@@ -5,7 +5,7 @@ import { surveyDraftSchema, type CompiledVersion, type SurveyDraft } from './sch
  * между версиями (решение «что делать, если вопросы меняются»).
  */
 
-/** Валидирует и «замораживает» черновик в версию. Падает на дублях ключей. */
+/** Валидирует и «замораживает» черновик в версию. Падает на `versionNo < 1` и дублях ключей. */
 export function compile(draft: SurveyDraft, versionNo: number, at: Date = new Date()): CompiledVersion {
   if (!Number.isInteger(versionNo) || versionNo < 1) {
     throw new Error(`versionNo должен быть положительным целым (получено: ${versionNo})`)
@@ -48,6 +48,7 @@ export function isComparable(c: ChangeClass): boolean {
  * - `semantic` — сменилась метрика, тип вопроса ИЛИ баллы (score) → ряд несопоставим;
  * - `text` — изменился только текст вопроса; `unchanged` — без изменений.
  * Смена только `label` варианта НЕ ломает сопоставимость (якорь — ключ) → `unchanged`.
+ * Предполагает, что `a` и `b` — версии одного опроса (`surveyKey` не сверяется).
  */
 export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<string, ChangeClass> {
   const am = new Map(a.questions.map((q) => [q.key, q]))
@@ -66,14 +67,14 @@ export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<str
         // Смена метрики ИЛИ типа вопроса (single↔multi↔text) ломает сопоставимость ряда.
         out[key] = 'semantic'
       } else {
-        // Состав ключей (без учёта порядка) — перестановка не ломает ряд.
         const keysA = qa.options.map((o) => o.key).sort().join(',')
         const keysB = qb.options.map((o) => o.key).sort().join(',')
-        // Ключ+балл — ловит смену шкалы/score (это уже смена смысла).
-        const sigA = qa.options.map((o) => `${o.key}=${o.score ?? ''}`).sort().join(',')
-        const sigB = qb.options.map((o) => `${o.key}=${o.score ?? ''}`).sort().join(',')
-        if (keysA !== keysB) out[key] = 'options'
-        else if (sigA !== sigB) out[key] = 'semantic'
+        // Смена score у ПЕРЕСЕКАЮЩИХСЯ ключей = смена шкалы → semantic. Проверяем ДО
+        // состава: иначе добавление/удаление варианта замаскировало бы смену балла.
+        const bScore = new Map(qb.options.map((o) => [o.key, o.score ?? null]))
+        const scaleShift = qa.options.some((o) => bScore.has(o.key) && bScore.get(o.key) !== (o.score ?? null))
+        if (scaleShift) out[key] = 'semantic'
+        else if (keysA !== keysB) out[key] = 'options'
         else if (qa.text !== qb.text) out[key] = 'text'
         else out[key] = 'unchanged'
       }

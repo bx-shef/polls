@@ -9,6 +9,8 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
-cd "${CLAUDE_PROJECT_DIR:-.}"
+dir="${CLAUDE_PROJECT_DIR:-.}"
+[ -d "$dir" ] || { echo "session-start: каталог не найден: $dir" >&2; exit 1; }
+cd "$dir"
 corepack enable >/dev/null 2>&1 || true
 pnpm install --frozen-lockfile

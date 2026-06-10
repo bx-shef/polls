@@ -39,6 +39,10 @@ describe('submissionSchema — границы', () => {
     expect(submissionSchema.safeParse({ ...ok, versionNo: -1 }).success).toBe(false)
   })
 
+  it('отклоняет versionNo = 0 (версии нумеруются с 1)', () => {
+    expect(submissionSchema.safeParse({ ...ok, versionNo: 0 }).success).toBe(false)
+  })
+
   it('отклоняет слишком много ответов (>200)', () => {
     const answers: Record<string, { values: string[] }> = {}
     for (let i = 0; i < 201; i++) answers[`q${i}`] = { values: ['a'] }

@@ -55,6 +55,8 @@ export function choiceValues(rs: ResponseRecord[], questionKey: string): string[
 }
 
 // ── Фильтры под 4 уровня агрегации ──
+// ВНИМАНИЕ: сырые срезы НЕ подавляют малые N. Перед показом byCompany/byCategory/
+// byProduct проверяйте размер выборки через meetsAnonymity (риск деанонимизации).
 export const bySurvey = (rs: ResponseRecord[], surveyKey: string): ResponseRecord[] =>
   rs.filter((r) => r.surveyKey === surveyKey)
 
@@ -88,7 +90,7 @@ export interface ResponsibleKpi {
   summary: NpsSummary
 }
 
-/** KPI сотрудников: NPS по ответственному с порогом значимости/анонимности. */
+/** KPI сотрудников: NPS по ответственному с порогом значимости/анонимности. Результат отсортирован по убыванию NPS. */
 export function kpiByResponsible(
   rs: ResponseRecord[],
   questionKey: string,
@@ -132,6 +134,6 @@ export function npsTrend(
     }
   }
   return [...groups.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([b, vals]) => ({ bucket: b, ...nps(vals) }))
 }

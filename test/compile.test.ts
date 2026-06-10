@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { compile, diffVersions, isComparable } from '../src/domain/compile'
 import { draftV1, draftV2, CSAT_Q, LIKED_Q, NPS_Q, COMMENT_Q } from '../src/demo/seed'
-import type { SurveyDraft } from '../src/domain/schema'
+import { compiledVersionSchema, type SurveyDraft } from '../src/domain/schema'
 
 describe('compile', () => {
   it('замораживает черновик в версию', () => {
@@ -146,5 +146,37 @@ describe('compile — валидация versionNo', () => {
   it('падает на versionNo < 1 и на нецелом', () => {
     expect(() => compile(draftV1(), 0)).toThrow(/положительным/)
     expect(() => compile(draftV1(), 1.5)).toThrow(/положительным/)
+  })
+})
+
+describe('diffVersions — состав + score одновременно', () => {
+  it('добавлен вариант И изменён score у общего ключа → semantic (не options)', () => {
+    const a: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'scale', required: true, text: 'x', options: [{ key: 'a', label: 'A', score: 1 }] }]
+    }
+    const b: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'scale', required: true, text: 'x', options: [{ key: 'a', label: 'A', score: 2 }, { key: 'b', label: 'B', score: 3 }] }]
+    }
+    expect(diffVersions(compile(a, 1), compile(b, 2))['q']).toBe('semantic')
+  })
+
+  it('смена только label (key/score те же) → unchanged', () => {
+    const a: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'choice', required: true, text: 'x', options: [{ key: 'a', label: 'Старый' }] }]
+    }
+    const b: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'choice', required: true, text: 'x', options: [{ key: 'a', label: 'Новый' }] }]
+    }
+    expect(diffVersions(compile(a, 1), compile(b, 2))['q']).toBe('unchanged')
+  })
+})
+
+describe('compiledVersionSchema — round-trip', () => {
+  it('compile(...) проходит собственную схему (включая compiledAt как ISO)', () => {
+    expect(compiledVersionSchema.safeParse(compile(draftV1(), 1)).success).toBe(true)
   })
 })

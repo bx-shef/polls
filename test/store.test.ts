@@ -54,6 +54,16 @@ describe('MemoryStore', () => {
     ).rejects.toThrow()
   })
 
+  it('addResponse отклоняет невалидный metric в ответе', async () => {
+    const s = new MemoryStore()
+    await expect(
+      s.addResponse({
+        id: 'x', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {},
+        answers: [{ questionKey: 'q', metric: 'bad' as never, valueChoice: [], valueNumber: null, valueText: null }]
+      })
+    ).rejects.toThrow()
+  })
+
   it('listResponses возвращает копию — мутация не утекает в стор', async () => {
     const s = new MemoryStore()
     await s.addResponse({ id: 'a1', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [] })

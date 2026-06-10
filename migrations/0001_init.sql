@@ -35,7 +35,7 @@ create table if not exists survey_group (
 create table if not exists survey (
   id                 bigserial primary key,
   group_id           bigint not null references survey_group (id),
-  survey_key         text not null,
+  survey_key         text not null check (char_length(survey_key) <= 200),
   title              text not null,
   lang               text not null default 'ru',
   status             text not null default 'draft' check (status in ('draft', 'active', 'paused', 'archived')),
@@ -59,7 +59,7 @@ create table if not exists survey_version (
 create table if not exists survey_question (
   id           bigserial primary key,
   version_id   bigint not null references survey_version (id),
-  question_key text not null,
+  question_key text not null check (char_length(question_key) <= 200),
   block        text,
   position     int not null,
   type         text not null check (type in ('single', 'multi', 'text')),
@@ -74,7 +74,7 @@ create table if not exists survey_question (
 create table if not exists survey_option (
   id           bigserial primary key,
   question_id  bigint not null references survey_question (id),
-  option_key   text not null,
+  option_key   text not null check (char_length(option_key) <= 200),
   position     int not null,
   label        text not null check (char_length(label) <= 500),
   score        numeric,
@@ -139,7 +139,7 @@ create index if not exists idx_response_portal_survey on response (portal_id, su
 create table if not exists response_answer (
   id           bigserial primary key,
   response_id  bigint not null references response (id) on delete cascade,
-  question_key text not null,
+  question_key text not null check (char_length(question_key) <= 200),
   metric       text not null check (metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
   value_choice text[],
   value_number numeric,

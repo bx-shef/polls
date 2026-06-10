@@ -28,7 +28,8 @@ describe('survey-schema.template.json', () => {
   it('содержит UX-поля фронта (intro/thanks/blocks), которые движок игнорирует', () => {
     // intro/thanks/blocks — контракт фронта, вне SurveyDraft: surveyDraftSchema их
     // отбрасывает (strip), но в файле-шаблоне они нужны для рендера UI.
-    expect(raw.intro.count).toBe('25 вопросов · 8 блоков')
+    expect(typeof raw.intro.count).toBe('string')
+    expect(raw.intro.count).toContain(String(raw.questions.length)) // счётчик отражает число вопросов
     expect(raw.blocks).toHaveLength(8)
     expect(raw.thanks.title).toBeTruthy()
   })

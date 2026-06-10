@@ -77,8 +77,9 @@ portal
 
 **Источник истины — нормализованные таблицы** (`survey_question` / `survey_option`):
 их удобно редактировать, валидировать и по ним строить агрегаты. При **публикации**
-версия «компилируется» в иммутабельный `compiled_schema` (JSONB той же формы, что
-`survey-schema.json` из прототипа) — именно его отдаёт фронт опроса.
+версия «компилируется» в иммутабельный `compiled_schema` (JSONB — это `CompiledVersion`
+движка: `surveyKey`/`title`/`lang`/`versionNo`/`questions`/`compiledAt`; UX-поля
+`intro`/`thanks`/`blocks` — контракт фронта, хранятся отдельно) — его отдаёт фронт опроса.
 
 ```
 Конструктор → survey_question/option (черновик)

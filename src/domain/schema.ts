@@ -13,6 +13,8 @@ import { z } from 'zod'
 export const QUESTION_TYPES = ['single', 'multi', 'text'] as const
 export type QuestionType = (typeof QUESTION_TYPES)[number]
 
+// При добавлении метрики синхронизировать CHECK в migrations/0001_init.sql
+// (survey_question.metric, response_answer.metric).
 export const METRICS = ['nps', 'csat', 'ces', 'scale', 'choice', 'text'] as const
 export type Metric = (typeof METRICS)[number]
 
@@ -80,7 +82,7 @@ export const compiledVersionSchema = z.object({
   surveyKey: z.string().min(1).max(200),
   title: z.string().max(500),
   lang: z.string().max(20),
-  versionNo: z.number().int().nonnegative(),
+  versionNo: z.number().int().positive(),
   questions: z.array(questionSchema),
   compiledAt: isoDatetime
 })
@@ -99,7 +101,7 @@ export type RawAnswer = z.infer<typeof rawAnswerSchema>
 export const submissionSchema = z
   .object({
     surveyKey: z.string().min(1).max(200),
-    versionNo: z.number().int().nonnegative(),
+    versionNo: z.number().int().positive(),
     answers: z.record(z.string().max(200), rawAnswerSchema)
   })
   .refine((s) => Object.keys(s.answers).length <= 200, {
@@ -122,9 +124,10 @@ export type StoredAnswer = z.infer<typeof storedAnswerSchema>
 
 /** Завершённая анкета со снимком контекста. */
 export const responseRecordSchema = z.object({
-  id: z.string().min(1),
+  // id записи: в MemoryStore — строка (seed r1..r12); в PgStore — bigint/UUID как строка.
+  id: z.string().min(1).max(200),
   surveyKey: z.string().min(1).max(200),
-  versionNo: z.number().int().nonnegative(),
+  versionNo: z.number().int().positive(),
   /** ISO-8601 с таймзоной. */
   submittedAt: isoDatetime,
   context: crmContextSchema,

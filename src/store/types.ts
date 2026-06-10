@@ -21,11 +21,12 @@ export interface IStore {
    */
   addResponse(r: ResponseRecord): Promise<void>
   /**
-   * Сохранённые ответы; опциональный фильтр по survey_key. Возвращается копия,
-   * не внутренняя ссылка. ВНИМАНИЕ: грузит всё в память — при больших объёмах
-   * агрегации должны считаться SQL-запросами на стороне PgStore, а не через
-   * listResponses() + in-process. Пагинация/курсор и tenant-фильтр (portalId)
-   * — в PgStore (см. ISSUE фазы деплоя: read-API, #7).
+   * Сохранённые ответы; опциональный фильтр по survey_key. Возвращается
+   * поверхностная копия (новый массив, те же объекты) — трактуйте записи как
+   * read-only, не мутируйте вложенные поля. ВНИМАНИЕ: грузит всё в память — при
+   * больших объёмах агрегации должны считаться SQL-запросами на стороне PgStore,
+   * а не через listResponses() + in-process. Пагинация/курсор и tenant-фильтр
+   * (portalId) — в PgStore (см. ISSUE фазы деплоя: read-API, #7).
    */
   listResponses(surveyKey?: string): Promise<ResponseRecord[]>
 }
