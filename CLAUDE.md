@@ -66,6 +66,9 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 
 ## Среда (web-сессии)
 
-SessionStart-хук (авто-`pnpm install` при старте веб-сессии Claude Code) пока
-НЕ настроен: запись `.claude/settings.json` блокируется харнессом как
-self-modification. Оформить через навык `session-start-hook` / `/update-config`.
+SessionStart-хук настроен: `.claude/hooks/session-start.sh` (зарегистрирован в
+`.claude/settings.json`) ставит зависимости (`pnpm install --frozen-lockfile`) при
+старте веб-сессии Claude Code, чтобы typecheck/test/verify работали сразу.
+Запускается синхронно и только в удалённой среде (гард по `CLAUDE_CODE_REMOTE`);
+локально — мгновенный выход. Вступает в силу для всех сессий после мержа в
+дефолтную ветку.
