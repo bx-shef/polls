@@ -38,3 +38,6 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Verify (итог на 4 уровнях)
+        run: pnpm verify

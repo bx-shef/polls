@@ -5,9 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "▶ pnpm install"
+echo "▶ pnpm install (--frozen-lockfile)"
 corepack enable >/dev/null 2>&1 || true
-pnpm install --frozen-lockfile || pnpm install
+pnpm install --frozen-lockfile
 
 echo "▶ typecheck"
 pnpm -s typecheck

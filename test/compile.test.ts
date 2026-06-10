@@ -23,8 +23,15 @@ describe('compile', () => {
     expect(() => compile(bad, 1)).toThrow(/question_key/)
   })
 
-  it('падает на невалидном черновике (zod: пустой surveyKey/questions)', () => {
-    expect(() => compile({ surveyKey: '', title: 't', lang: 'ru', questions: [] }, 1)).toThrow()
+  it('падает на пустом surveyKey (zod)', () => {
+    expect(() => compile({
+      surveyKey: '', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'text', metric: 'text', required: false, text: 'x', options: [] }]
+    }, 1)).toThrow()
+  })
+
+  it('падает на пустом списке вопросов (zod)', () => {
+    expect(() => compile({ surveyKey: 's', title: 't', lang: 'ru', questions: [] }, 1)).toThrow()
   })
 
   it('падает на дублирующемся option_key', () => {
@@ -80,6 +87,18 @@ describe('diffVersions', () => {
       questions: [{ key: 'q', type: 'single', metric: 'choice', required: true, text: 'x', options: [{ key: 'b', label: 'B' }, { key: 'a', label: 'A' }] }]
     }
     expect(diffVersions(compile(base, 1), compile(reordered, 2))['q']).toBe('unchanged')
+  })
+
+  it('смена баллов (score) при тех же ключах → semantic', () => {
+    const a: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'nps', required: true, text: 'x', options: [{ key: 'a', label: 'A', score: 1 }] }]
+    }
+    const b: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'nps', required: true, text: 'x', options: [{ key: 'a', label: 'A', score: 2 }] }]
+    }
+    expect(diffVersions(compile(a, 1), compile(b, 2))['q']).toBe('semantic')
   })
 
   it('isComparable: только unchanged/text/options сопоставимы', () => {

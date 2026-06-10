@@ -11,8 +11,8 @@ export type Metric = 'nps' | 'csat' | 'ces' | 'scale' | 'choice' | 'text'
 
 export const optionSchema = z.object({
   /** Стабильный ключ варианта — сохраняется между версиями. */
-  key: z.string().min(1),
-  label: z.string(),
+  key: z.string().min(1).max(200),
+  label: z.string().max(500),
   /** Числовой балл для шкальных метрик (напр. 0..10 для NPS). */
   score: z.number().nullish(),
   isOther: z.boolean().optional(),
@@ -22,23 +22,23 @@ export type Option = z.infer<typeof optionSchema>
 
 export const questionSchema = z.object({
   /** Стабильный ключ вопроса — якорь сопоставимости между версиями. */
-  key: z.string().min(1),
-  block: z.string().optional(),
+  key: z.string().min(1).max(200),
+  block: z.string().max(200).optional(),
   type: z.enum(['single', 'multi', 'text']),
   metric: z.enum(['nps', 'csat', 'ces', 'scale', 'choice', 'text']),
   required: z.boolean().default(true),
   columns: z.number().int().positive().optional(),
-  text: z.string(),
-  options: z.array(optionSchema).default([])
+  text: z.string().max(2000),
+  options: z.array(optionSchema).max(100).default([])
 })
 export type Question = z.infer<typeof questionSchema>
 
 export const surveyDraftSchema = z.object({
-  surveyKey: z.string().min(1),
-  title: z.string(),
+  surveyKey: z.string().min(1).max(200),
+  title: z.string().max(500),
   /** Один опрос = один язык (решение №3). */
-  lang: z.string().default('ru'),
-  questions: z.array(questionSchema).min(1)
+  lang: z.string().max(20).default('ru'),
+  questions: z.array(questionSchema).min(1).max(200)
 })
 export type SurveyDraft = z.infer<typeof surveyDraftSchema>
 
@@ -82,7 +82,7 @@ export type RawAnswer = z.infer<typeof rawAnswerSchema>
 
 export const submissionSchema = z
   .object({
-    surveyKey: z.string().max(200),
+    surveyKey: z.string().min(1).max(200),
     versionNo: z.number().int().nonnegative(),
     answers: z.record(z.string().max(200), rawAnswerSchema)
   })

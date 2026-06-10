@@ -4,6 +4,7 @@ import {
   byCompany,
   byProduct,
   bySurvey,
+  cesFor,
   choiceValues,
   csatFor,
   distributionFor,
@@ -15,7 +16,7 @@ import {
 import { buildDemo, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
 
-const all = buildDemo().responses
+const all = await (await buildDemo()).listResponses()
 
 describe('итог — уровень 1 (по опросу)', () => {
   const s = bySurvey(all, SURVEY_KEY)
@@ -91,10 +92,11 @@ describe('итог — тренд (версионно-безопасный)', ()
     ])
   })
 
-  it('тренд по дням — bucket формата YYYY-MM-DD', () => {
+  it('тренд по дням — 12 точек, отсортированы', () => {
     const t = npsTrend(all, NPS_Q, 'day')
-    expect(t.length).toBeGreaterThan(2)
-    expect(t[0]?.bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(t).toHaveLength(12)
+    expect(t[0]?.bucket).toBe('2026-04-03')
+    expect(t.at(-1)?.bucket).toBe('2026-05-25')
   })
 })
 
@@ -103,6 +105,10 @@ describe('итог — прямые выборки и граничные слу�
     const s = bySurvey(all, SURVEY_KEY)
     expect(numericValues(s, NPS_Q)).toHaveLength(12)
     expect(choiceValues(s, LIKED_Q)).toHaveLength(12)
+  })
+
+  it('cesFor считает среднее усилие по ключу', () => {
+    expect(cesFor(bySurvey(all, SURVEY_KEY), CSAT_Q)).toEqual({ n: 12, mean: 3.67 })
   })
 
   it('KPI игнорирует ответы без responsibleId', () => {

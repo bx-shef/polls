@@ -38,7 +38,7 @@ create table if not exists survey (
   survey_key         text not null,
   title              text not null,
   lang               text not null default 'ru',
-  status             text not null default 'draft',
+  status             text not null default 'draft' check (status in ('draft', 'active', 'paused', 'archived')),
   current_version_id bigint,
   created_at         timestamptz not null default now(),
   unique (group_id, survey_key)
@@ -63,7 +63,7 @@ create table if not exists survey_question (
   block        text,
   position     int not null,
   type         text not null check (type in ('single', 'multi', 'text')),
-  metric       text,                      -- nps|csat|ces|scale|choice|text
+  metric       text check (metric is null or metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
   required     boolean not null default true,
   columns      int default 1,
   text         text not null,
@@ -90,8 +90,8 @@ create table if not exists invitation (
   survey_id         bigint not null references survey (id),
   survey_version_id bigint not null references survey_version (id),
   token             text unique not null,
-  channel           text,
-  status            text not null default 'sent', -- sent|opened|completed|expired
+  channel           text check (channel is null or channel in ('email', 'sms', 'imol', 'link')),
+  status            text not null default 'sent' check (status in ('sent', 'opened', 'completed', 'expired')),
   deal_id           bigint,
   deal_category_id  bigint,
   deal_stage_id     text,

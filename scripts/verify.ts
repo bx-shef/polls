@@ -27,8 +27,8 @@ import {
   RESPONSIBLE_NAMES
 } from '../src/demo/seed'
 
-const store = buildDemo()
-const all = store.responses
+const store = await buildDemo()
+const all = await store.listResponses()
 
 const line = (s = '') => console.log(s)
 const h = (s: string) => {

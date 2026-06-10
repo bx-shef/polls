@@ -1,17 +1,17 @@
 import { compile } from '../domain/compile'
 import type { CompiledVersion, ResponseRecord, SurveyDraft } from '../domain/schema'
+import type { IStore } from './types'
 
 /**
- * In-memory хранилище — для локальной проверки итога и тестов.
- * В фазе деплоя рядом появится PgStore с той же поверхностью (см. migrations/).
+ * In-memory реализация {@link IStore} — для локальной проверки итога и тестов.
+ * В фазе деплоя рядом появится PgStore с тем же контрактом (см. migrations/).
  */
-export class MemoryStore {
+export class MemoryStore implements IStore {
   private versions: CompiledVersion[] = []
   private _responses: ResponseRecord[] = []
 
-  /** Публикует версию (компилирует черновик и «замораживает»). */
-  publish(draft: SurveyDraft, versionNo: number): CompiledVersion {
-    if (this.getVersion(draft.surveyKey, versionNo)) {
+  async publish(draft: SurveyDraft, versionNo: number): Promise<CompiledVersion> {
+    if (await this.getVersion(draft.surveyKey, versionNo)) {
       throw new Error(`Версия ${versionNo} опроса ${draft.surveyKey} уже опубликована`)
     }
     const version = compile(draft, versionNo)
@@ -19,22 +19,22 @@ export class MemoryStore {
     return version
   }
 
-  getVersion(surveyKey: string, versionNo: number): CompiledVersion | undefined {
+  async getVersion(surveyKey: string, versionNo: number): Promise<CompiledVersion | undefined> {
     return this.versions.find((v) => v.surveyKey === surveyKey && v.versionNo === versionNo)
   }
 
-  /** Текущая (последняя) опубликованная версия — её пин кладём в приглашение. */
-  currentVersion(surveyKey: string): CompiledVersion | undefined {
+  async currentVersion(surveyKey: string): Promise<CompiledVersion | undefined> {
+    // filter() создаёт новый массив, поэтому sort() не мутирует this.versions.
     return this.versions
       .filter((v) => v.surveyKey === surveyKey)
       .sort((a, b) => b.versionNo - a.versionNo)[0]
   }
 
-  addResponse(r: ResponseRecord): void {
+  async addResponse(r: ResponseRecord): Promise<void> {
     this._responses.push(r)
   }
 
-  get responses(): ResponseRecord[] {
+  async listResponses(): Promise<ResponseRecord[]> {
     return this._responses
   }
 }

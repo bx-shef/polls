@@ -6,6 +6,9 @@ import { ces, csat, distribution, nps, type CesSummary, type CsatSummary, type N
  * по стабильному question_key, а не по тексту или номеру версии.
  */
 
+/** Минимальный размер выборки для чувствительных срезов (анонимность/значимость). */
+export const ANONYMITY_THRESHOLD = 5
+
 function pushTo<K, V>(map: Map<K, V[]>, key: K, val: V): void {
   const arr = map.get(key)
   if (arr) arr.push(val)
@@ -55,8 +58,11 @@ export const byProduct = (rs: ResponseRecord[], productId: number): ResponseReco
 export const npsFor = (rs: ResponseRecord[], questionKey: string): NpsSummary =>
   nps(numericValues(rs, questionKey))
 
-export const csatFor = (rs: ResponseRecord[], questionKey: string): CsatSummary =>
-  csat(numericValues(rs, questionKey))
+export const csatFor = (
+  rs: ResponseRecord[],
+  questionKey: string,
+  opts?: { topBoxMin?: number }
+): CsatSummary => csat(numericValues(rs, questionKey), opts)
 
 export const cesFor = (rs: ResponseRecord[], questionKey: string): CesSummary =>
   ces(numericValues(rs, questionKey))
@@ -75,7 +81,7 @@ export function kpiByResponsible(
   questionKey: string,
   opts: { minN?: number } = {}
 ): ResponsibleKpi[] {
-  const minN = opts.minN ?? 5
+  const minN = opts.minN ?? ANONYMITY_THRESHOLD
   const groups = new Map<number, ResponseRecord[]>()
   for (const r of rs) {
     const id = r.context.responsibleId

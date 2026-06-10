@@ -39,7 +39,12 @@ export function isComparable(c: ChangeClass): boolean {
   return COMPARABLE_CLASSES.has(c)
 }
 
-/** Сравнивает две версии по question_key и возвращает класс изменения каждого вопроса. */
+/**
+ * Сравнивает версии по question_key и классифицирует изменение каждого вопроса:
+ * - `options` — изменился состав ключей вариантов (порядок не учитывается);
+ * - `semantic` — сменилась метрика ИЛИ баллы (score) вариантов → ряд несопоставим;
+ * - `text` — изменился только текст вопроса; `unchanged` — без изменений.
+ */
 export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<string, ChangeClass> {
   const am = new Map(a.questions.map((q) => [q.key, q]))
   const bm = new Map(b.questions.map((q) => [q.key, q]))
@@ -56,11 +61,14 @@ export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<str
       if (qa.metric !== qb.metric) {
         out[key] = 'semantic'
       } else {
-        // Сравниваем ОТСОРТИРОВАННЫЕ ключи: перестановка вариантов не должна
-        // ломать сопоставимость ряда (это не смена смысла).
-        const ka = qa.options.map((o) => o.key).sort().join(',')
-        const kb = qb.options.map((o) => o.key).sort().join(',')
-        if (ka !== kb) out[key] = 'options'
+        // Состав ключей (без учёта порядка) — перестановка не ломает ряд.
+        const keysA = qa.options.map((o) => o.key).sort().join(',')
+        const keysB = qb.options.map((o) => o.key).sort().join(',')
+        // Ключ+балл — ловит смену шкалы/score (это уже смена смысла).
+        const sigA = qa.options.map((o) => `${o.key}=${o.score ?? ''}`).sort().join(',')
+        const sigB = qb.options.map((o) => `${o.key}=${o.score ?? ''}`).sort().join(',')
+        if (keysA !== keysB) out[key] = 'options'
+        else if (sigA !== sigB) out[key] = 'semantic'
         else if (qa.text !== qb.text) out[key] = 'text'
         else out[key] = 'unchanged'
       }

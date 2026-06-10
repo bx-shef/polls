@@ -2,12 +2,13 @@
 # Запуск:  powershell -ExecutionPolicy Bypass -File scripts\check.ps1
 # Делает: установка зависимостей -> типы -> тесты -> расчёт итога.
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
-Write-Host '> pnpm install'
+Write-Host '> pnpm install (--frozen-lockfile)'
 try { corepack enable | Out-Null } catch {}
 pnpm install --frozen-lockfile
-if ($LASTEXITCODE -ne 0) { pnpm install }
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host '> typecheck'
 pnpm -s typecheck

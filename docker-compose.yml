@@ -7,7 +7,7 @@ services:
     # .env / docker secrets, не коммитить; БД держать во внутренней сети.
     environment:
       POSTGRES_USER: polls
-      POSTGRES_PASSWORD: polls
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polls}
       POSTGRES_DB: polls
     ports:
       # Только localhost: порт не торчит наружу (0.0.0.0).

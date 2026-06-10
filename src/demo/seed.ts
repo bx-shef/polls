@@ -109,16 +109,16 @@ function rawFor(e: SeedEntry): Record<string, RawAnswer> {
 }
 
 /** Строит хранилище с двумя версиями и сидовыми ответами через реальный пайплайн. */
-export function buildDemo(): MemoryStore {
+export async function buildDemo(): Promise<MemoryStore> {
   const store = new MemoryStore()
-  store.publish(draftV1(), 1)
-  store.publish(draftV2(), 2)
+  await store.publish(draftV1(), 1)
+  await store.publish(draftV2(), 2)
 
-  SEED.forEach((e, idx) => {
-    const version = store.getVersion(SURVEY_KEY, e.v)
+  for (const [idx, e] of SEED.entries()) {
+    const version = await store.getVersion(SURVEY_KEY, e.v)
     if (!version) throw new Error(`Версия ${e.v} не найдена`)
     const { answers } = buildResponseAnswers(version.questions, rawFor(e))
-    store.addResponse({
+    await store.addResponse({
       id: `r${idx + 1}`,
       surveyKey: SURVEY_KEY,
       versionNo: e.v,
@@ -132,7 +132,7 @@ export function buildDemo(): MemoryStore {
       },
       answers
     })
-  })
+  }
 
   return store
 }
