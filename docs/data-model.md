@@ -481,12 +481,12 @@ group by opt order by 2 desc;
 
 | Требование | Фаза | Статус |
 |---|---|---|
-| Шифрование OAuth-токенов (`portal.tokens`) + refresh-flow | Связка | ⛔ ISSUE |
-| Инструмент миграций (node-pg-migrate / Flyway) вместо одного SQL | Деплой | ⛔ ISSUE |
-| Серверный анти-абьюз: дедупликация nonce (TTL), проверка honeypot, rate-limit | Деплой | ⛔ ISSUE |
-| Наблюдаемость: структурные логи, `/api/health`, error-tracking | Деплой | ⛔ ISSUE |
-| Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Деплой | 🔶 обсудить |
-| Порог анонимности `N` во всех чувствительных срезах (не только KPI) | Деплой | 🔶 |
+| Шифрование OAuth-токенов (`portal.tokens`) + refresh-flow | Связка | ⛔ [#3](https://github.com/bx-shef/polls/issues/3) |
+| Серверный анти-абьюз: дедупликация nonce (TTL), проверка honeypot, rate-limit | Деплой | ⛔ [#4](https://github.com/bx-shef/polls/issues/4) |
+| Наблюдаемость: структурные логи, `/api/health`, error-tracking | Деплой | ⛔ [#5](https://github.com/bx-shef/polls/issues/5) |
+| Инструмент миграций (node-pg-migrate / Flyway) вместо одного SQL | Деплой | ⛔ [#6](https://github.com/bx-shef/polls/issues/6) |
+| Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |
+| Порог анонимности `N` — константа `ANONYMITY_THRESHOLD` (применить во всех срезах) | Деплой | 🔶 |
 | CHECK-ограничения и лимиты длины в схеме БД | Фаза 1 | ✅ |
 | Границы payload в zod (`.max`) | Фаза 1 | ✅ |
 
