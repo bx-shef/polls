@@ -16,7 +16,7 @@ create table if not exists app_user (
   id          bigserial primary key,
   portal_id   bigint not null references portal (id),
   b24_user_id bigint not null,
-  role        text not null default 'author',
+  role        text not null default 'author' check (role in ('author', 'admin', 'viewer')),
   unique (portal_id, b24_user_id)
 );
 
@@ -26,7 +26,7 @@ create table if not exists survey_group (
   portal_id      bigint not null references portal (id),
   owner_user_id  bigint references app_user (id),
   title          text not null,
-  visibility     text not null default 'private', -- private | department | portal
+  visibility     text not null default 'private' check (visibility in ('private', 'department', 'portal')),
   visibility_ref bigint,
   created_at     timestamptz not null default now()
 );
@@ -49,7 +49,7 @@ create table if not exists survey_version (
   id              bigserial primary key,
   survey_id       bigint not null references survey (id),
   version_no      int not null,
-  status          text not null default 'draft', -- draft | published | archived
+  status          text not null default 'draft' check (status in ('draft', 'published', 'archived')),
   compiled_schema jsonb,
   published_at    timestamptz,
   unique (survey_id, version_no)
@@ -62,7 +62,7 @@ create table if not exists survey_question (
   question_key text not null,
   block        text,
   position     int not null,
-  type         text not null,             -- single | multi | text
+  type         text not null check (type in ('single', 'multi', 'text')),
   metric       text,                      -- nps|csat|ces|scale|choice|text
   required     boolean not null default true,
   columns      int default 1,
@@ -122,7 +122,7 @@ create table if not exists response (
   nps_value         int,
   csat_value        numeric,
   sentiment         numeric,
-  status            text not null default 'raw', -- raw | analyzed
+  status            text not null default 'raw' check (status in ('raw', 'analyzed')),
   submitted_at      timestamptz not null default now()
 );
 create index if not exists idx_response_survey on response (survey_id);
@@ -139,7 +139,7 @@ create table if not exists response_answer (
   metric       text,
   value_choice text[],
   value_number numeric,
-  value_text   text,
+  value_text   text check (value_text is null or char_length(value_text) <= 4000),
   position     int
 );
 create index if not exists idx_answer_question on response_answer (question_key);

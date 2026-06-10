@@ -1,5 +1,5 @@
 import type { ResponseRecord } from './schema'
-import { csat, distribution, nps, type CsatSummary, type NpsSummary } from './metrics'
+import { ces, csat, distribution, nps, type CesSummary, type CsatSummary, type NpsSummary } from './metrics'
 
 /**
  * Агрегация поверх массива ответов. Версионно-безопасна: значения собираются
@@ -57,6 +57,9 @@ export const npsFor = (rs: ResponseRecord[], questionKey: string): NpsSummary =>
 
 export const csatFor = (rs: ResponseRecord[], questionKey: string): CsatSummary =>
   csat(numericValues(rs, questionKey))
+
+export const cesFor = (rs: ResponseRecord[], questionKey: string): CesSummary =>
+  ces(numericValues(rs, questionKey))
 
 export const distributionFor = (rs: ResponseRecord[], questionKey: string): Record<string, number> =>
   distribution(choiceValues(rs, questionKey))

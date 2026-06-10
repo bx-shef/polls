@@ -56,8 +56,10 @@ export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<str
       if (qa.metric !== qb.metric) {
         out[key] = 'semantic'
       } else {
-        const ka = qa.options.map((o) => o.key).join(',')
-        const kb = qb.options.map((o) => o.key).join(',')
+        // Сравниваем ОТСОРТИРОВАННЫЕ ключи: перестановка вариантов не должна
+        // ломать сопоставимость ряда (это не смена смысла).
+        const ka = qa.options.map((o) => o.key).sort().join(',')
+        const kb = qb.options.map((o) => o.key).sort().join(',')
         if (ka !== kb) out[key] = 'options'
         else if (qa.text !== qb.text) out[key] = 'text'
         else out[key] = 'unchanged'

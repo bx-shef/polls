@@ -20,7 +20,10 @@ export interface NpsSummary {
   nps: number
 }
 
-/** NPS по значениям 0..10: промоутеры ≥9, детракторы ≤6, пассивы 7–8. */
+/**
+ * NPS по значениям 0..10: промоутеры ≥9, детракторы ≤6, пассивы 7–8.
+ * При n=0 возвращает nps=0 — это sentinel: проверяйте `n` перед показом.
+ */
 export function nps(values: number[]): NpsSummary {
   const n = values.length
   let promoters = 0
@@ -50,6 +53,24 @@ export function csat(values: number[], opts: { topBoxMin?: number } = {}): CsatS
   const sum = values.reduce((a, b) => a + b, 0)
   const top = values.filter((v) => v >= topBoxMin).length
   return { n, mean: round2(sum / n), topBoxPct: round1((top / n) * 100) }
+}
+
+export interface CesSummary {
+  n: number
+  /** Средний балл усилия. */
+  mean: number
+}
+
+/**
+ * CES (Customer Effort Score) — среднее усилие. Направленность шкалы
+ * (больше = легче или наоборот) задаёт конкретный опрос, поэтому возвращаем
+ * только среднее и n; «бокс» при необходимости считайте на стороне отчёта.
+ * При n=0 mean=0 — sentinel, проверяйте `n`.
+ */
+export function ces(values: number[]): CesSummary {
+  const n = values.length
+  if (n === 0) return { n: 0, mean: 0 }
+  return { n, mean: round2(values.reduce((a, b) => a + b, 0) / n) }
 }
 
 /** Распределение выбранных вариантов (плоско по всем ответам). */

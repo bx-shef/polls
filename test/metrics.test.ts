@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { csat, distribution, nps, round1, round2 } from '../src/domain/metrics'
+import { ces, csat, distribution, nps, round1, round2 } from '../src/domain/metrics'
 
 describe('round', () => {
   it('round1/round2', () => {
     expect(round1(8.3333)).toBe(8.3)
     expect(round1(66.666)).toBe(66.7)
     expect(round2(4.25)).toBe(4.25)
+    expect(round1(0.05)).toBe(0.1)
+    expect(round2(0.125)).toBe(0.13) // .5 округляется вверх
   })
 })
 
@@ -50,5 +52,19 @@ describe('distribution', () => {
   it('counts keys across multi answers', () => {
     const d = distribution([['a', 'b'], ['a'], ['c', 'a']])
     expect(d).toEqual({ a: 3, b: 1, c: 1 })
+  })
+
+  it('empty → {}', () => {
+    expect(distribution([])).toEqual({})
+  })
+})
+
+describe('ces', () => {
+  it('mean of effort scores', () => {
+    expect(ces([1, 2, 3])).toEqual({ n: 3, mean: 2 })
+  })
+
+  it('empty → zeros (sentinel)', () => {
+    expect(ces([])).toEqual({ n: 0, mean: 0 })
   })
 })

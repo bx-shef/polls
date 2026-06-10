@@ -4,13 +4,16 @@ import {
   byCompany,
   byProduct,
   bySurvey,
+  choiceValues,
   csatFor,
   distributionFor,
   kpiByResponsible,
   npsFor,
-  npsTrend
+  npsTrend,
+  numericValues
 } from '../src/domain/aggregate'
 import { buildDemo, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
+import type { ResponseRecord } from '../src/domain/schema'
 
 const all = buildDemo().responses
 
@@ -86,5 +89,32 @@ describe('итог — тренд (версионно-безопасный)', ()
       ['2026-04', 16.7, 6],
       ['2026-05', 0, 6]
     ])
+  })
+
+  it('тренд по дням — bucket формата YYYY-MM-DD', () => {
+    const t = npsTrend(all, NPS_Q, 'day')
+    expect(t.length).toBeGreaterThan(2)
+    expect(t[0]?.bucket).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+})
+
+describe('итог — прямые выборки и граничные случаи', () => {
+  it('numericValues/choiceValues тянут значения по ключу', () => {
+    const s = bySurvey(all, SURVEY_KEY)
+    expect(numericValues(s, NPS_Q)).toHaveLength(12)
+    expect(choiceValues(s, LIKED_Q)).toHaveLength(12)
+  })
+
+  it('KPI игнорирует ответы без responsibleId', () => {
+    const extra: ResponseRecord[] = [
+      ...all,
+      {
+        id: 'z1', surveyKey: SURVEY_KEY, versionNo: 2, submittedAt: '2026-05-30T10:00:00.000Z',
+        context: {}, // без responsibleId
+        answers: [{ questionKey: NPS_Q, metric: 'nps', valueChoice: ['n10'], valueNumber: 10, valueText: null }]
+      }
+    ]
+    // строка без ответственного не создаёт группу → KPI не меняется
+    expect(kpiByResponsible(extra, NPS_Q, { minN: 2 })).toEqual(kpiByResponsible(all, NPS_Q, { minN: 2 }))
   })
 })

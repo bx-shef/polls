@@ -13,7 +13,7 @@ import {
   kpiByResponsible,
   npsTrend
 } from '../src/domain/aggregate'
-import { diffVersions } from '../src/domain/compile'
+import { compile, diffVersions } from '../src/domain/compile'
 import {
   buildDemo,
   draftV1,
@@ -26,7 +26,6 @@ import {
   CATEGORY_NAMES,
   RESPONSIBLE_NAMES
 } from '../src/demo/seed'
-import { compile } from '../src/domain/compile'
 
 const store = buildDemo()
 const all = store.responses
@@ -54,7 +53,7 @@ for (const [k, v] of Object.entries(distributionFor(s1, LIKED_Q)).sort((a, b) =>
 h('УРОВЕНЬ 2 — ПО УСЛУГЕ/ТОВАРУ')
 for (const productId of [1001, 1002]) {
   const sub = byProduct(all, productId)
-  line(`${(PRODUCT_NAMES[productId] ?? productId).padEnd(12)} NPS ${npsFor(sub, NPS_Q).nps}, CSAT ${csatFor(sub, CSAT_Q).mean} (n=${sub.length})`)
+  line(`${String(PRODUCT_NAMES[productId] ?? productId).padEnd(12)} NPS ${npsFor(sub, NPS_Q).nps}, CSAT ${csatFor(sub, CSAT_Q).mean} (n=${sub.length})`)
 }
 
 h('УРОВЕНЬ 3 — ПО СДЕЛКАМ ОДНОГО КЛИЕНТА')
@@ -66,11 +65,11 @@ for (const companyId of [101, 102]) {
 h('УРОВЕНЬ 4 — ПО НАПРАВЛЕНИЮ (+ KPI ответственных, порог N≥2)')
 for (const categoryId of [1, 2]) {
   const sub = byCategory(all, categoryId)
-  line(`${(CATEGORY_NAMES[categoryId] ?? categoryId).padEnd(10)} NPS ${npsFor(sub, NPS_Q).nps} (n=${sub.length})`)
+  line(`${String(CATEGORY_NAMES[categoryId] ?? categoryId).padEnd(10)} NPS ${npsFor(sub, NPS_Q).nps} (n=${sub.length})`)
 }
 line('KPI по ответственному (весь опрос):')
 for (const k of kpiByResponsible(all, NPS_Q, { minN: 2 })) {
-  line(`   ${(RESPONSIBLE_NAMES[k.responsibleId] ?? k.responsibleId).padEnd(10)} NPS ${k.summary.nps} (n=${k.summary.n})`)
+  line(`   ${String(RESPONSIBLE_NAMES[k.responsibleId] ?? k.responsibleId).padEnd(10)} NPS ${k.summary.nps} (n=${k.summary.n})`)
 }
 
 h('ТРЕНД NPS ПО МЕСЯЦАМ (через границу версий)')

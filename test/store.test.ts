@@ -24,10 +24,17 @@ describe('MemoryStore', () => {
     expect(() => s.publish(draftV1(), 1)).toThrow(/уже опубликована/)
   })
 
-  it('хранит ответы', () => {
+  it('хранит несколько ответов', () => {
     const s = new MemoryStore()
     s.publish(draftV1(), 1)
     s.addResponse({ id: 'x', surveyKey: SURVEY_KEY, versionNo: 1, submittedAt: '2026-04-01T00:00:00.000Z', context: {}, answers: [] })
-    expect(s.responses).toHaveLength(1)
+    s.addResponse({ id: 'y', surveyKey: SURVEY_KEY, versionNo: 1, submittedAt: '2026-04-02T00:00:00.000Z', context: {}, answers: [] })
+    expect(s.responses).toHaveLength(2)
+  })
+
+  it('пустое хранилище: currentVersion/getVersion → undefined', () => {
+    const s = new MemoryStore()
+    expect(s.currentVersion('nope')).toBeUndefined()
+    expect(s.getVersion('nope', 1)).toBeUndefined()
   })
 })

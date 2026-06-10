@@ -52,6 +52,12 @@ describe('normalizeAnswer — exclusive и other', () => {
   it('multi сохраняет несколько вариантов', () => {
     expect(normalizeAnswer(multiQ, { values: ['a', 'b'] })?.valueChoice).toEqual(['a', 'b'])
   })
+
+  it('exclusive вытесняет other — текст «Другое» не сохраняется', () => {
+    const a = normalizeAnswer(multiQ, { values: ['none', 'other'], text: 'своё' })
+    expect(a?.valueChoice).toEqual(['none'])
+    expect(a?.valueText).toBeNull()
+  })
 })
 
 describe('normalizeAnswer — текстовый вопрос', () => {
@@ -65,6 +71,10 @@ describe('validateAnswer', () => {
   it('обязательный без выбора → ошибка', () => {
     expect(validateAnswer(npsQ, {})).toBe('Выберите вариант')
     expect(validateAnswer(multiQ, {})).toBe('Выберите хотя бы один вариант')
+  })
+
+  it('обязательный с одними неизвестными ключами → ошибка', () => {
+    expect(validateAnswer(npsQ, { values: ['zzz'] })).toBe('Выберите вариант')
   })
 
   it('необязательный текст без значения → нет ошибки', () => {

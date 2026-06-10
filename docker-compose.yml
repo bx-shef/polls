@@ -3,12 +3,15 @@
 services:
   db:
     image: postgres:16-alpine
+    # ВНИМАНИЕ: dev-учётка только для локальной разработки. В проде — секрет из
+    # .env / docker secrets, не коммитить; БД держать во внутренней сети.
     environment:
       POSTGRES_USER: polls
       POSTGRES_PASSWORD: polls
       POSTGRES_DB: polls
     ports:
-      - '5432:5432'
+      # Только localhost: порт не торчит наружу (0.0.0.0).
+      - '127.0.0.1:5432:5432'
     volumes:
       - db-data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d:ro

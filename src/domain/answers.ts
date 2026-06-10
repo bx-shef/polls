@@ -53,8 +53,8 @@ export function normalizeAnswer(q: Question, raw: RawAnswer): StoredAnswer | nul
 
   const known = optionKeySet(q)
   let vals = (raw.values ?? []).filter((v) => known.has(v))
-  if (q.type === 'single') vals = vals.slice(0, 1)
   vals = coerceExclusive(q, vals)
+  if (q.type === 'single') vals = vals.slice(0, 1)
   if (vals.length === 0) return null
 
   let valueNumber: number | null = null

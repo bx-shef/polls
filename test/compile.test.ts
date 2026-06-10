@@ -23,6 +23,10 @@ describe('compile', () => {
     expect(() => compile(bad, 1)).toThrow(/question_key/)
   })
 
+  it('падает на невалидном черновике (zod: пустой surveyKey/questions)', () => {
+    expect(() => compile({ surveyKey: '', title: 't', lang: 'ru', questions: [] }, 1)).toThrow()
+  })
+
   it('падает на дублирующемся option_key', () => {
     const bad: SurveyDraft = {
       surveyKey: 's', title: 't', lang: 'ru',
@@ -64,6 +68,18 @@ describe('diffVersions', () => {
     expect(d['keep']).toBe('semantic')
     expect(d['gone']).toBe('removed')
     expect(d['fresh']).toBe('added')
+  })
+
+  it('перестановка вариантов не ломает сопоставимость → unchanged', () => {
+    const base: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'choice', required: true, text: 'x', options: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }] }]
+    }
+    const reordered: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'choice', required: true, text: 'x', options: [{ key: 'b', label: 'B' }, { key: 'a', label: 'A' }] }]
+    }
+    expect(diffVersions(compile(base, 1), compile(reordered, 2))['q']).toBe('unchanged')
   })
 
   it('isComparable: только unchanged/text/options сопоставимы', () => {

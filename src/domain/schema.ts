@@ -70,18 +70,25 @@ export interface CrmContext {
   products?: CrmProduct[]
 }
 
-/** Сырой ответ клиента на один вопрос. */
+/**
+ * Сырой ответ клиента на один вопрос. Оба поля опциональны: пустой объект `{}`
+ * означает «вопрос пропущен». Границы (.max) — защита от раздувания payload.
+ */
 export const rawAnswerSchema = z.object({
-  values: z.array(z.string()).optional(),
-  text: z.string().optional()
+  values: z.array(z.string().max(200)).max(100).optional(),
+  text: z.string().max(2000).optional()
 })
 export type RawAnswer = z.infer<typeof rawAnswerSchema>
 
-export const submissionSchema = z.object({
-  surveyKey: z.string(),
-  versionNo: z.number().int(),
-  answers: z.record(z.string(), rawAnswerSchema)
-})
+export const submissionSchema = z
+  .object({
+    surveyKey: z.string().max(200),
+    versionNo: z.number().int().nonnegative(),
+    answers: z.record(z.string().max(200), rawAnswerSchema)
+  })
+  .refine((s) => Object.keys(s.answers).length <= 200, {
+    message: 'Слишком много ответов в payload'
+  })
 export type Submission = z.infer<typeof submissionSchema>
 
 /** Нормализованный ответ на вопрос — хранится в БД. */
