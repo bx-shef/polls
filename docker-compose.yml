@@ -7,7 +7,8 @@ services:
     # .env / docker secrets, не коммитить; БД держать во внутренней сети.
     environment:
       POSTGRES_USER: polls
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polls}
+      # Без дефолта: запуск без явного пароля падает (а не стартует со слабым 'polls').
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан — задайте в .env}"
       POSTGRES_DB: polls
     ports:
       # Только localhost: порт не торчит наружу (0.0.0.0).

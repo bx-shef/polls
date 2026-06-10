@@ -9,6 +9,17 @@ import { ces, csat, distribution, nps, type CesSummary, type CsatSummary, type N
 /** Минимальный размер выборки для чувствительных срезов (анонимность/значимость). */
 export const ANONYMITY_THRESHOLD = 5
 
+/**
+ * Достаточна ли выборка, чтобы показать срез без риска деанонимизации.
+ * ВНИМАНИЕ: фильтры и метрики ниже — «сырые» building-blocks и НЕ подавляют
+ * малые N сами по себе. Принудительное подавление на срезах (компания/продукт/
+ * направление), пагинация и tenant-изоляция (portalId) — ответственность слоя
+ * чтения/дашборда (PgStore + read-API; см. ISSUE фазы деплоя).
+ */
+export function meetsAnonymity(n: number, threshold: number = ANONYMITY_THRESHOLD): boolean {
+  return n >= threshold
+}
+
 function pushTo<K, V>(map: Map<K, V[]>, key: K, val: V): void {
   const arr = map.get(key)
   if (arr) arr.push(val)
@@ -91,7 +102,7 @@ export function kpiByResponsible(
   const out: ResponsibleKpi[] = []
   for (const [responsibleId, list] of groups) {
     const summary = npsFor(list, questionKey)
-    if (summary.n >= minN) out.push({ responsibleId, summary })
+    if (meetsAnonymity(summary.n, minN)) out.push({ responsibleId, summary })
   }
   return out.sort((a, b) => b.summary.nps - a.summary.nps)
 }

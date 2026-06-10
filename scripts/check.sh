@@ -12,8 +12,8 @@ pnpm install --frozen-lockfile
 echo "▶ typecheck"
 pnpm -s typecheck
 
-echo "▶ test"
-pnpm -s test
+echo "▶ test (+покрытие, пороги в vitest.config.ts)"
+pnpm -s test:cov
 
 echo "▶ verify (итог на 4 уровнях)"
 pnpm -s verify

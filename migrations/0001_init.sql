@@ -108,7 +108,9 @@ create table if not exists invitation (
 -- ── Ответ (одна заполненная анкета) ──
 create table if not exists response (
   id                bigserial primary key,
-  portal_id         bigint references portal (id),
+  -- Каждый ответ принадлежит порталу (tenant). invitation_id опционален:
+  -- публичные ответы по ссылке могут не иметь персонального приглашения.
+  portal_id         bigint not null references portal (id),
   invitation_id     bigint references invitation (id),
   survey_id         bigint not null references survey (id),
   survey_version_id bigint not null references survey_version (id),
@@ -136,10 +138,11 @@ create table if not exists response_answer (
   id           bigserial primary key,
   response_id  bigint not null references response (id) on delete cascade,
   question_key text not null,
-  metric       text,
+  metric       text check (metric is null or metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
   value_choice text[],
   value_number numeric,
-  value_text   text check (value_text is null or char_length(value_text) <= 4000),
+  -- Лимит синхронизирован с rawAnswerSchema.text (zod .max(2000)).
+  value_text   text check (value_text is null or char_length(value_text) <= 2000),
   position     int
 );
 create index if not exists idx_answer_question on response_answer (question_key);

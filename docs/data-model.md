@@ -486,7 +486,8 @@ group by opt order by 2 desc;
 | Наблюдаемость: структурные логи, `/api/health`, error-tracking | Деплой | ⛔ [#5](https://github.com/bx-shef/polls/issues/5) |
 | Инструмент миграций (node-pg-migrate / Flyway) вместо одного SQL | Деплой | ⛔ [#6](https://github.com/bx-shef/polls/issues/6) |
 | Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |
-| Порог анонимности `N` — константа `ANONYMITY_THRESHOLD` (применить во всех срезах) | Деплой | 🔶 |
+| Порог анонимности `N`: `ANONYMITY_THRESHOLD` + `meetsAnonymity` (в KPI применён; подавление на остальных срезах — read-API) | Фаза 1 / Деплой | ✅ / 🔶 |
+| Read-API / PgStore: пагинация `listResponses`, подавление малых N, tenant-изоляция (`portalId`), SQL-агрегация | Деплой | 🔶 [#7](https://github.com/bx-shef/polls/issues/7) |
 | CHECK-ограничения и лимиты длины в схеме БД | Фаза 1 | ✅ |
 | Границы payload в zod (`.max`) | Фаза 1 | ✅ |
 

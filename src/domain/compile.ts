@@ -42,7 +42,7 @@ export function isComparable(c: ChangeClass): boolean {
 /**
  * Сравнивает версии по question_key и классифицирует изменение каждого вопроса:
  * - `options` — изменился состав ключей вариантов (порядок не учитывается);
- * - `semantic` — сменилась метрика ИЛИ баллы (score) вариантов → ряд несопоставим;
+ * - `semantic` — сменилась метрика, тип вопроса ИЛИ баллы (score) → ряд несопоставим;
  * - `text` — изменился только текст вопроса; `unchanged` — без изменений.
  */
 export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<string, ChangeClass> {
@@ -58,7 +58,8 @@ export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<str
     } else if (!qa && qb) {
       out[key] = 'added'
     } else if (qa && qb) {
-      if (qa.metric !== qb.metric) {
+      if (qa.metric !== qb.metric || qa.type !== qb.type) {
+        // Смена метрики ИЛИ типа вопроса (single↔multi↔text) ломает сопоставимость ряда.
         out[key] = 'semantic'
       } else {
         // Состав ключей (без учёта порядка) — перестановка не ломает ряд.

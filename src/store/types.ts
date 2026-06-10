@@ -13,6 +13,10 @@ export interface IStore {
   currentVersion(surveyKey: string): Promise<CompiledVersion | undefined>
   /** Сохраняет завершённую анкету. */
   addResponse(r: ResponseRecord): Promise<void>
-  /** Все сохранённые ответы. */
-  listResponses(): Promise<ResponseRecord[]>
+  /**
+   * Сохранённые ответы; опциональный фильтр по survey_key. Возвращается копия,
+   * не внутренняя ссылка. Полноценная пагинация/курсор и tenant-фильтр (portalId)
+   * — в PgStore (см. ISSUE фазы деплоя: read-API).
+   */
+  listResponses(surveyKey?: string): Promise<ResponseRecord[]>
 }

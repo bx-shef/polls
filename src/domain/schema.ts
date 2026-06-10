@@ -4,10 +4,23 @@ import { z } from 'zod'
  * Доменные типы движка опроса.
  * Соответствуют модели данных (docs/data-model.md): вопрос с метрикой и
  * стабильным ключом, вариант со стабильным ключом, ответ со снимком CRM-контекста.
+ *
+ * Перечисления и составные структуры выводятся из zod-схем (единый источник
+ * истины), чтобы тип TS и runtime-валидация на границах не расходились.
  */
 
-export type QuestionType = 'single' | 'multi' | 'text'
-export type Metric = 'nps' | 'csat' | 'ces' | 'scale' | 'choice' | 'text'
+// ── Перечисления: один источник для типа TS и для z.enum ──
+export const QUESTION_TYPES = ['single', 'multi', 'text'] as const
+export type QuestionType = (typeof QUESTION_TYPES)[number]
+
+export const METRICS = ['nps', 'csat', 'ces', 'scale', 'choice', 'text'] as const
+export type Metric = (typeof METRICS)[number]
+
+/** Метрики, для которых ответ несёт число (берётся из option.score). */
+export const NUMERIC_METRICS = new Set<Metric>(['nps', 'csat', 'ces', 'scale'])
+
+/** ISO-8601 с таймзоной (напр. `2026-04-03T10:00:00.000Z`). */
+const isoDatetime = z.string().datetime({ offset: true })
 
 export const optionSchema = z.object({
   /** Стабильный ключ варианта — сохраняется между версиями. */
@@ -24,8 +37,8 @@ export const questionSchema = z.object({
   /** Стабильный ключ вопроса — якорь сопоставимости между версиями. */
   key: z.string().min(1).max(200),
   block: z.string().max(200).optional(),
-  type: z.enum(['single', 'multi', 'text']),
-  metric: z.enum(['nps', 'csat', 'ces', 'scale', 'choice', 'text']),
+  type: z.enum(QUESTION_TYPES),
+  metric: z.enum(METRICS),
   required: z.boolean().default(true),
   columns: z.number().int().positive().optional(),
   text: z.string().max(2000),
@@ -42,33 +55,36 @@ export const surveyDraftSchema = z.object({
 })
 export type SurveyDraft = z.infer<typeof surveyDraftSchema>
 
-/** Иммутабельная опубликованная версия — её отдаёт фронт и к ней привязаны ответы. */
-export interface CompiledVersion {
-  surveyKey: string
-  title: string
-  lang: string
-  versionNo: number
-  questions: Question[]
-  compiledAt: string
-}
-
 /** Снимок CRM-контекста, снятый при закрытии сделки. */
-export interface CrmProduct {
-  productId: number
-  productName?: string
-  serviceTag?: string
-}
+export const crmProductSchema = z.object({
+  productId: z.number(),
+  productName: z.string().optional(),
+  serviceTag: z.string().optional()
+})
+export type CrmProduct = z.infer<typeof crmProductSchema>
 
-export interface CrmContext {
-  dealId?: number
-  dealCategoryId?: number
-  dealStageId?: string
-  companyId?: number
-  contactId?: number
-  responsibleId?: number
-  dealAmount?: number
-  products?: CrmProduct[]
-}
+export const crmContextSchema = z.object({
+  dealId: z.number().optional(),
+  dealCategoryId: z.number().optional(),
+  dealStageId: z.string().optional(),
+  companyId: z.number().optional(),
+  contactId: z.number().optional(),
+  responsibleId: z.number().optional(),
+  dealAmount: z.number().optional(),
+  products: z.array(crmProductSchema).optional()
+})
+export type CrmContext = z.infer<typeof crmContextSchema>
+
+/** Иммутабельная опубликованная версия — её отдаёт фронт и к ней привязаны ответы. */
+export const compiledVersionSchema = z.object({
+  surveyKey: z.string().min(1).max(200),
+  title: z.string().max(500),
+  lang: z.string().max(20),
+  versionNo: z.number().int().nonnegative(),
+  questions: z.array(questionSchema),
+  compiledAt: isoDatetime
+})
+export type CompiledVersion = z.infer<typeof compiledVersionSchema>
 
 /**
  * Сырой ответ клиента на один вопрос. Оба поля опциональны: пустой объект `{}`
@@ -92,24 +108,26 @@ export const submissionSchema = z
 export type Submission = z.infer<typeof submissionSchema>
 
 /** Нормализованный ответ на вопрос — хранится в БД. */
-export interface StoredAnswer {
-  questionKey: string
-  metric: Metric
+export const storedAnswerSchema = z.object({
+  questionKey: z.string().min(1).max(200),
+  metric: z.enum(METRICS),
   /** option_key[] выбранных вариантов. */
-  valueChoice: string[]
+  valueChoice: z.array(z.string().max(200)),
   /** Число для nps/csat/ces/scale (из option.score). */
-  valueNumber: number | null
+  valueNumber: z.number().nullable(),
   /** Свободный текст, включая «Другое». */
-  valueText: string | null
-}
+  valueText: z.string().nullable()
+})
+export type StoredAnswer = z.infer<typeof storedAnswerSchema>
 
 /** Завершённая анкета со снимком контекста. */
-export interface ResponseRecord {
-  id: string
-  surveyKey: string
-  versionNo: number
-  /** ISO-8601. */
-  submittedAt: string
-  context: CrmContext
-  answers: StoredAnswer[]
-}
+export const responseRecordSchema = z.object({
+  id: z.string().min(1),
+  surveyKey: z.string().min(1).max(200),
+  versionNo: z.number().int().nonnegative(),
+  /** ISO-8601 с таймзоной. */
+  submittedAt: isoDatetime,
+  context: crmContextSchema,
+  answers: z.array(storedAnswerSchema)
+})
+export type ResponseRecord = z.infer<typeof responseRecordSchema>

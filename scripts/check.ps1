@@ -14,8 +14,8 @@ Write-Host '> typecheck'
 pnpm -s typecheck
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-Write-Host '> test'
-pnpm -s test
+Write-Host '> test (+покрытие, пороги в vitest.config.ts)'
+pnpm -s test:cov
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host '> verify (итог на 4 уровнях)'

@@ -109,4 +109,35 @@ describe('diffVersions', () => {
     expect(isComparable('added')).toBe(false)
     expect(isComparable('removed')).toBe(false)
   })
+
+  it('смена type (single→multi) при той же метрике → semantic', () => {
+    const a: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'choice', required: true, text: 'x', options: [{ key: 'a', label: 'A' }] }]
+    }
+    const b: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'multi', metric: 'choice', required: true, text: 'x', options: [{ key: 'a', label: 'A' }] }]
+    }
+    expect(diffVersions(compile(a, 1), compile(b, 2))['q']).toBe('semantic')
+  })
+
+  it('появление score у варианта (был без балла) → semantic', () => {
+    const a: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'scale', required: true, text: 'x', options: [{ key: 'a', label: 'A' }] }]
+    }
+    const b: SurveyDraft = {
+      surveyKey: 's', title: 't', lang: 'ru',
+      questions: [{ key: 'q', type: 'single', metric: 'scale', required: true, text: 'x', options: [{ key: 'a', label: 'A', score: 5 }] }]
+    }
+    expect(diffVersions(compile(a, 1), compile(b, 2))['q']).toBe('semantic')
+  })
+})
+
+describe('compile — параметр at', () => {
+  it('compiledAt = переданная дата в ISO', () => {
+    const at = new Date('2026-01-02T03:04:05.000Z')
+    expect(compile(draftV1(), 1, at).compiledAt).toBe('2026-01-02T03:04:05.000Z')
+  })
 })

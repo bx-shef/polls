@@ -97,4 +97,28 @@ describe('buildResponseAnswers', () => {
     expect(answers.map((a) => a.questionKey)).toEqual(['q_nps'])
     expect(answers[0]?.valueNumber).toBe(10)
   })
+
+  it('все обязательные пропущены → ошибка на каждый, answers пуст', () => {
+    const { answers, errors } = buildResponseAnswers([npsQ, multiQ], {})
+    expect(answers).toEqual([])
+    expect(errors).toEqual({
+      q_nps: 'Выберите вариант',
+      q_m: 'Выберите хотя бы один вариант'
+    })
+  })
+})
+
+describe('normalizeAnswer — multi с числовой метрикой', () => {
+  it('два значения → valueNumber null (число только при одиночном выборе)', () => {
+    const q: Question = {
+      key: 'q_ms', type: 'multi', metric: 'csat', required: true, text: '?',
+      options: [
+        { key: 'a', label: 'A', score: 1 },
+        { key: 'b', label: 'B', score: 2 }
+      ]
+    }
+    const a = normalizeAnswer(q, { values: ['a', 'b'] })
+    expect(a?.valueChoice).toEqual(['a', 'b'])
+    expect(a?.valueNumber).toBeNull()
+  })
 })

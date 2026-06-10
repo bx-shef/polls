@@ -1,11 +1,9 @@
-import type { Question, RawAnswer, StoredAnswer } from './schema'
+import { NUMERIC_METRICS, type Question, type RawAnswer, type StoredAnswer } from './schema'
 
 /**
  * Серверная нормализация и валидация ответов — аналог buildAnswers() прототипа,
  * но устойчивый к подделке: чужие/неизвестные ключи отбрасываются.
  */
-
-const NUMERIC_METRICS = new Set(['nps', 'csat', 'ces', 'scale'])
 
 function optionKeySet(q: Question): Set<string> {
   return new Set(q.options.map((o) => o.key))
@@ -41,7 +39,8 @@ export function validateAnswer(q: Question, raw: RawAnswer): string | null {
 }
 
 /**
- * Нормализует сырой ответ в StoredAnswer или null (пустой/пропущенный).
+ * Нормализует сырой ответ в StoredAnswer или null (пустой/пропущенный/без
+ * известных вариантов). Необязательный вопрос без значения → null, а не ошибка.
  * Число берётся из option.score для шкальных метрик при одиночном выборе.
  */
 export function normalizeAnswer(q: Question, raw: RawAnswer): StoredAnswer | null {

@@ -36,8 +36,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
+      - name: Test (+ покрытие, пороги в vitest.config.ts)
+        run: pnpm test:cov
 
       - name: Verify (итог на 4 уровнях)
         run: pnpm verify

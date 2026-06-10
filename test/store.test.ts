@@ -37,4 +37,28 @@ describe('MemoryStore', () => {
     expect(await s.currentVersion('nope')).toBeUndefined()
     expect(await s.getVersion('nope', 1)).toBeUndefined()
   })
+
+  it('listResponses фильтрует по surveyKey, разные опросы не смешиваются', async () => {
+    const s = new MemoryStore()
+    await s.addResponse({ id: 'a1', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [] })
+    await s.addResponse({ id: 'b1', surveyKey: 'B', versionNo: 1, submittedAt: '2026-04-02T10:00:00.000Z', context: {}, answers: [] })
+    expect(await s.listResponses()).toHaveLength(2)
+    expect((await s.listResponses('A')).map((r) => r.id)).toEqual(['a1'])
+    expect((await s.listResponses('B')).map((r) => r.id)).toEqual(['b1'])
+  })
+
+  it('addResponse отклоняет невалидный submittedAt', async () => {
+    const s = new MemoryStore()
+    await expect(
+      s.addResponse({ id: 'x', surveyKey: 'A', versionNo: 1, submittedAt: 'не дата', context: {}, answers: [] })
+    ).rejects.toThrow()
+  })
+
+  it('listResponses возвращает копию — мутация не утекает в стор', async () => {
+    const s = new MemoryStore()
+    await s.addResponse({ id: 'a1', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [] })
+    const list = await s.listResponses()
+    list.push({ ...list[0]!, id: 'fake' })
+    expect(await s.listResponses()).toHaveLength(1)
+  })
 })

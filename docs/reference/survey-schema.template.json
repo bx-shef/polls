@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "surveyKey": "template_demo",
+  "title": "Обезличенный шаблон опроса",
   "lang": "ru",
   "intro": {
     "wordmark": "Бренд",
@@ -32,948 +33,965 @@
   ],
   "questions": [
     {
-      "id": "q01",
-      "block": 0,
+      "key": "q01",
+      "block": "Профиль",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 1 — один вариант",
       "options": [
         {
-          "id": "q01_o1",
+          "key": "q01_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q01_o2",
+          "key": "q01_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q01_o3",
+          "key": "q01_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q01_o4",
+          "key": "q01_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q01_o5",
+          "key": "q01_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q01_o6",
+          "key": "q01_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q01_o7",
+          "key": "q01_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q01_o8",
+          "key": "q01_o8",
           "label": "Вариант 8"
         },
         {
-          "id": "q01_o9",
+          "key": "q01_o9",
           "label": "Вариант 9"
         },
         {
-          "id": "q01_o10",
+          "key": "q01_o10",
           "label": "Вариант 10"
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
       ]
     },
     {
-      "id": "q02",
-      "block": 0,
+      "key": "q02",
+      "block": "Профиль",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 2 — один вариант",
       "options": [
         {
-          "id": "q02_o1",
+          "key": "q02_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q02_o2",
+          "key": "q02_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q02_o3",
+          "key": "q02_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q02_o4",
+          "key": "q02_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q02_o5",
+          "key": "q02_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q02_o6",
+          "key": "q02_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q02_o7",
+          "key": "q02_o7",
           "label": "Вариант 7"
         }
       ]
     },
     {
-      "id": "q03",
-      "block": 0,
+      "key": "q03",
+      "block": "Профиль",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 3 — один вариант",
       "options": [
         {
-          "id": "q03_o1",
+          "key": "q03_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q03_o2",
+          "key": "q03_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q03_o3",
+          "key": "q03_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q03_o4",
+          "key": "q03_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q03_o5",
+          "key": "q03_o5",
           "label": "Вариант 5"
         }
       ]
     },
     {
-      "id": "q04",
-      "block": 0,
+      "key": "q04",
+      "block": "Профиль",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 4 — один вариант",
       "options": [
         {
-          "id": "q04_o1",
+          "key": "q04_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q04_o2",
+          "key": "q04_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q04_o3",
+          "key": "q04_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q04_o4",
+          "key": "q04_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q04_o5",
+          "key": "q04_o5",
           "label": "Вариант 5"
         }
       ]
     },
     {
-      "id": "q05",
-      "block": 1,
+      "key": "q05",
+      "block": "Результаты",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 5 — один вариант",
       "options": [
         {
-          "id": "q05_o1",
+          "key": "q05_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q05_o2",
+          "key": "q05_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q05_o3",
+          "key": "q05_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q05_o4",
+          "key": "q05_o4",
           "label": "Вариант 4"
         }
       ]
     },
     {
-      "id": "q06",
-      "block": 1,
+      "key": "q06",
+      "block": "Результаты",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 6 — один вариант",
       "options": [
         {
-          "id": "q06_o1",
+          "key": "q06_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q06_o2",
+          "key": "q06_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q06_o3",
+          "key": "q06_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q06_o4",
+          "key": "q06_o4",
           "label": "Вариант 4"
         }
       ]
     },
     {
-      "id": "q07",
-      "block": 1,
+      "key": "q07",
+      "block": "Результаты",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 7 — несколько вариантов",
       "options": [
         {
-          "id": "q07_o1",
+          "key": "q07_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q07_o2",
+          "key": "q07_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q07_o3",
+          "key": "q07_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q07_o4",
+          "key": "q07_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q07_excl",
+          "key": "q07_excl",
           "label": "Вариант-исключение",
-          "exclusive": true
+          "isExclusive": true
         }
       ]
     },
     {
-      "id": "q08",
-      "block": 1,
+      "key": "q08",
+      "block": "Результаты",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 8 — один вариант",
       "options": [
         {
-          "id": "q08_o1",
+          "key": "q08_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q08_o2",
+          "key": "q08_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q08_o3",
+          "key": "q08_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q08_o4",
+          "key": "q08_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q08_o5",
+          "key": "q08_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q08_o6",
+          "key": "q08_o6",
           "label": "Вариант 6"
         }
       ]
     },
     {
-      "id": "q09",
-      "block": 1,
+      "key": "q09",
+      "block": "Результаты",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 9 — один вариант",
       "options": [
         {
-          "id": "q09_o1",
+          "key": "q09_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q09_o2",
+          "key": "q09_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q09_o3",
+          "key": "q09_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q09_o4",
+          "key": "q09_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q09_o5",
+          "key": "q09_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q09_o6",
+          "key": "q09_o6",
           "label": "Вариант 6"
         }
       ]
     },
     {
-      "id": "q10",
-      "block": 1,
+      "key": "q10",
+      "block": "Результаты",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 10 — один вариант",
       "options": [
         {
-          "id": "q10_o1",
+          "key": "q10_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q10_o2",
+          "key": "q10_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q10_o3",
+          "key": "q10_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q10_o4",
+          "key": "q10_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q10_o5",
+          "key": "q10_o5",
           "label": "Вариант 5"
         }
       ]
     },
     {
-      "id": "q11",
-      "block": 2,
+      "key": "q11",
+      "block": "Мотивация",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 11 — несколько вариантов",
+      "columns": 2,
       "options": [
         {
-          "id": "q11_o1",
+          "key": "q11_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q11_o2",
+          "key": "q11_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q11_o3",
+          "key": "q11_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q11_o4",
+          "key": "q11_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q11_o5",
+          "key": "q11_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q11_o6",
+          "key": "q11_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q11_o7",
+          "key": "q11_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q11_excl",
+          "key": "q11_excl",
           "label": "Вариант-исключение",
-          "exclusive": true
+          "isExclusive": true
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
-      ],
-      "columns": 2
+      ]
     },
     {
-      "id": "q12",
-      "block": 2,
+      "key": "q12",
+      "block": "Мотивация",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 12 — один вариант",
       "options": [
         {
-          "id": "q12_o1",
+          "key": "q12_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q12_o2",
+          "key": "q12_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q12_o3",
+          "key": "q12_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q12_o4",
+          "key": "q12_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q12_o5",
+          "key": "q12_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q12_o6",
+          "key": "q12_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q12_o7",
+          "key": "q12_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q12_o8",
+          "key": "q12_o8",
           "label": "Вариант 8"
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
       ]
     },
     {
-      "id": "q13",
-      "block": 3,
+      "key": "q13",
+      "block": "Сложности и проверка",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 13 — несколько вариантов",
+      "columns": 2,
       "options": [
         {
-          "id": "q13_o1",
+          "key": "q13_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q13_o2",
+          "key": "q13_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q13_o3",
+          "key": "q13_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q13_o4",
+          "key": "q13_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q13_o5",
+          "key": "q13_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q13_o6",
+          "key": "q13_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q13_o7",
+          "key": "q13_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q13_o8",
+          "key": "q13_o8",
           "label": "Вариант 8"
         },
         {
-          "id": "q13_o9",
+          "key": "q13_o9",
           "label": "Вариант 9"
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
-      ],
-      "columns": 2
+      ]
     },
     {
-      "id": "q14",
-      "block": 3,
+      "key": "q14",
+      "block": "Сложности и проверка",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 14 — несколько вариантов",
+      "columns": 2,
       "options": [
         {
-          "id": "q14_o1",
+          "key": "q14_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q14_o2",
+          "key": "q14_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q14_o3",
+          "key": "q14_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q14_o4",
+          "key": "q14_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q14_o5",
+          "key": "q14_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q14_o6",
+          "key": "q14_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q14_o7",
+          "key": "q14_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q14_o8",
+          "key": "q14_o8",
           "label": "Вариант 8"
         },
         {
-          "id": "q14_o9",
+          "key": "q14_o9",
           "label": "Вариант 9"
         },
         {
-          "id": "q14_o10",
+          "key": "q14_o10",
           "label": "Вариант 10"
         },
         {
-          "id": "q14_o11",
+          "key": "q14_o11",
           "label": "Вариант 11"
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
-      ],
-      "columns": 2
+      ]
     },
     {
-      "id": "q15",
-      "block": 3,
+      "key": "q15",
+      "block": "Сложности и проверка",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 15 — один вариант",
       "options": [
         {
-          "id": "q15_o1",
+          "key": "q15_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q15_o2",
+          "key": "q15_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q15_o3",
+          "key": "q15_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q15_o4",
+          "key": "q15_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q15_o5",
+          "key": "q15_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q15_o6",
+          "key": "q15_o6",
           "label": "Вариант 6"
         }
       ]
     },
     {
-      "id": "q16",
-      "block": 4,
+      "key": "q16",
+      "block": "Установки",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 16 — один вариант",
       "options": [
         {
-          "id": "q16_o1",
+          "key": "q16_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q16_o2",
+          "key": "q16_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q16_o3",
+          "key": "q16_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q16_o4",
+          "key": "q16_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q16_o5",
+          "key": "q16_o5",
           "label": "Вариант 5"
         }
       ]
     },
     {
-      "id": "q17",
-      "block": 4,
+      "key": "q17",
+      "block": "Установки",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 17 — несколько вариантов",
       "options": [
         {
-          "id": "q17_o1",
+          "key": "q17_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q17_o2",
+          "key": "q17_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q17_o3",
+          "key": "q17_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q17_o4",
+          "key": "q17_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q17_o5",
+          "key": "q17_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q17_excl",
+          "key": "q17_excl",
           "label": "Вариант-исключение",
-          "exclusive": true
+          "isExclusive": true
         }
       ]
     },
     {
-      "id": "q18",
-      "block": 5,
+      "key": "q18",
+      "block": "Инструменты",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 18 — несколько вариантов",
+      "columns": 2,
       "options": [
         {
-          "id": "q18_o1",
+          "key": "q18_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q18_o2",
+          "key": "q18_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q18_o3",
+          "key": "q18_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q18_o4",
+          "key": "q18_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q18_o5",
+          "key": "q18_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q18_o6",
+          "key": "q18_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q18_o7",
+          "key": "q18_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q18_o8",
+          "key": "q18_o8",
           "label": "Вариант 8"
         },
         {
-          "id": "q18_o9",
+          "key": "q18_o9",
           "label": "Вариант 9"
         },
         {
-          "id": "q18_o10",
+          "key": "q18_o10",
           "label": "Вариант 10"
         },
         {
-          "id": "q18_o11",
+          "key": "q18_o11",
           "label": "Вариант 11"
         },
         {
-          "id": "q18_o12",
+          "key": "q18_o12",
           "label": "Вариант 12"
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
-      ],
-      "columns": 2
+      ]
     },
     {
-      "id": "q19",
-      "block": 5,
+      "key": "q19",
+      "block": "Инструменты",
       "type": "multi",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 19 — несколько вариантов",
+      "columns": 2,
       "options": [
         {
-          "id": "q19_o1",
+          "key": "q19_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q19_o2",
+          "key": "q19_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q19_o3",
+          "key": "q19_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q19_o4",
+          "key": "q19_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q19_o5",
+          "key": "q19_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q19_o6",
+          "key": "q19_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q19_o7",
+          "key": "q19_o7",
           "label": "Вариант 7"
         },
         {
-          "id": "q19_o8",
+          "key": "q19_o8",
           "label": "Вариант 8"
         },
         {
-          "id": "q19_o9",
+          "key": "q19_o9",
           "label": "Вариант 9"
         },
         {
-          "id": "q19_o10",
+          "key": "q19_o10",
           "label": "Вариант 10"
         },
         {
-          "id": "q19_o11",
+          "key": "q19_o11",
           "label": "Вариант 11"
         },
         {
-          "id": "q19_o12",
+          "key": "q19_o12",
           "label": "Вариант 12"
         },
         {
-          "id": "other",
+          "key": "other",
           "label": "Другое",
-          "other": true
+          "isOther": true
         }
-      ],
-      "columns": 2
+      ]
     },
     {
-      "id": "q20",
-      "block": 6,
+      "key": "q20",
+      "block": "Вовлечённость",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 20 — один вариант",
       "options": [
         {
-          "id": "q20_o1",
+          "key": "q20_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q20_o2",
+          "key": "q20_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q20_o3",
+          "key": "q20_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q20_o4",
+          "key": "q20_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q20_o5",
+          "key": "q20_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q20_o6",
+          "key": "q20_o6",
           "label": "Вариант 6"
         }
       ]
     },
     {
-      "id": "q21",
-      "block": 6,
+      "key": "q21",
+      "block": "Вовлечённость",
       "type": "single",
+      "metric": "choice",
       "required": true,
       "text": "Текст вопроса 21 — один вариант",
       "options": [
         {
-          "id": "q21_o1",
+          "key": "q21_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q21_o2",
+          "key": "q21_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q21_o3",
+          "key": "q21_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q21_o4",
+          "key": "q21_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q21_o5",
+          "key": "q21_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q21_o6",
+          "key": "q21_o6",
           "label": "Вариант 6"
         },
         {
-          "id": "q21_o7",
+          "key": "q21_o7",
           "label": "Вариант 7"
         }
       ]
     },
     {
-      "id": "q22",
-      "block": 7,
+      "key": "q22",
+      "block": "Демография",
       "type": "single",
+      "metric": "choice",
       "required": false,
       "text": "Текст вопроса 22 — один вариант (необязательный)",
       "options": [
         {
-          "id": "q22_o1",
+          "key": "q22_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q22_o2",
+          "key": "q22_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q22_o3",
+          "key": "q22_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q22_o4",
+          "key": "q22_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q22_o5",
+          "key": "q22_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q22_o6",
+          "key": "q22_o6",
           "label": "Вариант 6"
         }
       ]
     },
     {
-      "id": "q23",
-      "block": 7,
+      "key": "q23",
+      "block": "Демография",
       "type": "single",
+      "metric": "choice",
       "required": false,
       "text": "Текст вопроса 23 — один вариант (необязательный)",
       "options": [
         {
-          "id": "q23_o1",
+          "key": "q23_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q23_o2",
+          "key": "q23_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q23_o3",
+          "key": "q23_o3",
           "label": "Вариант 3"
         }
       ]
     },
     {
-      "id": "q24",
-      "block": 7,
+      "key": "q24",
+      "block": "Демография",
       "type": "single",
+      "metric": "choice",
       "required": false,
       "text": "Текст вопроса 24 — один вариант (необязательный)",
       "options": [
         {
-          "id": "q24_o1",
+          "key": "q24_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q24_o2",
+          "key": "q24_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q24_o3",
+          "key": "q24_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q24_o4",
+          "key": "q24_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q24_o5",
+          "key": "q24_o5",
           "label": "Вариант 5"
         }
       ]
     },
     {
-      "id": "q25",
-      "block": 7,
+      "key": "q25",
+      "block": "Демография",
       "type": "single",
+      "metric": "choice",
       "required": false,
       "text": "Текст вопроса 25 — один вариант (необязательный)",
       "options": [
         {
-          "id": "q25_o1",
+          "key": "q25_o1",
           "label": "Вариант 1"
         },
         {
-          "id": "q25_o2",
+          "key": "q25_o2",
           "label": "Вариант 2"
         },
         {
-          "id": "q25_o3",
+          "key": "q25_o3",
           "label": "Вариант 3"
         },
         {
-          "id": "q25_o4",
+          "key": "q25_o4",
           "label": "Вариант 4"
         },
         {
-          "id": "q25_o5",
+          "key": "q25_o5",
           "label": "Вариант 5"
         },
         {
-          "id": "q25_o6",
+          "key": "q25_o6",
           "label": "Вариант 6"
         }
       ]
-    },
-    {
-      "id": "q26",
-      "block": 7,
-      "type": "text",
-      "required": false,
-      "text": "Текст вопроса 26 — свободный текст (необязательный)",
-      "options": []
     }
   ]
 }

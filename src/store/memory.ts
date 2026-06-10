@@ -1,5 +1,5 @@
 import { compile } from '../domain/compile'
-import type { CompiledVersion, ResponseRecord, SurveyDraft } from '../domain/schema'
+import { responseRecordSchema, type CompiledVersion, type ResponseRecord, type SurveyDraft } from '../domain/schema'
 import type { IStore } from './types'
 
 /**
@@ -31,10 +31,14 @@ export class MemoryStore implements IStore {
   }
 
   async addResponse(r: ResponseRecord): Promise<void> {
-    this._responses.push(r)
+    // Валидация на границе записи: гарантирует ISO-дату и форму контекста/ответов
+    // (раньше ResponseRecord был plain interface без runtime-гарантий).
+    this._responses.push(responseRecordSchema.parse(r))
   }
 
-  async listResponses(): Promise<ResponseRecord[]> {
-    return this._responses
+  async listResponses(surveyKey?: string): Promise<ResponseRecord[]> {
+    const rs = surveyKey == null ? this._responses : this._responses.filter((r) => r.surveyKey === surveyKey)
+    // Копия, а не внутренняя ссылка: внешний код не должен мутировать стор.
+    return [...rs]
   }
 }

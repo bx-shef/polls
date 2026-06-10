@@ -67,4 +67,17 @@ describe('ces', () => {
   it('empty → zeros (sentinel)', () => {
     expect(ces([])).toEqual({ n: 0, mean: 0 })
   })
+
+  it('дробные значения округляются (round2)', () => {
+    expect(ces([1, 2, 2])).toEqual({ n: 3, mean: 1.67 })
+  })
+})
+
+describe('nps — граничные значения шкалы', () => {
+  it('ровно 9 → промоутер (100), ровно 6 → детрактор (−100), 7/8 → пассив (0)', () => {
+    expect(nps([9]).nps).toBe(100)
+    expect(nps([6]).nps).toBe(-100)
+    expect(nps([7]).nps).toBe(0)
+    expect(nps([8]).nps).toBe(0)
+  })
 })
