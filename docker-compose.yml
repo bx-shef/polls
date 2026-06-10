@@ -1,0 +1,22 @@
+# Локальная БД для разработки. Миграции из ./migrations применяются при первом
+# старте контейнера. Приложение (Nuxt) добавим сервисом в фазе деплоя.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: polls
+      POSTGRES_PASSWORD: polls
+      POSTGRES_DB: polls
+    ports:
+      - '5432:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U polls -d polls']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db-data:
