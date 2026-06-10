@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "intro": {
+    "wordmark": "Вайбкодинг",
+    "year": "Опрос '26",
+    "kicker": "Первое большое исследование",
+    "title": "Как живут\nроссийские\nвайбкодеры?",
+    "lead": "Первое большое исследование о вайбкодинге: про AI-инструменты, реальные проекты, факапы и дивный новый мир, где код пишут словами. Неважно, умеете ли вы программировать — расскажите, как это у вас.",
+    "meta": ["Анонимно", "~5–7 минут", "Без персональных данных"],
+    "cta": "Начать опрос",
+    "count": "25 вопросов · 8 блоков"
+  },
+  "thanks": {
+    "title": "Спасибо",
+    "body": "Ваш ответ записан.",
+    "note": "Результаты войдут в открытое исследование."
+  },
+  "blocks": [
+    "О вас",
+    "Результаты и проекты",
+    "Зачем и что заменил",
+    "Сложности и безопасность",
+    "Взгляды",
+    "Инструменты",
+    "Время и вовлечённость",
+    "О вас, для статистики"
+  ],
+  "questions": [
+    { "id": "q_role", "block": 0, "type": "single", "required": true,
+      "text": "Кто вы по основной роли? (выберите основную)",
+      "options": [
+        {"id":"entrepreneur","label":"Предприниматель"},
+        {"id":"manager","label":"Руководитель"},
+        {"id":"marketer","label":"Маркетолог"},
+        {"id":"product","label":"Продакт"},
+        {"id":"designer","label":"Дизайнер"},
+        {"id":"analyst","label":"Аналитик"},
+        {"id":"hr","label":"HR"},
+        {"id":"sales","label":"Продажник"},
+        {"id":"developer","label":"Разработчик"},
+        {"id":"student","label":"Студент"},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+    { "id": "q_level", "block": 0, "type": "single", "required": true,
+      "text": "Какой у вас был уровень программирования до вайбкодинга?",
+      "options": [
+        {"id":"none","label":"Нулевой"},
+        {"id":"html_css","label":"Мог править HTML-CSS"},
+        {"id":"simple_scripts","label":"Писал простые скрипты"},
+        {"id":"sites_bots","label":"Делал сайты или ботов"},
+        {"id":"junior","label":"Junior"},
+        {"id":"middle_plus","label":"Middle+"},
+        {"id":"pro_dev","label":"Профессиональный разработчик"}
+      ] },
+    { "id": "q_experience", "block": 0, "type": "single", "required": true,
+      "text": "Как давно вы вайбкодите?",
+      "options": [
+        {"id":"lt_month","label":"Меньше месяца"},
+        {"id":"m1_3","label":"1–3 месяца"},
+        {"id":"m3_6","label":"3–6 месяцев"},
+        {"id":"m6_12","label":"6–12 месяцев"},
+        {"id":"gt_year","label":"Больше года"}
+      ] },
+    { "id": "q_frequency", "block": 0, "type": "single", "required": true,
+      "text": "Как часто вы вайбкодите?",
+      "options": [
+        {"id":"daily","label":"Почти каждый день"},
+        {"id":"weekly","label":"Несколько раз в неделю"},
+        {"id":"monthly","label":"Несколько раз в месяц"},
+        {"id":"rarely","label":"Реже"},
+        {"id":"abandoned","label":"Уже почти забросил"}
+      ] },
+
+    { "id": "q_projects_count", "block": 1, "type": "single", "required": true,
+      "text": "Сколько у вас получилось полностью рабочих проектов?",
+      "options": [
+        {"id":"none","label":"Ни одного"},
+        {"id":"one","label":"Один"},
+        {"id":"several_2_5","label":"Несколько (2–5)"},
+        {"id":"many_6plus","label":"Много (6+)"}
+      ] },
+    { "id": "q_self_sufficiency", "block": 1, "type": "single", "required": true,
+      "text": "Насколько ваши проекты самодостаточны?",
+      "options": [
+        {"id":"autonomous","label":"Работают сами, почти без вмешательства"},
+        {"id":"needs_manual","label":"Работают, но требуют постоянной ручной доработки"},
+        {"id":"barely_runs","label":"Запускаются с трудом, постоянно ломаются"},
+        {"id":"no_project","label":"Пока нет рабочего проекта"}
+      ] },
+    { "id": "q_users", "block": 1, "type": "multi", "required": true,
+      "text": "Кто реально пользуется вашими вайбкод-проектами?",
+      "options": [
+        {"id":"clients","label":"Клиенты"},
+        {"id":"colleagues","label":"Коллеги"},
+        {"id":"friends_community","label":"Друзья или сообщество"},
+        {"id":"only_me","label":"Только я"},
+        {"id":"no_project","label":"Пока нет работающего проекта","exclusive":true}
+      ] },
+    { "id": "q_time_best", "block": 1, "type": "single", "required": true,
+      "text": "Сколько времени занял ваш самый удачный вайбкод-проект от идеи до рабочей версии?",
+      "options": [
+        {"id":"lt_1h","label":"Меньше 1 часа"},
+        {"id":"h1_3","label":"1–3 часа"},
+        {"id":"day_1","label":"1 день"},
+        {"id":"d2_7","label":"2–7 дней"},
+        {"id":"gt_week","label":"Больше недели"},
+        {"id":"not_yet","label":"До сих пор не получилось"}
+      ] },
+    { "id": "q_cost_estimate", "block": 1, "type": "single", "required": true,
+      "text": "Сколько такой проект стоил бы у разработчика или студии (ваша оценка)?",
+      "options": [
+        {"id":"lt_10k","label":"До 10 тыс. ₽"},
+        {"id":"k10_50","label":"10–50 тыс. ₽"},
+        {"id":"k50_150","label":"50–150 тыс. ₽"},
+        {"id":"k150_500","label":"150–500 тыс. ₽"},
+        {"id":"gt_500k","label":"Больше 500 тыс. ₽"},
+        {"id":"dont_know","label":"Не знаю"}
+      ] },
+    { "id": "q_earned", "block": 1, "type": "single", "required": true,
+      "text": "Зарабатывали ли вы деньги с помощью вайбкод-проектов?",
+      "options": [
+        {"id":"regular_income","label":"Да, регулярный доход"},
+        {"id":"one_time","label":"Да, разово или эпизодически"},
+        {"id":"not_yet_plan","label":"Нет, но рассчитываю"},
+        {"id":"no_plan","label":"Нет и пока не планирую"},
+        {"id":"no_project","label":"Пока нет рабочего проекта"}
+      ] },
+
+    { "id": "q_replaced", "block": 2, "type": "multi", "required": true, "columns": 2,
+      "text": "Что вайбкодинг уже заменил лично вам?",
+      "options": [
+        {"id":"developer","label":"Разработчика"},
+        {"id":"analyst","label":"Аналитика"},
+        {"id":"designer","label":"Дизайнера"},
+        {"id":"contractor","label":"Подрядчика"},
+        {"id":"nocode","label":"No-code-инструменты"},
+        {"id":"excel","label":"Excel или таблицы"},
+        {"id":"manual_routine","label":"Ручную рутину"},
+        {"id":"nothing","label":"Ничего не заменил, только дополнил","exclusive":true},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+    { "id": "q_reason", "block": 2, "type": "single", "required": true,
+      "text": "Главная причина, почему вы начали вайбкодить?",
+      "options": [
+        {"id":"save_money","label":"Экономия денег"},
+        {"id":"speed","label":"Скорость"},
+        {"id":"curiosity","label":"Любопытство"},
+        {"id":"no_devs","label":"Нет разработчиков под рукой"},
+        {"id":"automate","label":"Хочу автоматизировать работу"},
+        {"id":"launch_product","label":"Хочу запустить продукт"},
+        {"id":"learn_ai","label":"Хочу разобраться в AI"},
+        {"id":"fear_behind","label":"Страх отстать от рынка"},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+
+    { "id": "q_breaks", "block": 3, "type": "multi", "required": true, "columns": 2,
+      "text": "Где чаще всего «ломается» сам процесс / инструменты?",
+      "options": [
+        {"id":"ai_misunderstands","label":"AI не понимает задачу"},
+        {"id":"code_not_run","label":"Код не запускается"},
+        {"id":"bugs_everywhere","label":"Баги на каждом шаге"},
+        {"id":"api_integration","label":"Сложно подключать API"},
+        {"id":"deploy","label":"Сложно деплоить"},
+        {"id":"databases","label":"Проблемы с базами данных"},
+        {"id":"security","label":"Безопасность"},
+        {"id":"design","label":"Дизайн"},
+        {"id":"maintenance","label":"Сложно поддерживать проект после запуска"},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+    { "id": "q_hardest", "block": 3, "type": "multi", "required": true, "columns": 2,
+      "text": "Что оказалось сложнее всего лично вам как навык?",
+      "options": [
+        {"id":"ideate","label":"Придумать идею"},
+        {"id":"describe_task","label":"Описать задачу"},
+        {"id":"architecture","label":"Понять архитектуру"},
+        {"id":"read_errors","label":"Читать ошибки"},
+        {"id":"git","label":"Работать с Git"},
+        {"id":"deploy","label":"Деплой"},
+        {"id":"databases","label":"Базы данных"},
+        {"id":"integrations","label":"Интеграции"},
+        {"id":"testing","label":"Тестирование"},
+        {"id":"security","label":"Безопасность"},
+        {"id":"finish_project","label":"Довести проект до конца"},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+    { "id": "q_security_check", "block": 3, "type": "single", "required": true,
+      "text": "Проверяете ли вы код, сгенерированный AI, на безопасность?",
+      "options": [
+        {"id":"yes_self","label":"Да, сам"},
+        {"id":"yes_ai","label":"Да, через AI"},
+        {"id":"yes_specialist","label":"Да, отдаю специалисту"},
+        {"id":"no_understand_risk","label":"Нет, но понимаю риск"},
+        {"id":"no_not_needed","label":"Нет, не считаю нужным"},
+        {"id":"dont_know_how","label":"Не знаю, как проверять"}
+      ] },
+
+    { "id": "q_miniapps", "block": 4, "type": "single", "required": true,
+      "text": "Как вы относитесь к идее, что каждый сотрудник скоро сможет делать себе мини-приложения под работу?",
+      "options": [
+        {"id":"already_happening","label":"Это уже происходит"},
+        {"id":"in_1_2_years","label":"Случится в ближайшие 1–2 года"},
+        {"id":"maybe_not_soon","label":"Возможно, но не скоро"},
+        {"id":"illusion","label":"Это иллюзия"},
+        {"id":"dangerous","label":"Это опасная идея"}
+      ] },
+    { "id": "q_devs_attitude", "block": 4, "type": "multi", "required": true,
+      "text": "Как вайбкодинг изменил ваше отношение к разработчикам?",
+      "options": [
+        {"id":"more_respect","label":"Стал больше уважать"},
+        {"id":"can_do_without","label":"Понял, что многое можно делать без них"},
+        {"id":"still_need_them","label":"Понял, что без них всё равно нельзя"},
+        {"id":"better_specs","label":"Стал лучше формулировать ТЗ"},
+        {"id":"think_like_dev","label":"Стал сам думать как разработчик"},
+        {"id":"no_change","label":"Отношение не изменилось","exclusive":true}
+      ] },
+
+    { "id": "q_tools", "block": 5, "type": "multi", "required": true, "columns": 2,
+      "text": "Какие инструменты для вайбкодинга вы используете?",
+      "options": [
+        {"id":"claude_code","label":"Claude Code"},
+        {"id":"google_antigravity","label":"Google Antigravity"},
+        {"id":"openai_codex","label":"OpenAI Codex"},
+        {"id":"cursor","label":"Cursor"},
+        {"id":"windsurf","label":"Windsurf"},
+        {"id":"replit","label":"Replit"},
+        {"id":"lovable","label":"Lovable"},
+        {"id":"bolt","label":"Bolt"},
+        {"id":"github_copilot","label":"GitHub Copilot"},
+        {"id":"vscode_ai","label":"VS Code с AI-расширениями"},
+        {"id":"jetbrains_ai","label":"JetBrains AI"},
+        {"id":"plain_chatgpt","label":"Обычный ChatGPT без среды разработки"},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+    { "id": "q_models", "block": 5, "type": "multi", "required": true, "columns": 2,
+      "text": "Какие модели или AI-провайдеры вы используете?",
+      "options": [
+        {"id":"openai","label":"OpenAI"},
+        {"id":"claude","label":"Claude"},
+        {"id":"gemini_gemma","label":"Gemini или Gemma"},
+        {"id":"bitrixgpt","label":"BitrixGPT"},
+        {"id":"qwen","label":"Qwen"},
+        {"id":"deepseek","label":"DeepSeek"},
+        {"id":"gigachat","label":"GigaChat"},
+        {"id":"yandexgpt","label":"YandexGPT"},
+        {"id":"mistral","label":"Mistral"},
+        {"id":"llama","label":"Llama"},
+        {"id":"local_models","label":"Локальные модели"},
+        {"id":"dont_know","label":"Не знаю, какая модель"},
+        {"id":"other","label":"Другое","other":true}
+      ] },
+
+    { "id": "q_time_control", "block": 6, "type": "single", "required": true,
+      "text": "Получается ли контролировать время на вайбкодинг?",
+      "options": [
+        {"id":"on_plan","label":"Да, обычно укладываюсь в план"},
+        {"id":"mostly_yes","label":"Скорее да, но иногда затягивает"},
+        {"id":"often_deeper","label":"Часто ухожу глубже, чем планировал"},
+        {"id":"lose_track","label":"Почти всегда теряю счёт времени"},
+        {"id":"no_limits","label":"Специально не ограничиваю себя"},
+        {"id":"hurts_other","label":"Из-за этого страдают другие дела"}
+      ] },
+    { "id": "q_vs_main_work", "block": 6, "type": "single", "required": true,
+      "text": "Замечали, что вайбкодинг занимает уже больше времени, чем основная работа?",
+      "options": [
+        {"id":"no","label":"Нет"},
+        {"id":"rarely","label":"Иногда, но редко"},
+        {"id":"periodically","label":"Да, периодически вместо основных задач"},
+        {"id":"comparable","label":"Да, занимает сравнимое время"},
+        {"id":"became_main","label":"Да, фактически стал основной активностью"},
+        {"id":"helps_faster","label":"Наоборот, помогает быстрее делать основную работу"},
+        {"id":"hard_to_say","label":"Затрудняюсь ответить"}
+      ] },
+
+    { "id": "q_age", "block": 7, "type": "single", "required": false,
+      "text": "Возраст",
+      "options": [
+        {"id":"under18","label":"До 18"},
+        {"id":"18_24","label":"18–24"},
+        {"id":"25_34","label":"25–34"},
+        {"id":"35_44","label":"35–44"},
+        {"id":"45_54","label":"45–54"},
+        {"id":"55plus","label":"55+"}
+      ] },
+    { "id": "q_gender", "block": 7, "type": "single", "required": false,
+      "text": "Пол",
+      "options": [
+        {"id":"male","label":"Мужской"},
+        {"id":"female","label":"Женский"},
+        {"id":"prefer_not","label":"Не хочу указывать"}
+      ] },
+    { "id": "q_geo", "block": 7, "type": "single", "required": false,
+      "text": "Где живёте",
+      "options": [
+        {"id":"moscow","label":"Москва"},
+        {"id":"spb","label":"Санкт-Петербург"},
+        {"id":"million_city","label":"Город-миллионник"},
+        {"id":"other_russia","label":"Другой город России"},
+        {"id":"abroad","label":"За пределами России"}
+      ] },
+    { "id": "q_work", "block": 7, "type": "single", "required": false,
+      "text": "Где работаете",
+      "options": [
+        {"id":"freelance","label":"Самозанятый / фриланс"},
+        {"id":"own_company","label":"Своя компания"},
+        {"id":"small_biz","label":"Малый бизнес"},
+        {"id":"large_company","label":"Крупная компания"},
+        {"id":"gov","label":"Госсектор"},
+        {"id":"not_working_student","label":"Не работаю или учусь"}
+      ] }
+  ]
+}
