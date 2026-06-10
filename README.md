@@ -7,7 +7,8 @@
 - [**Бриф**](./docs/brief.md) — спецификация сервиса опросов: пользовательский
   поток, структура 25 вопросов в 8 блоках, механика «Другое — свой вариант»,
   бэкенд-контракт, принятые решения (PostgreSQL, дашборд, домен
-  `polls.bx-shef.by`), реализация на
+  `polls.bx-shef.by`), сценарии применения (опрос по сделке → KPI, опросы
+  сотрудников → Живая лента), реализация на
   [templates-dashboard](https://github.com/bitrix24/templates-dashboard) и
   деплой по образцу [templates-mcp](https://github.com/bitrix24/templates-mcp).
 - [**Дизайн на b24ui**](./docs/design.md) — раскладки и блоки прототипа на
