@@ -179,3 +179,15 @@ describe('meetsAnonymity', () => {
     expect(meetsAnonymity(1, 2)).toBe(false)
   })
 })
+
+describe('npsTrend — сортировка бакетов не зависит от порядка вставки', () => {
+  it('ответы в обратном хронологическом порядке → бакеты по возрастанию', () => {
+    const mk = (id: string, date: string, n: number): ResponseRecord => ({
+      id, surveyKey: SURVEY_KEY, versionNo: 1, submittedAt: `${date}T10:00:00.000Z`,
+      context: {}, answers: [{ questionKey: NPS_Q, metric: 'nps', valueChoice: [], valueNumber: n, valueText: null }]
+    })
+    // Вставка май→апрель: компаратор должен переставить (ветвь a > b).
+    const rs = [mk('b', '2026-05-10', 9), mk('a', '2026-04-10', 9)]
+    expect(npsTrend(rs, NPS_Q, 'month').map((p) => p.bucket)).toEqual(['2026-04', '2026-05'])
+  })
+})

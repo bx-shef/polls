@@ -26,7 +26,7 @@ export const optionSchema = z.object({
   /** Стабильный ключ варианта — сохраняется между версиями. */
   key: z.string().min(1).max(200),
   label: z.string().max(500),
-  /** Числовой балл для шкальных метрик (напр. 0..10 для NPS). */
+  /** Числовой балл для шкальных метрик (напр. 0..10 для NPS). nullish: null (из БД) либо отсутствие. */
   score: z.number().nullish(),
   isOther: z.boolean().optional(),
   isExclusive: z.boolean().optional()

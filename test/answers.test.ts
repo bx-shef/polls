@@ -122,3 +122,25 @@ describe('normalizeAnswer — multi с числовой метрикой', () =>
     expect(a?.valueNumber).toBeNull()
   })
 })
+
+describe('покрытие краёв нормализации/валидации', () => {
+  it('обязательный текст из одних пробелов → ошибка', () => {
+    expect(validateAnswer({ ...textQ, required: true }, { text: '   ' })).toBe('Заполните поле')
+  })
+
+  it('необязательный single без выбора → нет ошибки', () => {
+    expect(validateAnswer({ ...npsQ, required: false }, {})).toBeNull()
+  })
+
+  it('числовая метрика, но у выбранного варианта нет score → valueNumber null', () => {
+    const q: Question = {
+      key: 'q_scale', type: 'single', metric: 'scale', required: true, text: '?',
+      options: [{ key: 'a', label: 'A' }] // без score
+    }
+    expect(normalizeAnswer(q, { values: ['a'] })?.valueNumber).toBeNull()
+  })
+
+  it('raw без поля values (undefined) не падает → null', () => {
+    expect(normalizeAnswer(npsQ, {})).toBeNull()
+  })
+})

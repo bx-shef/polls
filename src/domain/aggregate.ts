@@ -27,7 +27,9 @@ function pushTo<K, V>(map: Map<K, V[]>, key: K, val: V): void {
 }
 
 function bucketKey(iso: string, bucket: 'month' | 'day'): string {
-  return bucket === 'month' ? iso.slice(0, 7) : iso.slice(0, 10)
+  // Нормализуем к UTC: offset (напр. +05:00) не должен смещать день/месяц через полночь.
+  const utc = new Date(iso).toISOString()
+  return bucket === 'month' ? utc.slice(0, 7) : utc.slice(0, 10)
 }
 
 /** Числовые значения вопроса по всем ответам (для nps/csat/...). */
@@ -111,7 +113,11 @@ export interface TrendPoint extends NpsSummary {
   bucket: string
 }
 
-/** Динамика NPS по периодам (версионно-безопасно — по question_key). */
+/**
+ * Динамика NPS по периодам (версионно-безопасно — по question_key).
+ * Бакеты — UTC: `YYYY-MM` / `YYYY-MM-DD`. Малые N точек НЕ подавляются —
+ * это ответственность слоя чтения (см. meetsAnonymity).
+ */
 export function npsTrend(
   rs: ResponseRecord[],
   questionKey: string,

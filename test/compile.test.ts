@@ -141,3 +141,10 @@ describe('compile — параметр at', () => {
     expect(compile(draftV1(), 1, at).compiledAt).toBe('2026-01-02T03:04:05.000Z')
   })
 })
+
+describe('compile — валидация versionNo', () => {
+  it('падает на versionNo < 1 и на нецелом', () => {
+    expect(() => compile(draftV1(), 0)).toThrow(/положительным/)
+    expect(() => compile(draftV1(), 1.5)).toThrow(/положительным/)
+  })
+})

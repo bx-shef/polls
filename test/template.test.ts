@@ -24,4 +24,12 @@ describe('survey-schema.template.json', () => {
     expect(v.questions).toHaveLength(25)
     expect(new Set(v.questions.map((q) => q.key)).size).toBe(25)
   })
+
+  it('содержит UX-поля фронта (intro/thanks/blocks), которые движок игнорирует', () => {
+    // intro/thanks/blocks — контракт фронта, вне SurveyDraft: surveyDraftSchema их
+    // отбрасывает (strip), но в файле-шаблоне они нужны для рендера UI.
+    expect(raw.intro.count).toBe('25 вопросов · 8 блоков')
+    expect(raw.blocks).toHaveLength(8)
+    expect(raw.thanks.title).toBeTruthy()
+  })
 })

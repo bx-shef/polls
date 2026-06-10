@@ -128,7 +128,7 @@ export async function buildDemo(): Promise<MemoryStore> {
         companyId: e.companyId,
         dealCategoryId: e.dealCategoryId,
         responsibleId: e.responsibleId,
-        products: e.products.map((productId) => ({ productId, productName: PRODUCT_NAMES[productId] }))
+        products: e.products.map((productId) => ({ productId, productName: PRODUCT_NAMES[productId] ?? `#${productId}` }))
       },
       answers
     })

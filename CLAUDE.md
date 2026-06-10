@@ -57,9 +57,15 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - **#5** — наблюдаемость: структурные логи/метрики/трейсы + `/health`.
 - **#6** — раннер миграций (`0002+`).
 - **read-API / PgStore** — пагинация `listResponses`, принудительное подавление малых N,
-  tenant-изоляция, SQL-агрегация (ISSUE фазы деплоя).
+  tenant-изоляция, SQL-агрегация (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
 
 ## Документация (`docs/`)
 
 `brief.md` (спецификация), `design.md` (b24ui), `data-model.md` (PostgreSQL + аналитика),
 `reference/survey-schema.template.json` (обезличенный шаблон — валидный `SurveyDraft`).
+
+## Среда (web-сессии)
+
+SessionStart-хук (авто-`pnpm install` при старте веб-сессии Claude Code) пока
+НЕ настроен: запись `.claude/settings.json` блокируется харнессом как
+self-modification. Оформить через навык `session-start-hook` / `/update-config`.

@@ -32,7 +32,9 @@ export class MemoryStore implements IStore {
 
   async addResponse(r: ResponseRecord): Promise<void> {
     // Валидация на границе записи: гарантирует ISO-дату и форму контекста/ответов
-    // (раньше ResponseRecord был plain interface без runtime-гарантий).
+    // (раньше ResponseRecord был plain interface). Zod strip отбрасывает лишние поля.
+    // Инвариант «versionNo существует в сторе» обеспечивает PgStore (FK); здесь не
+    // проверяется — демо/тесты добавляют ответы напрямую.
     this._responses.push(responseRecordSchema.parse(r))
   }
 

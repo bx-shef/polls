@@ -7,7 +7,7 @@ create table if not exists portal (
   id           bigserial primary key,
   member_id    text unique not null,
   domain       text not null,
-  tokens       jsonb not null,
+  tokens       jsonb not null, -- TODO #3: шифровать перед продом (pgcrypto / app-level)
   installed_at timestamptz not null default now()
 );
 
@@ -63,10 +63,10 @@ create table if not exists survey_question (
   block        text,
   position     int not null,
   type         text not null check (type in ('single', 'multi', 'text')),
-  metric       text check (metric is null or metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
+  metric       text not null check (metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
   required     boolean not null default true,
   columns      int default 1,
-  text         text not null,
+  text         text not null check (char_length(text) <= 2000),
   unique (version_id, question_key)
 );
 
@@ -76,7 +76,7 @@ create table if not exists survey_option (
   question_id  bigint not null references survey_question (id),
   option_key   text not null,
   position     int not null,
-  label        text not null,
+  label        text not null check (char_length(label) <= 500),
   score        numeric,
   is_other     boolean not null default false,
   is_exclusive boolean not null default false,
@@ -89,7 +89,7 @@ create table if not exists invitation (
   portal_id         bigint not null references portal (id),
   survey_id         bigint not null references survey (id),
   survey_version_id bigint not null references survey_version (id),
-  token             text unique not null,
+  token             text unique not null check (char_length(token) <= 256),
   channel           text check (channel is null or channel in ('email', 'sms', 'imol', 'link')),
   status            text not null default 'sent' check (status in ('sent', 'opened', 'completed', 'expired')),
   deal_id           bigint,
@@ -104,6 +104,7 @@ create table if not exists invitation (
   sent_at           timestamptz not null default now(),
   completed_at      timestamptz
 );
+create index if not exists idx_invitation_portal_status on invitation (portal_id, status);
 
 -- ── Ответ (одна заполненная анкета) ──
 create table if not exists response (
@@ -132,13 +133,14 @@ create index if not exists idx_response_company on response (company_id);
 create index if not exists idx_response_category on response (deal_category_id);
 create index if not exists idx_response_responsible on response (responsible_id);
 create index if not exists idx_response_submitted on response (submitted_at);
+create index if not exists idx_response_portal_survey on response (portal_id, survey_id);
 
 -- ── Ответ на вопрос ──
 create table if not exists response_answer (
   id           bigserial primary key,
   response_id  bigint not null references response (id) on delete cascade,
   question_key text not null,
-  metric       text check (metric is null or metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
+  metric       text not null check (metric in ('nps', 'csat', 'ces', 'scale', 'choice', 'text')),
   value_choice text[],
   value_number numeric,
   -- Лимит синхронизирован с rawAnswerSchema.text (zod .max(2000)).
@@ -162,10 +164,10 @@ create table if not exists answer_insight (
   id           bigserial primary key,
   response_id  bigint not null references response (id) on delete cascade,
   question_key text,
-  theme        text,
+  theme        text check (theme is null or char_length(theme) <= 200),
   sentiment    numeric,
-  intent       text,
-  summary      text,
+  intent       text check (intent is null or char_length(intent) <= 200),
+  summary      text check (summary is null or char_length(summary) <= 10000),
   model        text,
   created_at   timestamptz not null default now()
 );

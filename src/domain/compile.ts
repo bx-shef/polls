@@ -7,6 +7,9 @@ import { surveyDraftSchema, type CompiledVersion, type SurveyDraft } from './sch
 
 /** Валидирует и «замораживает» черновик в версию. Падает на дублях ключей. */
 export function compile(draft: SurveyDraft, versionNo: number, at: Date = new Date()): CompiledVersion {
+  if (!Number.isInteger(versionNo) || versionNo < 1) {
+    throw new Error(`versionNo должен быть положительным целым (получено: ${versionNo})`)
+  }
   const parsed = surveyDraftSchema.parse(draft)
 
   const qKeys = new Set<string>()
@@ -44,6 +47,7 @@ export function isComparable(c: ChangeClass): boolean {
  * - `options` — изменился состав ключей вариантов (порядок не учитывается);
  * - `semantic` — сменилась метрика, тип вопроса ИЛИ баллы (score) → ряд несопоставим;
  * - `text` — изменился только текст вопроса; `unchanged` — без изменений.
+ * Смена только `label` варианта НЕ ломает сопоставимость (якорь — ключ) → `unchanged`.
  */
 export function diffVersions(a: CompiledVersion, b: CompiledVersion): Record<string, ChangeClass> {
   const am = new Map(a.questions.map((q) => [q.key, q]))

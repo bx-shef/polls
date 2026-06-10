@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "verify": "tsx scripts/verify.ts",
-    "check": "pnpm typecheck && pnpm test && pnpm verify"
+    "check": "pnpm typecheck && pnpm test:cov && pnpm verify"
   },
   "dependencies": {
     "zod": "^3.23.8"

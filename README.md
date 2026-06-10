@@ -28,7 +28,7 @@ src/domain/    schema, metrics, answers, compile (версии), aggregate (4 у
 src/store/     memory (тесты/локально); PgStore — в фазе деплоя
 src/demo/      детерминированный сид (общий для verify и тестов)
 scripts/       verify.ts, check.sh / check.ps1 (кросс-платформенная проверка)
-test/          vitest; покрытие ядра 100% строк/функций, ветви ~97% (CI гейтит)
+test/          vitest; покрытие ядра 100% строк/функций, ветви ~97% (CI гейтит на 85%, см. vitest.config.ts)
 migrations/    PostgreSQL-схема (0001_init.sql)
 docker-compose.yml   локальная БД (миграции применяются автоматически)
 ```
