@@ -168,6 +168,39 @@ describe('PgStore (pglite)', () => {
     expect((await store.listResponsesPage({ surveyKey: 'nope' })).items).toHaveLength(0)
   })
 
+  it('пагинация: курсор + фильтр surveyKey вместе ($N не сбивается)', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    for (const [i, d] of ['2026-04-01', '2026-04-02', '2026-04-03'].entries()) {
+      await store.addResponse(sampleResponse({ id: `r${i}`, submittedAt: `${d}T10:00:00.000Z`, answers: [] }))
+    }
+    const p1 = await store.listResponsesPage({ limit: 2, surveyKey: SURVEY_KEY })
+    expect(p1.items).toHaveLength(2)
+    const p2 = await store.listResponsesPage({ limit: 2, surveyKey: SURVEY_KEY, cursor: p1.nextCursor })
+    expect(p2.items).toHaveLength(1)
+    expect(p2.nextCursor).toBeUndefined()
+  })
+
+  it('курсор от другого портала tenant-безопасен (видны только свои данные)', async () => {
+    const { db, portalA, portalB } = await fresh()
+    const a = new PgStore(db, { portalId: portalA })
+    const b = new PgStore(db, { portalId: portalB })
+    await a.publish(draftV1(), 1)
+    await a.addResponse(sampleResponse({ submittedAt: '2026-04-01T10:00:00.000Z', answers: [] }))
+    await a.addResponse(sampleResponse({ submittedAt: '2026-04-02T10:00:00.000Z', answers: [] }))
+    const pa = await a.listResponsesPage({ limit: 1 })
+    expect((await b.listResponsesPage({ cursor: pa.nextCursor! })).items).toHaveLength(0)
+  })
+
+  it('currentVersion = max(version_no) даже при публикации вне порядка', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 2)
+    await store.publish(draftV1(), 1)
+    expect((await store.currentVersion(SURVEY_KEY))?.versionNo).toBe(2)
+  })
+
   it('addResponse до публикации → ошибка; неизвестная версия → ошибка', async () => {
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA })

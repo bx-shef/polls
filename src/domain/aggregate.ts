@@ -14,7 +14,7 @@ export const ANONYMITY_THRESHOLD = 5
  * ВНИМАНИЕ: фильтры и метрики ниже — «сырые» building-blocks и НЕ подавляют
  * малые N сами по себе. Принудительное подавление на срезах (компания/продукт/
  * направление), пагинация и tenant-изоляция (portalId) — ответственность слоя
- * чтения/дашборда (PgStore + read-API; см. ISSUE фазы деплоя).
+ * чтения/дашборда (PgStore + read-API, ISSUE #7).
  */
 export function meetsAnonymity(n: number, threshold: number = ANONYMITY_THRESHOLD): boolean {
   return n >= threshold
@@ -69,6 +69,7 @@ export const byCategory = (rs: ResponseRecord[], categoryId: number): ResponseRe
 export const byProduct = (rs: ResponseRecord[], productId: number): ResponseRecord[] =>
   rs.filter((r) => (r.context.products ?? []).some((p) => p.productId === productId))
 
+/** Срез по конкретной версии. */
 export const byVersion = (rs: ResponseRecord[], versionNo: number): ResponseRecord[] =>
   rs.filter((r) => r.versionNo === versionNo)
 

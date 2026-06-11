@@ -60,8 +60,8 @@ export type SurveyDraft = z.infer<typeof surveyDraftSchema>
 /** Снимок CRM-контекста, снятый при закрытии сделки. */
 export const crmProductSchema = z.object({
   productId: z.number(),
-  productName: z.string().optional(),
-  serviceTag: z.string().optional()
+  productName: z.string().max(500).optional(),
+  serviceTag: z.string().max(500).optional()
 })
 export type CrmProduct = z.infer<typeof crmProductSchema>
 
@@ -73,7 +73,7 @@ export const crmContextSchema = z.object({
   contactId: z.number().optional(),
   responsibleId: z.number().optional(),
   dealAmount: z.number().optional(),
-  products: z.array(crmProductSchema).optional()
+  products: z.array(crmProductSchema).max(50).optional()
 })
 export type CrmContext = z.infer<typeof crmContextSchema>
 

@@ -29,11 +29,13 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - `domain/answers.ts` — серверная нормализация/валидация ответов (устойчива к подделке ключей).
 - `domain/compile.ts` — компиляция черновика в иммутабельную версию + `diffVersions`
   (классы изменений; сопоставимость ряда по стабильному `question_key`).
-- `domain/aggregate.ts` — агрегация на 4 уровнях (опрос/услуга/клиент/направление) + KPI/тренд.
+- `domain/aggregate.ts` — агрегация на 4 уровнях (опрос/услуга/клиент/направление) + KPI/тренд;
+  срезы по версии (`byVersion`/`byVersionRange`), `npsTrend(minN)`.
 - `store/types.ts` (`IStore`) + `store/memory.ts` (`MemoryStore`) — контракт хранилища
-  (методы async) и in-memory реализация. `store/pg.ts` (`PgStore`) — реализация поверх
-  PostgreSQL: драйвер-агностичная (`Queryable` ≈ `pg.Pool`/pglite), tenant-scoped по
-  `portalId`; тесты на pglite (in-process). Read-API расширения — #7.
+  (методы async, вкл. keyset-пагинацию `listResponsesPage`) и in-memory реализация.
+  `store/pg.ts` (`PgStore`) — реализация поверх PostgreSQL: драйвер-агностичная
+  (`Queryable` ≈ `pg.Pool`/pglite), tenant-scoped по `portalId`; тесты на pglite (in-process).
+  `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare). Read-API расширения — #7.
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 
 ## Инварианты
@@ -48,7 +50,7 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 ## Конвенции
 
 - TS strict + `noUncheckedIndexedAccess` — доступ по индексу даёт `T | undefined`.
-- Без лишних зависимостей: только `zod` (+ dev: vitest/tsx/typescript).
+- Без лишних зависимостей: только `zod` в prod (+ dev: vitest/tsx/typescript/pglite).
 - Каждое нетривиальное решение фиксируется в `docs/`.
 
 ## Скоуп и роадмап
@@ -58,9 +60,9 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - **#4** — анти-абьюз: серверный nonce (TTL), rate-limit, honeypot, идемпотентность.
 - **#5** — наблюдаемость: структурные логи/метрики/трейсы + `/health`.
 - **#6** — раннер миграций (`0002+`).
-- **read-API / PgStore** — база `PgStore` (CRUD + tenant-изоляция) сделана; осталось:
-  пагинация `listResponses`, SQL-агрегация, принудительное подавление малых N,
-  денормализация контекста (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
+- **read-API / PgStore** — `PgStore` (CRUD + tenant-изоляция) и keyset-пагинация
+  (`listResponsesPage`) сделаны; осталось: SQL-агрегация, принудительное подавление
+  малых N на срезах, денормализация контекста, транзакции (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
 
 ## Документация (`docs/`)
 

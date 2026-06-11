@@ -188,6 +188,7 @@ describe('срезы по версии и подавление тренда (rea
     expect(byVersion(all, 2)).toHaveLength(6)
     expect(byVersionRange(all, 1, 2)).toHaveLength(12)
     expect(byVersionRange(all, 2, 2)).toHaveLength(6)
+    expect(byVersionRange(all, 2, 1)).toEqual([]) // from > to → пусто
   })
 
   it('npsTrend с minN подавляет малые бакеты', () => {

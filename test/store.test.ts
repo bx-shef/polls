@@ -102,4 +102,19 @@ describe('MemoryStore.listResponsesPage (keyset-пагинация)', () => {
     expect(page.nextCursor).toBeUndefined()
     expect((await s.listResponsesPage({ surveyKey: 'A' })).items.map((r) => r.id)).toEqual(['a'])
   })
+
+  it('тай-брейк по числовому id корректен (r2 < r10, не лексикографически)', async () => {
+    const s = new MemoryStore()
+    await s.addResponse(mk('r10', '2026-04-01'))
+    await s.addResponse(mk('r2', '2026-04-01'))
+    expect((await s.listResponsesPage({ limit: 10 })).items.map((r) => r.id)).toEqual(['r2', 'r10'])
+  })
+
+  it('лимит клампится (0 → ≥1, огромный → ≤ MAX)', async () => {
+    const s = new MemoryStore()
+    await s.addResponse(mk('a', '2026-04-01'))
+    await s.addResponse(mk('b', '2026-04-02'))
+    expect((await s.listResponsesPage({ limit: 0 })).items).toHaveLength(1)
+    expect((await s.listResponsesPage({ limit: 9999 })).items).toHaveLength(2)
+  })
 })

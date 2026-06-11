@@ -21,9 +21,10 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type 
  * - Версия хранится целиком в `survey_version.compiled_schema` (JSONB); снимок
  *   CRM-контекста — в `response.context` (JSONB, источник истины для round-trip).
  *
- * TODO (деплой / ISSUE #7): транзакции (BEGIN/COMMIT) на пуле pg; денормализация
- * контекста в индексируемые колонки (`company_id`, …) и `response_product` для
- * SQL-агрегации; пагинация/курсор и подавление малых N в read-API.
+ * TODO (#7, к реальному pg.Pool): транзакции (BEGIN/COMMIT) для publish/addResponse;
+ * `ON CONFLICT` в ensureGroup/ensureSurvey (TOCTOU при конкуренции); устранить N+1 в
+ * hydrate (`response_id = ANY($1)`) и batch-INSERT ответов; денормализация контекста
+ * в колонки и `response_product`; SQL-агрегация и подавление малых N на срезах.
  */
 
 /** Минимальный контракт драйвера БД (совместим с pg.Pool и PGlite). */
@@ -49,7 +50,7 @@ function toNum(v: unknown): number | null {
 }
 
 type ResponseRow = {
-  id: number
+  id: string | number // pg отдаёт bigint строкой; pglite — числом
   survey_key: string
   version_no: number
   submitted_at: unknown

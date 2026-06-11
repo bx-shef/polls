@@ -17,8 +17,8 @@ export interface ResponsePage {
 }
 
 /**
- * Контракт хранилища. Методы async, чтобы in-memory реализация и будущий
- * PgStore были взаимозаменяемы без правок вызывающего кода (решение тех-дира).
+ * Контракт хранилища. Методы async, чтобы in-memory реализация и PgStore
+ * были взаимозаменяемы без правок вызывающего кода (решение тех-дира).
  */
 export interface IStore {
   /**
@@ -41,8 +41,8 @@ export interface IStore {
    * поверхностная копия (новый массив, те же объекты) — трактуйте записи как
    * read-only, не мутируйте вложенные поля. ВНИМАНИЕ: грузит всё в память — при
    * больших объёмах агрегации должны считаться SQL-запросами на стороне PgStore,
-   * а не через listResponses() + in-process. Пагинация/курсор и tenant-фильтр
-   * (portalId) — в PgStore (см. ISSUE фазы деплоя: read-API, #7).
+   * а не через listResponses() + in-process. Для постраничной выдачи —
+   * `listResponsesPage()` (keyset); tenant-изоляция — в PgStore. SQL-агрегация — #7.
    */
   listResponses(surveyKey?: string): Promise<ResponseRecord[]>
 
