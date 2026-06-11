@@ -69,6 +69,13 @@ export const byCategory = (rs: ResponseRecord[], categoryId: number): ResponseRe
 export const byProduct = (rs: ResponseRecord[], productId: number): ResponseRecord[] =>
   rs.filter((r) => (r.context.products ?? []).some((p) => p.productId === productId))
 
+export const byVersion = (rs: ResponseRecord[], versionNo: number): ResponseRecord[] =>
+  rs.filter((r) => r.versionNo === versionNo)
+
+/** Срез по диапазону версий [fromVersion, toVersion] — для сравнения «до/после публикации». */
+export const byVersionRange = (rs: ResponseRecord[], fromVersion: number, toVersion: number): ResponseRecord[] =>
+  rs.filter((r) => r.versionNo >= fromVersion && r.versionNo <= toVersion)
+
 // ── Метрики по подвыборке ──
 export const npsFor = (rs: ResponseRecord[], questionKey: string): NpsSummary =>
   nps(numericValues(rs, questionKey))
@@ -117,13 +124,14 @@ export interface TrendPoint extends NpsSummary {
 
 /**
  * Динамика NPS по периодам (версионно-безопасно — по question_key).
- * Бакеты — UTC: `YYYY-MM` / `YYYY-MM-DD`. Малые N точек НЕ подавляются —
- * это ответственность слоя чтения (см. meetsAnonymity).
+ * Бакеты — UTC: `YYYY-MM` / `YYYY-MM-DD`. `minN` подавляет точки с малой выборкой
+ * (по умолчанию 1 — без подавления; для анонимности передайте `ANONYMITY_THRESHOLD`).
  */
 export function npsTrend(
   rs: ResponseRecord[],
   questionKey: string,
-  bucket: 'month' | 'day' = 'month'
+  bucket: 'month' | 'day' = 'month',
+  minN = 1
 ): TrendPoint[] {
   const groups = new Map<string, number[]>()
   for (const r of rs) {
@@ -136,4 +144,5 @@ export function npsTrend(
   return [...groups.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([b, vals]) => ({ bucket: b, ...nps(vals) }))
+    .filter((p) => p.n >= minN)
 }

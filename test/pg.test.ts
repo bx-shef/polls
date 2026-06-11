@@ -149,6 +149,25 @@ describe('PgStore (pglite)', () => {
     expect(got.answers[0]!.valueNumber).toBeNull()
   })
 
+  it('listResponsesPage: keyset-пагинация и фильтр', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    const days = ['2026-04-01', '2026-04-01', '2026-04-02'] // два с равным временем → тай-брейк по id (bigint)
+    for (const [i, d] of days.entries()) {
+      await store.addResponse(sampleResponse({ id: `r${i}`, submittedAt: `${d}T10:00:00.000Z`, answers: [] }))
+    }
+    const p1 = await store.listResponsesPage({ limit: 2 })
+    expect(p1.items).toHaveLength(2)
+    expect(p1.nextCursor).toBeTruthy()
+    const p2 = await store.listResponsesPage({ limit: 2, cursor: p1.nextCursor })
+    expect(p2.items).toHaveLength(1)
+    expect(p2.nextCursor).toBeUndefined()
+    // дефолтный лимит + фильтр по surveyKey
+    expect((await store.listResponsesPage({ surveyKey: SURVEY_KEY })).items).toHaveLength(3)
+    expect((await store.listResponsesPage({ surveyKey: 'nope' })).items).toHaveLength(0)
+  })
+
   it('addResponse до публикации → ошибка; неизвестная версия → ошибка', async () => {
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA })

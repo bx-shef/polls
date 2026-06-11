@@ -6,7 +6,8 @@ import {
   type ResponseRecord,
   type SurveyDraft
 } from '../domain/schema'
-import type { IStore } from './types'
+import { decodeCursor, encodeCursor } from './cursor'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions } from './types'
 
 /**
  * Реализация IStore поверх PostgreSQL.
@@ -46,6 +47,17 @@ function toIso(v: unknown): string {
 function toNum(v: unknown): number | null {
   return v == null ? null : Number(v)
 }
+
+type ResponseRow = {
+  id: number
+  survey_key: string
+  version_no: number
+  submitted_at: unknown
+  context: unknown
+}
+
+const SELECT_RESPONSE = `select r.id, s.survey_key, r.version_no, r.submitted_at, r.context
+   from response r join survey s on s.id = r.survey_id`
 
 export class PgStore implements IStore {
   constructor(
@@ -169,25 +181,9 @@ export class PgStore implements IStore {
     }
   }
 
-  async listResponses(surveyKey?: string): Promise<ResponseRecord[]> {
-    const where = surveyKey ? 'and s.survey_key = $2' : ''
-    const params = surveyKey ? [this.opts.portalId, surveyKey] : [this.opts.portalId]
-    const rows = await this.db.query<{
-      id: number
-      survey_key: string
-      version_no: number
-      submitted_at: unknown
-      context: unknown
-    }>(
-      `select r.id, s.survey_key, r.version_no, r.submitted_at, r.context
-       from response r
-       join survey s on s.id = r.survey_id
-       where r.portal_id = $1 ${where}
-       order by r.submitted_at asc, r.id asc`,
-      params
-    )
+  private async hydrate(rows: ResponseRow[]): Promise<ResponseRecord[]> {
     const out: ResponseRecord[] = []
-    for (const row of rows.rows) {
+    for (const row of rows) {
       const ans = await this.db.query<{
         question_key: string
         metric: string
@@ -217,5 +213,43 @@ export class PgStore implements IStore {
       )
     }
     return out
+  }
+
+  async listResponses(surveyKey?: string): Promise<ResponseRecord[]> {
+    const where = surveyKey ? 'and s.survey_key = $2' : ''
+    const params = surveyKey ? [this.opts.portalId, surveyKey] : [this.opts.portalId]
+    const rows = await this.db.query<ResponseRow>(
+      `${SELECT_RESPONSE} where r.portal_id = $1 ${where} order by r.submitted_at asc, r.id asc`,
+      params
+    )
+    return this.hydrate(rows.rows)
+  }
+
+  async listResponsesPage(opts: ResponsePageOptions = {}): Promise<ResponsePage> {
+    const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE)
+    const conds = ['r.portal_id = $1']
+    const params: unknown[] = [this.opts.portalId]
+    if (opts.surveyKey != null) {
+      params.push(opts.surveyKey)
+      conds.push(`s.survey_key = $${params.length}`)
+    }
+    if (opts.cursor) {
+      const c = decodeCursor(opts.cursor)
+      params.push(c.submittedAt, c.id)
+      conds.push(`(r.submitted_at, r.id) > ($${params.length - 1}::timestamptz, $${params.length}::bigint)`)
+    }
+    params.push(limit + 1)
+    const rows = await this.db.query<ResponseRow>(
+      `${SELECT_RESPONSE} where ${conds.join(' and ')} order by r.submitted_at asc, r.id asc limit $${params.length}`,
+      params
+    )
+    const slice = rows.rows.slice(0, limit)
+    const items = await this.hydrate(slice)
+    const last = slice[slice.length - 1]
+    const nextCursor =
+      rows.rows.length > limit && last
+        ? encodeCursor({ submittedAt: toIso(last.submitted_at), id: String(last.id) })
+        : undefined
+    return { items, nextCursor }
   }
 }

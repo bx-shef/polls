@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MemoryStore } from '../src/store/memory'
 import { draftV1, draftV2, SURVEY_KEY } from '../src/demo/seed'
+import type { ResponseRecord } from '../src/domain/schema'
 
 describe('MemoryStore', () => {
   it('публикует версии и отдаёт их по номеру', async () => {
@@ -70,5 +71,35 @@ describe('MemoryStore', () => {
     const list = await s.listResponses()
     list.push({ ...list[0]!, id: 'fake' })
     expect(await s.listResponses()).toHaveLength(1)
+  })
+})
+
+describe('MemoryStore.listResponsesPage (keyset-пагинация)', () => {
+  const mk = (id: string, date: string, sk = 'A'): ResponseRecord => ({
+    id, surveyKey: sk, versionNo: 1, submittedAt: `${date}T10:00:00.000Z`, context: {}, answers: []
+  })
+
+  it('страницы по 2 с курсором; тай-брейк по id при равном времени', async () => {
+    const s = new MemoryStore()
+    // вставка не по порядку — сортировка должна привести к [a, b, c]
+    await s.addResponse(mk('c', '2026-04-02'))
+    await s.addResponse(mk('a', '2026-04-01'))
+    await s.addResponse(mk('b', '2026-04-01')) // тот же timestamp, что 'a' → тай-брейк по id
+    const p1 = await s.listResponsesPage({ limit: 2 })
+    expect(p1.items.map((r) => r.id)).toEqual(['a', 'b'])
+    expect(p1.nextCursor).toBeTruthy()
+    const p2 = await s.listResponsesPage({ limit: 2, cursor: p1.nextCursor })
+    expect(p2.items.map((r) => r.id)).toEqual(['c'])
+    expect(p2.nextCursor).toBeUndefined()
+  })
+
+  it('дефолтный лимит и фильтр по surveyKey', async () => {
+    const s = new MemoryStore()
+    await s.addResponse(mk('a', '2026-04-01', 'A'))
+    await s.addResponse(mk('b', '2026-04-02', 'B'))
+    const page = await s.listResponsesPage()
+    expect(page.items).toHaveLength(2)
+    expect(page.nextCursor).toBeUndefined()
+    expect((await s.listResponsesPage({ surveyKey: 'A' })).items.map((r) => r.id)).toEqual(['a'])
   })
 })

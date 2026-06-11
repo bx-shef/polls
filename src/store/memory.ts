@@ -1,6 +1,7 @@
 import { compile } from '../domain/compile'
 import { responseRecordSchema, type CompiledVersion, type ResponseRecord, type SurveyDraft } from '../domain/schema'
-import type { IStore } from './types'
+import { afterKeyset, decodeCursor, encodeCursor, keysetCmp } from './cursor'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions } from './types'
 
 /**
  * In-memory реализация {@link IStore} — для локальной проверки итога и тестов.
@@ -42,5 +43,17 @@ export class MemoryStore implements IStore {
     const rs = surveyKey == null ? this._responses : this._responses.filter((r) => r.surveyKey === surveyKey)
     // Копия, а не внутренняя ссылка: внешний код не должен мутировать стор.
     return [...rs]
+  }
+
+  async listResponsesPage(opts: ResponsePageOptions = {}): Promise<ResponsePage> {
+    const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE)
+    const base = opts.surveyKey == null ? this._responses : this._responses.filter((r) => r.surveyKey === opts.surveyKey)
+    const sorted = [...base].sort(keysetCmp)
+    const after = opts.cursor ? sorted.filter((r) => afterKeyset(r, decodeCursor(opts.cursor!))) : sorted
+    const items = after.slice(0, limit)
+    const last = items[items.length - 1]
+    const nextCursor =
+      after.length > limit && last ? encodeCursor({ submittedAt: last.submittedAt, id: last.id }) : undefined
+    return { items, nextCursor }
   }
 }

@@ -9,5 +9,6 @@ export { validateAnswer, normalizeAnswer, buildResponseAnswers } from './domain/
 export type { BuiltAnswers } from './domain/answers'
 export { MemoryStore } from './store/memory'
 export { PgStore } from './store/pg'
-export type { IStore } from './store/types'
+export { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from './store/types'
+export type { IStore, ResponsePage, ResponsePageOptions } from './store/types'
 export type { Queryable, PgStoreOptions } from './store/pg'
