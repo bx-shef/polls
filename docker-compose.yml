@@ -1,0 +1,26 @@
+# Локальная БД для разработки. Миграции из ./migrations применяются при первом
+# старте контейнера. Приложение (Nuxt) добавим сервисом в фазе деплоя.
+services:
+  db:
+    image: postgres:16-alpine
+    # ВНИМАНИЕ: dev-учётка только для локальной разработки. В проде — секрет из
+    # .env / docker secrets, не коммитить; БД держать во внутренней сети.
+    environment:
+      POSTGRES_USER: polls
+      # Без дефолта: запуск без явного пароля падает (а не стартует со слабым 'polls').
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан — задайте в .env}"
+      POSTGRES_DB: polls
+    ports:
+      # Только localhost: порт не торчит наружу (0.0.0.0).
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U polls -d polls']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db-data:

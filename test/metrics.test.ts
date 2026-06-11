@@ -1,0 +1,83 @@
+import { describe, expect, it } from 'vitest'
+import { ces, csat, distribution, nps, round1, round2 } from '../src/domain/metrics'
+
+describe('round', () => {
+  it('round1/round2', () => {
+    expect(round1(8.3333)).toBe(8.3)
+    expect(round1(66.666)).toBe(66.7)
+    expect(round2(4.25)).toBe(4.25)
+    expect(round1(0.05)).toBe(0.1)
+    expect(round2(0.125)).toBe(0.13) // .5 округляется вверх
+  })
+})
+
+describe('nps', () => {
+  it('classifies promoters/passives/detractors', () => {
+    const s = nps([10, 9, 8, 7, 6, 0])
+    expect(s.n).toBe(6)
+    expect(s.promoters).toBe(2) // 10, 9
+    expect(s.passives).toBe(2) // 8, 7
+    expect(s.detractors).toBe(2) // 6, 0
+    expect(s.nps).toBe(0)
+  })
+
+  it('all promoters → 100', () => {
+    expect(nps([9, 10, 10]).nps).toBe(100)
+  })
+
+  it('empty → 0', () => {
+    expect(nps([]).nps).toBe(0)
+    expect(nps([]).n).toBe(0)
+  })
+})
+
+describe('csat', () => {
+  it('mean and top-box (default ≥4)', () => {
+    const s = csat([5, 4, 3, 2, 1])
+    expect(s.n).toBe(5)
+    expect(s.mean).toBe(3)
+    expect(s.topBoxPct).toBe(40) // 5,4 of 5
+  })
+
+  it('custom top-box threshold', () => {
+    expect(csat([5, 4, 3], { topBoxMin: 5 }).topBoxPct).toBeCloseTo(33.3, 1)
+  })
+
+  it('empty → zeros', () => {
+    expect(csat([])).toEqual({ n: 0, mean: 0, topBoxPct: 0 })
+  })
+})
+
+describe('distribution', () => {
+  it('counts keys across multi answers', () => {
+    const d = distribution([['a', 'b'], ['a'], ['c', 'a']])
+    expect(d).toEqual({ a: 3, b: 1, c: 1 })
+  })
+
+  it('empty → {}', () => {
+    expect(distribution([])).toEqual({})
+  })
+})
+
+describe('ces', () => {
+  it('mean of effort scores', () => {
+    expect(ces([1, 2, 3])).toEqual({ n: 3, mean: 2 })
+  })
+
+  it('empty → zeros (sentinel)', () => {
+    expect(ces([])).toEqual({ n: 0, mean: 0 })
+  })
+
+  it('дробные значения округляются (round2)', () => {
+    expect(ces([1, 2, 2])).toEqual({ n: 3, mean: 1.67 })
+  })
+})
+
+describe('nps — граничные значения шкалы', () => {
+  it('ровно 9 → промоутер (100), ровно 6 → детрактор (−100), 7/8 → пассив (0)', () => {
+    expect(nps([9]).nps).toBe(100)
+    expect(nps([6]).nps).toBe(-100)
+    expect(nps([7]).nps).toBe(0)
+    expect(nps([8]).nps).toBe(0)
+  })
+})
