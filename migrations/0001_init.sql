@@ -122,6 +122,7 @@ create table if not exists response (
   company_id        bigint,
   contact_id        bigint,
   responsible_id    bigint,
+  context           jsonb,            -- полный снимок CrmContext (lossless round-trip)
   nps_value         int,
   csat_value        numeric,
   sentiment         numeric,

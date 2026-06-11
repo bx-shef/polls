@@ -31,7 +31,9 @@ pnpm verify       # печатает И сверяет assert'ами итог н
   (классы изменений; сопоставимость ряда по стабильному `question_key`).
 - `domain/aggregate.ts` — агрегация на 4 уровнях (опрос/услуга/клиент/направление) + KPI/тренд.
 - `store/types.ts` (`IStore`) + `store/memory.ts` (`MemoryStore`) — контракт хранилища
-  (методы async) и in-memory реализация. PgStore — фаза деплоя.
+  (методы async) и in-memory реализация. `store/pg.ts` (`PgStore`) — реализация поверх
+  PostgreSQL: драйвер-агностичная (`Queryable` ≈ `pg.Pool`/pglite), tenant-scoped по
+  `portalId`; тесты на pglite (in-process). Read-API расширения — #7.
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 
 ## Инварианты
@@ -56,8 +58,9 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - **#4** — анти-абьюз: серверный nonce (TTL), rate-limit, honeypot, идемпотентность.
 - **#5** — наблюдаемость: структурные логи/метрики/трейсы + `/health`.
 - **#6** — раннер миграций (`0002+`).
-- **read-API / PgStore** — пагинация `listResponses`, принудительное подавление малых N,
-  tenant-изоляция, SQL-агрегация (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
+- **read-API / PgStore** — база `PgStore` (CRUD + tenant-изоляция) сделана; осталось:
+  пагинация `listResponses`, SQL-агрегация, принудительное подавление малых N,
+  денормализация контекста (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
 
 ## Документация (`docs/`)
 
