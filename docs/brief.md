@@ -759,3 +759,5 @@ curl https://polls.bx-shef.by/api/health
 ---
 
 *Обезличенный шаблон схемы: [`survey-schema.template.json`](./reference/survey-schema.template.json) · Дизайн на b24ui: [`docs/design.md`](./design.md).*
+
+*Последнее ревью: 2026-06-11.*
