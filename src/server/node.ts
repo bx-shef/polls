@@ -1,10 +1,12 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Api, ApiResult } from '../api/handlers'
 
 /**
  * Минимальный HTTP-адаптер на node:http (нулевые зависимости): роутинг двух
- * эндпоинтов, лимит тела, разбор JSON. Прод-адаптером может быть Nitro (фаза
- * связки) — хендлеры (`createApi`) от рантайма не зависят.
+ * эндпоинтов, лимит тела, разбор JSON, таймаут запроса (анти-slowloris).
+ * Прод-адаптером может быть Nitro (фаза связки) — хендлеры (`createApi`) от
+ * рантайма не зависят. Модуль НЕ экспортируется из barrel (src/index.ts),
+ * чтобы ядро не тянуло node:http: импортируйте напрямую из 'src/server/node'.
  *
  * IP берётся из сокета: за reverse-proxy (фаза деплоя) адаптер должен сам
  * решить вопрос доверия X-Forwarded-For — здесь заголовки НЕ читаются.
@@ -14,8 +16,10 @@ export interface NodeServerOptions {
   /** 0 (по умолчанию) — слушать на свободном порту (удобно тестам). */
   port?: number
   host?: string
-  /** Лимит тела запроса; больше → 413 (защита от раздувания). */
+  /** Лимит тела запроса; больше → 413 + закрытие соединения. */
   maxBodyBytes?: number
+  /** Максимум на весь запрос, мс (анти-slowloris; default 30с). */
+  requestTimeoutMs?: number
 }
 
 export interface NodeServer {
@@ -23,14 +27,32 @@ export interface NodeServer {
   close(): Promise<void>
 }
 
-function send(res: ServerResponse, r: ApiResult): void {
-  const payload = JSON.stringify(r.body)
-  res.writeHead(r.status, { 'content-type': 'application/json; charset=utf-8' })
-  res.end(payload)
+// ── маленькие чистые helpers (экспортированы для unit-тестов) ──
+
+export function ipOf(req: Pick<IncomingMessage, 'socket'>): string {
+  return req.socket.remoteAddress ?? 'unknown'
 }
 
+export function pathOf(rawUrl: string | undefined): string {
+  const raw = rawUrl ?? ''
+  const q = raw.indexOf('?')
+  return q === -1 ? raw : raw.slice(0, q)
+}
+
+export function portOf(addr: ReturnType<Server['address']>): number {
+  return typeof addr === 'object' && addr !== null ? addr.port : 0
+}
+
+function send(res: ServerResponse, r: ApiResult, opts: { closeConn?: boolean } = {}): void {
+  res.writeHead(r.status, {
+    'content-type': 'application/json; charset=utf-8',
+    ...(opts.closeConn ? { connection: 'close' } : {})
+  })
+  res.end(JSON.stringify(r.body))
+}
+
+/** null = превышен лимит тела (вызывающий отвечает 413 и закрывает соединение). */
 function readBody(req: IncomingMessage, maxBytes: number): Promise<string | null> {
-  // null = превышен лимит (тело дочитывать бессмысленно)
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks: Buffer[] = []
@@ -45,46 +67,67 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<string | null
       chunks.push(chunk)
     })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', reject)
+    req.on('error', reject) // reject после resolve — безопасный no-op
   })
+}
+
+async function route(api: Api, req: IncomingMessage, res: ServerResponse, maxBodyBytes: number): Promise<void> {
+  const ip = ipOf(req)
+  const url = pathOf(req.url)
+
+  if (url === '/api/session') {
+    if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
+    return send(res, await api.session({ ip }))
+  }
+
+  if (url === '/api/submit') {
+    if (req.method !== 'POST') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
+    const raw = await readBody(req, maxBodyBytes)
+    if (raw === null) {
+      // connection: close — соединение завершится после ответа, остаток тела не читаем
+      return send(res, { status: 413, body: { ok: false, error: 'Слишком большой запрос' } }, { closeConn: true })
+    }
+    let body: unknown
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      return send(res, { status: 400, body: { ok: false, error: 'Некорректный JSON' } })
+    }
+    return send(res, await api.submit({ ip, body }))
+  }
+
+  send(res, { status: 404, body: { ok: false, error: 'Не найдено' } })
+}
+
+/** Аварийный ответ при необработанной ошибке роутинга (экспорт — для unit-теста). */
+export function failSafe(res: Pick<ServerResponse, 'headersSent' | 'writeHead' | 'end' | 'destroy'>): void {
+  if (res.headersSent) {
+    res.destroy()
+    return
+  }
+  res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({ ok: false, error: 'Внутренняя ошибка' }))
 }
 
 export function startServer(opts: NodeServerOptions): Promise<NodeServer> {
   const maxBodyBytes = opts.maxBodyBytes ?? 64 * 1024
-  const server = createServer(async (req, res) => {
-    const ip = req.socket.remoteAddress ?? 'unknown'
-    const url = (req.url ?? '').split('?')[0]
-
-    if (url === '/api/session') {
-      if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
-      return send(res, await opts.api.session({ ip }))
-    }
-
-    if (url === '/api/submit') {
-      if (req.method !== 'POST') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
-      const raw = await readBody(req, maxBodyBytes)
-      if (raw === null) return send(res, { status: 413, body: { ok: false, error: 'Слишком большой запрос' } })
-      let body: unknown
-      try {
-        body = JSON.parse(raw)
-      } catch {
-        return send(res, { status: 400, body: { ok: false, error: 'Некорректный JSON' } })
-      }
-      return send(res, await opts.api.submit({ ip, body }))
-    }
-
-    send(res, { status: 404, body: { ok: false, error: 'Не найдено' } })
+  const server = createServer((req, res) => {
+    // async-роутинг с перехватом: необработанный reject уронил бы процесс (Node ≥15)
+    route(opts.api, req, res, maxBodyBytes).catch(() => failSafe(res))
   })
+  server.requestTimeout = opts.requestTimeoutMs ?? 30_000
+  server.headersTimeout = Math.min(10_000, server.requestTimeout)
 
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(opts.port ?? 0, opts.host ?? '127.0.0.1', () => {
-      const addr = server.address()
-      const port = typeof addr === 'object' && addr !== null ? addr.port : 0
       resolve({
-        port,
+        port: portOf(server.address()),
         close: () =>
-          new Promise<void>((res2, rej2) => server.close((e) => (e ? rej2(e) : res2())))
+          new Promise<void>((res2, rej2) => {
+            server.closeAllConnections() // иначе keep-alive соединения держат close()
+            server.close((e) => (e ? rej2(e) : res2()))
+          })
       })
     })
   })

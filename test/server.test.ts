@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
-import { createApi, SUPPORTED_SCHEMA_VERSION } from '../src/api/handlers'
-import { startServer, type NodeServer } from '../src/server/node'
+import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
+import { MemoryNonceStore } from '../src/api/nonce'
+import { SlidingWindowLimiter } from '../src/api/ratelimit'
+import { failSafe, ipOf, pathOf, portOf, startServer, type NodeServer } from '../src/server/node'
 import { MemoryStore } from '../src/store/memory'
 import { PgStore, type Queryable } from '../src/store/pg'
 import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
@@ -44,6 +46,7 @@ async function post(path: string, body: string): Promise<Response> {
 
 describe('node-адаптер: живой HTTP', () => {
   it('полный цикл: session → submit 200 → запись в сторе; replay того же nonce → 409', async () => {
+    // before читается ВНУТРИ теста → ассерты не зависят от порядка соседних it
     const before = (await store.listResponses()).length
     const s = await fetch(`${base}/api/session`)
     expect(s.status).toBe(200)
@@ -70,12 +73,92 @@ describe('node-адаптер: живой HTTP', () => {
     expect((await post('/api/submit', JSON.stringify({ pad: 'x'.repeat(2000) }))).status).toBe(413)
   })
 
-  it('роутинг: неизвестный путь → 404, неверный метод → 405', async () => {
+  it('роутинг: неизвестный путь → 404, неверный метод (POST/GET/HEAD/OPTIONS) → 405', async () => {
     expect((await fetch(`${base}/api/nope`)).status).toBe(404)
     expect((await fetch(`${base}/api/session`, { method: 'POST' })).status).toBe(405)
+    expect((await fetch(`${base}/api/session`, { method: 'HEAD' })).status).toBe(405)
     expect((await fetch(`${base}/api/submit`)).status).toBe(405)
+    expect((await fetch(`${base}/api/submit`, { method: 'OPTIONS' })).status).toBe(405)
     // query-string не ломает роутинг
     expect((await fetch(`${base}/api/session?x=1`)).status).toBe(200)
+  })
+
+  it('rate-limit и переполнение nonce-стора доходят до клиента (429/503)', async () => {
+    const limited = await startServer({
+      api: createApi({
+        store,
+        limiter: new SlidingWindowLimiter({ limit: 1, windowMs: 60_000 })
+      })
+    })
+    try {
+      expect((await fetch(`http://127.0.0.1:${limited.port}/api/session`)).status).toBe(200)
+      expect((await fetch(`http://127.0.0.1:${limited.port}/api/session`)).status).toBe(429)
+    } finally {
+      await limited.close()
+    }
+
+    const overflow = await startServer({
+      api: createApi({ store, nonces: new MemoryNonceStore({ maxPending: 0 }) })
+    })
+    try {
+      const r = await fetch(`http://127.0.0.1:${overflow.port}/api/session`)
+      expect(r.status).toBe(503)
+      expect(((await r.json()) as { error: string }).error).toMatch(/перегружен/)
+    } finally {
+      await overflow.close()
+    }
+  })
+
+  it('сломанный api → 500 через failSafe (процесс не падает); повторный close() → ошибка', async () => {
+    const broken: Api = {
+      session: () => Promise.reject(new Error('boom')),
+      submit: () => Promise.reject(new Error('boom'))
+    }
+    const srv = await startServer({ api: broken })
+    const r = await fetch(`http://127.0.0.1:${srv.port}/api/session`)
+    expect(r.status).toBe(500)
+    expect(await r.json()).toEqual({ ok: false, error: 'Внутренняя ошибка' })
+    await srv.close()
+    await expect(srv.close()).rejects.toThrow() // сервер уже остановлен
+  })
+})
+
+describe('node-адаптер: чистые helpers', () => {
+  it('ipOf: сокет без адреса → "unknown"', () => {
+    expect(ipOf({ socket: { remoteAddress: undefined } } as never)).toBe('unknown')
+    expect(ipOf({ socket: { remoteAddress: '1.2.3.4' } } as never)).toBe('1.2.3.4')
+  })
+
+  it('pathOf: undefined/без query/с query', () => {
+    expect(pathOf(undefined)).toBe('')
+    expect(pathOf('/api/x')).toBe('/api/x')
+    expect(pathOf('/api/x?a=1')).toBe('/api/x')
+  })
+
+  it('portOf: unix-socket (строка) и null → 0', () => {
+    expect(portOf('/tmp/sock' as never)).toBe(0)
+    expect(portOf(null)).toBe(0)
+    expect(portOf({ address: '127.0.0.1', family: 'IPv4', port: 8080 })).toBe(8080)
+  })
+
+  it('failSafe: до заголовков — 500 JSON; после — destroy сокета', () => {
+    const sent: unknown[] = []
+    failSafe({
+      headersSent: false,
+      writeHead: (code: number) => void sent.push(code),
+      end: (body: string) => void sent.push(body),
+      destroy: () => void sent.push('destroy')
+    } as never)
+    expect(sent[0]).toBe(500)
+
+    const after: unknown[] = []
+    failSafe({
+      headersSent: true,
+      writeHead: () => void after.push('writeHead'),
+      end: () => void after.push('end'),
+      destroy: () => void after.push('destroy')
+    } as never)
+    expect(after).toEqual(['destroy'])
   })
 })
 

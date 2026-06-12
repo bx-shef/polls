@@ -46,6 +46,14 @@ async function issueNonce(api: Api, ip = '10.0.0.1'): Promise<string> {
 }
 
 describe('GET /api/session', () => {
+  it('выдаёт nonce + schema_version (bootstrap клиента, brief §8)', async () => {
+    const { api } = await freshApi()
+    const r = await api.session({ ip: 'a' })
+    expect(r.status).toBe(200)
+    expect(r.body['nonce']).toBeTruthy()
+    expect(r.body['schema_version']).toBe(SUPPORTED_SCHEMA_VERSION)
+  })
+
   it('выдаёт nonce; флуд по IP режется rate-limit (429)', async () => {
     const { api } = await freshApi({ limiter: new SlidingWindowLimiter({ limit: 2, windowMs: 60_000 }) })
     expect((await api.session({ ip: 'a' })).status).toBe(200)
@@ -151,6 +159,69 @@ describe('POST /api/submit — конвейер проверок', () => {
     expect(JSON.stringify(r.body)).not.toMatch(/секретная/)
   })
 
+  it('text-вопрос: заполненный сохраняется (valueText), пропущенный необязательный — нет', async () => {
+    const { api, store } = await freshApi()
+    const n1 = await issueNonce(api)
+    const withComment = { ...validPayload(n1) }
+    ;(withComment['answers'] as Record<string, unknown>)['q_comment'] = { text: '  Отличный сервис  ' }
+    expect((await api.submit({ ip: 'a', body: withComment })).status).toBe(200)
+    const saved = (await store.listResponses()).at(-1)!
+    expect(saved.answers.find((a) => a.questionKey === 'q_comment')?.valueText).toBe('Отличный сервис')
+
+    const n2 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(n2) })).status).toBe(200) // без q_comment
+    const saved2 = (await store.listResponses()).at(-1)!
+    expect(saved2.answers.some((a) => a.questionKey === 'q_comment')).toBe(false)
+  })
+
+  it('hp из одних пробелов НЕ срабатывает как honeypot (trim)', async () => {
+    const { api } = await freshApi()
+    // кривое тело: если бы honeypot сработал — был бы generic «Отклонено»
+    const r = await api.submit({ ip: 'a', body: { hp: '   ' } })
+    expect(r.status).toBe(400)
+    expect(r.body['error']).toBe('Некорректный запрос')
+  })
+
+  it('schema_version строкой ("1") → 400 (строгая форма)', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(nonce), schema_version: '1' } })).status).toBe(400)
+  })
+
+  it('больше 200 ответов в payload → 400 (.refine)', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    const answers: Record<string, { values: string[] }> = {}
+    for (let i = 0; i < 201; i++) answers[`q${i}`] = { values: ['a'] }
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(nonce), answers } })).status).toBe(400)
+  })
+
+  it('гонка: два параллельных submit с одним nonce → ровно один 200 и один 409', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    const [a, b] = await Promise.all([
+      api.submit({ ip: 'a', body: validPayload(nonce) }),
+      api.submit({ ip: 'a', body: validPayload(nonce) })
+    ])
+    expect([a.status, b.status].sort()).toEqual([200, 409])
+  })
+
+  it('onError получает исходную ошибку стора (хук для логгера #5)', async () => {
+    const seen: unknown[] = []
+    const { api } = await freshApi({
+      store: new (class extends MemoryStore {
+        override async getVersion(): Promise<never> {
+          throw new Error('диагностика для логгера')
+        }
+      })(),
+      onError: (e) => seen.push(e)
+    })
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(500)
+    expect(seen).toHaveLength(1)
+    expect(String(seen[0])).toMatch(/диагностика/)
+  })
+
   it('дефолтные зависимости (реальные часы/uuid/лимитер) — happy path работает', async () => {
     const store = await buildDemo(new MemoryStore())
     const api = createApi({ store }) // всё по умолчанию
@@ -189,5 +260,15 @@ describe('анти-абьюз: примитивы', () => {
     expect(l.allow('k', c.now())).toBe(false)
     c.advance(1001) // старые события выпали из окна
     expect(l.allow('k', c.now())).toBe(true)
+  })
+
+  it('SlidingWindowLimiter: maxKeys — потолок памяти; sweep освобождает протухшие ключи', () => {
+    const c = clock()
+    const l = new SlidingWindowLimiter({ limit: 5, windowMs: 1000, maxKeys: 1 })
+    expect(l.allow('ip-1', c.now())).toBe(true)
+    expect(l.allow('ip-2', c.now())).toBe(false) // новый ключ при заполненном Map → fail-closed
+    expect(l.allow('ip-1', c.now())).toBe(true) // существующий ключ работает
+    c.advance(1001) // окно ip-1 протухло → sweep при переполнении освободит место
+    expect(l.allow('ip-2', c.now())).toBe(true)
   })
 })

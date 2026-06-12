@@ -17,13 +17,17 @@ import { SlidingWindowLimiter, type RateLimiter } from './ratelimit'
  *   2. rate-limit по IP → 429
  *   3. форма payload (zod) и schema_version → 400
  *   4. nonce: повтор → 409, неизвестный/протухший → 403
- *   5. версия опроса → 404
+ *   5. версия опроса → 404 (nonce к этому моменту уже потрачен — НАМЕРЕННО:
+ *      анти-перебор surveyKey/versionNo; UX: после 404/422 клиент запрашивает
+ *      новый nonce через GET /api/session)
  *   6. валидация ответов ядром (buildResponseAnswers) → 422 { errors }
  *   7. запись: id и submittedAt ставит СЕРВЕР (клиентские значения не принимаются),
  *      context пуст до invitation-flow (#3) → 200 { ok: true }
  *
  * Nitro-адаптер (фаза связки) — тонкая обёртка:
  *   export default defineEventHandler(async (event) => {
+ *     // getRequestIP по умолчанию отдаёт socket-IP; за reverse-proxy —
+ *     // { xForwardedFor: true } ТОЛЬКО при доверенном прокси (см. server/node.ts)
  *     const r = await api.submit({ ip: getRequestIP(event) ?? '?', body: await readBody(event) })
  *     setResponseStatus(event, r.status); return r.body
  *   })
@@ -50,6 +54,8 @@ export interface ApiDeps {
   /** Часы сервера (инжектируются в тестах). submittedAt ставится только отсюда. */
   now?: () => Date
   idGen?: () => string
+  /** Хук диагностики внутренних ошибок (500): сюда придёт логгер из #5. */
+  onError?: (e: unknown) => void
 }
 
 export interface ApiResult {
@@ -87,13 +93,15 @@ export function createApi(deps: ApiDeps): Api {
   const limiter = deps.limiter ?? new SlidingWindowLimiter({ limit: 10, windowMs: 60_000 })
   const now = deps.now ?? ((): Date => new Date())
   const idGen = deps.idGen ?? randomUUID
+  const onError = deps.onError ?? ((): void => undefined)
 
   return {
     async session({ ip }: SessionInput): Promise<ApiResult> {
       if (!limiter.allow(`s:${ip}`, now())) return err(429, 'Слишком много запросов')
       const nonce = nonces.issue(now())
       if (nonce == null) return err(503, 'Сервис перегружен, попробуйте позже')
-      return { status: 200, body: { nonce } }
+      // schema_version — клиенту для bootstrap (контракт brief §8)
+      return { status: 200, body: { nonce, schema_version: SUPPORTED_SCHEMA_VERSION } }
     },
 
     async submit({ ip, body }: SubmitInput): Promise<ApiResult> {
@@ -127,8 +135,9 @@ export function createApi(deps: ApiDeps): Api {
           answers
         })
         return { status: 200, body: { ok: true } }
-      } catch {
+      } catch (e) {
         // store может отказать (гонка версий, недоступность БД) — без деталей наружу
+        onError(e)
         return err(500, 'Внутренняя ошибка, попробуйте позже')
       }
     }
