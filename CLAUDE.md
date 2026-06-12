@@ -66,8 +66,8 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - **#6** — раннер миграций (`0002+`).
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
   SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
-  идемпотентный ensure. Осталось: идемпотентность `addResponse` (с #4), PII-редакция
-  на HTTP-слое, SQL-вариант `npsTrend` (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
+  идемпотентный ensure (#7 закрыт). Осталось: идемпотентность `addResponse` (с #4),
+  PII-редакция на HTTP-слое и SQL-вариант `npsTrend` (ISSUE [#10](https://github.com/bx-shef/polls/issues/10)).
 
 ## Документация (`docs/`)
 

@@ -497,7 +497,7 @@ group by opt order by 2 desc;
 | Порог анонимности `N`: `ANONYMITY_THRESHOLD` + `meetsAnonymity`; принудительное подавление чувствительных срезов — в `PgStore.aggregateNps/Csat/Distribution`. PII-erasure (#4) должен чистить `response.context` (JSONB), денормализованные колонки (`contact_id`, …) и `response_product.product_name` | Фаза 1–3 | ✅ |
 | `PgStore` (CRUD + tenant-изоляция `portalId`) — на pglite-тестах | Фаза 2 | ✅ |
 | Read-API: keyset-пагинация, SQL-агрегация + принудительное подавление малых N, денормализация, транзакции, идемпотентный ensure | Фаза 3 | ✅ |
-| Read-API остаток: идемпотентность `addResponse` (с #4), PII-редакция на HTTP-слое, SQL-вариант `npsTrend` | Деплой | 🔶 [#7](https://github.com/bx-shef/polls/issues/7) |
+| Read-API остаток: идемпотентность `addResponse` (с #4), PII-редакция на HTTP-слое, SQL-вариант `npsTrend` | Деплой | 🔶 [#10](https://github.com/bx-shef/polls/issues/10) |
 | CHECK-ограничения и лимиты длины в схеме БД | Фаза 1 | ✅ |
 | Границы payload в zod (`.max`) | Фаза 1 | ✅ |
 

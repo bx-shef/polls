@@ -32,7 +32,7 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type 
  *   загрузки ответов в память) и ПРИНУДИТЕЛЬНО подавляют малые выборки на
  *   чувствительных срезах; PII (contactId) в агрегатах не участвует.
  *
- * Остаётся (#3/#4/#7): идемпотентность addResponse и связь invitation_id (когда
+ * Остаётся (#3/#4/#10): идемпотентность addResponse и связь invitation_id (когда
  * появится invitation-flow), PII-редакция/erasure на HTTP-слое, SQL-вариант npsTrend.
  */
 
