@@ -1,4 +1,6 @@
+import { ANONYMITY_THRESHOLD, meetsAnonymity } from '../domain/aggregate'
 import { compile } from '../domain/compile'
+import { round1, round2, type CsatSummary, type NpsSummary } from '../domain/metrics'
 import {
   compiledVersionSchema,
   responseRecordSchema,
@@ -10,26 +12,42 @@ import { decodeCursor, encodeCursor } from './cursor'
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions } from './types'
 
 /**
- * Реализация IStore поверх PostgreSQL.
+ * Реализация IStore поверх PostgreSQL + SQL-агрегация (read-API, #7).
  *
  * Решения:
- * - Драйвер-агностичность: зависит только от минимального контракта `Queryable`,
- *   которому удовлетворяют и `pg.Pool` (прод), и `@electric-sql/pglite` (тесты).
- *   Ядро не тянет `pg` в зависимости — драйвер передаёт слой деплоя (Nuxt/Nitro).
+ * - Драйвер-агностичность: зависит только от контракта `Queryable` (query +
+ *   опциональная transaction), которому удовлетворяют и `pg.Pool` (прод, через
+ *   адаптер — см. JSDoc Queryable), и `@electric-sql/pglite` (тесты). Ядро не
+ *   тянет `pg` в зависимости — драйвер передаёт слой деплоя (Nuxt/Nitro).
  * - Tenant-изоляция: инстанс PgStore привязан к одному `portalId`; все запросы
  *   фильтруются по нему. Контракт `IStore` при этом не меняется.
- * - Версия хранится целиком в `survey_version.compiled_schema` (JSONB); снимок
- *   CRM-контекста — в `response.context` (JSONB, источник истины для round-trip).
+ * - Версия хранится целиком в `survey_version.compiled_schema` (JSONB). Снимок
+ *   CRM-контекста: JSONB `response.context` (источник истины, lossless) +
+ *   денормализация в колонки (`company_id`, …) и `response_product` — для
+ *   индексов и SQL-агрегации.
+ * - Запись (publish/addResponse) выполняется в транзакции, если драйвер её
+ *   поддерживает; ensure-методы идемпотентны (INSERT … ON CONFLICT) — нет
+ *   TOCTOU-гонки при конкурентных запросах.
+ * - SQL-агрегаты (aggregateNps/Csat/Distribution) считают метрики в БД (без
+ *   загрузки ответов в память) и ПРИНУДИТЕЛЬНО подавляют малые выборки на
+ *   чувствительных срезах; PII (contactId) в агрегатах не участвует.
  *
- * TODO (#7, к реальному pg.Pool): транзакции (BEGIN/COMMIT) для publish/addResponse;
- * `ON CONFLICT` в ensureGroup/ensureSurvey (TOCTOU при конкуренции); устранить N+1 в
- * hydrate (`response_id = ANY($1)`) и batch-INSERT ответов; денормализация контекста
- * в колонки и `response_product`; SQL-агрегация и подавление малых N на срезах.
+ * Остаётся (#4/#7): идемпотентность addResponse (по invitation), PII-редакция
+ * на HTTP-слое, SQL-вариант npsTrend.
  */
 
-/** Минимальный контракт драйвера БД (совместим с pg.Pool и PGlite). */
+/**
+ * Минимальный контракт драйвера БД (совместим с pg.Pool и PGlite).
+ * `transaction` опциональна: PGlite даёт её из коробки; для `pg.Pool` слой
+ * деплоя оборачивает connect/BEGIN/COMMIT/ROLLBACK/release, например:
+ *   transaction: async (fn) => { const c = await pool.connect(); try {
+ *     await c.query('begin'); const r = await fn(c); await c.query('commit'); return r
+ *   } catch (e) { await c.query('rollback'); throw e } finally { c.release() } }
+ * Без `transaction` запись неатомарна — допустимо только для тестов/демо.
+ */
 export interface Queryable {
   query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
+  transaction?<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
 }
 
 export interface PgStoreOptions {
@@ -37,6 +55,24 @@ export interface PgStoreOptions {
   portalId: number
   /** Группа опросов; по умолчанию авто-создаваемая «default» группа портала. */
   groupTitle?: string
+}
+
+/**
+ * Срез для SQL-агрегации. Поля company/category/responsible/product делают срез
+ * «чувствительным»: эффективный порог подавления не может опуститься ниже
+ * ANONYMITY_THRESHOLD (анонимность), `minN` может его только поднять.
+ */
+export interface AggregateFilter {
+  surveyKey: string
+  questionKey: string
+  companyId?: number
+  dealCategoryId?: number
+  responsibleId?: number
+  productId?: number
+  versionFrom?: number
+  versionTo?: number
+  /** Порог подавления; null-результат = «данных нет или срез подавлен». */
+  minN?: number
 }
 
 /** Дата из БД (Date или строка) → ISO-8601. `new Date()` принимает оба варианта. */
@@ -57,8 +93,21 @@ type ResponseRow = {
   context: unknown
 }
 
+type AnswerRow = {
+  response_id: string | number
+  question_key: string
+  metric: string
+  value_choice: string[] | null
+  value_number: string | number | null
+  value_text: string | null
+}
+
 const SELECT_RESPONSE = `select r.id, s.survey_key, r.version_no, r.submitted_at, r.context
    from response r join survey s on s.id = r.survey_id`
+
+const AGG_FROM = `from response_answer ra
+   join response r on r.id = ra.response_id
+   join survey s on s.id = r.survey_id`
 
 export class PgStore implements IStore {
   constructor(
@@ -66,36 +115,44 @@ export class PgStore implements IStore {
     private readonly opts: PgStoreOptions
   ) {}
 
-  private async ensureGroupId(): Promise<number> {
+  /** Транзакция, если драйвер умеет; иначе — последовательные запросы (см. Queryable). */
+  private inTx<T>(fn: (db: Queryable) => Promise<T>): Promise<T> {
+    return this.db.transaction ? this.db.transaction(fn) : fn(this.db)
+  }
+
+  /** Идемпотентно (ON CONFLICT): параллельный вызов не падает на гонке SELECT→INSERT. */
+  private async ensureGroupId(db: Queryable): Promise<number> {
     const title = this.opts.groupTitle ?? 'default'
-    const sel = await this.db.query<{ id: number }>(
+    const ins = await db.query<{ id: number }>(
+      `insert into survey_group (portal_id, title) values ($1, $2)
+       on conflict (portal_id, title) do nothing returning id`,
+      [this.opts.portalId, title]
+    )
+    if (ins.rows[0]) return ins.rows[0].id
+    const sel = await db.query<{ id: number }>(
       'select id from survey_group where portal_id = $1 and title = $2 limit 1',
       [this.opts.portalId, title]
     )
-    if (sel.rows[0]) return sel.rows[0].id
-    const ins = await this.db.query<{ id: number }>(
-      'insert into survey_group (portal_id, title) values ($1, $2) returning id',
-      [this.opts.portalId, title]
-    )
-    return ins.rows[0]!.id
+    return sel.rows[0]!.id
   }
 
-  private async ensureSurveyId(surveyKey: string, title: string, lang: string): Promise<number> {
-    const groupId = await this.ensureGroupId()
-    const sel = await this.db.query<{ id: number }>(
+  private async ensureSurveyId(db: Queryable, surveyKey: string, title: string, lang: string): Promise<number> {
+    const groupId = await this.ensureGroupId(db)
+    const ins = await db.query<{ id: number }>(
+      `insert into survey (group_id, survey_key, title, lang) values ($1, $2, $3, $4)
+       on conflict (group_id, survey_key) do nothing returning id`,
+      [groupId, surveyKey, title, lang]
+    )
+    if (ins.rows[0]) return ins.rows[0].id
+    const sel = await db.query<{ id: number }>(
       'select id from survey where group_id = $1 and survey_key = $2 limit 1',
       [groupId, surveyKey]
     )
-    if (sel.rows[0]) return sel.rows[0].id
-    const ins = await this.db.query<{ id: number }>(
-      'insert into survey (group_id, survey_key, title, lang) values ($1, $2, $3, $4) returning id',
-      [groupId, surveyKey, title, lang]
-    )
-    return ins.rows[0]!.id
+    return sel.rows[0]!.id
   }
 
-  private async surveyIdByKey(surveyKey: string): Promise<number | undefined> {
-    const r = await this.db.query<{ id: number }>(
+  private async surveyIdByKey(db: Queryable, surveyKey: string): Promise<number | undefined> {
+    const r = await db.query<{ id: number }>(
       `select s.id from survey s
        join survey_group g on g.id = s.group_id
        where g.portal_id = $1 and s.survey_key = $2 limit 1`,
@@ -106,26 +163,30 @@ export class PgStore implements IStore {
 
   async publish(draft: SurveyDraft, versionNo: number): Promise<CompiledVersion> {
     const version = compile(draft, versionNo)
-    const surveyId = await this.ensureSurveyId(version.surveyKey, version.title, version.lang)
-    const dup = await this.db.query(
-      'select 1 from survey_version where survey_id = $1 and version_no = $2',
-      [surveyId, versionNo]
-    )
-    if (dup.rows[0]) {
-      throw new Error(`Версия ${versionNo} опроса ${version.surveyKey} уже опубликована`)
-    }
-    await this.db.query(
-      `insert into survey_version (survey_id, version_no, status, compiled_schema, published_at)
-       values ($1, $2, 'published', $3, $4)`,
-      [surveyId, versionNo, JSON.stringify(version), version.compiledAt]
-    )
-    await this.db.query(
-      `update survey set current_version_id = (
-         select id from survey_version where survey_id = $1 order by version_no desc limit 1
-       ) where id = $1`,
-      [surveyId]
-    )
-    return version
+    return this.inTx(async (db) => {
+      const surveyId = await this.ensureSurveyId(db, version.surveyKey, version.title, version.lang)
+      const dup = await db.query(
+        'select 1 from survey_version where survey_id = $1 and version_no = $2',
+        [surveyId, versionNo]
+      )
+      if (dup.rows[0]) {
+        throw new Error(`Версия ${versionNo} опроса ${version.surveyKey} уже опубликована`)
+      }
+      await db.query(
+        `insert into survey_version (survey_id, version_no, status, compiled_schema, published_at)
+         values ($1, $2, 'published', $3, $4)`,
+        [surveyId, versionNo, JSON.stringify(version), version.compiledAt]
+      )
+      // current = max(version_no), а не «последняя вставленная»: публикация задним
+      // числом (v1 после v2) не должна откатывать пин текущей версии.
+      await db.query(
+        `update survey set current_version_id = (
+           select id from survey_version where survey_id = $1 order by version_no desc limit 1
+         ) where id = $1`,
+        [surveyId]
+      )
+      return version
+    })
   }
 
   async getVersion(surveyKey: string, versionNo: number): Promise<CompiledVersion | undefined> {
@@ -155,65 +216,99 @@ export class PgStore implements IStore {
 
   async addResponse(r: ResponseRecord): Promise<void> {
     const rec = responseRecordSchema.parse(r)
-    const surveyId = await this.surveyIdByKey(rec.surveyKey)
-    if (surveyId == null) throw new Error(`Опрос ${rec.surveyKey} не опубликован`)
-    const ver = await this.db.query<{ id: number }>(
-      'select id from survey_version where survey_id = $1 and version_no = $2 limit 1',
-      [surveyId, rec.versionNo]
-    )
-    const versionId = ver.rows[0]?.id
-    if (versionId == null) {
-      throw new Error(`Версия ${rec.versionNo} опроса ${rec.surveyKey} не найдена`)
-    }
-    const resp = await this.db.query<{ id: number }>(
-      `insert into response (portal_id, survey_id, survey_version_id, version_no, context, submitted_at)
-       values ($1, $2, $3, $4, $5, $6) returning id`,
-      [this.opts.portalId, surveyId, versionId, rec.versionNo, JSON.stringify(rec.context), rec.submittedAt]
-    )
-    const responseId = resp.rows[0]!.id
-    for (let i = 0; i < rec.answers.length; i++) {
-      const a = rec.answers[i]!
-      await this.db.query(
-        `insert into response_answer
-           (response_id, question_key, metric, value_choice, value_number, value_text, position)
-         values ($1, $2, $3, $4, $5, $6, $7)`,
-        [responseId, a.questionKey, a.metric, a.valueChoice, a.valueNumber, a.valueText, i]
+    await this.inTx(async (db) => {
+      const surveyId = await this.surveyIdByKey(db, rec.surveyKey)
+      if (surveyId == null) throw new Error(`Опрос ${rec.surveyKey} не опубликован`)
+      const ver = await db.query<{ id: number }>(
+        'select id from survey_version where survey_id = $1 and version_no = $2 limit 1',
+        [surveyId, rec.versionNo]
       )
-    }
+      const versionId = ver.rows[0]?.id
+      if (versionId == null) {
+        throw new Error(`Версия ${rec.versionNo} опроса ${rec.surveyKey} не найдена`)
+      }
+      const c = rec.context
+      const resp = await db.query<{ id: number }>(
+        `insert into response
+           (portal_id, survey_id, survey_version_id, version_no, deal_id, deal_category_id,
+            company_id, contact_id, responsible_id, context, submitted_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
+        [
+          this.opts.portalId, surveyId, versionId, rec.versionNo,
+          c.dealId ?? null, c.dealCategoryId ?? null, c.companyId ?? null,
+          c.contactId ?? null, c.responsibleId ?? null, JSON.stringify(c), rec.submittedAt
+        ]
+      )
+      const responseId = resp.rows[0]!.id
+
+      if (rec.answers.length > 0) {
+        // Один multi-VALUES INSERT вместо запроса на каждый ответ (анкета ≤ 200 вопросов).
+        const values: string[] = []
+        const params: unknown[] = []
+        rec.answers.forEach((a, i) => {
+          const o = params.length
+          values.push(`($${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6}, $${o + 7})`)
+          params.push(responseId, a.questionKey, a.metric, a.valueChoice, a.valueNumber, a.valueText, i)
+        })
+        await db.query(
+          `insert into response_answer
+             (response_id, question_key, metric, value_choice, value_number, value_text, position)
+           values ${values.join(', ')}`,
+          params
+        )
+      }
+
+      const products = c.products ?? []
+      if (products.length > 0) {
+        const values: string[] = []
+        const params: unknown[] = []
+        for (const p of products) {
+          const o = params.length
+          values.push(`($${o + 1}, $${o + 2}, $${o + 3}, $${o + 4})`)
+          params.push(responseId, p.productId, p.productName ?? null, p.serviceTag ?? null)
+        }
+        await db.query(
+          `insert into response_product (response_id, product_id, product_name, service_tag)
+           values ${values.join(', ')} on conflict do nothing`,
+          params
+        )
+      }
+    })
   }
 
+  /** Догружает ответы одним запросом (`= ANY`), без N+1 по строкам страницы. */
   private async hydrate(rows: ResponseRow[]): Promise<ResponseRecord[]> {
-    const out: ResponseRecord[] = []
-    for (const row of rows) {
-      const ans = await this.db.query<{
-        question_key: string
-        metric: string
-        value_choice: string[] | null
-        value_number: string | number | null
-        value_text: string | null
-      }>(
-        `select question_key, metric, value_choice, value_number, value_text
-         from response_answer where response_id = $1 order by position asc, id asc`,
-        [row.id]
-      )
-      out.push(
-        responseRecordSchema.parse({
-          id: String(row.id),
-          surveyKey: row.survey_key,
-          versionNo: row.version_no,
-          submittedAt: toIso(row.submitted_at),
-          context: row.context ?? {},
-          answers: ans.rows.map((a) => ({
-            questionKey: a.question_key,
-            metric: a.metric,
-            valueChoice: a.value_choice ?? [],
-            valueNumber: toNum(a.value_number),
-            valueText: a.value_text
-          }))
-        })
-      )
+    if (rows.length === 0) return []
+    const ids = rows.map((r) => String(r.id))
+    const ans = await this.db.query<AnswerRow>(
+      `select response_id, question_key, metric, value_choice, value_number, value_text
+       from response_answer where response_id = any($1::bigint[])
+       order by position asc, id asc`,
+      [ids]
+    )
+    const byResponse = new Map<string, AnswerRow[]>()
+    for (const a of ans.rows) {
+      const key = String(a.response_id)
+      const arr = byResponse.get(key)
+      if (arr) arr.push(a)
+      else byResponse.set(key, [a])
     }
-    return out
+    return rows.map((row) =>
+      responseRecordSchema.parse({
+        id: String(row.id),
+        surveyKey: row.survey_key,
+        versionNo: row.version_no,
+        submittedAt: toIso(row.submitted_at),
+        context: row.context ?? {},
+        answers: (byResponse.get(String(row.id)) ?? []).map((a) => ({
+          questionKey: a.question_key,
+          metric: a.metric,
+          valueChoice: a.value_choice ?? [],
+          valueNumber: toNum(a.value_number),
+          valueText: a.value_text
+        }))
+      })
+    )
   }
 
   async listResponses(surveyKey?: string): Promise<ResponseRecord[]> {
@@ -252,5 +347,93 @@ export class PgStore implements IStore {
         ? encodeCursor({ submittedAt: toIso(last.submitted_at), id: String(last.id) })
         : undefined
     return { items, nextCursor }
+  }
+
+  // ── SQL-агрегация (read-API #7): метрики считает БД, ответы в память не грузятся ──
+
+  /** WHERE среза + эффективный порог подавления (см. AggregateFilter). */
+  private slice(f: AggregateFilter): { where: string; params: unknown[]; minN: number } {
+    const conds = ['r.portal_id = $1', 's.survey_key = $2', 'ra.question_key = $3']
+    const params: unknown[] = [this.opts.portalId, f.surveyKey, f.questionKey]
+    const add = (sql: string, v: unknown): void => {
+      params.push(v)
+      conds.push(sql.replace('?', `$${params.length}`))
+    }
+    if (f.companyId != null) add('r.company_id = ?', f.companyId)
+    if (f.dealCategoryId != null) add('r.deal_category_id = ?', f.dealCategoryId)
+    if (f.responsibleId != null) add('r.responsible_id = ?', f.responsibleId)
+    if (f.productId != null) {
+      add('exists (select 1 from response_product rp where rp.response_id = r.id and rp.product_id = ?)', f.productId)
+    }
+    if (f.versionFrom != null) add('r.version_no >= ?', f.versionFrom)
+    if (f.versionTo != null) add('r.version_no <= ?', f.versionTo)
+    const sensitive =
+      f.companyId != null || f.dealCategoryId != null || f.responsibleId != null || f.productId != null
+    const minN = sensitive ? Math.max(f.minN ?? ANONYMITY_THRESHOLD, ANONYMITY_THRESHOLD) : (f.minN ?? 1)
+    return { where: conds.join(' and '), params, minN }
+  }
+
+  /**
+   * NPS по срезу (SQL). Границы как в domain/metrics: промоутеры ≥9, детракторы ≤6,
+   * пассивы — остальное. `null` — данных нет или срез подавлен (n < порога).
+   */
+  async aggregateNps(f: AggregateFilter): Promise<NpsSummary | null> {
+    const { where, params, minN } = this.slice(f)
+    const r = await this.db.query<{ n: number; promoters: number; detractors: number }>(
+      `select count(*)::int as n,
+              count(*) filter (where ra.value_number >= 9)::int as promoters,
+              count(*) filter (where ra.value_number <= 6)::int as detractors
+       ${AGG_FROM}
+       where ${where} and ra.value_number is not null`,
+      params
+    )
+    const row = r.rows[0]!
+    if (!meetsAnonymity(row.n, minN)) return null
+    const passives = row.n - row.promoters - row.detractors
+    return {
+      n: row.n,
+      promoters: row.promoters,
+      passives,
+      detractors: row.detractors,
+      nps: round1(((row.promoters - row.detractors) / row.n) * 100)
+    }
+  }
+
+  /** CSAT по срезу (SQL): среднее + топ-бокс (по умолчанию ≥4). `null` — нет данных/подавлено. */
+  async aggregateCsat(f: AggregateFilter, opts: { topBoxMin?: number } = {}): Promise<CsatSummary | null> {
+    const { where, params, minN } = this.slice(f)
+    params.push(opts.topBoxMin ?? 4)
+    const r = await this.db.query<{ n: number; mean: string | number | null; top: number }>(
+      `select count(*)::int as n,
+              avg(ra.value_number) as mean,
+              count(*) filter (where ra.value_number >= $${params.length})::int as top
+       ${AGG_FROM}
+       where ${where} and ra.value_number is not null`,
+      params
+    )
+    const row = r.rows[0]!
+    if (!meetsAnonymity(row.n, minN)) return null
+    // после проверки порога n ≥ 1 → avg по непустой выборке не бывает NULL
+    return { n: row.n, mean: round2(Number(row.mean)), topBoxPct: round1((row.top / row.n) * 100) }
+  }
+
+  /** Распределение option_key по срезу (SQL, unnest). `null` — нет данных/подавлено. */
+  async aggregateDistribution(f: AggregateFilter): Promise<Record<string, number> | null> {
+    const { where, params, minN } = this.slice(f)
+    const nq = await this.db.query<{ n: number }>(
+      `select count(*)::int as n ${AGG_FROM} where ${where} and cardinality(ra.value_choice) > 0`,
+      params
+    )
+    const n = nq.rows[0]!.n
+    if (!meetsAnonymity(n, minN)) return null
+    const r = await this.db.query<{ k: string; c: number }>(
+      `select k, count(*)::int as c
+       from (select unnest(ra.value_choice) as k ${AGG_FROM} where ${where}) t
+       group by k`,
+      params
+    )
+    const out: Record<string, number> = {}
+    for (const row of r.rows) out[row.k] = row.c
+    return out
   }
 }

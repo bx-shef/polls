@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { PgStore, type Queryable } from '../src/store/pg'
-import { npsFor } from '../src/domain/aggregate'
-import { draftV1, draftV2, SURVEY_KEY } from '../src/demo/seed'
+import { byCategory, byCompany, byProduct, byVersionRange, csatFor, distributionFor, npsFor } from '../src/domain/aggregate'
+import { buildDemo, draftV1, draftV2, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
 
 // Реальная схема в pglite (Postgres в WASM, in-process) — тесты идут и локально, и в CI без docker.
@@ -26,7 +26,7 @@ function sampleResponse(over: Partial<ResponseRecord> = {}): ResponseRecord {
     versionNo: 1,
     submittedAt: '2026-04-03T10:00:00.000Z',
     context: {
-      dealId: 5001, companyId: 101, dealCategoryId: 1, responsibleId: 11,
+      dealId: 5001, companyId: 101, dealCategoryId: 1, contactId: 777, responsibleId: 11,
       products: [{ productId: 1001, productName: 'Внедрение' }]
     },
     answers: [
@@ -101,7 +101,8 @@ describe('PgStore (pglite)', () => {
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA, groupTitle: 'HR-опросы' })
     await store.publish(draftV1(), 1)
-    await store.addResponse(sampleResponse({ id: 'np', context: { companyId: 102, responsibleId: 12 } }))
+    // пустой контекст: все денормализуемые поля NULL, продуктов нет
+    await store.addResponse(sampleResponse({ id: 'np', context: {} }))
     const list = await store.listResponses()
     expect(list).toHaveLength(1)
     expect(list[0]!.context.products).toBeUndefined()
@@ -207,5 +208,111 @@ describe('PgStore (pglite)', () => {
     await expect(store.addResponse(sampleResponse())).rejects.toThrow(/не опубликован/)
     await store.publish(draftV1(), 1)
     await expect(store.addResponse(sampleResponse({ versionNo: 5 }))).rejects.toThrow(/не найдена/)
+  })
+})
+
+/** Обёртка с инъекцией сбоя: запрос, совпавший с failOn, падает (для проверки отката). */
+function withFault(db: Queryable, failOn: RegExp): Queryable {
+  const wrapped: Queryable = {
+    query: (sql, params) =>
+      failOn.test(sql) ? Promise.reject(new Error('fault: injected')) : db.query(sql, params)
+  }
+  if (db.transaction) {
+    wrapped.transaction = (fn) => db.transaction!((tx) => fn(withFault(tx, failOn)))
+  }
+  return wrapped
+}
+
+describe('PgStore — транзакции и идемпотентный ensure', () => {
+  it('сбой на вставке ответов откатывает response целиком (transaction)', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(withFault(db, /insert into response_answer/), { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await expect(store.addResponse(sampleResponse())).rejects.toThrow(/fault/)
+    const n = await db.query<{ n: number }>('select count(*)::int as n from response')
+    expect(n.rows[0]!.n).toBe(0) // откатился и response, и его ответы
+  })
+
+  it('драйвер без transaction: fallback работает (неатомарно — только тесты/демо)', async () => {
+    const { db, portalA } = await fresh()
+    const queryOnly: Queryable = { query: (sql, params) => db.query(sql, params) }
+    const store = new PgStore(queryOnly, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await store.addResponse(sampleResponse())
+    expect(await store.listResponses()).toHaveLength(1)
+  })
+
+  it('ensure идемпотентен (ON CONFLICT): повторные publish не плодят группы/опросы', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await store.publish(draftV2(), 2)
+    const g = await db.query<{ n: number }>('select count(*)::int as n from survey_group')
+    const s = await db.query<{ n: number }>('select count(*)::int as n from survey')
+    expect(g.rows[0]!.n).toBe(1)
+    expect(s.rows[0]!.n).toBe(1)
+  })
+})
+
+describe('PgStore — денормализация контекста', () => {
+  it('addResponse заполняет индексируемые колонки и response_product', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await store.addResponse(sampleResponse())
+    const r = await db.query<{ deal_id: number; company_id: number; deal_category_id: number; contact_id: number; responsible_id: number }>(
+      'select deal_id::int, company_id::int, deal_category_id::int, contact_id::int, responsible_id::int from response'
+    )
+    expect(r.rows[0]).toEqual({ deal_id: 5001, company_id: 101, deal_category_id: 1, contact_id: 777, responsible_id: 11 })
+    const p = await db.query<{ product_id: number; product_name: string }>(
+      'select product_id::int, product_name from response_product'
+    )
+    expect(p.rows).toEqual([{ product_id: 1001, product_name: 'Внедрение' }])
+  })
+})
+
+describe('PgStore — SQL-агрегация (паритет с in-memory на демо-данных)', () => {
+  let store: PgStore
+  let all: Awaited<ReturnType<PgStore['listResponses']>>
+
+  beforeAll(async () => {
+    const { db, portalA } = await fresh()
+    store = await buildDemo(new PgStore(db, { portalId: portalA }))
+    all = await store.listResponses()
+  })
+
+  it('NPS: опрос, компания, товар, направление, диапазон версий', async () => {
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q }))
+      .toEqual(npsFor(all, NPS_Q))
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 101 }))
+      .toEqual(npsFor(byCompany(all, 101), NPS_Q))
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, productId: 1001 }))
+      .toEqual(npsFor(byProduct(all, 1001), NPS_Q))
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, dealCategoryId: 1 }))
+      .toEqual(npsFor(byCategory(all, 1), NPS_Q))
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, versionFrom: 1, versionTo: 1 }))
+      .toEqual(npsFor(byVersionRange(all, 1, 1), NPS_Q))
+  })
+
+  it('CSAT (вкл. topBoxMin) и распределение совпадают с in-memory', async () => {
+    expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q }))
+      .toEqual(csatFor(all, CSAT_Q))
+    expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q }, { topBoxMin: 5 }))
+      .toEqual(csatFor(all, CSAT_Q, { topBoxMin: 5 }))
+    expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: LIKED_Q }))
+      .toEqual(distributionFor(all, LIKED_Q))
+  })
+
+  it('принудительное подавление малых N на чувствительных срезах', async () => {
+    // responsibleId 12: n=4 < ANONYMITY_THRESHOLD → подавлено даже при minN=1 (нельзя опустить)
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, responsibleId: 12 })).toBeNull()
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, responsibleId: 12, minN: 1 })).toBeNull()
+    expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: LIKED_Q, responsibleId: 12 })).toBeNull()
+    // company 101: n=6 ≥ 5 → видим; поднятый minN=7 подавляет
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 101 })).not.toBeNull()
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 101, minN: 7 })).toBeNull()
+    // пустой срез: n=0 → null
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 999 })).toBeNull()
+    expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q, companyId: 999 })).toBeNull()
   })
 })

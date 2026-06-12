@@ -12,9 +12,9 @@ export const ANONYMITY_THRESHOLD = 5
 /**
  * Достаточна ли выборка, чтобы показать срез без риска деанонимизации.
  * ВНИМАНИЕ: фильтры и метрики ниже — «сырые» building-blocks и НЕ подавляют
- * малые N сами по себе. Принудительное подавление на срезах (компания/продукт/
- * направление), пагинация и tenant-изоляция (portalId) — ответственность слоя
- * чтения/дашборда (PgStore + read-API, ISSUE #7).
+ * малые N сами по себе. Принудительное подавление на чувствительных срезах
+ * реализует слой чтения: PgStore.aggregateNps/Csat/Distribution (использует
+ * этот helper); для in-memory пути вызывайте meetsAnonymity сами.
  */
 export function meetsAnonymity(n: number, threshold: number = ANONYMITY_THRESHOLD): boolean {
   return n >= threshold

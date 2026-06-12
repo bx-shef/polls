@@ -28,7 +28,9 @@ create table if not exists survey_group (
   title          text not null,
   visibility     text not null default 'private' check (visibility in ('private', 'department', 'portal')),
   visibility_ref bigint,
-  created_at     timestamptz not null default now()
+  created_at     timestamptz not null default now(),
+  -- идемпотентный ensure-паттерн PgStore (INSERT ... ON CONFLICT)
+  unique (portal_id, title)
 );
 
 -- ── Опрос (логический; стабильный survey_key) ──

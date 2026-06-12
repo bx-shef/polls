@@ -489,7 +489,8 @@ group by opt order by 2 desc;
 | Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |
 | Порог анонимности `N`: `ANONYMITY_THRESHOLD` + `meetsAnonymity` (в KPI применён; подавление на остальных срезах — read-API) | Фаза 1 / Деплой | ✅ / 🔶 |
 | `PgStore` (CRUD + tenant-изоляция `portalId`) — на pglite-тестах | Фаза 2 | ✅ |
-| Read-API расширения: SQL-агрегация, подавление малых N на срезах, денормализация контекста, транзакции (keyset-пагинация ✅) | Деплой | 🔶 [#7](https://github.com/bx-shef/polls/issues/7) |
+| Read-API: keyset-пагинация, SQL-агрегация + принудительное подавление малых N, денормализация, транзакции, идемпотентный ensure | Фаза 3 | ✅ |
+| Read-API остаток: идемпотентность `addResponse` (с #4), PII-редакция на HTTP-слое, SQL-вариант `npsTrend` | Деплой | 🔶 [#7](https://github.com/bx-shef/polls/issues/7) |
 | CHECK-ограничения и лимиты длины в схеме БД | Фаза 1 | ✅ |
 | Границы payload в zod (`.max`) | Фаза 1 | ✅ |
 

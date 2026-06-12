@@ -1,5 +1,6 @@
 import { buildResponseAnswers } from '../domain/answers'
 import { MemoryStore } from '../store/memory'
+import type { IStore } from '../store/types'
 import type { Option, RawAnswer, SurveyDraft } from '../domain/schema'
 
 /**
@@ -109,8 +110,10 @@ function rawFor(e: SeedEntry): Record<string, RawAnswer> {
 }
 
 /** Строит хранилище с двумя версиями и сидовыми ответами через реальный пайплайн. */
-export async function buildDemo(): Promise<MemoryStore> {
-  const store = new MemoryStore()
+export async function buildDemo(): Promise<MemoryStore>
+/** То же, но в переданный стор (напр. PgStore) — для паритет-тестов реализаций. */
+export async function buildDemo<T extends IStore>(store: T): Promise<T>
+export async function buildDemo(store: IStore = new MemoryStore()): Promise<IStore> {
   await store.publish(draftV1(), 1)
   await store.publish(draftV2(), 2)
 
