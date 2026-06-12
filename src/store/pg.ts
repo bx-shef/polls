@@ -32,22 +32,56 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type 
  *   загрузки ответов в память) и ПРИНУДИТЕЛЬНО подавляют малые выборки на
  *   чувствительных срезах; PII (contactId) в агрегатах не участвует.
  *
- * Остаётся (#4/#7): идемпотентность addResponse (по invitation), PII-редакция
- * на HTTP-слое, SQL-вариант npsTrend.
+ * Остаётся (#3/#4/#7): идемпотентность addResponse и связь invitation_id (когда
+ * появится invitation-flow), PII-редакция/erasure на HTTP-слое, SQL-вариант npsTrend.
  */
 
 /**
  * Минимальный контракт драйвера БД (совместим с pg.Pool и PGlite).
- * `transaction` опциональна: PGlite даёт её из коробки; для `pg.Pool` слой
- * деплоя оборачивает connect/BEGIN/COMMIT/ROLLBACK/release, например:
- *   transaction: async (fn) => { const c = await pool.connect(); try {
- *     await c.query('begin'); const r = await fn(c); await c.query('commit'); return r
- *   } catch (e) { await c.query('rollback'); throw e } finally { c.release() } }
- * Без `transaction` запись неатомарна — допустимо только для тестов/демо.
+ * `transaction` опциональна: PGlite даёт её из коробки; для `pg.Pool` используйте
+ * фабрику {@link queryableFromPool} — она строит корректный транзакционный
+ * адаптер. Без `transaction` запись неатомарна — допустимо только для тестов/демо
+ * (в проде включайте `requireTransaction` в PgStoreOptions).
  */
 export interface Queryable {
   query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
   transaction?<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
+}
+
+/** Структурный минимум pg.Pool (ядро не тянет зависимость `pg`). */
+export interface PoolLike {
+  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
+  connect(): Promise<{
+    query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
+    release(): void
+  }>
+}
+
+/**
+ * Фабрика Queryable из `pg.Pool`: транзакция = выделенный клиент +
+ * BEGIN/COMMIT/ROLLBACK/release. Используйте дефолтный уровень изоляции
+ * (READ COMMITTED) — ensure-паттерн «ON CONFLICT + SELECT» на него рассчитан.
+ */
+export function queryableFromPool(pool: PoolLike): Queryable {
+  return {
+    query: (sql, params) => pool.query(sql, params),
+    transaction: async (fn) => {
+      const c = await pool.connect()
+      let committed = false
+      try {
+        await c.query('begin')
+        const result = await fn({ query: (sql, params) => c.query(sql, params) })
+        await c.query('commit')
+        committed = true
+        return result
+      } finally {
+        // rollback «тихий»: его сбой (умершее соединение) не маскирует исходную
+        // ошибку fn; release возвращает клиента пулу в любом случае.
+        if (!committed) await c.query('rollback').catch(() => undefined)
+        c.release()
+      }
+    }
+  }
 }
 
 export interface PgStoreOptions {
@@ -55,12 +89,20 @@ export interface PgStoreOptions {
   portalId: number
   /** Группа опросов; по умолчанию авто-создаваемая «default» группа портала. */
   groupTitle?: string
+  /**
+   * Прод-режим: упасть на старте, если драйвер не поддерживает транзакции
+   * (страховка от тихой неатомарной записи при «голом» pg.Pool без адаптера).
+   */
+  requireTransaction?: boolean
 }
 
 /**
- * Срез для SQL-агрегации. Поля company/category/responsible/product делают срез
- * «чувствительным»: эффективный порог подавления не может опуститься ниже
+ * Срез для SQL-агрегации. Поля company/category/responsible/product/deal делают
+ * срез «чувствительным»: эффективный порог подавления не может опуститься ниже
  * ANONYMITY_THRESHOLD (анонимность), `minN` может его только поднять.
+ * `versionFrom`/`versionTo` чувствительными НЕ считаются (легитимное сравнение
+ * версий) — при узких версионных окнах вызывающий сам отвечает за анонимность
+ * (передавайте `minN` ≥ ANONYMITY_THRESHOLD).
  */
 export interface AggregateFilter {
   surveyKey: string
@@ -69,9 +111,14 @@ export interface AggregateFilter {
   dealCategoryId?: number
   responsibleId?: number
   productId?: number
+  dealId?: number
   versionFrom?: number
   versionTo?: number
-  /** Порог подавления; null-результат = «данных нет или срез подавлен». */
+  /**
+   * Порог подавления; null-результат = «данных нет или срез подавлен».
+   * Дефолт: 1 на нечувствительных срезах (подавления нет), ANONYMITY_THRESHOLD
+   * на чувствительных (опустить ниже нельзя).
+   */
   minN?: number
 }
 
@@ -113,24 +160,32 @@ export class PgStore implements IStore {
   constructor(
     private readonly db: Queryable,
     private readonly opts: PgStoreOptions
-  ) {}
+  ) {
+    if (opts.requireTransaction && !db.transaction) {
+      throw new Error('PgStore: драйвер без transaction — оберните pg.Pool через queryableFromPool()')
+    }
+  }
 
   /** Транзакция, если драйвер умеет; иначе — последовательные запросы (см. Queryable). */
   private inTx<T>(fn: (db: Queryable) => Promise<T>): Promise<T> {
     return this.db.transaction ? this.db.transaction(fn) : fn(this.db)
   }
 
-  /** Идемпотентно (ON CONFLICT): параллельный вызов не падает на гонке SELECT→INSERT. */
+  /**
+   * Идемпотентно (ON CONFLICT): параллельный вызов не падает на гонке SELECT→INSERT.
+   * Системная группа — без владельца; предикат соответствует частичному индексу
+   * uq_survey_group_default (пользовательские группы могут совпадать по названию).
+   */
   private async ensureGroupId(db: Queryable): Promise<number> {
     const title = this.opts.groupTitle ?? 'default'
     const ins = await db.query<{ id: number }>(
       `insert into survey_group (portal_id, title) values ($1, $2)
-       on conflict (portal_id, title) do nothing returning id`,
+       on conflict (portal_id, title) where owner_user_id is null do nothing returning id`,
       [this.opts.portalId, title]
     )
     if (ins.rows[0]) return ins.rows[0].id
     const sel = await db.query<{ id: number }>(
-      'select id from survey_group where portal_id = $1 and title = $2 limit 1',
+      'select id from survey_group where portal_id = $1 and title = $2 and owner_user_id is null limit 1',
       [this.opts.portalId, title]
     )
     return sel.rows[0]!.id
@@ -269,7 +324,7 @@ export class PgStore implements IStore {
         }
         await db.query(
           `insert into response_product (response_id, product_id, product_name, service_tag)
-           values ${values.join(', ')} on conflict do nothing`,
+           values ${values.join(', ')} on conflict (response_id, product_id) do nothing`,
           params
         )
       }
@@ -280,11 +335,15 @@ export class PgStore implements IStore {
   private async hydrate(rows: ResponseRow[]): Promise<ResponseRecord[]> {
     if (rows.length === 0) return []
     const ids = rows.map((r) => String(r.id))
+    // join по porталу — защитный (ids уже tenant-фильтрованы выше): свойство
+    // изоляции переживёт будущий рефакторинг с иным источником ids.
     const ans = await this.db.query<AnswerRow>(
-      `select response_id, question_key, metric, value_choice, value_number, value_text
-       from response_answer where response_id = any($1::bigint[])
-       order by position asc, id asc`,
-      [ids]
+      `select ra.response_id, ra.question_key, ra.metric, ra.value_choice, ra.value_number, ra.value_text
+       from response_answer ra
+       join response r on r.id = ra.response_id and r.portal_id = $2
+       where ra.response_id = any($1::bigint[])
+       order by ra.position asc, ra.id asc`,
+      [ids, this.opts.portalId]
     )
     const byResponse = new Map<string, AnswerRow[]>()
     for (const a of ans.rows) {
@@ -355,6 +414,7 @@ export class PgStore implements IStore {
   private slice(f: AggregateFilter): { where: string; params: unknown[]; minN: number } {
     const conds = ['r.portal_id = $1', 's.survey_key = $2', 'ra.question_key = $3']
     const params: unknown[] = [this.opts.portalId, f.surveyKey, f.questionKey]
+    // Инвариант: шаблон содержит РОВНО один `?` (replace заменяет только первое вхождение).
     const add = (sql: string, v: unknown): void => {
       params.push(v)
       conds.push(sql.replace('?', `$${params.length}`))
@@ -365,10 +425,12 @@ export class PgStore implements IStore {
     if (f.productId != null) {
       add('exists (select 1 from response_product rp where rp.response_id = r.id and rp.product_id = ?)', f.productId)
     }
+    if (f.dealId != null) add('r.deal_id = ?', f.dealId)
     if (f.versionFrom != null) add('r.version_no >= ?', f.versionFrom)
     if (f.versionTo != null) add('r.version_no <= ?', f.versionTo)
     const sensitive =
-      f.companyId != null || f.dealCategoryId != null || f.responsibleId != null || f.productId != null
+      f.companyId != null || f.dealCategoryId != null || f.responsibleId != null ||
+      f.productId != null || f.dealId != null
     const minN = sensitive ? Math.max(f.minN ?? ANONYMITY_THRESHOLD, ANONYMITY_THRESHOLD) : (f.minN ?? 1)
     return { where: conds.join(' and '), params, minN }
   }
@@ -417,21 +479,25 @@ export class PgStore implements IStore {
     return { n: row.n, mean: round2(Number(row.mean)), topBoxPct: round1((row.top / row.n) * 100) }
   }
 
-  /** Распределение option_key по срезу (SQL, unnest). `null` — нет данных/подавлено. */
+  /**
+   * Распределение option_key по срезу (SQL, unnest). `null` — нет данных/подавлено.
+   * Порог (n ответов) и распределение считаются ОДНИМ statement'ом — один снапшот,
+   * без гонки между проверкой подавления и выборкой при конкурентной записи.
+   */
   async aggregateDistribution(f: AggregateFilter): Promise<Record<string, number> | null> {
     const { where, params, minN } = this.slice(f)
-    const nq = await this.db.query<{ n: number }>(
-      `select count(*)::int as n ${AGG_FROM} where ${where} and cardinality(ra.value_choice) > 0`,
+    const r = await this.db.query<{ n: number; k: string; c: number }>(
+      `with src as (
+         select ra.value_choice ${AGG_FROM}
+         where ${where} and cardinality(ra.value_choice) > 0
+       )
+       select (select count(*)::int from src) as n, t.k, count(*)::int as c
+       from (select unnest(value_choice) as k from src) t
+       group by t.k`,
       params
     )
-    const n = nq.rows[0]!.n
+    const n = r.rows[0]?.n ?? 0
     if (!meetsAnonymity(n, minN)) return null
-    const r = await this.db.query<{ k: string; c: number }>(
-      `select k, count(*)::int as c
-       from (select unnest(ra.value_choice) as k ${AGG_FROM} where ${where}) t
-       group by k`,
-      params
-    )
     const out: Record<string, number> = {}
     for (const row of r.rows) out[row.k] = row.c
     return out

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
-import { PgStore, type Queryable } from '../src/store/pg'
+import { PgStore, queryableFromPool, type PoolLike, type Queryable } from '../src/store/pg'
 import { byCategory, byCompany, byProduct, byVersionRange, csatFor, distributionFor, npsFor } from '../src/domain/aggregate'
 import { buildDemo, draftV1, draftV2, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
@@ -10,13 +10,30 @@ import type { ResponseRecord } from '../src/domain/schema'
 // Реальная схема в pglite (Postgres в WASM, in-process) — тесты идут и локально, и в CI без docker.
 const migration = readFileSync(fileURLToPath(new URL('../migrations/0001_init.sql', import.meta.url)), 'utf8')
 
+// Один общий PGlite на файл (WASM-инициализация дорогая, ~2с). Изоляция тестов —
+// отдельными порталами (tenant): ровно та гарантия, которую PgStore и обещает.
+let pglite: PGlite
+let db: Queryable
+beforeAll(async () => {
+  pglite = new PGlite()
+  await pglite.exec(migration)
+  db = pglite as unknown as Queryable
+})
+afterAll(async () => {
+  await pglite.close()
+})
+
+let portalSeq = 0
 async function fresh(): Promise<{ db: Queryable; portalA: number; portalB: number }> {
-  const pg = new PGlite()
-  await pg.exec(migration)
-  const db = pg as unknown as Queryable
-  const a = await db.query<{ id: number }>("insert into portal (member_id, domain, tokens) values ('mA','a.b24','{}'::jsonb) returning id")
-  const b = await db.query<{ id: number }>("insert into portal (member_id, domain, tokens) values ('mB','b.b24','{}'::jsonb) returning id")
-  return { db, portalA: a.rows[0]!.id, portalB: b.rows[0]!.id }
+  const mk = async (): Promise<number> => {
+    const seq = ++portalSeq
+    const r = await db.query<{ id: number }>(
+      'insert into portal (member_id, domain, tokens) values ($1, $2, $3::jsonb) returning id',
+      [`m${seq}`, `p${seq}.b24`, '{}']
+    )
+    return r.rows[0]!.id
+  }
+  return { db, portalA: await mk(), portalB: await mk() }
 }
 
 function sampleResponse(over: Partial<ResponseRecord> = {}): ResponseRecord {
@@ -229,26 +246,98 @@ describe('PgStore — транзакции и идемпотентный ensure'
     const store = new PgStore(withFault(db, /insert into response_answer/), { portalId: portalA })
     await store.publish(draftV1(), 1)
     await expect(store.addResponse(sampleResponse())).rejects.toThrow(/fault/)
-    const n = await db.query<{ n: number }>('select count(*)::int as n from response')
+    const n = await db.query<{ n: number }>('select count(*)::int as n from response where portal_id = $1', [portalA])
     expect(n.rows[0]!.n).toBe(0) // откатился и response, и его ответы
   })
 
-  it('драйвер без transaction: fallback работает (неатомарно — только тесты/демо)', async () => {
+  it('драйвер без transaction: fallback работает, но запись неатомарна (partial write)', async () => {
     const { db, portalA } = await fresh()
     const queryOnly: Queryable = { query: (sql, params) => db.query(sql, params) }
     const store = new PgStore(queryOnly, { portalId: portalA })
     await store.publish(draftV1(), 1)
     await store.addResponse(sampleResponse())
     expect(await store.listResponses()).toHaveLength(1)
+
+    // Контракт fallback'а: сбой после INSERT response оставляет «пустой» ответ —
+    // именно поэтому прод обязан использовать transaction (см. requireTransaction).
+    const faulty = new PgStore(withFault(queryOnly, /insert into response_answer/), { portalId: portalA })
+    await expect(faulty.addResponse(sampleResponse({ submittedAt: '2026-04-04T10:00:00.000Z' }))).rejects.toThrow(/fault/)
+    const r = await db.query<{ n: number }>('select count(*)::int as n from response where portal_id = $1', [portalA])
+    const a = await db.query<{ n: number }>(
+      'select count(*)::int as n from response_answer ra join response r on r.id = ra.response_id where r.portal_id = $1',
+      [portalA]
+    )
+    expect(r.rows[0]!.n).toBe(2) // второй (оборванный) response остался
+    expect(a.rows[0]!.n).toBe(2) // а его ответов нет (только 2 от первого)
+  })
+
+  it('requireTransaction: прод-guard падает на драйвере без transaction', async () => {
+    const { db, portalA } = await fresh()
+    const queryOnly: Queryable = { query: (sql, params) => db.query(sql, params) }
+    expect(() => new PgStore(queryOnly, { portalId: portalA, requireTransaction: true }))
+      .toThrow(/queryableFromPool/)
+    // с транзакционным драйвером guard проходит
+    expect(() => new PgStore(db, { portalId: portalA, requireTransaction: true })).not.toThrow()
+  })
+
+  it('queryableFromPool: транзакция коммитится, при ошибке откатывается, клиент освобождается', async () => {
+    const { db, portalA } = await fresh()
+    let released = 0
+    const pool: PoolLike = {
+      query: (sql, params) => db.query(sql, params),
+      connect: async () => ({
+        query: (sql, params) => db.query(sql, params),
+        release: () => {
+          released++
+        }
+      })
+    }
+    const store = new PgStore(queryableFromPool(pool), { portalId: portalA, requireTransaction: true })
+    await store.publish(draftV1(), 1)
+    await store.addResponse(sampleResponse())
+    expect(await store.listResponses()).toHaveLength(1)
+
+    const faulty = new PgStore(withFault(queryableFromPool(pool), /insert into response_answer/), { portalId: portalA })
+    await expect(faulty.addResponse(sampleResponse({ submittedAt: '2026-04-05T10:00:00.000Z' }))).rejects.toThrow(/fault/)
+    const n = await db.query<{ n: number }>('select count(*)::int as n from response where portal_id = $1', [portalA])
+    expect(n.rows[0]!.n).toBe(1) // оборванный ответ откатился BEGIN/ROLLBACK'ом фабрики
+    expect(released).toBeGreaterThanOrEqual(3) // publish + addResponse + откат: клиент всегда возвращён
+  })
+
+  it('queryableFromPool: сбой rollback НЕ маскирует исходную ошибку fn', async () => {
+    let released = 0
+    const pool: PoolLike = {
+      query: (sql, params) => db.query(sql, params),
+      connect: async () => ({
+        query: (sql, params) =>
+          /^rollback$/.test(sql) ? Promise.reject(new Error('rollback failed')) : db.query(sql, params),
+        release: () => {
+          released++
+        }
+      })
+    }
+    const q = queryableFromPool(pool)
+    await expect(
+      q.transaction!(async () => {
+        throw new Error('исходная ошибка fn')
+      })
+    ).rejects.toThrow(/исходная ошибка fn/) // не «rollback failed»
+    expect(released).toBe(1)
+    await db.query('rollback') // зачистка: begin прошёл, rollback мы сымитировали упавшим
   })
 
   it('ensure идемпотентен (ON CONFLICT): повторные publish не плодят группы/опросы', async () => {
+    // PGlite однопоточен — конкурентную гонку не воспроизвести; проверяем
+    // последовательную идемпотентность (конфликтная ветка INSERT → SELECT).
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA })
     await store.publish(draftV1(), 1)
     await store.publish(draftV2(), 2)
-    const g = await db.query<{ n: number }>('select count(*)::int as n from survey_group')
-    const s = await db.query<{ n: number }>('select count(*)::int as n from survey')
+    const g = await db.query<{ n: number }>('select count(*)::int as n from survey_group where portal_id = $1', [portalA])
+    const s = await db.query<{ n: number }>(
+      'select count(*)::int as n from survey s join survey_group g on g.id = s.group_id where g.portal_id = $1',
+      [portalA]
+    )
     expect(g.rows[0]!.n).toBe(1)
     expect(s.rows[0]!.n).toBe(1)
   })
@@ -261,11 +350,14 @@ describe('PgStore — денормализация контекста', () => {
     await store.publish(draftV1(), 1)
     await store.addResponse(sampleResponse())
     const r = await db.query<{ deal_id: number; company_id: number; deal_category_id: number; contact_id: number; responsible_id: number }>(
-      'select deal_id::int, company_id::int, deal_category_id::int, contact_id::int, responsible_id::int from response'
+      'select deal_id::int, company_id::int, deal_category_id::int, contact_id::int, responsible_id::int from response where portal_id = $1',
+      [portalA]
     )
     expect(r.rows[0]).toEqual({ deal_id: 5001, company_id: 101, deal_category_id: 1, contact_id: 777, responsible_id: 11 })
     const p = await db.query<{ product_id: number; product_name: string }>(
-      'select product_id::int, product_name from response_product'
+      `select rp.product_id::int, rp.product_name from response_product rp
+       join response r on r.id = rp.response_id where r.portal_id = $1`,
+      [portalA]
     )
     expect(p.rows).toEqual([{ product_id: 1001, product_name: 'Внедрение' }])
   })
@@ -281,6 +373,9 @@ describe('PgStore — SQL-агрегация (паритет с in-memory на �
     all = await store.listResponses()
   })
 
+  // Числа срезов — из src/demo/seed.ts (12 ответов): responsible 11 → n=5,
+  // 12 → n=4, 13 → n=3; company 101/102 → по 6; product 1001 → 8; category 1 → 8.
+
   it('NPS: опрос, компания, товар, направление, диапазон версий', async () => {
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q }))
       .toEqual(npsFor(all, NPS_Q))
@@ -292,15 +387,23 @@ describe('PgStore — SQL-агрегация (паритет с in-memory на �
       .toEqual(npsFor(byCategory(all, 1), NPS_Q))
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, versionFrom: 1, versionTo: 1 }))
       .toEqual(npsFor(byVersionRange(all, 1, 1), NPS_Q))
+    // versionFrom без versionTo — независимая ветка фильтра
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, versionFrom: 2 }))
+      .toEqual(npsFor(all.filter((r) => r.versionNo >= 2), NPS_Q))
   })
 
-  it('CSAT (вкл. topBoxMin) и распределение совпадают с in-memory', async () => {
+  it('CSAT (вкл. topBoxMin) и распределение совпадают с in-memory, в т.ч. на чувствительном срезе', async () => {
     expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q }))
       .toEqual(csatFor(all, CSAT_Q))
     expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q }, { topBoxMin: 5 }))
       .toEqual(csatFor(all, CSAT_Q, { topBoxMin: 5 }))
     expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: LIKED_Q }))
       .toEqual(distributionFor(all, LIKED_Q))
+    // sensitive-срез (company 101, n=6 ≥ порога): паритет и для CSAT, и для распределения
+    expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q, companyId: 101 }))
+      .toEqual(csatFor(byCompany(all, 101), CSAT_Q))
+    expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: LIKED_Q, companyId: 101 }))
+      .toEqual(distributionFor(byCompany(all, 101), LIKED_Q))
   })
 
   it('принудительное подавление малых N на чувствительных срезах', async () => {
@@ -308,11 +411,18 @@ describe('PgStore — SQL-агрегация (паритет с in-memory на �
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, responsibleId: 12 })).toBeNull()
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, responsibleId: 12, minN: 1 })).toBeNull()
     expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: LIKED_Q, responsibleId: 12 })).toBeNull()
+    // граница: responsible 11 → n=5 = ANONYMITY_THRESHOLD → ПОКАЗЫВАЕТСЯ (≥, не >)
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, responsibleId: 11 }))
+      .toEqual(npsFor(all.filter((r) => r.context.responsibleId === 11), NPS_Q))
     // company 101: n=6 ≥ 5 → видим; поднятый minN=7 подавляет
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 101 })).not.toBeNull()
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 101, minN: 7 })).toBeNull()
-    // пустой срез: n=0 → null
+    // dealId — чувствительный срез: каждая сделка в seed уникальна (n=1) → всегда подавлено
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, dealId: 5001 })).toBeNull()
+    // пустой срез: n=0 → null; неизвестный questionKey → null (не исключение)
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 999 })).toBeNull()
     expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q, companyId: 999 })).toBeNull()
+    expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: 'q_нет_такого' })).toBeNull()
+    expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: 'q_нет_такого' })).toBeNull()
   })
 })

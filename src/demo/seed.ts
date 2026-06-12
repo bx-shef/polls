@@ -111,7 +111,7 @@ function rawFor(e: SeedEntry): Record<string, RawAnswer> {
 
 /** Строит хранилище с двумя версиями и сидовыми ответами через реальный пайплайн. */
 export async function buildDemo(): Promise<MemoryStore>
-/** То же, но в переданный стор (напр. PgStore) — для паритет-тестов реализаций. */
+/** То же, но в переданный стор — для тестов паритета реализаций (MemoryStore vs PgStore). */
 export async function buildDemo<T extends IStore>(store: T): Promise<T>
 export async function buildDemo(store: IStore = new MemoryStore()): Promise<IStore> {
   await store.publish(draftV1(), 1)

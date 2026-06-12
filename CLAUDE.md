@@ -12,7 +12,8 @@ bash scripts/check.sh                                   # то же, Linux/macOS
 powershell -ExecutionPolicy Bypass -File scripts\check.ps1   # то же, Windows
 pnpm typecheck    # tsc --noEmit
 pnpm test         # vitest
-pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config.ts; CI гейтит этим)
+pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config.ts; CI гейтит этим).
+                  # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 ```
 

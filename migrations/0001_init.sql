@@ -28,10 +28,13 @@ create table if not exists survey_group (
   title          text not null,
   visibility     text not null default 'private' check (visibility in ('private', 'department', 'portal')),
   visibility_ref bigint,
-  created_at     timestamptz not null default now(),
-  -- идемпотентный ensure-паттерн PgStore (INSERT ... ON CONFLICT)
-  unique (portal_id, title)
+  created_at     timestamptz not null default now()
 );
+-- Идемпотентный ensure системной группы PgStore (INSERT ... ON CONFLICT):
+-- уникальность названия — только для групп БЕЗ владельца (owner_user_id is null).
+-- Пользовательские группы разных владельцев могут совпадать по названию.
+create unique index if not exists uq_survey_group_default
+  on survey_group (portal_id, title) where owner_user_id is null;
 
 -- ── Опрос (логический; стабильный survey_key) ──
 create table if not exists survey (
