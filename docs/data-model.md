@@ -488,7 +488,8 @@ group by opt order by 2 desc;
 | Инструмент миграций (node-pg-migrate / Flyway) вместо одного SQL | Деплой | ⛔ [#6](https://github.com/bx-shef/polls/issues/6) |
 | Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |
 | Порог анонимности `N`: `ANONYMITY_THRESHOLD` + `meetsAnonymity` (в KPI применён; подавление на остальных срезах — read-API) | Фаза 1 / Деплой | ✅ / 🔶 |
-| Read-API / PgStore: пагинация `listResponses`, подавление малых N, tenant-изоляция (`portalId`), SQL-агрегация | Деплой | 🔶 [#7](https://github.com/bx-shef/polls/issues/7) |
+| `PgStore` (CRUD + tenant-изоляция `portalId`) — на pglite-тестах | Фаза 2 | ✅ |
+| Read-API расширения: SQL-агрегация, подавление малых N на срезах, денормализация контекста, транзакции (keyset-пагинация ✅) | Деплой | 🔶 [#7](https://github.com/bx-shef/polls/issues/7) |
 | CHECK-ограничения и лимиты длины в схеме БД | Фаза 1 | ✅ |
 | Границы payload в zod (`.max`) | Фаза 1 | ✅ |
 
@@ -497,4 +498,4 @@ group by opt order by 2 desc;
 *Спецификация — [`brief.md`](./brief.md) · Дизайн — [`design.md`](./design.md) ·
 Шаблон схемы — [`reference/survey-schema.template.json`](./reference/survey-schema.template.json).*
 
-*Последнее ревью: 2026-06-11.*
+*Последнее ревью: 2026-06-12.*

@@ -5,6 +5,8 @@ import {
   byCompany,
   byProduct,
   bySurvey,
+  byVersion,
+  byVersionRange,
   cesFor,
   choiceValues,
   csatFor,
@@ -177,6 +179,23 @@ describe('meetsAnonymity', () => {
     expect(meetsAnonymity(4)).toBe(false)
     expect(meetsAnonymity(2, 2)).toBe(true)
     expect(meetsAnonymity(1, 2)).toBe(false)
+  })
+})
+
+describe('срезы по версии и подавление тренда (read-API)', () => {
+  it('byVersion / byVersionRange', () => {
+    expect(byVersion(all, 1)).toHaveLength(6)
+    expect(byVersion(all, 2)).toHaveLength(6)
+    expect(byVersionRange(all, 1, 2)).toHaveLength(12)
+    expect(byVersionRange(all, 2, 2)).toHaveLength(6)
+    expect(byVersionRange(all, 2, 1)).toEqual([]) // from > to → пусто
+  })
+
+  it('npsTrend с minN подавляет малые бакеты', () => {
+    // по дням каждый бакет n=1 → при minN=2 пусто; по месяцам n=6 остаются, при minN=7 — пусто
+    expect(npsTrend(all, NPS_Q, 'day', 2)).toEqual([])
+    expect(npsTrend(all, NPS_Q, 'month', 6)).toHaveLength(2)
+    expect(npsTrend(all, NPS_Q, 'month', 7)).toEqual([])
   })
 })
 
