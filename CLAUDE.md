@@ -12,7 +12,8 @@ bash scripts/check.sh                                   # то же, Linux/macOS
 powershell -ExecutionPolicy Bypass -File scripts\check.ps1   # то же, Windows
 pnpm typecheck    # tsc --noEmit
 pnpm test         # vitest
-pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config.ts; CI гейтит этим)
+pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config.ts; CI гейтит этим).
+                  # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 ```
 
@@ -34,8 +35,11 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - `store/types.ts` (`IStore`) + `store/memory.ts` (`MemoryStore`) — контракт хранилища
   (методы async, вкл. keyset-пагинацию `listResponsesPage`) и in-memory реализация.
   `store/pg.ts` (`PgStore`) — реализация поверх PostgreSQL: драйвер-агностичная
-  (`Queryable` ≈ `pg.Pool`/pglite), tenant-scoped по `portalId`; тесты на pglite (in-process).
-  `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare). Read-API расширения — #7.
+  (`Queryable` ≈ `pg.Pool`/pglite; запись в транзакции при поддержке драйвера),
+  tenant-scoped по `portalId`; денормализация контекста в колонки + `response_product`;
+  SQL-агрегация (`aggregateNps/Csat/Distribution`) с принудительным подавлением малых N
+  на чувствительных срезах; тесты на pglite (in-process, паритет с in-memory).
+  `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare).
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 
 ## Инварианты
@@ -60,9 +64,10 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 - **#4** — анти-абьюз: серверный nonce (TTL), rate-limit, honeypot, идемпотентность.
 - **#5** — наблюдаемость: структурные логи/метрики/трейсы + `/health`.
 - **#6** — раннер миграций (`0002+`).
-- **read-API / PgStore** — `PgStore` (CRUD + tenant-изоляция) и keyset-пагинация
-  (`listResponsesPage`) сделаны; осталось: SQL-агрегация, принудительное подавление
-  малых N на срезах, денормализация контекста, транзакции (ISSUE [#7](https://github.com/bx-shef/polls/issues/7)).
+- **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
+  SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
+  идемпотентный ensure (#7 закрыт). Осталось: идемпотентность `addResponse` (с #4),
+  PII-редакция на HTTP-слое и SQL-вариант `npsTrend` (ISSUE [#10](https://github.com/bx-shef/polls/issues/10)).
 
 ## Документация (`docs/`)
 
