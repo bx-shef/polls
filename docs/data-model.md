@@ -490,7 +490,8 @@ group by opt order by 2 desc;
 | Требование | Фаза | Статус |
 |---|---|---|
 | Шифрование OAuth-токенов (`portal.tokens`) + refresh-flow | Связка | ⛔ [#3](https://github.com/bx-shef/polls/issues/3) |
-| Серверный анти-абьюз: дедупликация nonce (TTL), проверка honeypot, rate-limit | Деплой | ⛔ [#4](https://github.com/bx-shef/polls/issues/4) |
+| Серверный анти-абьюз в ядре (`src/api`): nonce TTL → 409, honeypot → 400, rate-limit → 429, server-set `submittedAt` | Фаза 4 | ✅ |
+| Анти-абьюз остаток: идемпотентность по invitation (с #3), общий стор nonce/лимитов (мульти-инстанс) | Деплой | 🔶 [#4](https://github.com/bx-shef/polls/issues/4) |
 | Наблюдаемость: структурные логи, `/api/health`, error-tracking | Деплой | ⛔ [#5](https://github.com/bx-shef/polls/issues/5) |
 | Инструмент миграций (node-pg-migrate / Flyway) вместо одного SQL | Деплой | ⛔ [#6](https://github.com/bx-shef/polls/issues/6) |
 | Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |

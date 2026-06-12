@@ -1,0 +1,136 @@
+import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { buildResponseAnswers } from '../domain/answers'
+import { rawAnswerSchema } from '../domain/schema'
+import type { IStore } from '../store/types'
+import { MemoryNonceStore, type NonceStore } from './nonce'
+import { SlidingWindowLimiter, type RateLimiter } from './ratelimit'
+
+/**
+ * HTTP-хендлеры опроса (контур A) — framework-agnostic, как и всё ядро:
+ * чистые функции «вход → { status, body }» с инжектируемыми зависимостями
+ * (store/nonce/limiter/часы). Нет привязки к Nitro/Express — адаптер задаёт
+ * рантайм (см. src/server/node.ts; Nitro-обёртка фазы связки — в JSDoc ниже).
+ *
+ * Конвейер POST /api/submit (порядок — по ISSUE #4 и brief §8):
+ *   1. honeypot (`hp` непустой → 400, generic-ответ — боту незачем знать причину)
+ *   2. rate-limit по IP → 429
+ *   3. форма payload (zod) и schema_version → 400
+ *   4. nonce: повтор → 409, неизвестный/протухший → 403
+ *   5. версия опроса → 404
+ *   6. валидация ответов ядром (buildResponseAnswers) → 422 { errors }
+ *   7. запись: id и submittedAt ставит СЕРВЕР (клиентские значения не принимаются),
+ *      context пуст до invitation-flow (#3) → 200 { ok: true }
+ *
+ * Nitro-адаптер (фаза связки) — тонкая обёртка:
+ *   export default defineEventHandler(async (event) => {
+ *     const r = await api.submit({ ip: getRequestIP(event) ?? '?', body: await readBody(event) })
+ *     setResponseStatus(event, r.status); return r.body
+ *   })
+ */
+
+/** Payload POST /api/submit = brief §8 + пин опроса/версии (мультиопросное ядро). */
+const httpSubmitSchema = z
+  .object({
+    schema_version: z.number().int(),
+    nonce: z.string().min(1).max(200),
+    hp: z.string().max(200).optional(),
+    surveyKey: z.string().min(1).max(200),
+    versionNo: z.number().int().positive(),
+    answers: z.record(z.string().max(200), rawAnswerSchema)
+  })
+  .refine((s) => Object.keys(s.answers).length <= 200, { message: 'Слишком много ответов в payload' })
+
+export const SUPPORTED_SCHEMA_VERSION = 1
+
+export interface ApiDeps {
+  store: IStore
+  nonces?: NonceStore
+  limiter?: RateLimiter
+  /** Часы сервера (инжектируются в тестах). submittedAt ставится только отсюда. */
+  now?: () => Date
+  idGen?: () => string
+}
+
+export interface ApiResult {
+  status: number
+  body: Record<string, unknown>
+}
+
+export interface SessionInput {
+  ip: string
+}
+
+export interface SubmitInput {
+  ip: string
+  /** Разобранный JSON тела запроса (парсит адаптер). */
+  body: unknown
+}
+
+export interface Api {
+  session(input: SessionInput): Promise<ApiResult>
+  submit(input: SubmitInput): Promise<ApiResult>
+}
+
+const err = (status: number, error: string): ApiResult => ({ status, body: { ok: false, error } })
+
+/** honeypot читаем до zod: боту — generic 400 без подсказок о форме payload. */
+function honeypotTripped(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false
+  const hp = (body as Record<string, unknown>)['hp']
+  return typeof hp === 'string' && hp.trim() !== ''
+}
+
+export function createApi(deps: ApiDeps): Api {
+  const store = deps.store
+  const nonces = deps.nonces ?? new MemoryNonceStore()
+  const limiter = deps.limiter ?? new SlidingWindowLimiter({ limit: 10, windowMs: 60_000 })
+  const now = deps.now ?? ((): Date => new Date())
+  const idGen = deps.idGen ?? randomUUID
+
+  return {
+    async session({ ip }: SessionInput): Promise<ApiResult> {
+      if (!limiter.allow(`s:${ip}`, now())) return err(429, 'Слишком много запросов')
+      const nonce = nonces.issue(now())
+      if (nonce == null) return err(503, 'Сервис перегружен, попробуйте позже')
+      return { status: 200, body: { nonce } }
+    },
+
+    async submit({ ip, body }: SubmitInput): Promise<ApiResult> {
+      if (honeypotTripped(body)) return err(400, 'Отклонено')
+      if (!limiter.allow(`p:${ip}`, now())) return err(429, 'Слишком много запросов')
+
+      const parsed = httpSubmitSchema.safeParse(body)
+      if (!parsed.success) return err(400, 'Некорректный запрос')
+      const p = parsed.data
+      if (p.schema_version !== SUPPORTED_SCHEMA_VERSION) {
+        return err(400, `Неподдерживаемая версия схемы: ${p.schema_version}`)
+      }
+
+      const nonceState = nonces.consume(p.nonce, now())
+      if (nonceState === 'replay') return err(409, 'Ответ уже был отправлен')
+      if (nonceState === 'unknown') return err(403, 'Сессия устарела, обновите страницу')
+
+      try {
+        const version = await store.getVersion(p.surveyKey, p.versionNo)
+        if (!version) return err(404, 'Опрос или версия не найдены')
+
+        const { answers, errors } = buildResponseAnswers(version.questions, p.answers)
+        if (Object.keys(errors).length > 0) return { status: 422, body: { ok: false, errors } }
+
+        await store.addResponse({
+          id: idGen(),
+          surveyKey: version.surveyKey,
+          versionNo: version.versionNo,
+          submittedAt: now().toISOString(), // только сервер; клиентское поле игнорируется (#4)
+          context: {}, // CRM-снимок появится с invitation-flow (#3)
+          answers
+        })
+        return { status: 200, body: { ok: true } }
+      } catch {
+        // store может отказать (гонка версий, недоступность БД) — без деталей наружу
+        return err(500, 'Внутренняя ошибка, попробуйте позже')
+      }
+    }
+  }
+}
