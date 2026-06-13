@@ -50,6 +50,9 @@ pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
   (`MemoryNonceStore`, TTL) и `api/ratelimit.ts` (`SlidingWindowLimiter`) — in-memory
   анти-абьюз одного инстанса. `server/node.ts` — адаптер на node:http (лимит тела 413,
   JSON 400, роутинг); Nitro-обёртка фазы связки — пример в JSDoc handlers.
+- `bitrix24/crypto.ts` (`TokenCipher` AES-256-GCM + `loadTokenKey` startup-guard),
+  `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh через инжектируемый fetch),
+  `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh).
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 
 ## Инварианты
@@ -70,7 +73,8 @@ pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
 ## Скоуп и роадмап
 
 Сетевой/деплой-слой вынесен в ISSUE (не дефекты ядра):
-- **#3** — OAuth Bitrix24 (в т.ч. шифрование токенов в БД).
+- **#3** — OAuth Bitrix24: ядро в `src/bitrix24` (AES-256-GCM шифрование `portal.tokens`,
+  refresh-flow, startup-guard ключа). Остаётся: install/callback-эндпоинт + живой обмен с порталом.
 - **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
   honeypot → 400, rate-limit → 429). Остаётся: идемпотентность по invitation (с #3),
   общий стор nonce/лимитов для мульти-инстанса, серверная конфигурация за reverse-proxy.
