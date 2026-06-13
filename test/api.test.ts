@@ -1,0 +1,274 @@
+import { describe, expect, it } from 'vitest'
+import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
+import { MemoryNonceStore } from '../src/api/nonce'
+import { SlidingWindowLimiter } from '../src/api/ratelimit'
+import { MemoryStore } from '../src/store/memory'
+import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
+
+/** Управляемые часы: детерминированные TTL/окна без таймеров. */
+function clock(startIso = '2026-06-12T10:00:00.000Z'): { now: () => Date; advance: (ms: number) => void } {
+  let t = new Date(startIso).getTime()
+  return { now: () => new Date(t), advance: (ms) => (t += ms) }
+}
+
+async function freshApi(over: Partial<Parameters<typeof createApi>[0]> = {}): Promise<{
+  api: Api
+  store: MemoryStore
+  now: () => Date
+  advance: (ms: number) => void
+}> {
+  const store = await buildDemo(new MemoryStore())
+  const c = clock()
+  const api = createApi({ store, now: c.now, idGen: () => 'srv-id-1', ...over })
+  return { api, store, now: c.now, advance: c.advance }
+}
+
+/** Валидный payload на версию 2 демо-опроса (все обязательные вопросы отвечены). */
+function validPayload(nonce: string): Record<string, unknown> {
+  return {
+    schema_version: SUPPORTED_SCHEMA_VERSION,
+    nonce,
+    hp: '',
+    surveyKey: SURVEY_KEY,
+    versionNo: 2,
+    answers: {
+      q_nps: { values: ['n9'] },
+      q_csat: { values: ['s4'] },
+      q_liked: { values: ['speed'] }
+    }
+  }
+}
+
+async function issueNonce(api: Api, ip = '10.0.0.1'): Promise<string> {
+  const s = await api.session({ ip })
+  expect(s.status).toBe(200)
+  return s.body['nonce'] as string
+}
+
+describe('GET /api/session', () => {
+  it('выдаёт nonce + schema_version (bootstrap клиента, brief §8)', async () => {
+    const { api } = await freshApi()
+    const r = await api.session({ ip: 'a' })
+    expect(r.status).toBe(200)
+    expect(r.body['nonce']).toBeTruthy()
+    expect(r.body['schema_version']).toBe(SUPPORTED_SCHEMA_VERSION)
+  })
+
+  it('выдаёт nonce; флуд по IP режется rate-limit (429)', async () => {
+    const { api } = await freshApi({ limiter: new SlidingWindowLimiter({ limit: 2, windowMs: 60_000 }) })
+    expect((await api.session({ ip: 'a' })).status).toBe(200)
+    expect((await api.session({ ip: 'a' })).status).toBe(200)
+    expect((await api.session({ ip: 'a' })).status).toBe(429)
+    expect((await api.session({ ip: 'b' })).status).toBe(200) // другой IP — свой бюджет
+  })
+
+  it('переполнение nonce-стора → 503 (защита памяти)', async () => {
+    const { api } = await freshApi({ nonces: new MemoryNonceStore({ maxPending: 1 }) })
+    expect((await api.session({ ip: 'a' })).status).toBe(200)
+    expect((await api.session({ ip: 'b' })).status).toBe(503)
+  })
+})
+
+describe('POST /api/submit — конвейер проверок', () => {
+  it('happy path: 200, запись с СЕРВЕРНЫМИ id/submittedAt и пустым context', async () => {
+    const { api, store, now } = await freshApi()
+    const nonce = await issueNonce(api)
+    const payload = {
+      ...validPayload(nonce),
+      // попытка подделки: сервер обязан игнорировать клиентские поля записи
+      id: 'hacker-id',
+      submittedAt: '1999-01-01T00:00:00.000Z',
+      context: { companyId: 999999 }
+    }
+    const r = await api.submit({ ip: '10.0.0.1', body: payload })
+    expect(r).toEqual({ status: 200, body: { ok: true } })
+    const saved = (await store.listResponses()).at(-1)!
+    expect(saved.id).toBe('srv-id-1') // серверный idGen
+    expect(saved.submittedAt).toBe(now().toISOString()) // серверные часы (#4)
+    expect(saved.context).toEqual({}) // контекст не принимается от клиента
+    expect(saved.answers.find((a) => a.questionKey === 'q_nps')?.valueNumber).toBe(9)
+  })
+
+  it('honeypot: непустой hp → 400 generic, ДО любых других проверок', async () => {
+    const { api } = await freshApi({ limiter: new SlidingWindowLimiter({ limit: 0, windowMs: 60_000 }) })
+    // лимит 0 дал бы 429 — но honeypot срабатывает раньше
+    const r = await api.submit({ ip: 'bot', body: { hp: 'gotcha' } })
+    expect(r.status).toBe(400)
+    expect(r.body['error']).toBe('Отклонено')
+  })
+
+  it('rate-limit по IP → 429; не делит бюджет с /session', async () => {
+    const { api } = await freshApi({ limiter: new SlidingWindowLimiter({ limit: 1, windowMs: 60_000 }) })
+    // 1-я попытка submit съедает бюджет p:ip (payload неважен — упадёт позже по форме)
+    expect((await api.submit({ ip: 'x', body: {} })).status).toBe(400)
+    expect((await api.submit({ ip: 'x', body: {} })).status).toBe(429)
+  })
+
+  it('кривая форма → 400; неподдерживаемая schema_version → 400 с пояснением', async () => {
+    const { api } = await freshApi()
+    expect((await api.submit({ ip: 'a', body: 'не объект' })).status).toBe(400)
+    expect((await api.submit({ ip: 'a', body: { schema_version: 1 } })).status).toBe(400)
+    const nonce = await issueNonce(api)
+    const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), schema_version: 2 } })
+    expect(r.status).toBe(400)
+    expect(String(r.body['error'])).toMatch(/версия схемы: 2/)
+  })
+
+  it('nonce: повтор → 409, неизвестный → 403, протухший (TTL) → 403', async () => {
+    const { api, advance } = await freshApi({ nonces: new MemoryNonceStore({ ttlMs: 1000 }) })
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(200)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(409) // replay
+    expect((await api.submit({ ip: 'a', body: validPayload('левый') })).status).toBe(403) // unknown
+    const stale = await issueNonce(api)
+    advance(1001) // nonce протух
+    expect((await api.submit({ ip: 'a', body: validPayload(stale) })).status).toBe(403)
+  })
+
+  it('неизвестный опрос/версия → 404 (nonce уже потрачен — анти-перебор)', async () => {
+    const { api } = await freshApi()
+    const n1 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(n1), surveyKey: 'нет' } })).status).toBe(404)
+    const n2 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(n2), versionNo: 99 } })).status).toBe(404)
+  })
+
+  it('ошибки валидации ответов → 422 { errors } (обязательный вопрос пропущен)', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    const body = { ...validPayload(nonce), answers: { q_nps: { values: ['n9'] } } } // нет q_csat/q_liked
+    const r = await api.submit({ ip: 'a', body })
+    expect(r.status).toBe(422)
+    expect(r.body['ok']).toBe(false)
+    expect(Object.keys(r.body['errors'] as Record<string, string>)).toEqual(
+      expect.arrayContaining(['q_csat', 'q_liked'])
+    )
+  })
+
+  it('сбой стора → 500 без деталей наружу', async () => {
+    const { api } = await freshApi({
+      store: new (class extends MemoryStore {
+        override async getVersion(): Promise<never> {
+          throw new Error('БД упала: секретная строка подключения')
+        }
+      })()
+    })
+    const nonce = await issueNonce(api)
+    const r = await api.submit({ ip: 'a', body: validPayload(nonce) })
+    expect(r.status).toBe(500)
+    expect(JSON.stringify(r.body)).not.toMatch(/секретная/)
+  })
+
+  it('text-вопрос: заполненный сохраняется (valueText), пропущенный необязательный — нет', async () => {
+    const { api, store } = await freshApi()
+    const n1 = await issueNonce(api)
+    const withComment = { ...validPayload(n1) }
+    ;(withComment['answers'] as Record<string, unknown>)['q_comment'] = { text: '  Отличный сервис  ' }
+    expect((await api.submit({ ip: 'a', body: withComment })).status).toBe(200)
+    const saved = (await store.listResponses()).at(-1)!
+    expect(saved.answers.find((a) => a.questionKey === 'q_comment')?.valueText).toBe('Отличный сервис')
+
+    const n2 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(n2) })).status).toBe(200) // без q_comment
+    const saved2 = (await store.listResponses()).at(-1)!
+    expect(saved2.answers.some((a) => a.questionKey === 'q_comment')).toBe(false)
+  })
+
+  it('hp из одних пробелов НЕ срабатывает как honeypot (trim)', async () => {
+    const { api } = await freshApi()
+    // кривое тело: если бы honeypot сработал — был бы generic «Отклонено»
+    const r = await api.submit({ ip: 'a', body: { hp: '   ' } })
+    expect(r.status).toBe(400)
+    expect(r.body['error']).toBe('Некорректный запрос')
+  })
+
+  it('schema_version строкой ("1") → 400 (строгая форма)', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(nonce), schema_version: '1' } })).status).toBe(400)
+  })
+
+  it('больше 200 ответов в payload → 400 (.refine)', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    const answers: Record<string, { values: string[] }> = {}
+    for (let i = 0; i < 201; i++) answers[`q${i}`] = { values: ['a'] }
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(nonce), answers } })).status).toBe(400)
+  })
+
+  it('гонка: два параллельных submit с одним nonce → ровно один 200 и один 409', async () => {
+    const { api } = await freshApi()
+    const nonce = await issueNonce(api)
+    const [a, b] = await Promise.all([
+      api.submit({ ip: 'a', body: validPayload(nonce) }),
+      api.submit({ ip: 'a', body: validPayload(nonce) })
+    ])
+    expect([a.status, b.status].sort()).toEqual([200, 409])
+  })
+
+  it('onError получает исходную ошибку стора (хук для логгера #5)', async () => {
+    const seen: unknown[] = []
+    const { api } = await freshApi({
+      store: new (class extends MemoryStore {
+        override async getVersion(): Promise<never> {
+          throw new Error('диагностика для логгера')
+        }
+      })(),
+      onError: (e) => seen.push(e)
+    })
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(500)
+    expect(seen).toHaveLength(1)
+    expect(String(seen[0])).toMatch(/диагностика/)
+  })
+
+  it('дефолтные зависимости (реальные часы/uuid/лимитер) — happy path работает', async () => {
+    const store = await buildDemo(new MemoryStore())
+    const api = createApi({ store }) // всё по умолчанию
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(200)
+    const saved = (await store.listResponses()).at(-1)!
+    expect(saved.id).toMatch(/^[0-9a-f-]{36}$/) // randomUUID
+  })
+})
+
+describe('анти-абьюз: примитивы', () => {
+  it('MemoryNonceStore: prune освобождает место под maxPending', () => {
+    const c = clock()
+    const s = new MemoryNonceStore({ ttlMs: 100, maxPending: 1, idGen: () => `n${c.now().getTime()}` })
+    expect(s.issue(c.now())).toBeTruthy()
+    expect(s.issue(c.now())).toBeNull() // переполнен
+    c.advance(101) // первый протух → prune при следующем issue
+    expect(s.issue(c.now())).toBeTruthy()
+  })
+
+  it('MemoryNonceStore: replay различим, пока не истёк TTL использованного', () => {
+    const c = clock()
+    const s = new MemoryNonceStore({ ttlMs: 100 })
+    const n = s.issue(c.now())!
+    expect(s.consume(n, c.now())).toBe('ok')
+    expect(s.consume(n, c.now())).toBe('replay')
+    c.advance(101)
+    expect(s.consume(n, c.now())).toBe('unknown') // после TTL запись о использовании вычищена
+  })
+
+  it('SlidingWindowLimiter: окно скользит', () => {
+    const c = clock()
+    const l = new SlidingWindowLimiter({ limit: 2, windowMs: 1000 })
+    expect(l.allow('k', c.now())).toBe(true)
+    expect(l.allow('k', c.now())).toBe(true)
+    expect(l.allow('k', c.now())).toBe(false)
+    c.advance(1001) // старые события выпали из окна
+    expect(l.allow('k', c.now())).toBe(true)
+  })
+
+  it('SlidingWindowLimiter: maxKeys — потолок памяти; sweep освобождает протухшие ключи', () => {
+    const c = clock()
+    const l = new SlidingWindowLimiter({ limit: 5, windowMs: 1000, maxKeys: 1 })
+    expect(l.allow('ip-1', c.now())).toBe(true)
+    expect(l.allow('ip-2', c.now())).toBe(false) // новый ключ при заполненном Map → fail-closed
+    expect(l.allow('ip-1', c.now())).toBe(true) // существующий ключ работает
+    c.advance(1001) // окно ip-1 протухло → sweep при переполнении освободит место
+    expect(l.allow('ip-2', c.now())).toBe(true)
+  })
+})

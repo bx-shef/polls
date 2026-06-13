@@ -1,8 +1,10 @@
 # CLAUDE.md
 
 Ядро сервиса опросов (движок + версионирование + аналитика) под будущую
-интеграцию с Bitrix24. Сейчас в репозитории — **только ядро** (TypeScript,
-framework-agnostic), без сетевого слоя. Комментарии и документация — на русском.
+интеграцию с Bitrix24. В репозитории — **ядро + framework-agnostic HTTP-слой**
+(TypeScript): хендлеры `/api/session`+`/api/submit` с анти-абьюзом и node-адаптер
+(`pnpm serve`). Nuxt/b24ui-фронт и Nitro-привязка — фаза связки. Комментарии и
+документация — на русском.
 
 ## Команды
 
@@ -15,6 +17,7 @@ pnpm test         # vitest
 pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config.ts; CI гейтит этим).
                   # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
+pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080): /api/session, /api/submit
 ```
 
 Для проверок предпочитай `scripts/check.sh` / `check.ps1` — один запуск ставит
@@ -40,6 +43,13 @@ pnpm verify       # печатает И сверяет assert'ами итог н
   SQL-агрегация (`aggregateNps/Csat/Distribution`) с принудительным подавлением малых N
   на чувствительных срезах; тесты на pglite (in-process, паритет с in-memory).
   `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare).
+- `api/handlers.ts` (`createApi`) — framework-agnostic HTTP-хендлеры (вход → {status, body},
+  зависимости инжектируются): конвейер submit = honeypot → rate-limit → форма/schema_version →
+  nonce (409 replay / 403 unknown) → версия (404) → валидация ответов (422) → запись с
+  СЕРВЕРНЫМИ id/submittedAt и пустым context (до invitation-flow #3). `api/nonce.ts`
+  (`MemoryNonceStore`, TTL) и `api/ratelimit.ts` (`SlidingWindowLimiter`) — in-memory
+  анти-абьюз одного инстанса. `server/node.ts` — адаптер на node:http (лимит тела 413,
+  JSON 400, роутинг); Nitro-обёртка фазы связки — пример в JSDoc handlers.
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 
 ## Инварианты
@@ -61,7 +71,9 @@ pnpm verify       # печатает И сверяет assert'ами итог н
 
 Сетевой/деплой-слой вынесен в ISSUE (не дефекты ядра):
 - **#3** — OAuth Bitrix24 (в т.ч. шифрование токенов в БД).
-- **#4** — анти-абьюз: серверный nonce (TTL), rate-limit, honeypot, идемпотентность.
+- **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
+  honeypot → 400, rate-limit → 429). Остаётся: идемпотентность по invitation (с #3),
+  общий стор nonce/лимитов для мульти-инстанса, серверная конфигурация за reverse-proxy.
 - **#5** — наблюдаемость: структурные логи/метрики/трейсы + `/health`.
 - **#6** — раннер миграций (`0002+`).
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
@@ -84,4 +96,4 @@ SessionStart-хук настроен: `.claude/hooks/session-start.sh` (заре
 дефолтную ветку.
 
 ---
-*Последнее ревью: 2026-06-12.*
+*Последнее ревью: 2026-06-13.*
