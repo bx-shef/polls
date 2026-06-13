@@ -7,7 +7,7 @@ create table if not exists portal (
   id           bigserial primary key,
   member_id    text unique not null,
   domain       text not null,
-  tokens       jsonb not null, -- TODO #3: шифровать перед продом (pgcrypto / app-level)
+  tokens       jsonb not null, -- зашифрованы app-level (AES-256-GCM): src/bitrix24/crypto.ts (#3)
   installed_at timestamptz not null default now()
 );
 
