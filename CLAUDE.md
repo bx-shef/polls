@@ -50,8 +50,9 @@ pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
   (`MemoryNonceStore`, TTL) и `api/ratelimit.ts` (`SlidingWindowLimiter`) — in-memory
   анти-абьюз одного инстанса. `server/node.ts` — адаптер на node:http (лимит тела 413,
   JSON 400, роутинг); Nitro-обёртка фазы связки — пример в JSDoc handlers.
-- `bitrix24/crypto.ts` (`TokenCipher` AES-256-GCM + `loadTokenKey` startup-guard),
-  `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh через инжектируемый fetch),
+- `bitrix24/crypto.ts` (`TokenCipher` AES-256-GCM с `kid` в blob — форвард-совместимость
+  ротации ключа + `loadTokenKey` startup-guard),
+  `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh POST-телом через инжектируемый fetch),
   `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh).
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 

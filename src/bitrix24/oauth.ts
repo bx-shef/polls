@@ -5,7 +5,13 @@ import { z } from 'zod'
  * протухшего access-token. HTTP инжектируется (`fetch`-совместимый) — логика
  * проверяется юнит-тестами без живого портала; прод передаёт global fetch.
  * Endpoint и формат — по докам Bitrix24 oauth (https://oauth.bitrix.info/oauth/token/).
+ *
+ * Ретраи/таймауты/circuit-breaker — НЕ ответственность ядра: `request()` бросает
+ * `OAuthError` без повтора; устойчивость к сбоям сети добавляет HTTP-слой деплоя.
  */
+
+/** Верхняя граница `expires_in` (сек): 1 год. Защита от переполнения Date. */
+const MAX_EXPIRES_IN = 366 * 24 * 3600
 
 /** Нормализованные токены (то, что шифруется и хранится). */
 export const oauthTokensSchema = z.object({
@@ -15,6 +21,8 @@ export const oauthTokensSchema = z.object({
   /** ISO-8601; вычислен из expires_in на момент выдачи. */
   expiresAt: z.string().datetime({ offset: true }),
   domain: z.string().max(200).optional(),
+  // SSRF: при использовании как URL исходящих REST-вызовов (фаза связки) хост
+  // обязательно валидировать по allowlist (*.bitrix24.ru/.com/...), не localhost/RFC-1918.
   clientEndpoint: z.string().max(500).optional()
 })
 export type OAuthTokens = z.infer<typeof oauthTokensSchema>
@@ -23,7 +31,8 @@ export type OAuthTokens = z.infer<typeof oauthTokensSchema>
 const tokenResponseSchema = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1),
-  expires_in: z.number().int().positive(),
+  // .max(): аномально большой expires_in иначе переполнит Date → RangeError.
+  expires_in: z.number().int().positive().max(MAX_EXPIRES_IN),
   member_id: z.string().min(1),
   domain: z.string().optional(),
   client_endpoint: z.string().optional()
@@ -34,8 +43,14 @@ export interface HttpResponse {
   status: number
   json(): Promise<unknown>
 }
-/** Минимум, совместимый с global fetch (GET token-эндпоинта). */
-export type HttpFetch = (url: string) => Promise<HttpResponse>
+/** Подмножество RequestInit, нужное клиенту (POST token-эндпоинта). */
+export interface HttpRequestInit {
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+}
+/** Минимум, совместимый с global fetch (POST token-эндпоинта). */
+export type HttpFetch = (url: string, init?: HttpRequestInit) => Promise<HttpResponse>
 
 /** Ошибка OAuth без утечки секретов в сообщение. */
 export class OAuthError extends Error {
@@ -58,12 +73,16 @@ export interface Bitrix24OAuthOptions {
 }
 
 export class Bitrix24OAuth {
+  private readonly clientId: string
+  private readonly clientSecret: string
   private readonly fetch: HttpFetch
   private readonly tokenUrl: string
   private readonly now: () => Date
 
-  constructor(private readonly opts: Bitrix24OAuthOptions) {
-    this.fetch = opts.fetch ?? ((url) => fetch(url) as Promise<HttpResponse>)
+  constructor(opts: Bitrix24OAuthOptions) {
+    this.clientId = opts.clientId
+    this.clientSecret = opts.clientSecret
+    this.fetch = opts.fetch ?? ((url, init) => fetch(url, init) as Promise<HttpResponse>)
     this.tokenUrl = opts.tokenUrl ?? 'https://oauth.bitrix.info/oauth/token/'
     this.now = opts.now ?? ((): Date => new Date())
   }
@@ -79,29 +98,39 @@ export class Bitrix24OAuth {
   }
 
   private async request(params: Record<string, string>): Promise<OAuthTokens> {
-    const qs = new URLSearchParams({
-      client_id: this.opts.clientId,
-      client_secret: this.opts.clientSecret,
+    // client_secret — в теле POST (RFC 6749 §2.3.1), НЕ в URL: иначе секрет течёт
+    // в access-логи прокси/CDN/APM и Referer.
+    const body = new URLSearchParams({
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
       ...params
-    })
+    }).toString()
     let res: HttpResponse
     try {
-      res = await this.fetch(`${this.tokenUrl}?${qs.toString()}`)
+      res = await this.fetch(this.tokenUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body
+      })
     } catch {
       throw new OAuthError('Сеть недоступна при обращении к OAuth Bitrix24')
     }
-    let body: unknown
+    // Тело читаем мягко: на ошибочном статусе non-JSON ответ (HTML 502 от прокси)
+    // не должен маскировать реальный отказ под «некорректный ответ».
+    let body2: unknown
+    let jsonOk = true
     try {
-      body = await res.json()
+      body2 = await res.json()
     } catch {
-      throw new OAuthError('Некорректный ответ OAuth Bitrix24', res.status)
+      jsonOk = false
     }
     if (!res.ok) {
       // error_description от Bitrix безопасно показать; токенов в ошибке нет
-      const desc = (body as { error_description?: string; error?: string })?.error_description
-      throw new OAuthError(`OAuth Bitrix24 отказал: ${desc ?? 'ошибка'}`, res.status)
+      const desc = jsonOk ? (body2 as { error_description?: string; error?: string })?.error_description : undefined
+      throw new OAuthError(`OAuth Bitrix24 отказал: ${desc ?? `HTTP ${res.status}`}`, res.status)
     }
-    const parsed = tokenResponseSchema.safeParse(body)
+    if (!jsonOk) throw new OAuthError('Некорректный ответ OAuth Bitrix24', res.status)
+    const parsed = tokenResponseSchema.safeParse(body2)
     if (!parsed.success) throw new OAuthError('OAuth Bitrix24 вернул неполные токены', res.status)
     const r = parsed.data
     return {

@@ -4,6 +4,20 @@ import type { CompiledVersion, ResponseRecord, SurveyDraft } from '../domain/sch
 export const DEFAULT_PAGE_SIZE = 100
 export const MAX_PAGE_SIZE = 500
 
+/**
+ * Минимальный контракт драйвера БД (совместим с pg.Pool и PGlite). Живёт здесь
+ * (а не в `store/pg`), потому что это cross-cutting инфраструктурный интерфейс:
+ * им пользуются и `PgStore`, и `bitrix24/PortalTokenStore` — слой `bitrix24` не
+ * должен зависеть от файла с реализацией `PgStore`+SQL.
+ * `transaction` опциональна: PGlite даёт её из коробки; для `pg.Pool` используйте
+ * фабрику `queryableFromPool` (store/pg) — она строит корректный транзакционный
+ * адаптер. Без `transaction` запись неатомарна — допустимо только для тестов/демо.
+ */
+export interface Queryable {
+  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
+  transaction?<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
+}
+
 export interface ResponsePageOptions {
   surveyKey?: string
   limit?: number
