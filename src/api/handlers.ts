@@ -23,8 +23,9 @@ import { MemoryInvitationStore, type InvitationStore } from './invitation'
  *      анти-перебор surveyKey/versionNo; UX: после 404/422 клиент запрашивает
  *      новый nonce через GET /api/session)
  *   6. валидация ответов ядром (buildResponseAnswers) → 422 { errors }
- *   7. приглашение (#3): токен `invitation` (если есть) расходуется ПОСЛЕ 422 —
- *      replay → 409, неизвестный/протухший → 403, чужой опрос/версия → 409
+ *   7. приглашение (#3): токен `invitation` (если есть) сверяется/расходуется ПОСЛЕ
+ *      422 — replay → 409, чужой пин (surveyKey/versionNo) → 409 БЕЗ расхода токена,
+ *      неизвестный/протухший → 403; CRM-снимок берётся только на успехе
  *   8. запись: id и submittedAt ставит СЕРВЕР (клиентские значения не принимаются),
  *      context = снимок из приглашения (#3) либо {} без токена → 200 { ok: true }
  *
@@ -154,12 +155,12 @@ export function createApi(deps: ApiDeps): Api {
         // переиздаётся через /api/session). Нет токена → context пуст (back-compat).
         let context: CrmContext = {}
         if (p.invitation != null) {
-          const inv = invitations.consume(p.invitation, now())
+          // pin-aware consume: чужой опрос/версия → 409 БЕЗ расхода токена (не сжигаем
+          // приглашение при несовпадении пина — анти-DoS на утёкший токен).
+          const inv = invitations.consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
           if (inv.status === 'replay') return err(409, 'Приглашение уже использовано')
+          if (inv.status === 'mismatch') return err(409, 'Приглашение не соответствует опросу или версии')
           if (inv.status === 'unknown') return err(403, 'Приглашение недействительно или истекло')
-          if (inv.invitation.surveyKey !== p.surveyKey || inv.invitation.versionNo !== p.versionNo) {
-            return err(409, 'Приглашение не соответствует опросу или версии')
-          }
           context = inv.invitation.context
         }
 

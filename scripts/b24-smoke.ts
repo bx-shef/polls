@@ -154,7 +154,10 @@ async function main(): Promise<void> {
   if (target) {
     console.log('─ A) Bitrix24 → CrmContext (целевая сделка) ─')
     const cleaned = clean(target)
-    console.log(JSON.stringify(cleaned, null, 2))
+    // dealAmount (сумма сделки — финданные) маскируем в выводе: stdout может уходить в лог/CI.
+    const shown: Record<string, unknown> = { ...cleaned }
+    if (shown['dealAmount'] != null) shown['dealAmount'] = '<скрыто>'
+    console.log(JSON.stringify(shown, null, 2))
     const parsed = crmContextSchema.safeParse(cleaned)
     if (parsed.success) console.log('✓ CrmContext валиден по zod-схеме ядра — маппинг сходится.')
     else {
@@ -177,7 +180,11 @@ async function main(): Promise<void> {
   const contexts: CrmContext[] = []
   let valid = 0
   for (const d of batch) {
-    const id = num(d['ID'])!
+    const id = num(d['ID'])
+    if (id == null) {
+      console.log('  ⚠ сделка без ID — пропущена')
+      continue
+    }
     const ctx = mapDeal(d, await fetchRows(id))
     if (crmContextSchema.safeParse(clean(ctx)).success) valid++
     else console.log(`  ⚠ сделка ${id}: контекст не прошёл схему`)

@@ -89,8 +89,11 @@ export type CrmContext = z.infer<typeof crmContextSchema>
 export const invitationPolicySchema = z.object({
   /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
   triggerStages: z.array(z.string().max(200)).max(50).default([]),
-  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). */
-  channelOrder: z.array(z.enum(INVITE_CHANNELS)).max(INVITE_CHANNELS.length).default(['email', 'sms'])
+  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей. */
+  channelOrder: z
+    .array(z.enum(INVITE_CHANNELS))
+    .refine((a) => new Set(a).size === a.length, { message: 'channelOrder: каналы не должны повторяться' })
+    .default(['email', 'sms'])
 })
 export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
 
@@ -107,6 +110,7 @@ export const invitationSchema = z.object({
   context: crmContextSchema,
   status: z.enum(['pending', 'used']),
   createdAt: isoDatetime,
+  /** ISO-срок жизни; `undefined` — бессрочно. MemoryInvitationStore всегда задаёт TTL. */
   expiresAt: isoDatetime.optional()
 })
 export type Invitation = z.infer<typeof invitationSchema>

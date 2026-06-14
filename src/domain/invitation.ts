@@ -8,7 +8,7 @@ import type { InvitationPolicy, InviteChannel } from './schema'
  */
 
 /** Запускается ли опрос на этой стадии сделки (триггер задаёт сам опрос). */
-export function shouldInvite(stageId: string | null | undefined, policy: InvitationPolicy): boolean {
+export function shouldInvite(stageId: string | undefined, policy: InvitationPolicy): boolean {
   return stageId != null && policy.triggerStages.includes(stageId)
 }
 

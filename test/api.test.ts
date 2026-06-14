@@ -293,6 +293,26 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((await api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })).status).toBe(200)
     expect((await store.listResponses()).at(-1)!.context).toEqual(snapshot)
   })
+
+  it('приглашение от другого ОПРОСА → 409 (сверка surveyKey, не только версии)', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
+    const nonce = await issueNonce(api)
+    const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
+    expect(r.status).toBe(409)
+  })
+
+  it('гонка: два параллельных submit с одним приглашением → ровно один 200 и один 409', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const n1 = await issueNonce(api)
+    const n2 = await issueNonce(api)
+    const [a, b] = await Promise.all([
+      api.submit({ ip: 'a', body: { ...validPayload(n1), invitation: inv.token } }),
+      api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })
+    ])
+    expect([a.status, b.status].sort()).toEqual([200, 409])
+  })
 })
 
 describe('GET /api/health (#5)', () => {
