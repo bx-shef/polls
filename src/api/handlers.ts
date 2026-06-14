@@ -62,6 +62,11 @@ export interface ApiDeps {
    * (`api_error`). Задайте, чтобы перенаправить ошибку в свой трекер.
    */
   onError?: (e: unknown) => void
+  /**
+   * TTL кэша `health()` в мс (default 1000). Health публичный и НЕ throttled —
+   * кэш ограничивает частоту реальных `store.ping()` (анти-DoS на пул БД).
+   */
+  healthCacheMs?: number
 }
 
 export interface ApiResult {
@@ -103,6 +108,8 @@ export function createApi(deps: ApiDeps): Api {
   const idGen = deps.idGen ?? randomUUID
   const logger = deps.logger ?? nullLogger
   const onError = deps.onError ?? ((e: unknown): void => logger.error('api_error', { err: errInfo(e) }))
+  const healthCacheMs = deps.healthCacheMs ?? 1000
+  let healthCache: { atMs: number; result: ApiResult } | null = null
 
   return {
     async session({ ip }: SessionInput): Promise<ApiResult> {
@@ -152,15 +159,23 @@ export function createApi(deps: ApiDeps): Api {
     },
 
     async health(): Promise<ApiResult> {
+      // Кэш на healthCacheMs: health публичный и НЕ throttled (оркестратор/прокси
+      // опрашивают часто) — иначе флуд /api/health долбил бы пул БД (DoS-вектор).
+      const nowMs = now().getTime()
+      if (healthCache && nowMs - healthCache.atMs < healthCacheMs) return healthCache.result
       const ts = now().toISOString()
+      let result: ApiResult
       try {
         await store.ping()
-        return { status: 200, body: { ok: true, ts } }
+        result = { status: 200, body: { ok: true, ts } }
       } catch (e) {
-        // health публичный и НЕ throttled — деталей наружу не даём, диагностика в лог.
+        // Деталей наружу не даём: тело health = { ok, ts } (намеренно без `error`);
+        // диагностика — в лог.
         logger.error('health_ping_failed', { err: errInfo(e) })
-        return { status: 503, body: { ok: false, ts } }
+        result = { status: 503, body: { ok: false, ts } }
       }
+      healthCache = { atMs: nowMs, result }
+      return result
     }
   }
 }

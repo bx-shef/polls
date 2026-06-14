@@ -139,6 +139,7 @@ export function startServer(opts: NodeServerOptions): Promise<NodeServer> {
           ip: ipOf(req)
         }
         if (res.statusCode >= 500) logger.error('request', fields)
+        else if (res.statusCode >= 400) logger.warn('request', fields) // 4xx (429/409/422) видны в warn
         else logger.info('request', fields)
       })
   })

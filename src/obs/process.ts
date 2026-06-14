@@ -24,6 +24,10 @@ export interface ProcessHandlerOptions {
    * Завершать процесс при `uncaughtException` (best practice — состояние
    * процесса после него неопределённо). Default `true`. `unhandledRejection`
    * процесс НЕ валит — только логируется (поведение Node по умолчанию мягче).
+   * NB: `onFatal` зовётся СИНХРОННО (fire-and-forget) перед `exit(1)`; для
+   * async-флаша трекера (Sentry) ставьте `exitOnUncaught: false` и завершайте
+   * процесс внутри `onFatal` после флаша — иначе `exit` оборвёт и флаш, и
+   * буферизованный stdout. В проде fatal-лог надёжнее синхронным sink/адаптером.
    */
   exitOnUncaught?: boolean
   /** Инжекция `process` в тестах. Default: глобальный `process`. */

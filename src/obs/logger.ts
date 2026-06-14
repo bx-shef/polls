@@ -43,7 +43,8 @@ const SECRET_KEY_PARTS = [
   'passwd',
   'authorization',
   'cookie',
-  'nonce', // одноразовый анти-абьюз-токен (replay в пределах TTL)
+  'signature', // подписи вебхуков Bitrix24
+  'nonce', // одноразовый анти-абьюз-токен (replay в пределах TTL); нигде не логируем, редакция — на будущее
   'credential',
   'apikey',
   'api_key',
@@ -64,8 +65,9 @@ function isSecretKey(key: string): boolean {
  * Глубокое маскирование: значения секретных ключей → `[REDACTED]`, защита от
  * циклов (`[Circular]`), глубины (`[Truncated]`) и гигантских строк. Редакция
  * по ИМЕНИ ключа (а не сканированием значений) — детерминированно и без ложных
- * срабатываний; следствие: не кладите секреты в сообщения ошибок/строки
- * подключения (их значение под ключом `message`/`stack` не маскируется).
+ * срабатываний; следствие: секреты в значениях под несекретными ключами
+ * (`message`/`stack` и т.п.) не маскируются. Частное исключение — креды в строках
+ * подключения внутри `Error`: их вычищает `errInfo` (см. `scrubSecrets`).
  * Возвращает НОВУЮ структуру — исходные поля вызывающего не мутируются.
  */
 export function redact(value: unknown): unknown {
@@ -92,10 +94,22 @@ function redactInner(value: unknown, depth: number, ancestors: WeakSet<object>):
   }
 }
 
+/**
+ * Маскирует креды в URL подключения (`scheme://user:PASS@host`) — узкий
+ * value-скан для известного утечного вектора: pg/redis-драйверы кладут строку
+ * подключения с паролем в `Error.message` при сбое соединения.
+ */
+const CONN_CRED = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]*:)[^\s@]+(@)/gi
+function scrubSecrets(s: string): string {
+  return s.replace(CONN_CRED, '$1[REDACTED]$2')
+}
+
 /** Нормализует unknown-ошибку в логируемые поля (для onError/process-хуков). */
 export function errInfo(e: unknown): LogFields {
-  if (e instanceof Error) return { name: e.name, message: e.message, stack: e.stack }
-  return { message: String(e) }
+  if (e instanceof Error) {
+    return { name: e.name, message: scrubSecrets(e.message), stack: e.stack ? scrubSecrets(e.stack) : e.stack }
+  }
+  return { message: scrubSecrets(String(e)) }
 }
 
 export interface JsonLoggerOptions {
@@ -139,6 +153,7 @@ export function createJsonLogger(opts: JsonLoggerOptions = {}): Logger {
 
 function build(min: LogLevel, now: () => Date, sink: (l: LogLevel, line: string) => void, base: LogFields): Logger {
   const emit = (level: LogLevel, msg: string, fields?: LogFields): void => {
+    // Record<LogLevel,number>[LogLevel] ≠ undefined даже при noUncheckedIndexedAccess.
     if (RANK[level] < RANK[min]) return
     const safe = redact({ ...base, ...fields }) as LogFields
     // Зарезервированные поля идут ПОСЛЕ spread — их нельзя перетереть из fields.

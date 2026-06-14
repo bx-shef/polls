@@ -124,19 +124,28 @@ describe('node-адаптер: живой HTTP', () => {
     expect(r.headers.get('x-request-id')).toBeTruthy()
   })
 
-  it('логгер получает строку запроса с полями (#5)', async () => {
-    const lines: { msg: string; fields: Record<string, unknown> }[] = []
-    const logger = {
-      ...nullLogger,
-      info: (msg: string, fields?: Record<string, unknown>) => void lines.push({ msg, fields: fields ?? {} })
-    }
+  it('логгер получает строку запроса: 200 → info, 4xx → warn (#5)', async () => {
+    const lines: { level: string; msg: string; fields: Record<string, unknown> }[] = []
+    const cap =
+      (level: string) =>
+      (msg: string, fields?: Record<string, unknown>): void =>
+        void lines.push({ level, msg, fields: fields ?? {} })
+    const logger = { ...nullLogger, info: cap('info'), warn: cap('warn'), error: cap('error') }
     const srv = await startServer({ api: createApi({ store }), logger })
     try {
-      await (await fetch(`http://127.0.0.1:${srv.port}/api/session`)).json() // дождаться полного ответа
-      const rec = lines.find((l) => l.msg === 'request')
-      expect(rec?.fields['path']).toBe('/api/session')
-      expect(rec?.fields['status']).toBe(200)
-      expect(typeof rec?.fields['requestId']).toBe('string')
+      // Порядок детерминирован микротаск-очередью: server-side .finally пишет в lines
+      // ДО того, как loopback-ответ дойдёт до клиента (та же петля событий).
+      await (await fetch(`http://127.0.0.1:${srv.port}/api/session`)).json()
+      const ok = lines.find((l) => l.fields['path'] === '/api/session')
+      expect(ok?.level).toBe('info')
+      expect(ok?.msg).toBe('request')
+      expect(ok?.fields['status']).toBe(200)
+      expect(typeof ok?.fields['requestId']).toBe('string')
+
+      await fetch(`http://127.0.0.1:${srv.port}/api/nope`).then((r) => r.text()) // 404
+      const notFound = lines.find((l) => l.fields['path'] === '/api/nope')
+      expect(notFound?.level).toBe('warn') // 4xx → warn
+      expect(notFound?.fields['status']).toBe(404)
     } finally {
       await srv.close()
     }

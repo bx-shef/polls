@@ -274,6 +274,23 @@ describe('GET /api/health (#5)', () => {
     expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(500)
     expect(seen).toContain('api_error')
   })
+
+  it('кэшируется в пределах TTL — не долбит БД (#5)', async () => {
+    let pings = 0
+    const store = new (class extends MemoryStore {
+      override async ping(): Promise<void> {
+        pings++
+      }
+    })()
+    const c = clock()
+    const api = createApi({ store, now: c.now, healthCacheMs: 1000 })
+    await api.health()
+    await api.health()
+    expect(pings).toBe(1) // второй вызов — из кэша
+    c.advance(1001)
+    await api.health()
+    expect(pings).toBe(2) // кэш истёк → новый ping
+  })
 })
 
 describe('анти-абьюз: примитивы', () => {

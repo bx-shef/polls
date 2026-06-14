@@ -17,6 +17,8 @@ const api = createApi({ store, logger })
 const { port } = await startServer({ api, logger, port: Number(process.env.PORT ?? 8080) })
 logger.info('server_started', { port })
 
+// Человекочитаемые curl-примеры — только для интерактивного `pnpm serve`,
+// НЕ для прод-пайпа JSON-логов (нельзя мешать форматы в одном stdout).
 console.log(`Опрос «${SURVEY_KEY}» (версии 1–2) слушает на http://127.0.0.1:${port}
 Примеры:
   curl http://127.0.0.1:${port}/api/session

@@ -95,6 +95,13 @@ describe('createJsonLogger', () => {
     expect(lines[0]?.['surveyKey']).toBe('svc')
   })
 
+  it('секрет в base редактируется в каждой записи', () => {
+    const { logger, lines } = captureJson({ base: { token: 'xyz', svc: 'polls' } })
+    logger.info('hit')
+    expect(lines[0]?.['token']).toBe('[REDACTED]')
+    expect(lines[0]?.['svc']).toBe('polls')
+  })
+
   it('уровень берётся из env LOG_LEVEL; мусор → info', () => {
     const saved = process.env['LOG_LEVEL']
     try {
@@ -161,21 +168,24 @@ describe('redact', () => {
       client_secret: 'CS',
       Authorization: 'Bearer x',
       cookie: 'sid=1',
+      signature: 'sig',
       password: 'p',
       nonce: 'n',
       API_KEY: 'k',
       surveyKey: 'svc',
       questionKey: 'q_nps',
+      optionKey: 'opt_1',
       portalId: 42,
       nested: { secretValue: 'z', ok: 'visible' },
       list: [{ token: 't' }, 'plain']
     }) as Record<string, unknown>
-    for (const k of ['access_token', 'refreshToken', 'tokens', 'client_secret', 'Authorization', 'cookie', 'password', 'nonce', 'API_KEY']) {
+    for (const k of ['access_token', 'refreshToken', 'tokens', 'client_secret', 'Authorization', 'cookie', 'signature', 'password', 'nonce', 'API_KEY']) {
       expect(out[k]).toBe('[REDACTED]')
     }
     // доменные идентификаторы целы (в них есть «Key», но это не секрет)
     expect(out['surveyKey']).toBe('svc')
     expect(out['questionKey']).toBe('q_nps')
+    expect(out['optionKey']).toBe('opt_1')
     expect(out['portalId']).toBe(42)
     expect((out['nested'] as Record<string, unknown>)['secretValue']).toBe('[REDACTED]')
     expect((out['nested'] as Record<string, unknown>)['ok']).toBe('visible')
@@ -201,6 +211,7 @@ describe('redact', () => {
     expect(JSON.stringify(redact(deep))).toMatch(/\[Truncated\]/)
 
     expect(redact('x'.repeat(10_005))).toBe(`${'x'.repeat(10_000)}…[truncated]`)
+    expect(redact('x'.repeat(10_000))).toBe('x'.repeat(10_000)) // ровно на границе — НЕ усечена
     expect(redact(5)).toBe(5)
     expect(redact(null)).toBe(null)
     expect(redact(undefined)).toBe(undefined)
@@ -216,6 +227,15 @@ describe('errInfo', () => {
     expect(typeof e['stack']).toBe('string')
     expect(errInfo('строка')).toEqual({ message: 'строка' })
     expect(errInfo(42)).toEqual({ message: '42' })
+    const noStack = new Error('x')
+    delete (noStack as { stack?: string }).stack
+    expect(errInfo(noStack)['stack']).toBeUndefined() // ветка stack=undefined
+  })
+
+  it('чистит креды строки подключения в message', () => {
+    const e = errInfo(new Error('connect failed: postgres://app:s3cr3t@db:5432/polls'))
+    expect(e['message']).not.toMatch(/s3cr3t/)
+    expect(e['message']).toMatch(/postgres:\/\/app:\[REDACTED\]@db/)
   })
 })
 
@@ -238,6 +258,7 @@ describe('installProcessHandlers', () => {
     const fatal: [string, unknown][] = []
     installProcessHandlers({ logger, process: f.proc, onFatal: (k, e) => fatal.push([k, e]) })
     f.emit('unhandledRejection', new Error('rej'))
+    expect(calls[0]?.level).toBe('error')
     expect(calls[0]?.msg).toBe('unhandledRejection')
     expect((calls[0]?.fields?.['err'] as Record<string, unknown>)['message']).toBe('rej')
     expect(fatal).toEqual([['unhandledRejection', expect.any(Error)]])
@@ -250,6 +271,7 @@ describe('installProcessHandlers', () => {
     const fatal: string[] = []
     installProcessHandlers({ logger, process: f.proc, onFatal: (k) => fatal.push(k) })
     f.emit('uncaughtException', new Error('boom'))
+    expect(calls[0]?.level).toBe('error')
     expect(calls[0]?.msg).toBe('uncaughtException')
     expect(fatal).toEqual(['uncaughtException'])
     expect(f.exits).toEqual([1])
