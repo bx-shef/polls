@@ -508,4 +508,4 @@ group by opt order by 2 desc;
 *Спецификация — [`brief.md`](./brief.md) · Дизайн — [`design.md`](./design.md) ·
 Шаблон схемы — [`reference/survey-schema.template.json`](./reference/survey-schema.template.json).*
 
-*Последнее ревью: 2026-06-13.*
+*Последнее ревью: 2026-06-14.*
