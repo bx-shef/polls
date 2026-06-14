@@ -39,6 +39,10 @@ describe('MemoryStore', () => {
     expect(await s.getVersion('nope', 1)).toBeUndefined()
   })
 
+  it('ping() — health-проба in-memory резолвится (#5)', async () => {
+    await expect(new MemoryStore().ping()).resolves.toBeUndefined()
+  })
+
   it('listResponses фильтрует по surveyKey, разные опросы не смешиваются', async () => {
     const s = new MemoryStore()
     await s.addResponse({ id: 'a1', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [] })

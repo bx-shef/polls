@@ -56,4 +56,8 @@ export class MemoryStore implements IStore {
       after.length > limit && last ? encodeCursor({ submittedAt: last.submittedAt, id: last.id }) : undefined
     return { items, nextCursor }
   }
+
+  async ping(): Promise<void> {
+    // In-memory: соединение всегда «живо», проверять нечего.
+  }
 }

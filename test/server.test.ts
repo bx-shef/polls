@@ -7,6 +7,7 @@ import { MemoryNonceStore } from '../src/api/nonce'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { failSafe, ipOf, pathOf, portOf, startServer, type NodeServer } from '../src/server/node'
 import { MemoryStore } from '../src/store/memory'
+import { nullLogger } from '../src/obs/logger'
 import { PgStore, type Queryable } from '../src/store/pg'
 import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
 
@@ -109,10 +110,56 @@ describe('node-адаптер: живой HTTP', () => {
     }
   })
 
+  it('GET /api/health → 200 { ok, ts }; POST /api/health → 405 (#5)', async () => {
+    const r = await fetch(`${base}/api/health`)
+    expect(r.status).toBe(200)
+    const body = (await r.json()) as { ok: boolean; ts: string }
+    expect(body.ok).toBe(true)
+    expect(typeof body.ts).toBe('string')
+    expect((await fetch(`${base}/api/health`, { method: 'POST' })).status).toBe(405)
+  })
+
+  it('каждый ответ несёт заголовок x-request-id (корреляция, #5)', async () => {
+    const r = await fetch(`${base}/api/session`)
+    expect(r.headers.get('x-request-id')).toBeTruthy()
+  })
+
+  it('логгер получает строку запроса с полями (#5)', async () => {
+    const lines: { msg: string; fields: Record<string, unknown> }[] = []
+    const logger = {
+      ...nullLogger,
+      info: (msg: string, fields?: Record<string, unknown>) => void lines.push({ msg, fields: fields ?? {} })
+    }
+    const srv = await startServer({ api: createApi({ store }), logger })
+    try {
+      await (await fetch(`http://127.0.0.1:${srv.port}/api/session`)).json() // дождаться полного ответа
+      const rec = lines.find((l) => l.msg === 'request')
+      expect(rec?.fields['path']).toBe('/api/session')
+      expect(rec?.fields['status']).toBe(200)
+      expect(typeof rec?.fields['requestId']).toBe('string')
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('health через адаптер при мёртвой БД → 503 (#5)', async () => {
+    const store503 = await buildDemo(new MemoryStore())
+    store503.ping = () => Promise.reject(new Error('db down'))
+    const srv = await startServer({ api: createApi({ store: store503 }) })
+    try {
+      const r = await fetch(`http://127.0.0.1:${srv.port}/api/health`)
+      expect(r.status).toBe(503)
+      expect(((await r.json()) as { ok: boolean }).ok).toBe(false)
+    } finally {
+      await srv.close()
+    }
+  })
+
   it('сломанный api → 500 через failSafe (процесс не падает); повторный close() → ошибка', async () => {
     const broken: Api = {
       session: () => Promise.reject(new Error('boom')),
-      submit: () => Promise.reject(new Error('boom'))
+      submit: () => Promise.reject(new Error('boom')),
+      health: () => Promise.reject(new Error('boom'))
     }
     const srv = await startServer({ api: broken })
     const r = await fetch(`http://127.0.0.1:${srv.port}/api/session`)

@@ -168,6 +168,11 @@ export class PgStore implements IStore {
     return this.db.transaction ? this.db.transaction(fn) : fn(this.db)
   }
 
+  /** Health-проба (#5): дешёвый round-trip к БД; реджект → соединение мертво. */
+  async ping(): Promise<void> {
+    await this.db.query('select 1')
+  }
+
   /**
    * Идемпотентно (ON CONFLICT): параллельный вызов не падает на гонке SELECT→INSERT.
    * Системная группа — без владельца; предикат соответствует частичному индексу

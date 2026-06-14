@@ -493,7 +493,8 @@ group by opt order by 2 desc;
 | OAuth install/callback-эндпоинт + живой обмен с порталом Bitrix24 | Связка | 🔶 [#3](https://github.com/bx-shef/polls/issues/3) |
 | Серверный анти-абьюз в ядре (`src/api`): nonce TTL → 409, honeypot → 400, rate-limit → 429, server-set `submittedAt` | Фаза 4 | ✅ |
 | Анти-абьюз остаток: идемпотентность по invitation (с #3), общий стор nonce/лимитов (мульти-инстанс) | Деплой | 🔶 [#4](https://github.com/bx-shef/polls/issues/4) |
-| Наблюдаемость: структурные логи, `/api/health`, error-tracking | Деплой | ⛔ [#5](https://github.com/bx-shef/polls/issues/5) |
+| Наблюдаемость (ядро `src/obs`): структурный логгер + редакция секретов, `GET /api/health` (200/503), error-tracking unhandled, `x-request-id` | Фаза 5 | ✅ |
+| Наблюдаемость (деплой): адаптеры `Logger`→Pino / `onFatal`→Sentry, живой `/health` за reverse-proxy, метрики/OTel-трейсы | Деплой | 🔶 [#5](https://github.com/bx-shef/polls/issues/5) |
 | Инструмент миграций (node-pg-migrate / Flyway) вместо одного SQL | Деплой | ⛔ [#6](https://github.com/bx-shef/polls/issues/6) |
 | Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |
 | Порог анонимности `N`: `ANONYMITY_THRESHOLD` + `meetsAnonymity`; принудительное подавление чувствительных срезов — в `PgStore.aggregateNps/Csat/Distribution`. PII-erasure (#4) должен чистить `response.context` (JSONB), денормализованные колонки (`contact_id`, …) и `response_product.product_name` | Фаза 1–3 | ✅ |

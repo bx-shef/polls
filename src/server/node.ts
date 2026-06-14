@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Api, ApiResult } from '../api/handlers'
+import { nullLogger, type Logger } from '../obs/logger'
 
 /**
  * Минимальный HTTP-адаптер на node:http (нулевые зависимости): роутинг двух
@@ -20,6 +22,8 @@ export interface NodeServerOptions {
   maxBodyBytes?: number
   /** Максимум на весь запрос, мс (анти-slowloris; default 30с). */
   requestTimeoutMs?: number
+  /** Структурный логгер запросов (#5). Default `nullLogger` (тихая библиотека). */
+  logger?: Logger
 }
 
 export interface NodeServer {
@@ -75,6 +79,12 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, maxBod
   const ip = ipOf(req)
   const url = pathOf(req.url)
 
+  if (url === '/api/health') {
+    // Публичный, без rate-limit: оркестратор/reverse-proxy опрашивает часто.
+    if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
+    return send(res, await api.health())
+  }
+
   if (url === '/api/session') {
     if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
     return send(res, await api.session({ ip }))
@@ -111,9 +121,26 @@ export function failSafe(res: Pick<ServerResponse, 'headersSent' | 'writeHead' |
 
 export function startServer(opts: NodeServerOptions): Promise<NodeServer> {
   const maxBodyBytes = opts.maxBodyBytes ?? 64 * 1024
+  const logger = opts.logger ?? nullLogger
   const server = createServer((req, res) => {
+    const requestId = randomUUID()
+    const startedAt = Date.now()
+    res.setHeader('x-request-id', requestId) // корреляция лог↔клиент (лёгкий seam под трейсы)
     // async-роутинг с перехватом: необработанный reject уронил бы процесс (Node ≥15)
-    route(opts.api, req, res, maxBodyBytes).catch(() => failSafe(res))
+    route(opts.api, req, res, maxBodyBytes)
+      .catch(() => failSafe(res))
+      .finally(() => {
+        const fields = {
+          requestId,
+          method: req.method,
+          path: pathOf(req.url),
+          status: res.statusCode,
+          durationMs: Date.now() - startedAt,
+          ip: ipOf(req)
+        }
+        if (res.statusCode >= 500) logger.error('request', fields)
+        else logger.info('request', fields)
+      })
   })
   server.requestTimeout = opts.requestTimeoutMs ?? 30_000
   server.headersTimeout = Math.min(10_000, server.requestTimeout)
