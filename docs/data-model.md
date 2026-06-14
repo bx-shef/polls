@@ -489,7 +489,8 @@ group by opt order by 2 desc;
 
 | Требование | Фаза | Статус |
 |---|---|---|
-| Шифрование OAuth-токенов (`portal.tokens`) + refresh-flow | Связка | ⛔ [#3](https://github.com/bx-shef/polls/issues/3) |
+| Шифрование OAuth-токенов (`portal.tokens`, AES-256-GCM) + refresh-flow + startup-guard ключа — `src/bitrix24` | Фаза 5 | ✅ |
+| OAuth install/callback-эндпоинт + живой обмен с порталом Bitrix24 | Связка | 🔶 [#3](https://github.com/bx-shef/polls/issues/3) |
 | Серверный анти-абьюз в ядре (`src/api`): nonce TTL → 409, honeypot → 400, rate-limit → 429, server-set `submittedAt` | Фаза 4 | ✅ |
 | Анти-абьюз остаток: идемпотентность по invitation (с #3), общий стор nonce/лимитов (мульти-инстанс) | Деплой | 🔶 [#4](https://github.com/bx-shef/polls/issues/4) |
 | Наблюдаемость: структурные логи, `/api/health`, error-tracking | Деплой | ⛔ [#5](https://github.com/bx-shef/polls/issues/5) |
@@ -507,4 +508,4 @@ group by opt order by 2 desc;
 *Спецификация — [`brief.md`](./brief.md) · Дизайн — [`design.md`](./design.md) ·
 Шаблон схемы — [`reference/survey-schema.template.json`](./reference/survey-schema.template.json).*
 
-*Последнее ревью: 2026-06-13.*
+*Последнее ревью: 2026-06-14.*

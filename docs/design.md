@@ -508,4 +508,4 @@ const distColumns = [
 *Спецификация структуры и поведения — [`brief.md`](./brief.md). Обезличенный
 шаблон схемы — [`reference/survey-schema.template.json`](./reference/survey-schema.template.json).*
 
-*Последнее ревью: 2026-06-13.*
+*Последнее ревью: 2026-06-14.*

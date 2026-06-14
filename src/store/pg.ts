@@ -9,7 +9,16 @@ import {
   type SurveyDraft
 } from '../domain/schema'
 import { decodeCursor, encodeCursor } from './cursor'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions } from './types'
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  type IStore,
+  type Queryable,
+  type ResponsePage,
+  type ResponsePageOptions
+} from './types'
+// Re-export для обратной совместимости: исторически Queryable жил здесь.
+export type { Queryable } from './types'
 
 /**
  * Реализация IStore поверх PostgreSQL + SQL-агрегация (read-API, #7).
@@ -35,18 +44,6 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type 
  * Остаётся (#3/#4/#10): идемпотентность addResponse и связь invitation_id (когда
  * появится invitation-flow), PII-редакция/erasure на HTTP-слое, SQL-вариант npsTrend.
  */
-
-/**
- * Минимальный контракт драйвера БД (совместим с pg.Pool и PGlite).
- * `transaction` опциональна: PGlite даёт её из коробки; для `pg.Pool` используйте
- * фабрику {@link queryableFromPool} — она строит корректный транзакционный
- * адаптер. Без `transaction` запись неатомарна — допустимо только для тестов/демо
- * (в проде включайте `requireTransaction` в PgStoreOptions).
- */
-export interface Queryable {
-  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
-  transaction?<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
-}
 
 /** Структурный минимум pg.Pool (ядро не тянет зависимость `pg`). */
 export interface PoolLike {

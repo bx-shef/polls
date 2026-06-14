@@ -6,7 +6,7 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/domain/**', 'src/store/**', 'src/api/**', 'src/server/**'],
+      include: ['src/domain/**', 'src/store/**', 'src/api/**', 'src/server/**', 'src/bitrix24/**'],
       exclude: ['src/demo/**', 'src/index.ts', 'src/store/types.ts'],
       reporter: ['text', 'html'],
       thresholds: {
