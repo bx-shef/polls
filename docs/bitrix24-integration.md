@@ -105,7 +105,7 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 - Чистые `shouldInvite` / `chooseChannel` + тип `InvitationPolicy`
   (`domain/invitation.ts`) — кодируют решения выше, тестируемы изолированно.
 
-**Остаётся (storage + binding):**
+**Остаётся (storage + binding) — [#17](https://github.com/bx-shef/polls/issues/17); идемпотентность/общий стор — [#4](https://github.com/bx-shef/polls/issues/4):**
 
 - Вшить `invitationPolicy` в `surveyDraft`/`compiledVersion` + `PgStore` (сейчас тип
   самостоятельный, чтобы не трогать миграции вне вехи).
@@ -117,8 +117,8 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 
 ## Остаётся (слой связки)
 
-- **[#3](https://github.com/bx-shef/polls/issues/3)** — инвайт-флоу: ядро-рантайм
+- **[#17](https://github.com/bx-shef/polls/issues/17)** — инвайт-флоу: ядро-рантайм
   готов (раздел «Invitation-flow» выше); остаётся storage-вшивание `invitationPolicy`
-  и binding-endpoint `ONCRMDEALUPDATE`.
+  и binding-endpoint `ONCRMDEALUPDATE`. (#3 про OAuth-токены — закрыт.)
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).

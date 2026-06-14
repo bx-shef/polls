@@ -89,11 +89,11 @@ UI/CSS не готова, пока не увидена глазами — рен
 ## Скоуп и роадмап
 
 Сетевой/деплой-слой вынесен в ISSUE (не дефекты ядра):
-- **#3** — OAuth Bitrix24: ядро в `src/bitrix24` (AES-256-GCM шифрование `portal.tokens`,
-  refresh-flow, startup-guard ключа). Invitation-flow: ядро-рантайм сделан (`Invitation` +
-  `api/invitation.ts` + проброс в submit; маппинг сверен вживую, см.
-  `docs/bitrix24-integration.md`). Остаётся: install/callback- и `ONCRMDEALUPDATE`-эндпоинты,
-  storage-вшивание `invitationPolicy`.
+- **#3** (закрыт) — OAuth Bitrix24: ядро в `src/bitrix24` (AES-256-GCM шифрование
+  `portal.tokens`, refresh-flow, startup-guard ключа). Invitation-flow: ядро-рантайм
+  сделан (`Invitation` + `api/invitation.ts` + проброс в submit; маппинг сверен вживую,
+  см. `docs/bitrix24-integration.md`); binding (`ONCRMDEALUPDATE` + вшивание
+  `invitationPolicy`) — **#17**, идемпотентность/общий стор — **#4**.
 - **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
   honeypot → 400, rate-limit → 429, идемпотентность по invitation — single-use, #3).
   Остаётся: общий стор nonce/лимитов/приглашений для мульти-инстанса, серверная
