@@ -55,6 +55,15 @@ function sampleResponse(over: Partial<ResponseRecord> = {}): ResponseRecord {
 }
 
 describe('PgStore (pglite)', () => {
+  it('ping() — health-проба выполняет select 1 и резолвится (#5)', async () => {
+    await expect(new PgStore(db, { portalId: 1 }).ping()).resolves.toBeUndefined()
+  })
+
+  it('ping() реджектит, когда драйвер недоступен (#5)', async () => {
+    const dead: Queryable = { query: () => Promise.reject(new Error('connection refused')) }
+    await expect(new PgStore(dead, { portalId: 1 }).ping()).rejects.toThrow(/connection refused/)
+  })
+
   it('публикует версии, отдаёт по номеру и текущую; иммутабельность', async () => {
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA })

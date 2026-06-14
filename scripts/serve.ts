@@ -5,11 +5,20 @@
 import { createApi } from '../src/api/handlers'
 import { startServer } from '../src/server/node'
 import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
+import { createJsonLogger } from '../src/obs/logger'
+import { installProcessHandlers } from '../src/obs/process'
+
+// #5 в деле: JSON-логи в stdout + перехват unhandled (в проде onFatal → Sentry).
+const logger = createJsonLogger({ base: { svc: 'polls' } })
+installProcessHandlers({ logger })
 
 const store = await buildDemo()
-const api = createApi({ store })
-const { port } = await startServer({ api, port: Number(process.env.PORT ?? 8080) })
+const api = createApi({ store, logger })
+const { port } = await startServer({ api, logger, port: Number(process.env.PORT ?? 8080) })
+logger.info('server_started', { port })
 
+// Человекочитаемые curl-примеры — только для интерактивного `pnpm serve`,
+// НЕ для прод-пайпа JSON-логов (нельзя мешать форматы в одном stdout).
 console.log(`Опрос «${SURVEY_KEY}» (версии 1–2) слушает на http://127.0.0.1:${port}
 Примеры:
   curl http://127.0.0.1:${port}/api/session

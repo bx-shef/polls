@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { buildResponseAnswers } from '../domain/answers'
 import { rawAnswerSchema } from '../domain/schema'
 import type { IStore } from '../store/types'
+import { errInfo, nullLogger, type Logger } from '../obs/logger'
 import { MemoryNonceStore, type NonceStore } from './nonce'
 import { SlidingWindowLimiter, type RateLimiter } from './ratelimit'
 
@@ -54,8 +55,18 @@ export interface ApiDeps {
   /** Часы сервера (инжектируются в тестах). submittedAt ставится только отсюда. */
   now?: () => Date
   idGen?: () => string
-  /** Хук диагностики внутренних ошибок (500): сюда придёт логгер из #5. */
+  /** Структурный логгер (#5). Default `nullLogger` (тишина без сайд-эффектов). */
+  logger?: Logger
+  /**
+   * Хук диагностики внутренних ошибок (500). Если не задан — пишет в `logger`
+   * (`api_error`). Задайте, чтобы перенаправить ошибку в свой трекер.
+   */
   onError?: (e: unknown) => void
+  /**
+   * TTL кэша `health()` в мс (default 1000). Health публичный и НЕ throttled —
+   * кэш ограничивает частоту реальных `store.ping()` (анти-DoS на пул БД).
+   */
+  healthCacheMs?: number
 }
 
 export interface ApiResult {
@@ -76,6 +87,8 @@ export interface SubmitInput {
 export interface Api {
   session(input: SessionInput): Promise<ApiResult>
   submit(input: SubmitInput): Promise<ApiResult>
+  /** Публичный health-check (#5): 200 при живой БД, 503 при её недоступности. */
+  health(): Promise<ApiResult>
 }
 
 const err = (status: number, error: string): ApiResult => ({ status, body: { ok: false, error } })
@@ -93,7 +106,10 @@ export function createApi(deps: ApiDeps): Api {
   const limiter = deps.limiter ?? new SlidingWindowLimiter({ limit: 10, windowMs: 60_000 })
   const now = deps.now ?? ((): Date => new Date())
   const idGen = deps.idGen ?? randomUUID
-  const onError = deps.onError ?? ((): void => undefined)
+  const logger = deps.logger ?? nullLogger
+  const onError = deps.onError ?? ((e: unknown): void => logger.error('api_error', { err: errInfo(e) }))
+  const healthCacheMs = deps.healthCacheMs ?? 1000
+  let healthCache: { atMs: number; result: ApiResult } | null = null
 
   return {
     async session({ ip }: SessionInput): Promise<ApiResult> {
@@ -140,6 +156,26 @@ export function createApi(deps: ApiDeps): Api {
         onError(e)
         return err(500, 'Внутренняя ошибка, попробуйте позже')
       }
+    },
+
+    async health(): Promise<ApiResult> {
+      // Кэш на healthCacheMs: health публичный и НЕ throttled (оркестратор/прокси
+      // опрашивают часто) — иначе флуд /api/health долбил бы пул БД (DoS-вектор).
+      const nowMs = now().getTime()
+      if (healthCache && nowMs - healthCache.atMs < healthCacheMs) return healthCache.result
+      const ts = now().toISOString()
+      let result: ApiResult
+      try {
+        await store.ping()
+        result = { status: 200, body: { ok: true, ts } }
+      } catch (e) {
+        // Деталей наружу не даём: тело health = { ok, ts } (намеренно без `error`);
+        // диагностика — в лог.
+        logger.error('health_ping_failed', { err: errInfo(e) })
+        result = { status: 503, body: { ok: false, ts } }
+      }
+      healthCache = { atMs: nowMs, result }
+      return result
     }
   }
 }

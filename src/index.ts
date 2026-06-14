@@ -18,6 +18,12 @@ export { MemoryNonceStore } from './api/nonce'
 export type { NonceStore } from './api/nonce'
 export { SlidingWindowLimiter } from './api/ratelimit'
 export type { RateLimiter } from './api/ratelimit'
+// Наблюдаемость (#5): zero-dep структурный логгер + редакция секретов + process-хуки.
+// Прод подменяет Logger адаптером (Pino/Sentry) — ядро интерфейсо-зависимо, не вендоро.
+export { createJsonLogger, nullLogger, redact, errInfo, LOG_LEVELS } from './obs/logger'
+export type { Logger, LogLevel, LogFields, JsonLoggerOptions } from './obs/logger'
+export { installProcessHandlers } from './obs/process'
+export type { ProcessLike, ProcessHandlerOptions } from './obs/process'
 // Bitrix24 (#3): шифрование OAuth-токенов + refresh-flow (fetch/pg.Pool даёт слой деплоя)
 export { TokenCipher, loadTokenKey } from './bitrix24/crypto'
 export type { EncryptedBlob } from './bitrix24/crypto'

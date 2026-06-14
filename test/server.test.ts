@@ -7,6 +7,7 @@ import { MemoryNonceStore } from '../src/api/nonce'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { failSafe, ipOf, pathOf, portOf, startServer, type NodeServer } from '../src/server/node'
 import { MemoryStore } from '../src/store/memory'
+import { nullLogger } from '../src/obs/logger'
 import { PgStore, type Queryable } from '../src/store/pg'
 import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
 
@@ -109,10 +110,65 @@ describe('node-адаптер: живой HTTP', () => {
     }
   })
 
+  it('GET /api/health → 200 { ok, ts }; POST /api/health → 405 (#5)', async () => {
+    const r = await fetch(`${base}/api/health`)
+    expect(r.status).toBe(200)
+    const body = (await r.json()) as { ok: boolean; ts: string }
+    expect(body.ok).toBe(true)
+    expect(typeof body.ts).toBe('string')
+    expect((await fetch(`${base}/api/health`, { method: 'POST' })).status).toBe(405)
+  })
+
+  it('каждый ответ несёт заголовок x-request-id (корреляция, #5)', async () => {
+    const r = await fetch(`${base}/api/session`)
+    expect(r.headers.get('x-request-id')).toBeTruthy()
+  })
+
+  it('логгер получает строку запроса: 200 → info, 4xx → warn (#5)', async () => {
+    const lines: { level: string; msg: string; fields: Record<string, unknown> }[] = []
+    const cap =
+      (level: string) =>
+      (msg: string, fields?: Record<string, unknown>): void =>
+        void lines.push({ level, msg, fields: fields ?? {} })
+    const logger = { ...nullLogger, info: cap('info'), warn: cap('warn'), error: cap('error') }
+    const srv = await startServer({ api: createApi({ store }), logger })
+    try {
+      // Порядок детерминирован микротаск-очередью: server-side .finally пишет в lines
+      // ДО того, как loopback-ответ дойдёт до клиента (та же петля событий).
+      await (await fetch(`http://127.0.0.1:${srv.port}/api/session`)).json()
+      const ok = lines.find((l) => l.fields['path'] === '/api/session')
+      expect(ok?.level).toBe('info')
+      expect(ok?.msg).toBe('request')
+      expect(ok?.fields['status']).toBe(200)
+      expect(typeof ok?.fields['requestId']).toBe('string')
+
+      await fetch(`http://127.0.0.1:${srv.port}/api/nope`).then((r) => r.text()) // 404
+      const notFound = lines.find((l) => l.fields['path'] === '/api/nope')
+      expect(notFound?.level).toBe('warn') // 4xx → warn
+      expect(notFound?.fields['status']).toBe(404)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('health через адаптер при мёртвой БД → 503 (#5)', async () => {
+    const store503 = await buildDemo(new MemoryStore())
+    store503.ping = () => Promise.reject(new Error('db down'))
+    const srv = await startServer({ api: createApi({ store: store503 }) })
+    try {
+      const r = await fetch(`http://127.0.0.1:${srv.port}/api/health`)
+      expect(r.status).toBe(503)
+      expect(((await r.json()) as { ok: boolean }).ok).toBe(false)
+    } finally {
+      await srv.close()
+    }
+  })
+
   it('сломанный api → 500 через failSafe (процесс не падает); повторный close() → ошибка', async () => {
     const broken: Api = {
       session: () => Promise.reject(new Error('boom')),
-      submit: () => Promise.reject(new Error('boom'))
+      submit: () => Promise.reject(new Error('boom')),
+      health: () => Promise.reject(new Error('boom'))
     }
     const srv = await startServer({ api: broken })
     const r = await fetch(`http://127.0.0.1:${srv.port}/api/session`)

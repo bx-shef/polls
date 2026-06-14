@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
+import { nullLogger } from '../src/obs/logger'
 import { MemoryNonceStore } from '../src/api/nonce'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { MemoryStore } from '../src/store/memory'
@@ -229,6 +230,66 @@ describe('POST /api/submit — конвейер проверок', () => {
     expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(200)
     const saved = (await store.listResponses()).at(-1)!
     expect(saved.id).toMatch(/^[0-9a-f-]{36}$/) // randomUUID
+  })
+})
+
+describe('GET /api/health (#5)', () => {
+  it('живая БД → 200 { ok, ts }', async () => {
+    const { api, now } = await freshApi()
+    const r = await api.health()
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true, ts: now().toISOString() })
+  })
+
+  it('недоступная БД → 503 без деталей; ошибка уходит в logger', async () => {
+    const seen: string[] = []
+    const store = new (class extends MemoryStore {
+      override async ping(): Promise<never> {
+        throw new Error('db down: секрет коннекта')
+      }
+    })()
+    const logger = { ...nullLogger, error: (msg: string) => void seen.push(msg) }
+    const r = await createApi({ store, logger }).health()
+    expect(r.status).toBe(503)
+    expect(r.body['ok']).toBe(false)
+    expect(typeof r.body['ts']).toBe('string')
+    expect(JSON.stringify(r.body)).not.toMatch(/секрет/)
+    expect(seen).toContain('health_ping_failed')
+  })
+
+  it('дефолтный onError пишет диагностику в logger при сбое submit (#5)', async () => {
+    const seen: string[] = []
+    const logger = { ...nullLogger, error: (msg: string) => void seen.push(msg) }
+    // store с падающим getVersion инжектируется в createApi (buildDemo идёт на
+    // отдельном дефолтном сторе внутри freshApi — как в тестах сбоя выше).
+    const { api } = await freshApi({
+      store: new (class extends MemoryStore {
+        override async getVersion(): Promise<never> {
+          throw new Error('boom')
+        }
+      })(),
+      logger
+    })
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(500)
+    expect(seen).toContain('api_error')
+  })
+
+  it('кэшируется в пределах TTL — не долбит БД (#5)', async () => {
+    let pings = 0
+    const store = new (class extends MemoryStore {
+      override async ping(): Promise<void> {
+        pings++
+      }
+    })()
+    const c = clock()
+    const api = createApi({ store, now: c.now, healthCacheMs: 1000 })
+    await api.health()
+    await api.health()
+    expect(pings).toBe(1) // второй вызов — из кэша
+    c.advance(1001)
+    await api.health()
+    expect(pings).toBe(2) // кэш истёк → новый ping
   })
 })
 
