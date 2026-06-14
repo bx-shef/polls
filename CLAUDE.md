@@ -45,10 +45,12 @@ pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
   `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare).
 - `api/handlers.ts` (`createApi`) — framework-agnostic HTTP-хендлеры (вход → {status, body},
   зависимости инжектируются): конвейер submit = honeypot → rate-limit → форма/schema_version →
-  nonce (409 replay / 403 unknown) → версия (404) → валидация ответов (422) → запись с
-  СЕРВЕРНЫМИ id/submittedAt и пустым context (до invitation-flow #3). `api/nonce.ts`
-  (`MemoryNonceStore`, TTL) и `api/ratelimit.ts` (`SlidingWindowLimiter`) — in-memory
-  анти-абьюз одного инстанса. `server/node.ts` — адаптер на node:http (лимит тела 413,
+  nonce (409 replay / 403 unknown) → версия (404) → валидация ответов (422) → приглашение
+  (#3: токен → снимок CrmContext, single-use; replay 409 / unknown 403 / чужой пин 409) →
+  запись с СЕРВЕРНЫМИ id/submittedAt; context — снимок из приглашения либо пустой без токена.
+  `api/nonce.ts` (`MemoryNonceStore`, TTL), `api/ratelimit.ts` (`SlidingWindowLimiter`) и
+  `api/invitation.ts` (`MemoryInvitationStore`, single-use) — in-memory анти-абьюз/состояние
+  одного инстанса. `server/node.ts` — адаптер на node:http (лимит тела 413,
   JSON 400, роутинг, `x-request-id` + строка лога `request`); Nitro-обёртка фазы связки — пример в JSDoc handlers.
 - `obs/logger.ts` (`Logger`/`createJsonLogger` + `redact` секретов) и `obs/process.ts`
   (`installProcessHandlers`: unhandled → лог + `onFatal`/Sentry) — наблюдаемость (#5), zero-dep.
@@ -88,10 +90,14 @@ UI/CSS не готова, пока не увидена глазами — рен
 
 Сетевой/деплой-слой вынесен в ISSUE (не дефекты ядра):
 - **#3** — OAuth Bitrix24: ядро в `src/bitrix24` (AES-256-GCM шифрование `portal.tokens`,
-  refresh-flow, startup-guard ключа). Остаётся: install/callback-эндпоинт + живой обмен с порталом.
+  refresh-flow, startup-guard ключа). Invitation-flow: ядро-рантайм сделан (`Invitation` +
+  `api/invitation.ts` + проброс в submit; маппинг сверен вживую, см.
+  `docs/bitrix24-integration.md`). Остаётся: install/callback- и `ONCRMDEALUPDATE`-эндпоинты,
+  storage-вшивание `invitationPolicy`.
 - **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
-  honeypot → 400, rate-limit → 429). Остаётся: идемпотентность по invitation (с #3),
-  общий стор nonce/лимитов для мульти-инстанса, серверная конфигурация за reverse-proxy.
+  honeypot → 400, rate-limit → 429, идемпотентность по invitation — single-use, #3).
+  Остаётся: общий стор nonce/лимитов/приглашений для мульти-инстанса, серверная
+  конфигурация за reverse-proxy.
 - **#5** — наблюдаемость: ядро сделано (`src/obs`: zero-dep структурный логгер с редакцией
   секретов, `GET /api/health` → 200/503, `installProcessHandlers` для unhandled, `x-request-id`).
   Остаётся (слой деплоя): адаптеры `Logger`→Pino / `onFatal`→Sentry, живой `/health` за

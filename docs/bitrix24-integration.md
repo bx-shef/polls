@@ -66,10 +66,55 @@ B24_WEBHOOK_URL='https://<portal>/rest/<id>/<token>/' \
 (имя/телефон/email) **не печатаются** — только факт наличия канала (boolean).
 Согласуется с privacy-правилом ядра (живые данные портала не уходят в облако/CI).
 
+## Invitation-flow (#3): снимок CRM-контекста в ответе
+
+`submit` исторически писал `context: {}`. Приглашение со снимком закрывает пробел.
+Поток:
+
+1. **Сделка → триггер-стадия.** Binding-endpoint ловит `ONCRMDEALUPDATE`, маппит
+   сделку → `CrmContext` (таблица выше), создаёт приглашение: снимок контекста +
+   пин `surveyKey/versionNo` + одноразовый токен.
+2. **Доставка.** Binding-слой выбирает канал и шлёт ссылку с токеном.
+3. **Сабмит.** `POST /api/submit` с полем `invitation` резолвит токен → снимок
+   становится `ResponseRecord.context`.
+
+**Решения (конфиг — на стороне опроса):**
+
+- **Триггер задаёт опрос.** `invitationPolicy.triggerStages: string[]` — `stage_id`,
+  переход в которые запускает опрос (а не хардкод WON); стадии портал-специфичны
+  (нюанс №2 выше). Хелпер `shouldInvite(stageId, policy)`.
+- **Порядок каналов задаёт опрос.** `invitationPolicy.channelOrder` (`email→sms`
+  либо `sms→email`) — первый доступный у контакта канал побеждает (`chooseChannel`).
+  Нет канала → приглашение не шлётся, а **пропуск пишется в таймлайн сделки**
+  (`crm.timeline.comment`) **или смарт-элемента** (timeline соответствующего СПА),
+  чтобы оператор видел причину.
+
+**Сделано (ядро-рантайм, `src/`):**
+
+- Тип `Invitation` (`domain/schema.ts`): токен + снимок `CrmContext` + пин опроса/
+  версии + статус/сроки. **ПДн адресата не храним** — канал резолвит binding-слой.
+- `InvitationStore` / `MemoryInvitationStore` (`api/invitation.ts`) по образцу
+  nonce: `create`→токен, `peek`, `consume` (single-use).
+- Проводка `POST /api/submit` (`api/handlers.ts`): токен расходуется **после** 422
+  (чтобы ошибка ответов не сжигала неповторимое приглашение). Коды: повтор → 409
+  (= идемпотентность `addResponse`, #4), неизвестный/протухший → 403, чужой
+  опрос/версия → 409. Без токена — `context: {}` (back-compat).
+- Чистые `shouldInvite` / `chooseChannel` + тип `InvitationPolicy`
+  (`domain/invitation.ts`) — кодируют решения выше, тестируемы изолированно.
+
+**Остаётся (storage + binding):**
+
+- Вшить `invitationPolicy` в `surveyDraft`/`compiledVersion` + `PgStore` (сейчас тип
+  самостоятельный, чтобы не трогать миграции вне вехи).
+- `MemoryInvitationStore` → таблица в `PgStore` для мульти-инстанса (как nonce, #4).
+- Endpoint `ONCRMDEALUPDATE`: детект триггер-стадии (категория-aware через
+  `crm.dealcategory.stage.list`/`crm.status`), дедуп по `dealId`, отправка ссылки по
+  `chooseChannel`, запись пропуска в таймлайн. Поверх `src/bitrix24/`.
+
 ## Остаётся (слой связки)
 
-- **[#3](https://github.com/bx-shef/polls/issues/3)** — инвайт-флоу: слушать
-  `ONCRMDEALUPDATE`→`WON`, снимать `CrmContext`, выбирать канал (email/SMS),
-  идемпотентность по invitation. Живой обмен с порталом поверх `src/bitrix24/`.
+- **[#3](https://github.com/bx-shef/polls/issues/3)** — инвайт-флоу: ядро-рантайм
+  готов (раздел «Invitation-flow» выше); остаётся storage-вшивание `invitationPolicy`
+  и binding-endpoint `ONCRMDEALUPDATE`.
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
