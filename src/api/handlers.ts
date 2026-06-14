@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { buildResponseAnswers } from '../domain/answers'
-import { rawAnswerSchema } from '../domain/schema'
+import { rawAnswerSchema, type CrmContext } from '../domain/schema'
 import type { IStore } from '../store/types'
 import { errInfo, nullLogger, type Logger } from '../obs/logger'
 import { MemoryNonceStore, type NonceStore } from './nonce'
 import { SlidingWindowLimiter, type RateLimiter } from './ratelimit'
+import { MemoryInvitationStore, type InvitationStore } from './invitation'
 
 /**
  * HTTP-хендлеры опроса (контур A) — framework-agnostic, как и всё ядро:
@@ -22,8 +23,10 @@ import { SlidingWindowLimiter, type RateLimiter } from './ratelimit'
  *      анти-перебор surveyKey/versionNo; UX: после 404/422 клиент запрашивает
  *      новый nonce через GET /api/session)
  *   6. валидация ответов ядром (buildResponseAnswers) → 422 { errors }
- *   7. запись: id и submittedAt ставит СЕРВЕР (клиентские значения не принимаются),
- *      context пуст до invitation-flow (#3) → 200 { ok: true }
+ *   7. приглашение (#3): токен `invitation` (если есть) расходуется ПОСЛЕ 422 —
+ *      replay → 409, неизвестный/протухший → 403, чужой опрос/версия → 409
+ *   8. запись: id и submittedAt ставит СЕРВЕР (клиентские значения не принимаются),
+ *      context = снимок из приглашения (#3) либо {} без токена → 200 { ok: true }
  *
  * Nitro-адаптер (фаза связки) — тонкая обёртка:
  *   export default defineEventHandler(async (event) => {
@@ -40,6 +43,7 @@ const httpSubmitSchema = z
     schema_version: z.number().int(),
     nonce: z.string().min(1).max(200),
     hp: z.string().max(200).optional(),
+    invitation: z.string().min(1).max(200).optional(),
     surveyKey: z.string().min(1).max(200),
     versionNo: z.number().int().positive(),
     answers: z.record(z.string().max(200), rawAnswerSchema)
@@ -52,6 +56,8 @@ export interface ApiDeps {
   store: IStore
   nonces?: NonceStore
   limiter?: RateLimiter
+  /** Стор приглашений (#3): резолвит токен → снимок CRM-контекста. Default in-memory. */
+  invitations?: InvitationStore
   /** Часы сервера (инжектируются в тестах). submittedAt ставится только отсюда. */
   now?: () => Date
   idGen?: () => string
@@ -104,6 +110,7 @@ export function createApi(deps: ApiDeps): Api {
   const store = deps.store
   const nonces = deps.nonces ?? new MemoryNonceStore()
   const limiter = deps.limiter ?? new SlidingWindowLimiter({ limit: 10, windowMs: 60_000 })
+  const invitations = deps.invitations ?? new MemoryInvitationStore()
   const now = deps.now ?? ((): Date => new Date())
   const idGen = deps.idGen ?? randomUUID
   const logger = deps.logger ?? nullLogger
@@ -142,12 +149,26 @@ export function createApi(deps: ApiDeps): Api {
         const { answers, errors } = buildResponseAnswers(version.questions, p.answers)
         if (Object.keys(errors).length > 0) return { status: 422, body: { ok: false, errors } }
 
+        // CRM-снимок из приглашения (#3). Расходуем ПОСЛЕ валидации ответов — чтобы
+        // 422 не сжигал неповторимое приглашение (в отличие от nonce, который
+        // переиздаётся через /api/session). Нет токена → context пуст (back-compat).
+        let context: CrmContext = {}
+        if (p.invitation != null) {
+          const inv = invitations.consume(p.invitation, now())
+          if (inv.status === 'replay') return err(409, 'Приглашение уже использовано')
+          if (inv.status === 'unknown') return err(403, 'Приглашение недействительно или истекло')
+          if (inv.invitation.surveyKey !== p.surveyKey || inv.invitation.versionNo !== p.versionNo) {
+            return err(409, 'Приглашение не соответствует опросу или версии')
+          }
+          context = inv.invitation.context
+        }
+
         await store.addResponse({
           id: idGen(),
           surveyKey: version.surveyKey,
           versionNo: version.versionNo,
           submittedAt: now().toISOString(), // только сервер; клиентское поле игнорируется (#4)
-          context: {}, // CRM-снимок появится с invitation-flow (#3)
+          context, // снимок из приглашения (#3) либо {} без токена
           answers
         })
         return { status: 200, body: { ok: true } }

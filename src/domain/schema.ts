@@ -21,6 +21,10 @@ export type Metric = (typeof METRICS)[number]
 /** Метрики, для которых ответ несёт число (берётся из option.score). */
 export const NUMERIC_METRICS = new Set<Metric>(['nps', 'csat', 'ces', 'scale'])
 
+/** Каналы доставки приглашения (invitation-flow #3); порядок задаёт опрос. */
+export const INVITE_CHANNELS = ['email', 'sms'] as const
+export type InviteChannel = (typeof INVITE_CHANNELS)[number]
+
 /** ISO-8601 с таймзоной (напр. `2026-04-03T10:00:00.000Z`). */
 const isoDatetime = z.string().datetime({ offset: true })
 
@@ -76,6 +80,36 @@ export const crmContextSchema = z.object({
   products: z.array(crmProductSchema).max(50).optional()
 })
 export type CrmContext = z.infer<typeof crmContextSchema>
+
+/**
+ * Политика приглашения опроса (invitation-flow #3) — кодирует «когда звать» и
+ * «каким каналом». Самостоятельный тип: вшивание в surveyDraft/compiledVersion +
+ * PgStore и сам binding-endpoint — отдельной вехой (см. docs/bitrix24-integration.md).
+ */
+export const invitationPolicySchema = z.object({
+  /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
+  triggerStages: z.array(z.string().max(200)).max(50).default([]),
+  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). */
+  channelOrder: z.array(z.enum(INVITE_CHANNELS)).max(INVITE_CHANNELS.length).default(['email', 'sms'])
+})
+export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
+
+/**
+ * Приглашение (invitation-flow #3): связывает одноразовый токен со СНИМКОМ
+ * CRM-контекста (на момент закрытия сделки) и пином опроса/версии. На submit
+ * токен резолвится → context приглашения становится ResponseRecord.context.
+ * ПДн адресата (email/phone) НЕ храним — канал резолвит binding-слой при отправке.
+ */
+export const invitationSchema = z.object({
+  token: z.string().min(1).max(200),
+  surveyKey: z.string().min(1).max(200),
+  versionNo: z.number().int().positive(),
+  context: crmContextSchema,
+  status: z.enum(['pending', 'used']),
+  createdAt: isoDatetime,
+  expiresAt: isoDatetime.optional()
+})
+export type Invitation = z.infer<typeof invitationSchema>
 
 /** Иммутабельная опубликованная версия — её отдаёт фронт и к ней привязаны ответы. */
 export const compiledVersionSchema = z.object({

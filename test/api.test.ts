@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
 import { nullLogger } from '../src/obs/logger'
 import { MemoryNonceStore } from '../src/api/nonce'
+import { MemoryInvitationStore } from '../src/api/invitation'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { MemoryStore } from '../src/store/memory'
 import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
@@ -230,6 +231,67 @@ describe('POST /api/submit — конвейер проверок', () => {
     expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(200)
     const saved = (await store.listResponses()).at(-1)!
     expect(saved.id).toMatch(/^[0-9a-f-]{36}$/) // randomUUID
+  })
+})
+
+describe('POST /api/submit — приглашение #3 (снимок CRM-контекста)', () => {
+  const snapshot = { dealId: 5994, companyId: 3986, dealStageId: 'WON' }
+
+  async function withInvitation(): Promise<{
+    api: Api
+    store: MemoryStore
+    invitations: MemoryInvitationStore
+    now: () => Date
+  }> {
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({ invitations })
+    return { api: base.api, store: base.store, invitations, now: base.now }
+  }
+
+  it('валидный токен → 200; context записи = снимок из приглашения', async () => {
+    const { api, store, invitations, now } = await withInvitation()
+    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const nonce = await issueNonce(api)
+    const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
+    expect(r.status).toBe(200)
+    expect((await store.listResponses()).at(-1)!.context).toEqual(snapshot)
+  })
+
+  it('повторное использование приглашения → 409 (идемпотентность #4)', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const n1 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(n1), invitation: inv.token } })).status).toBe(200)
+    const n2 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })).status).toBe(409)
+  })
+
+  it('неизвестный/протухший токен → 403', async () => {
+    const { api } = await withInvitation()
+    const nonce = await issueNonce(api)
+    const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: 'нет-такого' } })
+    expect(r.status).toBe(403)
+  })
+
+  it('приглашение от другого опроса/версии → 409 (несоответствие пина)', async () => {
+    const { api, invitations, now } = await withInvitation()
+    // версия приглашения 1, а payload идёт на версию 2
+    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 1, context: snapshot }, now())
+    const nonce = await issueNonce(api)
+    const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
+    expect(r.status).toBe(409)
+  })
+
+  it('422 по ответам НЕ сжигает приглашение — можно дослать корректные', async () => {
+    const { api, store, invitations, now } = await withInvitation()
+    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const n1 = await issueNonce(api)
+    const bad = { ...validPayload(n1), invitation: inv.token, answers: { q_nps: { values: ['n9'] } } }
+    expect((await api.submit({ ip: 'a', body: bad })).status).toBe(422)
+    // приглашение цело → корректный сабмит проходит и пишет снимок
+    const n2 = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })).status).toBe(200)
+    expect((await store.listResponses()).at(-1)!.context).toEqual(snapshot)
   })
 })
 
