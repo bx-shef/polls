@@ -106,6 +106,7 @@ UI/CSS не готова, пока не увидена глазами — рен
 
 `brief.md` (спецификация), `design.md` (b24ui), `data-model.md` (PostgreSQL + аналитика),
 `observability.md` (логи/health/error-tracking — #5),
+`bitrix24-integration.md` (маппинг CRM→`CrmContext` + smoke-тест связки `scripts/b24-smoke.ts`),
 `reference/survey-schema.template.json` (обезличенный шаблон — валидный `SurveyDraft`).
 
 ## Среда (web-сессии)
