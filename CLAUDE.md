@@ -95,8 +95,8 @@ UI/CSS не готова, пока не увидена глазами — рен
 - **#3** (закрыт) — OAuth Bitrix24: ядро в `src/bitrix24` (AES-256-GCM шифрование
   `portal.tokens`, refresh-flow, startup-guard ключа). Invitation-flow: ядро-рантайм
   сделан (`Invitation` + `api/invitation.ts` + проброс в submit; маппинг сверен вживую,
-  см. `docs/bitrix24-integration.md`); binding (`ONCRMDEALUPDATE` + вшивание
-  `invitationPolicy`) — **#17**, идемпотентность/общий стор — **#4**.
+  см. `docs/bitrix24-integration.md`); `invitationPolicy` вшита в схему/версию, остаётся
+  binding `ONCRMDEALUPDATE` — **#17**; идемпотентность/общий стор — **#4**.
 - **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
   honeypot → 400, rate-limit → 429, идемпотентность по invitation — single-use, #3).
   Остаётся: общий стор nonce/лимитов/приглашений для мульти-инстанса, серверная
@@ -107,7 +107,8 @@ UI/CSS не готова, пока не увидена глазами — рен
   reverse-proxy, метрики/OTel-трейсы. См. `docs/observability.md`.
 - **#6** — раннер миграций: `node-pg-migrate` поверх `migrations/*.sql` (`pnpm migrate up`);
   те же `.sql` применяют pglite-тесты (единый источник схемы), initdb-механизм убран.
-  Осталось: живой прогон на Postgres (деплой) + первая `0002_*` под `invitationPolicy` (#17).
+  Осталось: живой прогон на Postgres (деплой). Первая `0002_*` — при денормализации
+  `triggerStages` под binding (#17); сам `invitationPolicy` миграции не требует (едет в JSONB).
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
   SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
   идемпотентный ensure (#7 закрыт). Осталось: идемпотентность `addResponse` (с #4),
