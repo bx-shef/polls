@@ -107,9 +107,9 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 
 **Остаётся (storage + binding) — [#17](https://github.com/bx-shef/polls/issues/17); идемпотентность/общий стор — [#4](https://github.com/bx-shef/polls/issues/4):**
 
-- Сделано (#17): `invitationPolicy` вшит в `surveyDraft`/`compiledVersion`, переживает
-  запись через `compiled_schema` (JSONB) — без отдельной миграции. Остаётся (с binding):
-  денормализация `triggerStages` в индексируемую колонку под запрос «какие опросы триггерит стадия X».
+- Сделано (#17): `invitationPolicy` вшит в `surveyDraft`/`compiledVersion` (compiled_schema JSONB);
+  денормализация `triggerStages` (миграция `0002`, GIN) + `IStore.surveysTriggeredBy` (#22) — сделано.
+  Остаётся: сам binding-endpoint `ONCRMDEALUPDATE`.
 - `MemoryInvitationStore` → таблица в `PgStore` для мульти-инстанса (как nonce, #4).
 - Endpoint `ONCRMDEALUPDATE`: детект триггер-стадии (категория-aware:
   `crm.dealcategory.stage.list` для кастомных воронок, `crm.status` для общей
@@ -119,8 +119,8 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 ## Остаётся (слой связки)
 
 - **[#17](https://github.com/bx-shef/polls/issues/17)** — инвайт-флоу: ядро-рантайм
-  готов; `invitationPolicy` вшита в схему/версию. Остаётся binding-endpoint `ONCRMDEALUPDATE`
-  + денормализация `triggerStages` под запрос «по стадии». (#3 про OAuth-токены — закрыт.)
+  готов; `invitationPolicy` вшита, `triggerStages` индексированы (`surveysTriggeredBy`, #22).
+  Остаётся binding-endpoint `ONCRMDEALUPDATE`. (#3 про OAuth-токены — закрыт.)
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
 

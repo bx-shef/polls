@@ -31,6 +31,16 @@ export class MemoryStore implements IStore {
       .sort((a, b) => b.versionNo - a.versionNo)[0]
   }
 
+  async surveysTriggeredBy(stageId: string): Promise<string[]> {
+    const keys = [...new Set(this.versions.map((v) => v.surveyKey))]
+    const out: string[] = []
+    for (const key of keys) {
+      const cur = await this.currentVersion(key)
+      if (cur?.invitationPolicy?.triggerStages.includes(stageId)) out.push(key)
+    }
+    return out.sort()
+  }
+
   async addResponse(r: ResponseRecord): Promise<void> {
     // Валидация на границе записи: гарантирует ISO-дату и форму контекста/ответов
     // (раньше ResponseRecord был plain interface). Zod strip отбрасывает лишние поля.

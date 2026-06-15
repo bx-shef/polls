@@ -230,9 +230,9 @@ export class PgStore implements IStore {
         throw new Error(`Версия ${versionNo} опроса ${version.surveyKey} уже опубликована`)
       }
       await db.query(
-        `insert into survey_version (survey_id, version_no, status, compiled_schema, published_at)
-         values ($1, $2, 'published', $3, $4)`,
-        [surveyId, versionNo, JSON.stringify(version), version.compiledAt]
+        `insert into survey_version (survey_id, version_no, status, compiled_schema, trigger_stages, published_at)
+         values ($1, $2, 'published', $3, $4, $5)`,
+        [surveyId, versionNo, JSON.stringify(version), version.invitationPolicy?.triggerStages ?? [], version.compiledAt]
       )
       // current = max(version_no), а не «последняя вставленная»: публикация задним
       // числом (v1 после v2) не должна откатывать пин текущей версии.
@@ -269,6 +269,18 @@ export class PgStore implements IStore {
     )
     const row = r.rows[0]
     return row ? compiledVersionSchema.parse(row.compiled_schema) : undefined
+  }
+
+  async surveysTriggeredBy(stageId: string): Promise<string[]> {
+    const r = await this.db.query<{ survey_key: string }>(
+      `select s.survey_key from survey s
+       join survey_group g on g.id = s.group_id
+       join survey_version sv on sv.id = s.current_version_id
+       where g.portal_id = $1 and sv.trigger_stages @> array[$2]::text[]
+       order by s.survey_key`,
+      [this.opts.portalId, stageId]
+    )
+    return r.rows.map((row) => row.survey_key)
   }
 
   async addResponse(r: ResponseRecord): Promise<void> {

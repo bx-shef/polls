@@ -181,6 +181,7 @@ create table survey_version (
   version_no      int not null,
   status          text not null default 'draft',  -- draft | published | archived
   compiled_schema jsonb,                          -- замороженная схема для фронта
+  trigger_stages  text[] not null default '{}',  -- денормализация invitationPolicy.triggerStages (#22, GIN)
   published_at    timestamptz,
   unique (survey_id, version_no)
 );

@@ -107,8 +107,8 @@ UI/CSS не готова, пока не увидена глазами — рен
   reverse-proxy, метрики/OTel-трейсы. См. `docs/observability.md`.
 - **#6** — раннер миграций: `node-pg-migrate` поверх `migrations/*.sql` (`pnpm migrate up`);
   те же `.sql` применяют pglite-тесты (единый источник схемы), initdb-механизм убран.
-  Осталось: живой прогон на Postgres (деплой). Первая `0002_*` — при денормализации
-  `triggerStages` под binding (#17); сам `invitationPolicy` миграции не требует (едет в JSONB).
+  Осталось: живой прогон на Postgres (деплой). Первая `0002_*` (денормализация
+  `triggerStages` под binding) — сделана (#22); `invitationPolicy` миграции не требует (JSONB).
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
   SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
   идемпотентный ensure (#7 закрыт). Осталось: идемпотентность `addResponse` (с #4),

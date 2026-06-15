@@ -46,6 +46,13 @@ export interface IStore {
   /** Последняя опубликованная версия (её пин кладём в приглашение) или undefined. */
   currentVersion(surveyKey: string): Promise<CompiledVersion | undefined>
   /**
+   * survey_key опросов, ТЕКУЩАЯ версия которых триггерится стадией `stageId`
+   * (invitationPolicy.triggerStages). Для binding-хендлера ONCRMDEALUPDATE (#17/#22):
+   * PgStore — GIN-индекс по денормализованной колонке trigger_stages; MemoryStore — скан.
+   * Tenant-scoped (PgStore). Отсортирован по survey_key.
+   */
+  surveysTriggeredBy(stageId: string): Promise<string[]>
+  /**
    * Сохраняет завершённую анкету (валидирует запись на границе). Инвариант:
    * `versionNo` записи должен существовать в сторе — в PgStore это FK на survey_version.
    */
