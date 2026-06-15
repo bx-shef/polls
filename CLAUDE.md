@@ -18,6 +18,7 @@ pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config
                   # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080): /api/session, /api/submit
+pnpm migrate up   # применить миграции БД (node-pg-migrate; DATABASE_URL). Создать: pnpm migrate create
 ```
 
 Для проверок предпочитай `scripts/check.sh` / `check.ps1` — один запуск ставит
@@ -74,7 +75,9 @@ pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
 ## Конвенции
 
 - TS strict + `noUncheckedIndexedAccess` — доступ по индексу даёт `T | undefined`.
-- Без лишних зависимостей: только `zod` в prod (+ dev: vitest/tsx/typescript/pglite).
+- Зависимости — по делу, без догмы «zero-dep»: берём проверенные библиотеки, где они
+  оправданы. Прод-ядро держим лёгким (валидация — `zod`); инфраструктуру не изобретаем
+  (миграции — `node-pg-migrate`). dev: vitest/tsx/typescript/pglite.
 - Каждое нетривиальное решение фиксируется в `docs/`.
 
 ## Визуальная верификация UI (с фазы связки)
@@ -102,7 +105,9 @@ UI/CSS не готова, пока не увидена глазами — рен
   секретов, `GET /api/health` → 200/503, `installProcessHandlers` для unhandled, `x-request-id`).
   Остаётся (слой деплоя): адаптеры `Logger`→Pino / `onFatal`→Sentry, живой `/health` за
   reverse-proxy, метрики/OTel-трейсы. См. `docs/observability.md`.
-- **#6** — раннер миграций (`0002+`).
+- **#6** — раннер миграций: `node-pg-migrate` поверх `migrations/*.sql` (`pnpm migrate up`);
+  те же `.sql` применяют pglite-тесты (единый источник схемы), initdb-механизм убран.
+  Осталось: живой прогон на Postgres (деплой) + первая `0002_*` под `invitationPolicy` (#17).
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
   SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
   идемпотентный ensure (#7 закрыт). Осталось: идемпотентность `addResponse` (с #4),

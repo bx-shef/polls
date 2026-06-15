@@ -1,9 +1,8 @@
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { TokenCipher, encryptedBlobSchema, loadTokenKey } from '../src/bitrix24/crypto'
+import { applySchema } from './helpers/schema'
 import {
   Bitrix24OAuth,
   OAuthError,
@@ -242,7 +241,6 @@ describe('Bitrix24OAuth', () => {
 })
 
 describe('PortalTokenStore (pglite)', () => {
-  const migration = readFileSync(fileURLToPath(new URL('../migrations/0001_init.sql', import.meta.url)), 'utf8')
   const cipher = new TokenCipher(key)
   let pg: PGlite
   let db: Queryable
@@ -250,7 +248,7 @@ describe('PortalTokenStore (pglite)', () => {
 
   beforeAll(async () => {
     pg = new PGlite()
-    await pg.exec(migration)
+    await applySchema(pg)
     db = pg as unknown as Queryable
     store = new PortalTokenStore(db, cipher)
   })

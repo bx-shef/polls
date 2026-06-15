@@ -1,5 +1,6 @@
-# Локальная БД для разработки. Миграции из ./migrations применяются при первом
-# старте контейнера. Приложение (Nuxt) добавим сервисом в фазе деплоя.
+# Локальная БД для разработки. Схему применяет раннер миграций node-pg-migrate
+# (`pnpm migrate up`), а НЕ docker initdb — чтобы правки схемы катились и после
+# первого старта (#6). Приложение (Nuxt) добавим сервисом в фазе деплоя.
 services:
   db:
     image: postgres:16-alpine
@@ -15,7 +16,6 @@ services:
       - '127.0.0.1:5432:5432'
     volumes:
       - db-data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U polls -d polls']
       interval: 5s

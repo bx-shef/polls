@@ -1,11 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
 import { MemoryNonceStore } from '../src/api/nonce'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { failSafe, ipOf, pathOf, portOf, startServer, type NodeServer } from '../src/server/node'
+import { applySchema } from './helpers/schema'
 import { MemoryStore } from '../src/store/memory'
 import { nullLogger } from '../src/obs/logger'
 import { PgStore, type Queryable } from '../src/store/pg'
@@ -221,7 +220,7 @@ describe('node-адаптер: чистые helpers', () => {
 describe('интеграция API ↔ PgStore (pglite)', () => {
   it('submit пишет в настоящий Postgres; ответ читается с серверным submittedAt', async () => {
     const pg = new PGlite()
-    await pg.exec(readFileSync(fileURLToPath(new URL('../migrations/0001_init.sql', import.meta.url)), 'utf8'))
+    await applySchema(pg)
     const db = pg as unknown as Queryable
     const portal = (
       await db.query<{ id: number }>(

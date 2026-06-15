@@ -1,6 +1,6 @@
 -- Схема хранения сервиса опросов (PostgreSQL).
--- Соответствует docs/data-model.md. Применяется автоматически контейнером
--- postgres из docker-compose (mount в /docker-entrypoint-initdb.d).
+-- Соответствует docs/data-model.md. Применяется раннером миграций node-pg-migrate
+-- (`pnpm migrate up`); тот же SQL применяют pglite-тесты (test/helpers/schema.ts).
 
 -- ── Портал (локальное приложение: обычно одна строка) ──
 create table if not exists portal (
