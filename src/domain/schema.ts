@@ -59,8 +59,9 @@ export type Question = z.infer<typeof questionSchema>
  */
 export const invitationPolicySchema = z.object({
   /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
-  triggerStages: z.array(z.string().max(200)).max(50).default([]),
-  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей. */
+  triggerStages: z.array(z.string().min(1).max(200)).max(50).default([]),
+  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей.
+   *  Дефолт email→sms — условный, пересмотреть при добавлении каналов. */
   channelOrder: z
     .array(z.enum(INVITE_CHANNELS))
     .refine((a) => new Set(a).size === a.length, { message: 'channelOrder: каналы не должны повторяться' })
@@ -124,7 +125,8 @@ export const compiledVersionSchema = z.object({
   lang: z.string().max(20),
   versionNo: z.number().int().positive(),
   questions: z.array(questionSchema),
-  /** Политика приглашения (опц.) — заморожена вместе с версией. */
+  /** Политика приглашения (опц.), заморожена с версией (в compiled_schema JSONB).
+   *  Денормализация triggerStages под запрос «по стадии» — при binding (#17). */
   invitationPolicy: invitationPolicySchema.optional(),
   compiledAt: isoDatetime
 })

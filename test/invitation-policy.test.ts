@@ -1,33 +1,30 @@
 import { describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
-import { compile } from '../src/domain/compile'
-import { invitationPolicySchema, surveyDraftSchema, type SurveyDraft } from '../src/domain/schema'
+import { compile, diffVersions } from '../src/domain/compile'
+import { surveyDraftSchema, type InvitationPolicy, type SurveyDraft } from '../src/domain/schema'
 import { MemoryStore } from '../src/store/memory'
 import { PgStore, type Queryable } from '../src/store/pg'
 import { applySchema } from './helpers/schema'
 
-const POLICY = { triggerStages: ['C1:WON', 'EXECUTING'], channelOrder: ['sms', 'email'] }
+// Базовые свойства invitationPolicySchema (дефолты, отказ на дублях каналов) покрыты
+// в test/invitation.test.ts. Здесь — вшивание политики в draft/version/store.
+const POLICY: InvitationPolicy = { triggerStages: ['C1:WON', 'EXECUTING'], channelOrder: ['sms', 'email'] }
 
-function draftWithPolicy(surveyKey = 'pol_survey'): SurveyDraft {
+function draft(over: Partial<SurveyDraft> = {}): SurveyDraft {
   return {
-    surveyKey,
+    surveyKey: 'pol_survey',
     title: 'Опрос с политикой приглашения',
     lang: 'ru',
     questions: [
       { key: 'q_nps', type: 'single', metric: 'nps', required: true, text: 'Оцените', options: [{ key: 'n10', label: '10', score: 10 }] }
     ],
-    invitationPolicy: { triggerStages: ['C1:WON', 'EXECUTING'], channelOrder: ['sms', 'email'] }
+    invitationPolicy: POLICY,
+    ...over
   }
 }
 
-describe('invitationPolicy — схема', () => {
-  it('пустой объект → дефолты (email→sms, без стадий)', () => {
-    expect(invitationPolicySchema.parse({})).toEqual({ triggerStages: [], channelOrder: ['email', 'sms'] })
-  })
-  it('дубли каналов отвергаются', () => {
-    expect(() => invitationPolicySchema.parse({ channelOrder: ['email', 'email'] })).toThrow()
-  })
-  it('surveyDraft без политики валиден (back-compat)', () => {
+describe('invitationPolicy в surveyDraft', () => {
+  it('draft без политики валиден (back-compat) → undefined', () => {
     const d = surveyDraftSchema.parse({
       surveyKey: 's',
       title: 't',
@@ -35,40 +32,61 @@ describe('invitationPolicy — схема', () => {
     })
     expect(d.invitationPolicy).toBeUndefined()
   })
+
+  it('пустая политика {} в draft → inner-дефолты (email,sms; без стадий)', () => {
+    const parsed = surveyDraftSchema.parse({
+      surveyKey: 's',
+      title: 't',
+      questions: [{ key: 'q', type: 'text', metric: 'text', text: '?' }],
+      invitationPolicy: {}
+    })
+    expect(compile(parsed, 1).invitationPolicy).toEqual({ triggerStages: [], channelOrder: ['email', 'sms'] })
+  })
 })
 
 describe('compile вшивает invitationPolicy в версию', () => {
-  it('переносит политику в опубликованную версию', () => {
-    expect(compile(draftWithPolicy(), 1).invitationPolicy).toEqual(POLICY)
+  it('переносит политику', () => {
+    expect(compile(draft(), 1).invitationPolicy).toEqual(POLICY)
   })
-  it('без политики — undefined в версии', () => {
-    const draft: SurveyDraft = {
-      surveyKey: 's',
-      title: 't',
-      lang: 'ru',
-      questions: [{ key: 'q', type: 'text', metric: 'text', required: false, text: '?', options: [] }]
-    }
-    expect(compile(draft, 1).invitationPolicy).toBeUndefined()
+
+  it('без политики → undefined', () => {
+    expect(compile(draft({ invitationPolicy: undefined }), 1).invitationPolicy).toBeUndefined()
+  })
+
+  it('diffVersions НЕ зависит от смены политики (ряд остаётся сопоставим)', () => {
+    const v1 = compile(draft(), 1)
+    const v2 = compile(draft({ invitationPolicy: { triggerStages: ['OTHER'], channelOrder: ['email'] } }), 2)
+    // Вопросы идентичны → все unchanged; политика приглашения на классы изменений не влияет.
+    expect(Object.values(diffVersions(v1, v2)).every((c) => c === 'unchanged')).toBe(true)
   })
 })
 
-describe('политика переживает запись/чтение', () => {
-  it('MemoryStore: currentVersion отдаёт политику', async () => {
+describe('политика переживает запись/чтение и заморожена по версиям', () => {
+  it('MemoryStore: getVersion/currentVersion + иммутабельность v1↔v2', async () => {
     const store = new MemoryStore()
-    await store.publish(draftWithPolicy(), 1)
-    expect((await store.currentVersion('pol_survey'))?.invitationPolicy).toEqual(POLICY)
+    await store.publish(draft(), 1)
+    await store.publish(draft({ invitationPolicy: undefined }), 2)
+    expect((await store.getVersion('pol_survey', 1))?.invitationPolicy).toEqual(POLICY)
+    expect((await store.getVersion('pol_survey', 2))?.invitationPolicy).toBeUndefined()
+    expect((await store.currentVersion('pol_survey'))?.invitationPolicy).toBeUndefined() // текущая = v2
   })
 
-  it('PgStore (pglite): round-trip через compiled_schema JSONB', async () => {
+  it('PgStore (pglite): round-trip через compiled_schema JSONB + иммутабельность', async () => {
     const pg = new PGlite()
-    await applySchema(pg)
-    const db = pg as unknown as Queryable
-    const { rows } = await db.query<{ id: number }>(
-      "insert into portal (member_id, domain, tokens) values ('m-pol', 'pol.b24', '{}'::jsonb) returning id"
-    )
-    const store = new PgStore(db, { portalId: rows[0]!.id })
-    await store.publish(draftWithPolicy(), 1)
-    expect((await store.getVersion('pol_survey', 1))?.invitationPolicy).toEqual(POLICY)
-    await pg.close()
+    try {
+      await applySchema(pg)
+      const db = pg as unknown as Queryable
+      const { rows } = await db.query<{ id: number }>(
+        "insert into portal (member_id, domain, tokens) values ('m-pol', 'pol.b24', '{}'::jsonb) returning id"
+      )
+      const store = new PgStore(db, { portalId: rows[0]!.id })
+      await store.publish(draft(), 1)
+      await store.publish(draft({ invitationPolicy: undefined }), 2)
+      expect((await store.getVersion('pol_survey', 1))?.invitationPolicy).toEqual(POLICY)
+      expect((await store.getVersion('pol_survey', 2))?.invitationPolicy).toBeUndefined()
+      expect((await store.currentVersion('pol_survey'))?.invitationPolicy).toBeUndefined()
+    } finally {
+      await pg.close()
+    }
   })
 })
