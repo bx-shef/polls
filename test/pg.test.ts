@@ -1,14 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { PgStore, queryableFromPool, type PoolLike, type Queryable } from '../src/store/pg'
 import { byCategory, byCompany, byProduct, byVersionRange, csatFor, distributionFor, npsFor } from '../src/domain/aggregate'
 import { buildDemo, draftV1, draftV2, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
-
-// Реальная схема в pglite (Postgres в WASM, in-process) — тесты идут и локально, и в CI без docker.
-const migration = readFileSync(fileURLToPath(new URL('../migrations/0001_init.sql', import.meta.url)), 'utf8')
+import { applySchema } from './helpers/schema'
 
 // Один общий PGlite на файл (WASM-инициализация дорогая, ~2с). Изоляция тестов —
 // отдельными порталами (tenant): ровно та гарантия, которую PgStore и обещает.
@@ -16,7 +12,7 @@ let pglite: PGlite
 let db: Queryable
 beforeAll(async () => {
   pglite = new PGlite()
-  await pglite.exec(migration)
+  await applySchema(pglite)
   db = pglite as unknown as Queryable
 })
 afterAll(async () => {
