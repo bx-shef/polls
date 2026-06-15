@@ -32,11 +32,16 @@ export class MemoryStore implements IStore {
   }
 
   async surveysTriggeredBy(stageId: string): Promise<string[]> {
-    const keys = [...new Set(this.versions.map((v) => v.surveyKey))]
+    // Один проход: для каждого surveyKey оставляем версию с максимальным versionNo
+    // (= текущую), затем фильтруем по стадии. Опросы без invitationPolicy не попадают.
+    const current = new Map<string, CompiledVersion>()
+    for (const v of this.versions) {
+      const prev = current.get(v.surveyKey)
+      if (!prev || v.versionNo > prev.versionNo) current.set(v.surveyKey, v)
+    }
     const out: string[] = []
-    for (const key of keys) {
-      const cur = await this.currentVersion(key)
-      if (cur?.invitationPolicy?.triggerStages.includes(stageId)) out.push(key)
+    for (const [key, v] of current) {
+      if (v.invitationPolicy?.triggerStages.includes(stageId)) out.push(key)
     }
     return out.sort()
   }

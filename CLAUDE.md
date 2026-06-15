@@ -95,8 +95,10 @@ UI/CSS не готова, пока не увидена глазами — рен
 - **#3** (закрыт) — OAuth Bitrix24: ядро в `src/bitrix24` (AES-256-GCM шифрование
   `portal.tokens`, refresh-flow, startup-guard ключа). Invitation-flow: ядро-рантайм
   сделан (`Invitation` + `api/invitation.ts` + проброс в submit; маппинг сверен вживую,
-  см. `docs/bitrix24-integration.md`); `invitationPolicy` вшита в схему/версию, остаётся
-  binding `ONCRMDEALUPDATE` — **#17**; идемпотентность/общий стор — **#4**.
+  см. `docs/bitrix24-integration.md`); `invitationPolicy` вшита в схему/версию (уровень —
+  version-frozen, решение **#21**); `triggerStages` денормализованы + `IStore.surveysTriggeredBy`
+  (GIN, **#22**) — сделано. Остаётся binding `ONCRMDEALUPDATE` — **#17** (он нормализует
+  `stageId` под формат `triggerStages`); идемпотентность/общий стор — **#4**.
 - **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
   honeypot → 400, rate-limit → 429, идемпотентность по invitation — single-use, #3).
   Остаётся: общий стор nonce/лимитов/приглашений для мульти-инстанса, серверная

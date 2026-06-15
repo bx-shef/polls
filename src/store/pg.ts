@@ -259,12 +259,14 @@ export class PgStore implements IStore {
   }
 
   async currentVersion(surveyKey: string): Promise<CompiledVersion | undefined> {
+    // «Текущая» = версия из survey.current_version_id (его проставляет publish = max
+    // опубликованного version_no). Тот же указатель использует surveysTriggeredBy —
+    // единое определение «текущей версии», не зависящее от черновиков в таблице.
     const r = await this.db.query<{ compiled_schema: unknown }>(
-      `select sv.compiled_schema from survey_version sv
-       join survey s on s.id = sv.survey_id
+      `select sv.compiled_schema from survey s
        join survey_group g on g.id = s.group_id
-       where g.portal_id = $1 and s.survey_key = $2
-       order by sv.version_no desc limit 1`,
+       join survey_version sv on sv.id = s.current_version_id
+       where g.portal_id = $1 and s.survey_key = $2`,
       [this.opts.portalId, surveyKey]
     )
     const row = r.rows[0]

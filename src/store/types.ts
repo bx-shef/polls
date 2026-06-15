@@ -49,7 +49,8 @@ export interface IStore {
    * survey_key опросов, ТЕКУЩАЯ версия которых триггерится стадией `stageId`
    * (invitationPolicy.triggerStages). Для binding-хендлера ONCRMDEALUPDATE (#17/#22):
    * PgStore — GIN-индекс по денормализованной колонке trigger_stages; MemoryStore — скан.
-   * Tenant-scoped (PgStore). Отсортирован по survey_key.
+   * Опросы без invitationPolicy в результат не попадают. Tenant-scoped (PgStore),
+   * отсортировано по survey_key. Набор ограничен числом активных опросов портала (без пагинации).
    */
   surveysTriggeredBy(stageId: string): Promise<string[]>
   /**

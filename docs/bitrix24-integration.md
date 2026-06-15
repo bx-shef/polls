@@ -120,7 +120,9 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 
 - **[#17](https://github.com/bx-shef/polls/issues/17)** — инвайт-флоу: ядро-рантайм
   готов; `invitationPolicy` вшита, `triggerStages` индексированы (`surveysTriggeredBy`, #22).
-  Остаётся binding-endpoint `ONCRMDEALUPDATE`. (#3 про OAuth-токены — закрыт.)
+  Остаётся binding-endpoint `ONCRMDEALUPDATE` — он обязан нормализовать `stageId` из вебхука
+  к тому же формату, что в `triggerStages` (category-aware), иначе GIN-матч не сработает и опрос
+  молча не триггернётся; и валидировать `STAGE_ID` через zod. (#3 про OAuth-токены — закрыт.)
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
 
