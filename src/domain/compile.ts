@@ -29,6 +29,7 @@ export function compile(draft: SurveyDraft, versionNo: number, at: Date = new Da
     lang: parsed.lang,
     versionNo,
     questions: parsed.questions,
+    invitationPolicy: parsed.invitationPolicy,
     compiledAt: at.toISOString()
   }
 }

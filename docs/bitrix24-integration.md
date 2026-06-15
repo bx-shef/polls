@@ -107,8 +107,9 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 
 **Остаётся (storage + binding) — [#17](https://github.com/bx-shef/polls/issues/17); идемпотентность/общий стор — [#4](https://github.com/bx-shef/polls/issues/4):**
 
-- Вшить `invitationPolicy` в `surveyDraft`/`compiledVersion` + `PgStore` (сейчас тип
-  самостоятельный, чтобы не трогать миграции вне вехи).
+- ✅ `invitationPolicy` вшит в `surveyDraft`/`compiledVersion` (#17) и переживает запись
+  через `compiled_schema` (JSONB) — без отдельной миграции. Остаётся (с binding):
+  денормализация стадий-триггеров в колонку для запроса «какие опросы триггерит стадия X».
 - `MemoryInvitationStore` → таблица в `PgStore` для мульти-инстанса (как nonce, #4).
 - Endpoint `ONCRMDEALUPDATE`: детект триггер-стадии (категория-aware:
   `crm.dealcategory.stage.list` для кастомных воронок, `crm.status` для общей

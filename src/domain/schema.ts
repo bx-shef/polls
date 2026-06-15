@@ -52,12 +52,30 @@ export const questionSchema = z.object({
 })
 export type Question = z.infer<typeof questionSchema>
 
+/**
+ * Политика приглашения опроса (invitation-flow): «когда звать» (стадии-триггеры
+ * сделки) и «каким каналом» (порядок проб). Объявлена ДО surveyDraftSchema, т.к.
+ * вшита в него и в compiledVersion (#17); persists в survey_version.compiled_schema.
+ */
+export const invitationPolicySchema = z.object({
+  /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
+  triggerStages: z.array(z.string().max(200)).max(50).default([]),
+  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей. */
+  channelOrder: z
+    .array(z.enum(INVITE_CHANNELS))
+    .refine((a) => new Set(a).size === a.length, { message: 'channelOrder: каналы не должны повторяться' })
+    .default(['email', 'sms'])
+})
+export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
+
 export const surveyDraftSchema = z.object({
   surveyKey: z.string().min(1).max(200),
   title: z.string().max(500),
   /** Один опрос = один язык (решение №3). */
   lang: z.string().max(20).default('ru'),
-  questions: z.array(questionSchema).min(1).max(200)
+  questions: z.array(questionSchema).min(1).max(200),
+  /** Политика приглашения (опц.): когда и каким каналом звать клиента. */
+  invitationPolicy: invitationPolicySchema.optional()
 })
 export type SurveyDraft = z.infer<typeof surveyDraftSchema>
 
@@ -80,22 +98,6 @@ export const crmContextSchema = z.object({
   products: z.array(crmProductSchema).max(50).optional()
 })
 export type CrmContext = z.infer<typeof crmContextSchema>
-
-/**
- * Политика приглашения опроса (invitation-flow #3) — кодирует «когда звать» и
- * «каким каналом». Самостоятельный тип: вшивание в surveyDraft/compiledVersion +
- * PgStore и сам binding-endpoint — отдельной вехой (см. docs/bitrix24-integration.md).
- */
-export const invitationPolicySchema = z.object({
-  /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
-  triggerStages: z.array(z.string().max(200)).max(50).default([]),
-  /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей. */
-  channelOrder: z
-    .array(z.enum(INVITE_CHANNELS))
-    .refine((a) => new Set(a).size === a.length, { message: 'channelOrder: каналы не должны повторяться' })
-    .default(['email', 'sms'])
-})
-export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
 
 /**
  * Приглашение (invitation-flow #3): связывает одноразовый токен со СНИМКОМ
@@ -122,6 +124,8 @@ export const compiledVersionSchema = z.object({
   lang: z.string().max(20),
   versionNo: z.number().int().positive(),
   questions: z.array(questionSchema),
+  /** Политика приглашения (опц.) — заморожена вместе с версией. */
+  invitationPolicy: invitationPolicySchema.optional(),
   compiledAt: isoDatetime
 })
 export type CompiledVersion = z.infer<typeof compiledVersionSchema>
