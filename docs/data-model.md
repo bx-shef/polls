@@ -495,7 +495,7 @@ group by opt order by 2 desc;
 | Анти-абьюз остаток: идемпотентность по invitation (с #3), общий стор nonce/лимитов (мульти-инстанс) | Деплой | 🔶 [#4](https://github.com/bx-shef/polls/issues/4) |
 | Наблюдаемость (ядро `src/obs`): структурный логгер + редакция секретов, `GET /api/health` (200/503, кэш), error-tracking unhandled, `x-request-id` | Фаза 6 | ✅ |
 | Наблюдаемость (деплой): адаптеры `Logger`→Pino / `onFatal`→Sentry, живой `/health` за reverse-proxy, метрики/OTel-трейсы | Деплой | 🔶 [#5](https://github.com/bx-shef/polls/issues/5) |
-| Раннер миграций: `node-pg-migrate` поверх `migrations/*.sql` (`pnpm migrate up`); те же `.sql` применяют pglite-тесты; initdb убран. Осталось: живой прогон на Postgres | Деплой | 🔶 [#6](https://github.com/bx-shef/polls/issues/6) |
+| Раннер миграций: `node-pg-migrate` поверх `migrations/*.sql` (`pnpm migrate up`); те же `.sql` применяют pglite-тесты; initdb убран. Живой прогон на Postgres — обычный деплой-шаг (§выкладка) | Деплой | ✅ [#6](https://github.com/bx-shef/polls/issues/6) |
 | Async-контракт хранилища (`IStore`) для перехода MemoryStore→PgStore | Фаза 1 | ✅ |
 | Порог анонимности `N`: `ANONYMITY_THRESHOLD` + `meetsAnonymity`; принудительное подавление чувствительных срезов — в `PgStore.aggregateNps/Csat/Distribution`. PII-erasure (#4) должен чистить `response.context` (JSONB), денормализованные колонки (`contact_id`, …) и `response_product.product_name` | Фаза 1–3 | ✅ |
 | `PgStore` (CRUD + tenant-изоляция `portalId`) — на pglite-тестах | Фаза 2 | ✅ |
