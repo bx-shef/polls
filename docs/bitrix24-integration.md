@@ -122,3 +122,6 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
   и binding-endpoint `ONCRMDEALUPDATE`. (#3 про OAuth-токены — закрыт.)
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
+
+---
+*Последнее ревью: 2026-06-15.*
