@@ -2,6 +2,7 @@ import {
   npsFor,
   csatFor,
   distributionFor,
+  npsTrend,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
@@ -11,9 +12,14 @@ import {
  * domain/aggregate над общим стором (useStore — те же ответы, что собирает /api/submit).
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
+ * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
  *
- * Подавление малых N: при n < ANONYMITY_THRESHOLD числа НЕ отдаём (как domain/PgStore —
- * гейт по общему N опроса; per-bin k-анонимность — отдельное ужесточение для реальных данных, #49).
+ * Подавление малых N — ДВА уровня:
+ *  1) уровень опроса: при общем n < ANONYMITY_THRESHOLD весь дашборд скрыт
+ *     (`meetsAnonymity`, как domain/PgStore — гейт по общему N);
+ *  2) уровень точки тренда: месяц с n < ANONYMITY_THRESHOLD отбрасывается внутри
+ *     `npsTrend` (параметр `minN`) — тот же порог, но применяется к бакету отдельно.
+ * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
  * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Дашборд контура B —
  * внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
@@ -60,6 +66,8 @@ export default defineEventHandler(async (event) => {
     suppressed: false as const,
     nps: npsKey ? npsFor(responses, npsKey) : null,
     csat: csatKey ? csatFor(responses, csatKey) : null,
-    distribution
+    distribution,
+    // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
+    trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : []
   }
 })
