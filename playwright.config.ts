@@ -47,8 +47,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:3030',
     reducedMotion: 'reduce',
-    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#34) —
-    // отдельными проектами с colorScheme:'dark', когда у b24ui-экранов будет dark.
+    // Дефолт — светлая тема (детерминизм); dark-проекты ниже переопределяют `colorScheme:'dark'`.
     colorScheme: 'light'
   },
   expect: {
