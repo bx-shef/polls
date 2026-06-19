@@ -65,7 +65,10 @@ pnpm migrate up   # применить миграции БД (node-pg-migrate; D
   на чувствительных срезах; тесты на pglite (in-process, паритет с in-memory).
   `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare).
 - `api/handlers.ts` (`createApi`) — framework-agnostic HTTP-хендлеры (вход → {status, body},
-  зависимости инжектируются): конвейер submit = honeypot → rate-limit → форма/schema_version →
+  зависимости инжектируются). `survey({surveyKey})` (GET `/api/survey/:key/current`, #25) отдаёт
+  текущую версию для рендера контура A — публичная проекция БЕЗ `invitationPolicy` (внутренняя
+  CRM-конфигурация наружу не утекает), rate-limited, 404 если опроса нет. Конвейер
+  submit = honeypot → rate-limit → форма/schema_version →
   nonce (409 replay / 403 unknown) → версия (404) → валидация ответов (422) → приглашение
   (#3: токен → снимок CrmContext, single-use; replay 409 / unknown 403 / чужой пин 409) →
   запись с СЕРВЕРНЫМИ id/submittedAt; context — снимок из приглашения либо пустой без токена.

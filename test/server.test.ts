@@ -3,7 +3,7 @@ import { PGlite } from '@electric-sql/pglite'
 import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
 import { MemoryNonceStore } from '../src/api/nonce'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
-import { failSafe, ipOf, pathOf, portOf, startServer, type NodeServer } from '../src/server/node'
+import { failSafe, ipOf, pathOf, portOf, startServer, surveyKeyFromPath, type NodeServer } from '../src/server/node'
 import { applySchema } from './helpers/schema'
 import { MemoryStore } from '../src/store/memory'
 import { nullLogger } from '../src/obs/logger'
@@ -60,6 +60,19 @@ describe('node-адаптер: живой HTTP', () => {
 
     const replay = await post('/api/submit', JSON.stringify(payload(nonce)))
     expect(replay.status).toBe(409)
+  })
+
+  it('GET /api/survey/:key/current → 200 версия с вопросами; неизвестный → 404; POST → 405', async () => {
+    const r = await fetch(`${base}/api/survey/${SURVEY_KEY}/current`)
+    expect(r.status).toBe(200)
+    const body = (await r.json()) as { ok: boolean; version: Record<string, unknown> }
+    expect(body.ok).toBe(true)
+    expect(body.version['surveyKey']).toBe(SURVEY_KEY)
+    expect(Array.isArray(body.version['questions'])).toBe(true)
+    expect(body.version['invitationPolicy']).toBeUndefined() // внутреннее наружу не отдаём
+
+    expect((await fetch(`${base}/api/survey/no_such/current`)).status).toBe(404)
+    expect((await fetch(`${base}/api/survey/${SURVEY_KEY}/current`, { method: 'POST' })).status).toBe(405)
   })
 
   it('honeypot через HTTP → 400 generic', async () => {
@@ -166,6 +179,7 @@ describe('node-адаптер: живой HTTP', () => {
   it('сломанный api → 500 через failSafe (процесс не падает); повторный close() → ошибка', async () => {
     const broken: Api = {
       session: () => Promise.reject(new Error('boom')),
+      survey: () => Promise.reject(new Error('boom')),
       submit: () => Promise.reject(new Error('boom')),
       health: () => Promise.reject(new Error('boom'))
     }
@@ -188,6 +202,14 @@ describe('node-адаптер: чистые helpers', () => {
     expect(pathOf(undefined)).toBe('')
     expect(pathOf('/api/x')).toBe('/api/x')
     expect(pathOf('/api/x?a=1')).toBe('/api/x')
+  })
+
+  it('surveyKeyFromPath: матч /api/survey/:key/current (+декод), иначе null', () => {
+    expect(surveyKeyFromPath('/api/survey/csat_postdeal/current')).toBe('csat_postdeal')
+    expect(surveyKeyFromPath('/api/survey/a%20b/current')).toBe('a b') // percent-декод
+    expect(surveyKeyFromPath('/api/survey//current')).toBeNull() // пустой сегмент
+    expect(surveyKeyFromPath('/api/survey/x/current/extra')).toBeNull()
+    expect(surveyKeyFromPath('/api/session')).toBeNull()
   })
 
   it('portOf: unix-socket (строка) и null → 0', () => {

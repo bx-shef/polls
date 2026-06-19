@@ -4,8 +4,9 @@ import type { Api, ApiResult } from '../api/handlers'
 import { nullLogger, type Logger } from '../obs/logger'
 
 /**
- * Минимальный HTTP-адаптер на node:http (нулевые зависимости): роутинг двух
- * эндпоинтов, лимит тела, разбор JSON, таймаут запроса (анти-slowloris).
+ * Минимальный HTTP-адаптер на node:http (нулевые зависимости): роутинг
+ * эндпоинтов (session/survey/submit/health), лимит тела, разбор JSON, таймаут
+ * запроса (анти-slowloris).
  * Прод-адаптером может быть Nitro (фаза связки) — хендлеры (`createApi`) от
  * рантайма не зависят. Модуль НЕ экспортируется из barrel (src/index.ts),
  * чтобы ядро не тянуло node:http: импортируйте напрямую из 'src/server/node'.
@@ -45,6 +46,20 @@ export function pathOf(rawUrl: string | undefined): string {
 
 export function portOf(addr: ReturnType<Server['address']>): number {
   return typeof addr === 'object' && addr !== null ? addr.port : 0
+}
+
+/**
+ * `/api/survey/:key/current` → декодированный ключ (или null, если путь не подходит).
+ * Сегмент-ключ декодируем (`decodeURIComponent`); валидацию формы делает хендлер.
+ */
+export function surveyKeyFromPath(url: string): string | null {
+  const m = /^\/api\/survey\/([^/]+)\/current$/.exec(url)
+  if (!m || m[1] === undefined) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    return m[1] // битый percent-encoding — отдаём как есть, хендлер отвалидирует
+  }
 }
 
 function send(res: ServerResponse, r: ApiResult, opts: { closeConn?: boolean } = {}): void {
@@ -88,6 +103,12 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, maxBod
   if (url === '/api/session') {
     if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
     return send(res, await api.session({ ip }))
+  }
+
+  const surveyKey = surveyKeyFromPath(url)
+  if (surveyKey !== null) {
+    if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
+    return send(res, await api.survey({ ip, surveyKey }))
   }
 
   if (url === '/api/submit') {
