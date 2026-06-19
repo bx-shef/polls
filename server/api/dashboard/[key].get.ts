@@ -3,6 +3,7 @@ import {
   csatFor,
   distributionFor,
   npsTrend,
+  byProduct,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
@@ -13,6 +14,8 @@ import {
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
  * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
+ * Срез по услугам — NPS/CSAT по каждому продукту (`byProduct`); имя берём из денормализованного
+ * `context.products[].productName`, услуги с выборкой < порога подавляем (анонимность среза).
  *
  * Подавление малых N — ДВА уровня:
  *  1) уровень опроса: при общем n < ANONYMITY_THRESHOLD весь дашборд скрыт
@@ -21,8 +24,9 @@ import {
  *     `npsTrend` (параметр `minN`) — тот же порог, но применяется к бакету отдельно.
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
- * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Дашборд контура B —
- * внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
+ * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срез по услугам
+ * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала) — ещё один довод закрыть auth.
+ * Дашборд контура B — внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
  * SQL-агрегация (PgStore) + rate-limit → #49. Сейчас данные синтетические (seed), N подавлены.
  */
 export default defineEventHandler(async (event) => {
@@ -61,6 +65,33 @@ export default defineEventHandler(async (event) => {
     distribution = { question: choiceQ.text, items }
   }
 
+  // Срез по услугам. Имя берём ПЕРВЫМ вхождением productId (устойчивее к переименованию в
+  // CRM, чем «последнее выигрывает»). Ответ с несколькими продуктами учитывается в КАЖДОЙ
+  // услуге (срез по услуге, не разбиение — суммы n по услугам могут превышать общий n).
+  // Метрику показываем только если её СОБСТВЕННАЯ выборка ≥ порога (не только число ответов
+  // услуги) — узкая метрика иначе могла бы деанонимизировать. Услугу без показуемых метрик
+  // не выводим. TODO(#49): при SQL-агрегации (PgStore) логика переедет в ядровой helper.
+  const productNames = new Map<number, string>()
+  for (const r of responses) {
+    for (const p of r.context.products ?? []) {
+      if (!productNames.has(p.productId)) productNames.set(p.productId, p.productName ?? `#${p.productId}`)
+    }
+  }
+  const services = [...productNames.entries()]
+    .map(([productId, name]) => {
+      const subset = byProduct(responses, productId)
+      const npsSum = npsKey ? npsFor(subset, npsKey) : null
+      const csatSum = csatKey ? csatFor(subset, csatKey) : null
+      return {
+        name,
+        n: subset.length,
+        nps: npsSum && meetsAnonymity(npsSum.n) ? npsSum.nps : null,
+        csat: csatSum && meetsAnonymity(csatSum.n) ? csatSum.mean : null
+      }
+    })
+    .filter((s) => meetsAnonymity(s.n) && (s.nps !== null || s.csat !== null))
+    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
+
   return {
     ...base,
     suppressed: false as const,
@@ -68,6 +99,7 @@ export default defineEventHandler(async (event) => {
     csat: csatKey ? csatFor(responses, csatKey) : null,
     distribution,
     // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
-    trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : []
+    trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : [],
+    services
   }
 })

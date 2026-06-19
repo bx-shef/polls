@@ -17,6 +17,8 @@ interface Dashboard {
   csat?: CsatSummary | null
   distribution?: { question: string; items: { label: string; count: number }[] } | null
   trend?: TrendPoint[]
+  // Срез по услугам — проекция (имя продукта + метрики подвыборки), не ядровой тип.
+  services?: { name: string; n: number; nps: number | null; csat: number | null }[]
 }
 
 // NPS ∈ [-100, 100] → ширина шкалы [0%, 100%] (−100→0, 0→50, 100→100). Клампим
@@ -102,6 +104,23 @@ const { data, error } = await useAsyncData<Dashboard>(`dashboard:${surveyKey.val
             </div>
             <span class="w-10 shrink-0 text-right text-sm font-semibold">{{ p.nps }}</span>
             <span class="w-12 shrink-0 text-right text-xs text-gray-500 dark:text-gray-400">n={{ p.n }}</span>
+          </li>
+        </ul>
+      </B24Card>
+
+      <B24Card
+        v-if="data?.services?.length"
+        title="По услугам"
+        class="sm:col-span-2"
+      >
+        <ul class="flex flex-col gap-2">
+          <li v-for="(s, i) in data.services" :key="i" class="flex items-center justify-between gap-3">
+            <span class="text-sm font-medium">{{ s.name }}</span>
+            <div class="flex items-center gap-3 text-sm">
+              <span v-if="s.nps !== null">NPS <b>{{ s.nps }}</b></span>
+              <span v-if="s.csat !== null">CSAT <b>{{ s.csat }}</b></span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">n={{ s.n }}</span>
+            </div>
           </li>
         </ul>
       </B24Card>
