@@ -65,8 +65,6 @@ export function useSurvey() {
     } catch { return undefined }
   }
 
-  async function load() {} // зарезервировано (версию грузит страница); оставлено для совместимости
-
   function reset(nextVersion: PublicVersion | null, fetchError?: unknown) {
     fill.value = null
     if (fetchError) {
@@ -178,6 +176,6 @@ export function useSurvey() {
 
   return {
     version, phase, errorMsg, submitting, view,
-    load, reset, start, hydrate, selectOption, setOther, setText, back, next, submit
+    reset, start, hydrate, selectOption, setOther, setText, back, next, submit
   }
 }
