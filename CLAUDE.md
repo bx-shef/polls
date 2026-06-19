@@ -139,7 +139,11 @@ Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #3
 (#25; демо-контент в `demo/seed.ts`). Вопросы — `B24RadioGroup`/`B24CheckboxGroup` (`variant=card`)/`B24Textarea`.
 
 Маршрут привязан к визуальному гейту (#39: `webServer`+`baseURL`, гейт снимает живой `/s/:key`).
-Дальше (#34): состояния пусто/ошибка/загрузка, deep-link `?q=N`, persist (localStorage), тёмная тема.
+**Persist + deep-link (#34):** прогресс кладётся в localStorage (`SurveyFill.snapshot()`), `hydrate()`
+в `onMounted` страницы восстанавливает его (resume на reload) и поддерживает `?q=N` (1-based);
+снимок чистится на успешном submit; restore недоверенный — валидируется ядром. Только клиент
+(localStorage нет на SSR) → гейт на fresh-контексте видит интро.
+Дальше (#34): экраны survey/thanks под гейт (навигация), состояния пусто/ошибка/загрузка, тёмная тема.
 
 ## Инварианты
 

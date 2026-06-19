@@ -16,11 +16,18 @@ const { data, error } = await useAsyncData(
   { watch: [surveyKey] }
 )
 
-const { phase, version, view, errorMsg, submitting, reset, start, selectOption, setOther, setText, back, next } =
+const { phase, version, view, errorMsg, submitting, reset, start, hydrate, selectOption, setOther, setText, back, next } =
   useSurvey()
 
 // Прокидываем результат загрузки в композабл (и при первичном рендере, и при смене :key).
 watch([data, error], () => reset(data.value?.version ?? null, error.value ?? undefined), { immediate: true })
+
+// Клиентская гидратация (после SSR): resume из localStorage + deep-link `?q=N` (1-based в URL).
+onMounted(() => {
+  const q = route.query.q
+  const idx = typeof q === 'string' && /^\d+$/.test(q) ? Math.max(0, Number(q) - 1) : undefined
+  hydrate(idx)
+})
 </script>
 
 <template>
