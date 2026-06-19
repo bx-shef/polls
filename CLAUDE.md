@@ -21,7 +21,7 @@
 | Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ инфра (фикстура; `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
 | `server/` (Nitro) | обёртки `createApi`: `/api/` session · submit · survey/:key/current · health | ✅ привязка готова (dev-стор MemoryStore+seed) |
-| Фронт-экраны (контур A) | Интро/Опрос/Спасибо поверх `SurveyFill` + готовых `/api/*` | ⏳ следующая фаза (#34) |
+| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | 🔶 happy-path готов; гейт-привязка/состояния/тема/persist → #34 |
 | Дашборд (контур B) | аналитика внутри Bitrix24 | ⏳ не начат |
 | Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
 
@@ -129,8 +129,15 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 submit, паритет с `node.ts`; невалидный JSON отвергает h3 — формат h3, не ядровой). Типизируются
 Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #36); живой smoke — `pnpm build` + curl.
 
-Дальше: экраны Интро/Опрос/Спасибо поверх `SurveyFill` (зовут `~core/client` + эти роуты),
-подключение маршрутов к визуальному гейту (#34).
+**Экраны контура A (`app/pages/s/[key].vue` + `app/components/survey/*`):** маршрут `/s/:key`
+оркеструет фазы intro→survey→thanks через композабл `app/composables/useSurvey.ts` — тонкую
+реактивную обёртку (`shallowRef`+bump) над ядровым `SurveyFill`; вся логика прохождения
+остаётся в ядре, экраны эмитят намерения и зовут публичные `/api/*` (`survey/current`,
+`session`, `submit`). Презентация (`intro`/`thanks`) — из версии-снимка (#25; демо-контент в
+`demo/seed.ts`). Вопросы рендерятся `B24RadioGroup`/`B24CheckboxGroup` (`variant=card`)/`B24Textarea`.
+
+Дальше (#34): привязка живого маршрута к визуальному гейту (webServer+baseURL), состояния
+пусто/ошибка отправки/загрузка, deep-link `?q=N`, persist-снимок (localStorage), тёмная тема.
 
 ## Инварианты
 
