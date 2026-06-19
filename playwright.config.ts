@@ -47,8 +47,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:3030',
     reducedMotion: 'reduce',
-    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#34) —
-    // отдельными проектами с colorScheme:'dark', когда у b24ui-экранов будет dark.
+    // Дефолт — светлая тема (детерминизм); dark-проекты ниже переопределяют `colorScheme:'dark'`.
     colorScheme: 'light'
   },
   expect: {
@@ -62,6 +61,8 @@ export default defineConfig({
   // (та же 2-колоночная, рейл ~34%), мобайл (рейл скрыт, нав к низу, 1 колонка).
   // mobile — реальный mobile-профиль (Pixel 7: chromium-совместим, isMobile/hasTouch/
   // mobile-UA), чтобы media (hover:none)/(pointer:coarse) рендерились как на устройстве.
+  // Каждый брейкпоинт — в светлой И тёмной теме (colorScheme → color-mode по prefers-color-scheme
+  // флипает класс `.dark`, #34). dark-проекты дают отдельные эталоны `*-{bp}-dark.png`.
   projects: [
     {
       name: 'desktop',
@@ -74,6 +75,18 @@ export default defineConfig({
     {
       name: 'mobile',
       use: { ...devices['Pixel 7'] }
+    },
+    {
+      name: 'desktop-dark',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 }, colorScheme: 'dark' }
+    },
+    {
+      name: 'tablet-dark',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 768 }, colorScheme: 'dark' }
+    },
+    {
+      name: 'mobile-dark',
+      use: { ...devices['Pixel 7'], colorScheme: 'dark' }
     }
   ]
 })

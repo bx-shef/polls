@@ -14,9 +14,15 @@ import { fileURLToPath } from 'node:url'
 export default defineNuxtConfig({
   compatibilityDate: '2026-06-19',
   srcDir: 'app/',
-  modules: ['@bitrix24/b24ui-nuxt'],
+  // color-mode ДО b24ui: чтобы b24ui при init видел модуль (hasNuxtModule) и подключил
+  // свои color-mode-компоненты (для будущего тоггла темы).
+  modules: ['@nuxtjs/color-mode', '@bitrix24/b24ui-nuxt'],
   // CSS-вход b24ui (Tailwind v4 + тема/токены) — обязателен, иначе компоненты без стилей.
   css: ['~/assets/css/main.css'],
+  // Тёмная тема b24ui — классовая (`.dark` на <html>). color-mode по системе (prefers-color-scheme),
+  // classSuffix:'' → класс ровно `dark` (как ждёт b24ui). Гейт детерминированно гоняет обе темы
+  // через colorScheme-проекты. Инлайн-скрипт color-mode ставит класс до paint — без вспышки.
+  colorMode: { preference: 'system', fallback: 'light', classSuffix: '' },
   // Контур A — публичный опрос (лендинг-подобный), SSR оправдан (быстрый first paint).
   ssr: true,
   devtools: { enabled: false },

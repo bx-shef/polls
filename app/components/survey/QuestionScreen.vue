@@ -32,7 +32,7 @@ function onMulti(vals: string[]) {
   <B24Card variant="outline" class="w-full max-w-xl">
     <div class="flex flex-col gap-5">
       <B24Progress :model-value="view.progress.current" :max="view.progress.total" />
-      <p class="text-sm text-gray-500">Вопрос {{ view.progress.current }} из {{ view.progress.total }}</p>
+      <p class="text-sm text-gray-500 dark:text-gray-400">Вопрос {{ view.progress.current }} из {{ view.progress.total }}</p>
       <h2 class="text-xl font-semibold">{{ q.text }}</h2>
 
       <B24RadioGroup
