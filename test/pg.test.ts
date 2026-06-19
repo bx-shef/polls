@@ -237,7 +237,7 @@ describe('PgStore (pglite)', () => {
       'select count(*)::int as n from response_answer ra join response r on r.id = ra.response_id where r.portal_id = $1',
       [portalA]
     )
-    expect(ans.rows[0]!.n).toBe(2) // только от первого ответа
+    expect(ans.rows[0]!.n).toBe(2) // 2 вопроса (q_nps + q_comment) первой записи; дубль своих не вставил
     // другой токен пишется нормально
     await store.addResponse(sampleResponse({ id: 'c', invitationToken: 'tok-2' }))
     expect(await store.listResponses()).toHaveLength(2)
@@ -478,5 +478,39 @@ describe('PgStore — SQL-агрегация (паритет с in-memory на �
     // пустой/неизвестный срез → []
     expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: 'q_нет_такого' })).toEqual([])
     expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 999 })).toEqual([])
+  })
+
+  it('npsTrend (SQL): поточечное подавление и UTC-граница дня', async () => {
+    // отдельный портал с подобранными данными: апрель n=5 (= порог), май n=2 (< порога).
+    const { db, portalA } = await fresh()
+    const s = new PgStore(db, { portalId: portalA })
+    await s.publish(draftV1(), 1)
+    const nps = (id: string, at: string): ResponseRecord => sampleResponse({
+      id, submittedAt: at, context: { companyId: 700 },
+      answers: [{ questionKey: NPS_Q, metric: 'nps', valueChoice: ['n10'], valueNumber: 10, valueText: null }]
+    })
+    for (let i = 0; i < 5; i++) await s.addResponse(nps(`apr${i}`, `2026-04-1${i}T10:00:00.000Z`))
+    for (let i = 0; i < 2; i++) await s.addResponse(nps(`may${i}`, `2026-05-0${i + 1}T10:00:00.000Z`))
+    // чувствительный срез (company) → пол ANONYMITY_THRESHOLD=5 на точку: апрель проходит, май подавлен
+    const t = await s.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 700 }, 'month')
+    expect(t.map((p) => [p.bucket, p.n])).toEqual([['2026-04', 5]]) // май (n=2) отброшен поточечно
+    const all2 = await s.listResponses()
+    expect(t).toEqual(npsTrend(all2, NPS_Q, 'month', ANONYMITY_THRESHOLD)) // паритет с in-memory
+
+    // UTC-граница: 2026-05-01T01:00+03:00 = 2026-04-30T22:00 UTC → бакет '2026-04-30', не '2026-05-01'
+    const { portalA: pB } = await fresh()
+    const s2 = new PgStore(db, { portalId: pB })
+    await s2.publish(draftV1(), 1)
+    await s2.addResponse(nps('tz', '2026-05-01T01:00:00.000+03:00'))
+    const day = await s2.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q }, 'day')
+    expect(day[0]?.bucket).toBe('2026-04-30') // в UTC, как in-memory
+    expect(day).toEqual(npsTrend(await s2.listResponses(), NPS_Q, 'day'))
+  })
+
+  it('addResponse реджектит invitationToken длиннее 256 (schema-граница)', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await expect(store.addResponse(sampleResponse({ invitationToken: 'x'.repeat(257) }))).rejects.toThrow()
   })
 })

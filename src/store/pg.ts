@@ -43,9 +43,12 @@ export type { Queryable } from './types'
  *
  * Идемпотентность addResponse — durable по invitation_token (частичный UNIQUE,
  * миграция 0003): повтор приглашения на любом инстансе → ON CONFLICT DO NOTHING (#3/#4).
- * SQL-вариант npsTrend — aggregateNpsTrend (#10). Остаётся: связь response.invitation_id
- * с строкой invitation (когда invitation-flow получит общий стор #4), PII-редакция на
- * HTTP-слое (нет публичного read-ответов; вынесено в ISSUE).
+ * SQL-вариант npsTrend — aggregateNpsTrend (#10). Тех-долг: сейчас якорь идемпотентности —
+ * сам токен в колонке `invitation_token`; когда invitation-flow получит общий стор (#4) и
+ * приглашения будут жить в таблице `invitation`, ключ дедупа переключится на FK
+ * `response.invitation_id` (отдельная миграция 0004) — токен как credential в response
+ * больше храниться не будет. PII-редакция на HTTP-слое — нет публичного read-ответов,
+ * вынесено в ISSUE #31 (там же требование strip'ать invitationToken из проекции).
  */
 
 /** Структурный минимум pg.Pool (ядро не тянет зависимость `pg`). */
@@ -304,7 +307,7 @@ export class PgStore implements IStore {
       const c = rec.context
       // ON CONFLICT по частичному uq_response_invitation_token (см. миграцию 0003):
       // повтор того же invitation_token (даже с другого инстанса) → DO NOTHING, строка
-      // не вставляется и `returning id` пуст → идемпотентный no-op ниже. Токен NULL
+      // не вставляется и `rows` пуст → идемпотентный no-op ниже. Токен NULL
       // (публичный ответ без приглашения) под предикат индекса не подпадает — вставка идёт.
       const resp = await db.query<{ id: number }>(
         `insert into response
@@ -323,8 +326,9 @@ export class PgStore implements IStore {
       const responseId = resp.rows[0]?.id
       // Дубль по invitation_token: ответ уже записан (этим или соседним инстансом) —
       // тихо выходим, не плодя ответы/товары. Это и есть durable single-use (#3/#4).
+      // return из колбэка inTx завершает транзакцию COMMIT'ом (не throw) — частичной
+      // записи нет: response не вставлен, children тем более.
       if (responseId == null) return
-
 
       if (rec.answers.length > 0) {
         // Один multi-VALUES INSERT вместо запроса на каждый ответ (анкета ≤ 200 вопросов).
@@ -538,7 +542,9 @@ export class PgStore implements IStore {
    * считает БД, ответы в память не грузятся. Бакеты — в UTC (как in-memory: смещение
    * таймзоны не должно сдвигать день/месяц через полночь): `to_char(submitted_at at
    * time zone 'UTC', …)`. Порог подавления — общий `slice()` (на чувствительном срезе
-   * пол ANONYMITY_THRESHOLD на КАЖДУЮ точку); бакеты с n < порога отбрасываются.
+   * порог ANONYMITY_THRESHOLD применяется к КАЖДОЙ точке); бакеты с n < порога отбрасываются.
+   * Без `generate_series`: пустые периоды между точками не достраиваются — это
+   * паритет с in-memory `npsTrend` (он тоже отдаёт только непустые бакеты).
    * Паритет с in-memory: тот же набор/порядок точек и те же значения метрики.
    */
   async aggregateNpsTrend(f: AggregateFilter, bucket: 'month' | 'day' = 'month'): Promise<TrendPoint[]> {

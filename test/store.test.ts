@@ -76,12 +76,16 @@ describe('MemoryStore', () => {
     })
     await s.addResponse(mk('a', { invitationToken: 'tok-1' }))
     await s.addResponse(mk('b', { invitationToken: 'tok-1' })) // повтор → no-op
-    expect(await s.listResponses()).toHaveLength(1)
+    const after = await s.listResponses()
+    expect(after).toHaveLength(1)
+    expect(after[0]!.id).toBe('a') // сохранён первый, не перезаписан вторым
     await s.addResponse(mk('c', { invitationToken: 'tok-2' })) // другой токен → пишется
     expect(await s.listResponses()).toHaveLength(2)
     await s.addResponse(mk('d')) // без токена — дедупа нет
     await s.addResponse(mk('e'))
-    expect(await s.listResponses()).toHaveLength(4)
+    const all = await s.listResponses()
+    expect(all).toHaveLength(4)
+    expect(all.filter((r) => r.invitationToken == null)).toHaveLength(2) // d, e — без токена
   })
 
   it('listResponses возвращает копию — мутация не утекает в стор', async () => {

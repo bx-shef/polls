@@ -10,7 +10,13 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type 
 export class MemoryStore implements IStore {
   private versions: CompiledVersion[] = []
   private _responses: ResponseRecord[] = []
-  /** Токены приглашений уже записанных ответов — durable single-use (паритет с PgStore UNIQUE, #3/#4). */
+  /**
+   * Токены приглашений уже записанных ответов — single-use (паритет с PgStore UNIQUE, #3/#4).
+   * Без namespace по porталу: MemoryStore — single-tenant by design (нет `portalId`,
+   * для локальной проверки/тестов/демо). Межтенантную изоляцию ключа гарантирует только
+   * PgStore (`(portal_id, invitation_token)`); если MemoryStore когда-нибудь станет
+   * мульти-тенантным — ключ Set'а нужно будет расширить порталом.
+   */
   private seenInvitationTokens = new Set<string>()
 
   async publish(draft: SurveyDraft, versionNo: number): Promise<CompiledVersion> {
