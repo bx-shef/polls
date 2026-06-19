@@ -18,10 +18,10 @@
 | `bitrix24/` | crypto/oauth/portal (OAuth-токены) | ✅ ядро готово, под тестами |
 | `server/node.ts` | node:http-адаптер (`pnpm serve`) | ✅ готово |
 | `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
-| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ на живом `/s/:key` (webServer; #39, `docs/visual-gate.md`) |
-| `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
+| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ живой `/s/:key`, 5 поверхностей ×(light+dark) = 30 эталонов (#39; `docs/visual-gate.md`) |
+| `app/` (Nuxt 4 + b24ui) | приложение контура A (`nuxt.config`, экраны `/s/:key`, тёмная тема) | ✅ экраны готовы под гейтом |
 | `server/` (Nitro) | обёртки `createApi`: `/api/` session · submit · survey/:key/current · health | ✅ привязка готова (dev-стор MemoryStore+seed) |
-| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | 🔶 happy-path + гейт intro/survey/thanks/error ×(light+dark) + persist/deep-link ✅; загрузка/пусто/submit-ошибка → #34, тоггл темы → #45 |
+| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема; тоггл темы → #45 |
 | Дашборд (контур B) | аналитика внутри Bitrix24 | ⏳ не начат |
 | Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
 
@@ -145,8 +145,9 @@ Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #3
 (localStorage нет на SSR) → гейт на fresh-контексте видит интро.
 Тёмная тема (#34): `@nuxtjs/color-mode` (preference system, classSuffix '' → класс `.dark`) флипает
 b24ui по `prefers-color-scheme`; гейт детерминированно гоняет ОБЕ темы через colorScheme-проекты.
-Визуальный гейт: 4 поверхности (intro/survey/thanks/error=404) × 3 брейкпоинта × 2 темы = 24 эталона.
-Дальше (#34): состояния загрузка/пусто/submit-ошибка.
+Визуальный гейт: 5 поверхностей (intro/survey/thanks/error=404/submit-error) × 3 брейкпоинта × 2 темы = 30 эталонов.
+Состояние submit-ошибки — под гейтом (мок провала `/api/submit`). loading/«пусто» отдельно не
+гейтятся: loading недостижим на первом paint (SSR await + watch immediate), «пусто» = 404. Тоггл темы — #45.
 
 ## Инварианты
 
