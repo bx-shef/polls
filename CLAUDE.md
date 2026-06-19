@@ -20,7 +20,8 @@
 | `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
 | Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ инфра (фикстура; `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
-| Фронт-экраны (контур A) | Интро/Опрос/Спасибо поверх `SurveyFill` + Nitro-привязка `createApi` | ⏳ следующая фаза (#34, #10) |
+| `server/` (Nitro) | обёртки `createApi`: `/api/` session · submit · survey/:key/current · health | ✅ привязка готова (dev-стор MemoryStore+seed) |
+| Фронт-экраны (контур A) | Интро/Опрос/Спасибо поверх `SurveyFill` + готовых `/api/*` | ⏳ следующая фаза (#34) |
 | Дашборд (контур B) | аналитика внутри Bitrix24 | ⏳ не начат |
 | Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
 
@@ -120,8 +121,16 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 крипто/токены/SQL попадут в клиентский бандл. Серверный слой — корневой `server/` (в Nuxt 4
 `serverDir` по умолчанию `<rootDir>/server`, доп. конфиг не нужен).
 
-Дальше: экраны Интро/Опрос/Спасибо поверх `SurveyFill`, Nitro-обёртка `createApi`
-(`server/`), подключение маршрутов к визуальному гейту (#34).
+**Nitro-привязка ядра (`server/`):** тонкие обёртки над `createApi` — `server/utils/api.ts`
+(`useApi()`, инстанс на процесс: пока MemoryStore+seed для dev-паритета с `pnpm serve`;
+прод-стор/PgStore + общий анти-абьюз — слой деплоя #4/#6) + роуты `server/api/`:
+`GET /api/session`, `POST /api/submit`, `GET /api/survey/:key/current`, `GET /api/health`.
+Логика — в ядре, обёртки только мапят `event → api.*(...)`/статус (+ body-limit 64КБ на
+submit, паритет с `node.ts`; невалидный JSON отвергает h3 — формат h3, не ядровой). Типизируются
+Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #36); живой smoke — `pnpm build` + curl.
+
+Дальше: экраны Интро/Опрос/Спасибо поверх `SurveyFill` (зовут `~core/client` + эти роуты),
+подключение маршрутов к визуальному гейту (#34).
 
 ## Инварианты
 
