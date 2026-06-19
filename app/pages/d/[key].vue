@@ -4,6 +4,7 @@
 // + подавление малых N; распределение приходит с метками опций). Тонкий рендер. DEV-ONLY (auth → #47).
 interface NpsSummary { n: number; nps: number; promoters: number; passives: number; detractors: number }
 interface CsatSummary { n: number; mean: number; topBoxPct: number }
+interface TrendPoint extends NpsSummary { bucket: string }
 interface Dashboard {
   ok: boolean
   title?: string
@@ -13,7 +14,11 @@ interface Dashboard {
   nps?: NpsSummary | null
   csat?: CsatSummary | null
   distribution?: { question: string; items: { label: string; count: number }[] } | null
+  trend?: TrendPoint[]
 }
+
+// NPS ∈ [-100, 100] → ширина шкалы [0%, 100%] (−100→0, 0→50, 100→100).
+const barWidth = (nps: number): string => `${(nps + 100) / 2}%`
 
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
@@ -77,6 +82,23 @@ const { data, error } = await useAsyncData<Dashboard>(`dashboard:${surveyKey.val
           >
             <span class="text-sm">{{ item.label }}</span>
             <B24Badge color="air-secondary-accent" :label="String(item.count)" />
+          </li>
+        </ul>
+      </B24Card>
+
+      <B24Card
+        v-if="data?.trend?.length"
+        title="Динамика NPS по месяцам"
+        class="sm:col-span-2"
+      >
+        <ul class="flex flex-col gap-3">
+          <li v-for="p in data.trend" :key="p.bucket" class="flex items-center gap-3">
+            <span class="w-16 shrink-0 text-sm text-gray-500 dark:text-gray-400">{{ p.bucket }}</span>
+            <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-700">
+              <div class="h-2 rounded-full bg-sky-500" :style="{ width: barWidth(p.nps) }" />
+            </div>
+            <span class="w-10 shrink-0 text-right text-sm font-semibold">{{ p.nps }}</span>
+            <span class="w-12 shrink-0 text-right text-xs text-gray-500 dark:text-gray-400">n={{ p.n }}</span>
           </li>
         </ul>
       </B24Card>

@@ -2,6 +2,7 @@ import {
   npsFor,
   csatFor,
   distributionFor,
+  npsTrend,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
@@ -11,6 +12,8 @@ import {
  * domain/aggregate над общим стором (useStore — те же ответы, что собирает /api/submit).
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
+ * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key) с подавлением
+ * точек малой выборки (порог тот же `ANONYMITY_THRESHOLD` — месяц с n<порога не показываем).
  *
  * Подавление малых N: при n < ANONYMITY_THRESHOLD числа НЕ отдаём (как domain/PgStore —
  * гейт по общему N опроса; per-bin k-анонимность — отдельное ужесточение для реальных данных, #49).
@@ -60,6 +63,8 @@ export default defineEventHandler(async (event) => {
     suppressed: false as const,
     nps: npsKey ? npsFor(responses, npsKey) : null,
     csat: csatKey ? csatFor(responses, csatKey) : null,
-    distribution
+    distribution,
+    // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
+    trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : []
   }
 })
