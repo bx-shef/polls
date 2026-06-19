@@ -96,8 +96,10 @@ const surveyKeySchema = z.string().min(1).max(200)
  * Публичная проекция версии для контура A (GET /api/survey/:key/current):
  * презентация + вопросы из снимка, но БЕЗ `invitationPolicy` — триггер-стадии и
  * канал приглашения это внутренняя CRM-конфигурация, наружу её не отдаём.
+ * Тип возврата — `Omit<…, 'invitationPolicy'>`: добавят новое чувствительное
+ * поле в версию — компилятор не даст молча протечь (заставит обновить проекцию).
  */
-function toPublicVersion(v: CompiledVersion): Record<string, unknown> {
+function toPublicVersion(v: CompiledVersion): Omit<CompiledVersion, 'invitationPolicy'> {
   const { invitationPolicy: _omit, ...pub } = v
   return pub
 }
@@ -148,8 +150,8 @@ export function createApi(deps: ApiDeps): Api {
     },
 
     async survey({ ip, surveyKey }: SurveyInput): Promise<ApiResult> {
-      // GET-чтение: тот же rate-limit, что у session (анти-перебор surveyKey).
-      if (!limiter.allow(`v:${ip}`, now())) return err(429, 'Слишком много запросов')
+      // GET-чтение: отдельный бюджет rate-limit (анти-перебор surveyKey).
+      if (!limiter.allow(`sv:${ip}`, now())) return err(429, 'Слишком много запросов')
       const key = surveyKeySchema.safeParse(surveyKey)
       if (!key.success) return err(400, 'Некорректный ключ опроса')
       try {

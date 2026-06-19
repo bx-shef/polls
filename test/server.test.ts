@@ -73,6 +73,14 @@ describe('node-адаптер: живой HTTP', () => {
 
     expect((await fetch(`${base}/api/survey/no_such/current`)).status).toBe(404)
     expect((await fetch(`${base}/api/survey/${SURVEY_KEY}/current`, { method: 'POST' })).status).toBe(405)
+
+    // percent-encoded ключ доходит до хендлера декодированным (нет такого опроса → 404, не 400/500)
+    expect((await fetch(`${base}/api/survey/a%20b/current`)).status).toBe(404)
+
+    // HEAD ведём как GET (зонд прокси/браузеров): 200, тело пустое
+    const head = await fetch(`${base}/api/survey/${SURVEY_KEY}/current`, { method: 'HEAD' })
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
   })
 
   it('honeypot через HTTP → 400 generic', async () => {

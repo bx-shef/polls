@@ -111,10 +111,10 @@ describe('GET /api/survey/:key/current (контур A)', () => {
     expect(r.status).toBe(404)
   })
 
-  it('некорректный ключ (слишком длинный) → 400', async () => {
+  it('некорректный ключ (слишком длинный / пустой) → 400', async () => {
     const { api } = await freshApi()
-    const r = await api.survey({ ip: 'a', surveyKey: 'x'.repeat(201) })
-    expect(r.status).toBe(400)
+    expect((await api.survey({ ip: 'a', surveyKey: 'x'.repeat(201) })).status).toBe(400)
+    expect((await api.survey({ ip: 'a', surveyKey: '' })).status).toBe(400) // контракт хендлера, независимо от роутера
   })
 
   it('флуд по IP режется rate-limit (429)', async () => {

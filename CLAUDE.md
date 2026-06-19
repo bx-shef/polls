@@ -167,8 +167,11 @@ UI/CSS не готова, пока не увидена глазами — рен
   `triggerStages` под binding) — сделана (#22); `invitationPolicy` миграции не требует (JSONB).
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
   SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
-  идемпотентный ensure (#7 закрыт). Осталось: идемпотентность `addResponse` (с #4),
-  PII-редакция на HTTP-слое и SQL-вариант `npsTrend` (ISSUE [#10](https://github.com/bx-shef/polls/issues/10)).
+  идемпотентный ensure (#7 закрыт). Публичный read контура A — `GET /api/survey/:key/current`
+  (`survey()`, проекция без `invitationPolicy`, #25) — сделан. Осталось: идемпотентность
+  `addResponse` (с #4), PII-редакция на HTTP-слое и SQL-вариант `npsTrend`
+  (ISSUE [#10](https://github.com/bx-shef/polls/issues/10)); кэш/ETag для read-эндпоинтов —
+  ISSUE [#30](https://github.com/bx-shef/polls/issues/30).
 
 ## Документация (`docs/`)
 
