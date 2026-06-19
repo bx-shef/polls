@@ -2,9 +2,11 @@
 // Дашборд результатов (контур B): аналитика опроса в нативной теме b24ui (air-токены, без
 // индиго-айдентики контура A). Данные — серверный агрегат /api/dashboard/:key (domain/aggregate
 // + подавление малых N; распределение приходит с метками опций). Тонкий рендер. DEV-ONLY (auth → #47).
-interface NpsSummary { n: number; nps: number; promoters: number; passives: number; detractors: number }
-interface CsatSummary { n: number; mean: number; topBoxPct: number }
-interface TrendPoint extends NpsSummary { bucket: string }
+// Типы метрик — из ядра (type-only: в клиентский бандл не попадают, граница ~core
+// соблюдена). Один источник правды с серверным агрегатом — расхождение ловит компилятор.
+import type { NpsSummary, CsatSummary } from '~core/domain/metrics'
+import type { TrendPoint } from '~core/domain/aggregate'
+
 interface Dashboard {
   ok: boolean
   title?: string
@@ -17,8 +19,9 @@ interface Dashboard {
   trend?: TrendPoint[]
 }
 
-// NPS ∈ [-100, 100] → ширина шкалы [0%, 100%] (−100→0, 0→50, 100→100).
-const barWidth = (nps: number): string => `${(nps + 100) / 2}%`
+// NPS ∈ [-100, 100] → ширина шкалы [0%, 100%] (−100→0, 0→50, 100→100). Клампим
+// на случай аномального значения в ответе (клиент JSON не валидирует) — полоса не вылезет.
+const barWidth = (nps: number): string => `${Math.max(0, Math.min(100, (nps + 100) / 2))}%`
 
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))

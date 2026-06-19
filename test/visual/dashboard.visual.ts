@@ -16,6 +16,8 @@ import { SURVEY_KEY } from '../../src/demo/seed'
 test('дашборд совпадает с эталоном', async ({ page }) => {
   await page.goto(`/d/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  // Якорь нижней секции: тренд отрисован — снимок fullPage захватывает её целиком.
+  await expect(page.getByText('Динамика NPS по месяцам')).toBeVisible()
   await expect(page).toHaveScreenshot('dashboard.png', { fullPage: true })
 })
 
