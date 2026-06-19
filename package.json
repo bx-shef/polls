@@ -9,6 +9,7 @@
   },
   "description": "Сервис опросов — движок, версионирование и аналитика (ядро)",
   "scripts": {
+    "postinstall": "nuxt prepare",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,11 +18,17 @@
     "serve": "tsx scripts/serve.ts",
     "migrate": "node-pg-migrate",
     "check": "pnpm typecheck && pnpm test:cov && pnpm verify",
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "nuxt:prepare": "nuxt prepare",
     "visual:install": "playwright install chromium",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots"
   },
   "dependencies": {
+    "@bitrix24/b24ui-nuxt": "^2.8.0",
+    "nuxt": "^4.4.8",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -31,6 +38,7 @@
     "@vitest/coverage-v8": "^2.1.8",
     "node-pg-migrate": "^8.0.4",
     "pg": "^8.21.0",
+    "tailwindcss": "^4.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

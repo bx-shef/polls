@@ -1,0 +1,4 @@
+/* CSS-вход b24ui (обязателен): Tailwind v4 + тема/токены b24ui. Без него ни air-токены
+   компонентов, ни Tailwind-утилиты не компилируются. См. README @bitrix24/b24ui-nuxt. */
+@import "tailwindcss";
+@import "@bitrix24/b24ui-nuxt";
