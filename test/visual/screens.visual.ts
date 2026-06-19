@@ -44,12 +44,16 @@ test('экран «error» (опрос не найден) совпадает с 
 })
 
 test('экран «submit-error» (провал отправки) совпадает с эталоном', async ({ page }) => {
-  // Мокаем провал ТОЛЬКО POST /api/submit (клиентский $fetch) → ядро остаётся, экран опроса
-  // показывает алерт ошибки. GET survey/current (SSR) не трогаем.
-  await page.route('**/api/submit', (route) => route.fulfill({ status: 500, body: '{"ok":false}' }))
+  // Изолируем именно провал submit: /api/session отдаём детерминированно (успех), а POST
+  // /api/submit мокаем 500. Так тест «красный» только при реальной ошибке submit, а не из-за
+  // чего-то до него. Оба — клиентские $fetch; GET survey/current (SSR) не трогаем.
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  await page.route('**/api/submit', (route) => route.fulfill({ status: 500, json: { ok: false } }))
   await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
   await page.getByRole('button', { name: 'Начать', exact: true }).click()
-  await answerHappyPath(page) // дойдёт до «Отправить» и кликнет — submit упадёт (мок)
+  await answerHappyPath(page) // на «Отправить»: session (мок-успех) → submit (мок-500) → алерт
   await expect(page.getByText(/Не удалось отправить/)).toBeVisible()
   await expect(page).toHaveScreenshot('submit-error.png', { fullPage: true })
 })

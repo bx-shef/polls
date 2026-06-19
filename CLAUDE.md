@@ -18,8 +18,8 @@
 | `bitrix24/` | crypto/oauth/portal (OAuth-токены) | ✅ ядро готово, под тестами |
 | `server/node.ts` | node:http-адаптер (`pnpm serve`) | ✅ готово |
 | `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
-| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ на живом `/s/:key` (webServer; #39, `docs/visual-gate.md`) |
-| `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
+| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ живой `/s/:key`, 5 поверхностей ×(light+dark) = 30 эталонов (#39; `docs/visual-gate.md`) |
+| `app/` (Nuxt 4 + b24ui) | приложение контура A (`nuxt.config`, экраны `/s/:key`, тёмная тема) | ✅ экраны готовы под гейтом |
 | `server/` (Nitro) | обёртки `createApi`: `/api/` session · submit · survey/:key/current · health | ✅ привязка готова (dev-стор MemoryStore+seed) |
 | Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема; тоггл темы → #45 |
 | Дашборд (контур B) | аналитика внутри Bitrix24 | ⏳ не начат |
