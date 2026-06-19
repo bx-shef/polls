@@ -24,9 +24,21 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : [['list']],
   // Эталоны лежат предсказуемо: test/visual/__screenshots__/<spec>/<имя>-<project>.png
   snapshotPathTemplate: '{testDir}/__screenshots__/{testFileName}/{arg}-{projectName}{ext}',
+  // Гейт сторожит ЖИВОЙ SSR-рендер приложения (#39), а не фикстуры: поднимаем собранный
+  // .output и снимаем реальные маршруты. `reuseExistingServer` локально переиспользует уже
+  // запущенный `pnpm preview` (без пересборки); в CI/Stop-хуке — собирает и поднимает сам.
+  // Готовность ждём по /api/health (Nitro). Сборка небыстрая — таймаут щедрый.
+  webServer: {
+    command: 'pnpm build && node .output/server/index.mjs',
+    url: 'http://127.0.0.1:3030/api/health',
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+    env: { PORT: '3030' }
+  },
   use: {
+    baseURL: 'http://127.0.0.1:3030',
     reducedMotion: 'reduce',
-    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#13 future) —
+    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#34) —
     // отдельными проектами с colorScheme:'dark', когда у b24ui-экранов будет dark.
     colorScheme: 'light'
   },
