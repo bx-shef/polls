@@ -38,7 +38,7 @@ onMounted(() => {
 
 <template>
   <main class="flex min-h-screen items-center justify-center p-6">
-    <p v-if="phase === 'loading'" class="text-gray-500">Загрузка…</p>
+    <p v-if="phase === 'loading'" class="text-gray-500 dark:text-gray-400">Загрузка…</p>
 
     <B24Alert
       v-else-if="phase === 'error'"
