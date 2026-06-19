@@ -11,7 +11,8 @@ import { defineConfig, devices } from '@playwright/test'
  * - фиксированные вьюпорты-брейкпоинты как ОТДЕЛЬНЫЕ проекты — эталон на каждый
  *   (десктоп-рейл скрыт на мобайле и т.п., docs/design.md §8);
  * - детерминированный демо-сид (`demo/seed.ts`) + `waitUntil:'networkidle'` (ресурсы
- *   подгружены) + якорь-локатор visible (гидратация/рендер завершены) — снимок не раньше готовности.
+ *   подгружены) + якорь-локатор visible (гидратация/рендер завершены) — снимок не раньше готовности;
+ * - шрифты — системные (b24ui: CSS-переменные → `system-ui`), веб-фонтов нет → рендер не зависит от сети.
  *
  * Эталоны (`*.png`) коммитятся рядом со спеками и сверяются в той же среде
  * (предустановленный chromium в /opt/pw-browsers). Малый `maxDiffPixelRatio`
@@ -23,6 +24,9 @@ export default defineConfig({
   testMatch: '**/*.visual.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
+  // Жёсткий test-timeout: при зависшем networkidle/SSR падаем за 15с, не за дефолтные 30с
+  // (быстрый выход Stop-хука). Интро рендерится <1с — запас огромный.
+  timeout: 15_000,
   reporter: process.env.CI ? 'github' : [['list']],
   // Эталоны лежат предсказуемо: test/visual/__screenshots__/<spec>/<имя>-<project>.png
   snapshotPathTemplate: '{testDir}/__screenshots__/{testFileName}/{arg}-{projectName}{ext}',

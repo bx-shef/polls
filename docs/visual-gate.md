@@ -35,6 +35,8 @@ pnpm visual:install        # поставить chromium (в удалённой 
 pnpm test:visual           # прогон скриншот-регрессии (сверка с эталоном)
 pnpm test:visual:update    # ОСОЗНАННО обновить эталоны. ОБЯЗАТЕЛЬНО затем:
                            # git diff test/visual/__screenshots__ — сверить .png глазами перед коммитом
+PORT=3030 pnpm preview     # держать в отдельном терминале → test:visual переиспустит сервер
+                           # (reuseExistingServer) без пересборки на каждый прогон. Порт ровно 3030!
 ```
 
 Эталоны лежат по `snapshotPathTemplate` из `playwright.config.ts`, напр.:
