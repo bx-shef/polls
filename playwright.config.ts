@@ -26,6 +26,8 @@ export default defineConfig({
   snapshotPathTemplate: '{testDir}/__screenshots__/{testFileName}/{arg}-{projectName}{ext}',
   use: {
     reducedMotion: 'reduce',
+    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#13 future) —
+    // отдельными проектами с colorScheme:'dark', когда у b24ui-экранов будет dark.
     colorScheme: 'light'
   },
   expect: {
@@ -35,15 +37,22 @@ export default defineConfig({
       maxDiffPixelRatio: 0.002
     }
   },
+  // Три брейкпоинта по docs/design.md §8: десктоп (рейл ~38%), планшет 1024–1279
+  // (та же 2-колоночная, рейл ~34%), мобайл (рейл скрыт, нав к низу, 1 колонка).
+  // mobile — реальный mobile-профиль (Pixel 7: chromium-совместим, isMobile/hasTouch/
+  // mobile-UA), чтобы media (hover:none)/(pointer:coarse) рендерились как на устройстве.
   projects: [
     {
       name: 'desktop',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 } }
     },
     {
+      name: 'tablet',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 768 } }
+    },
+    {
       name: 'mobile',
-      // Брейкпоинт мобайла (docs/design.md §8: рейл скрыт, нав прилипает к низу, 1 колонка).
-      use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } }
+      use: { ...devices['Pixel 7'] }
     }
   ]
 })

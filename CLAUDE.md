@@ -39,7 +39,8 @@ pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
 pnpm migrate up   # применить миграции БД (node-pg-migrate; DATABASE_URL). Создать: pnpm migrate create
 pnpm test:visual  # визуальный гейт #13: скриншот-регрессия (Playwright). Обновить эталоны:
                   # pnpm test:visual:update (после глазами-сверки). Браузер: pnpm visual:install.
-                  # НЕ входит в `pnpm check` (агент-сайд через Stop-хук) — см. docs/visual-gate.md
+                  # НЕ входит в `pnpm check` — запускается Stop-хуком Claude Code при
+                  # завершении сессии на изменениях UI. См. docs/visual-gate.md
 ```
 
 Для проверок предпочитай `scripts/check.sh` / `check.ps1` — один запуск ставит
