@@ -16,13 +16,17 @@
     "verify": "tsx scripts/verify.ts",
     "serve": "tsx scripts/serve.ts",
     "migrate": "node-pg-migrate",
-    "check": "pnpm typecheck && pnpm test:cov && pnpm verify"
+    "check": "pnpm typecheck && pnpm test:cov && pnpm verify",
+    "visual:install": "playwright install chromium",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.1",
+    "@playwright/test": "^1.49.0",
     "@types/node": "^22.10.2",
     "@vitest/coverage-v8": "^2.1.8",
     "node-pg-migrate": "^8.0.4",

@@ -3,6 +3,11 @@ dist/
 .nuxt/
 .output/
 coverage/
+# Playwright: артефакты прогона игнорируем, baseline-скриншоты (test/visual/**/*.png) — нет.
+test-results/
+playwright-report/
+blob-report/
+.playwright/
 *.log
 .env
 .env.*
