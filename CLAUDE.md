@@ -138,8 +138,8 @@ Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #3
 чувствительное поле не попадает в бандл/рендер). Презентация (`intro`/`thanks`) — из снимка
 (#25; демо-контент в `demo/seed.ts`). Вопросы — `B24RadioGroup`/`B24CheckboxGroup` (`variant=card`)/`B24Textarea`.
 
-Дальше: привязка живого маршрута к визуальному гейту (#13 → #39, webServer+baseURL) — следующий
-PR; состояния пусто/ошибка/загрузка, deep-link `?q=N`, persist (localStorage), тёмная тема — #34.
+Маршрут привязан к визуальному гейту (#39: `webServer`+`baseURL`, гейт снимает живой `/s/:key`).
+Дальше (#34): состояния пусто/ошибка/загрузка, deep-link `?q=N`, persist (localStorage), тёмная тема.
 
 ## Инварианты
 
