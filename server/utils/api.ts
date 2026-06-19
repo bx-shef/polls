@@ -2,18 +2,29 @@ import { createApi, type Api } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
+import type { IStore } from '~core/store/types'
 
 /**
- * Nitro-привязка ядрового HTTP-слоя (контур A). SERVER-ONLY: `~core/api`/`~core/store`/
- * `~core/obs` сюда импортируются намеренно (Nitro-роуты, гарантия — server-каталог Nuxt),
- * в клиентский бандл не попадают.
+ * Nitro-привязка ядра. SERVER-ONLY: `~core/api`/`~core/store`/`~core/obs` сюда импортируются
+ * намеренно (Nitro-роуты, гарантия — server-каталог Nuxt), в клиентский бандл не попадают.
  *
- * Логика остаётся в ядре (`createApi`, framework-agnostic) — здесь только инстанс на
- * процесс. Стор: пока демо (MemoryStore + seed, паритет с `pnpm serve`), чтобы контур A
- * имел рабочий бэкенд в dev. Прод-стор (PgStore по `DATABASE_URL`) + общий стор анти-абьюза
- * для мульти-инстанса — слой деплоя (#4, #6). Один логгер JSON в stdout (#5).
+ * Логика остаётся в ядре (`createApi`, framework-agnostic) — здесь только инстанс на процесс.
+ * Стор: пока демо (MemoryStore + seed, паритет с `pnpm serve`). ОДИН инстанс на процесс
+ * (`useStore`) — общий для `/api/*` (контур A) и дашборда (контур B), чтобы дашборд видел
+ * отправленные ответы. Прод-стор (PgStore по `DATABASE_URL`) + общий стор анти-абьюза — #4/#6.
  */
+let storePromise: Promise<IStore> | undefined
 let apiPromise: Promise<Api> | undefined
+
+export function useStore(): Promise<IStore> {
+  if (!storePromise) {
+    storePromise = buildDemo().catch((e) => {
+      storePromise = undefined
+      throw e
+    })
+  }
+  return storePromise
+}
 
 export function useApi(): Promise<Api> {
   if (!apiPromise) {
@@ -35,7 +46,7 @@ async function buildApi(): Promise<Api> {
       msg: 'Nitro-слой использует MemoryStore+seed (данные эфемерны); PgStore по DATABASE_URL — #6'
     })
   }
-  const store = await buildDemo()
+  const store = await useStore()
   // Щедрый лимитер для dev/gate-сервера: SSR-рендер сам дёргает /api/survey/:key/current
   // (server-to-server, один loopback-IP), и визуальный гейт прогоняет страницу многократно —
   // дефолтные 10/60с быстро упираются в 429 (флаки гейта). Это НЕ прод-граница анти-абьюза
