@@ -7,6 +7,10 @@
   эндпоинты `/api/session`, `/api/submit`. Без Bitrix24-авторизации. См. `brief.md` §9-A.
 - **Контур B** — закрытый дашборд результатов внутри Bitrix24 (аналитика, scopes
   `crm`/`user_brief`). См. `brief.md` §9-B.
+- **`SurveyFill`** — framework-agnostic «мозг» прохождения опроса (контур A): навигация/
+  deep-link, валидация шага, single/multi + exclusive, «Другое», persist-снимок,
+  маппинг в `Submission`. Без DOM/Vue — Vue-композабл оборачивает реактивностью.
+  `src/client/survey-fill.ts` (#24).
 - **Версия-снимок (CompiledVersion)** — иммутабельный результат `compile()` черновика:
   опубликованная версия не перезаписывается, ответ пинится на номер версии при отправке.
   См. `domain/compile.ts`.
