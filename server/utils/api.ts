@@ -1,6 +1,7 @@
 import { createApi, type Api } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger } from '~core/obs/logger'
+import { SlidingWindowLimiter } from '~core/api/ratelimit'
 
 /**
  * Nitro-привязка ядрового HTTP-слоя (контур A). SERVER-ONLY: `~core/api`/`~core/store`/
@@ -35,5 +36,11 @@ async function buildApi(): Promise<Api> {
     })
   }
   const store = await buildDemo()
-  return createApi({ store, logger })
+  // Щедрый лимитер для dev/gate-сервера: SSR-рендер сам дёргает /api/survey/:key/current
+  // (server-to-server, один loopback-IP), и визуальный гейт прогоняет страницу многократно —
+  // дефолтные 10/60с быстро упираются в 429 (флаки гейта). Это НЕ прод-граница анти-абьюза
+  // (она по IP за доверенным прокси + общий стор — #4/#6); здесь высокий потолок убирает
+  // ложные 429, оставляя ceiling от примитивного флуда.
+  const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
+  return createApi({ store, logger, limiter })
 }

@@ -1,26 +1,24 @@
 import { test, expect } from '@playwright/test'
-import { pathToFileURL, fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-
-const here = dirname(fileURLToPath(import.meta.url))
 
 /**
- * Реестр визуально проверяемых «поверхностей» контура A (issue #13).
+ * Реестр визуально проверяемых «поверхностей» контура A (issue #13/#39).
  *
- * Сейчас — статические фикстуры-заглушки (Nuxt/b24ui-слоя ещё нет): гейт доказан
- * end-to-end ДО появления экранов, как и просили («экраны сразу под гейтом»). Когда
- * появится Nuxt-приложение — заменим `file://`-фикстуры на `baseURL` + реальные
- * маршруты (`/s/:key` и т.п.), добавим состояния (пусто/ошибка/загрузка) и тёмную тему;
- * структура реестра и сами эталоны на брейкпоинты (desktop/mobile проекты) останутся.
+ * Теперь — ЖИВЫЕ маршруты приложения (webServer + baseURL в playwright.config), а не
+ * статические фикстуры: гейт сторожит реальный SSR-рендер b24ui-экранов на детерминированном
+ * демо-сиде (`demo/seed.ts`). Дальше (#34): состояния (survey/thanks/пусто/ошибка/загрузка),
+ * тёмная тема — отдельными поверхностями/проектами.
  */
+// TODO(#34): добавить поверхности survey/thanks — им нужна управляющая навигация (клик
+// «Начать» → вопрос; «Далее»/«Отправить» → спасибо) + состояния пусто/ошибка/загрузка/тёмная тема.
 const SURFACES = [
-  { name: 'intro', file: 'intro.placeholder.html' }
+  { name: 'intro', path: '/s/csat_postdeal' }
 ] as const
 
 for (const surface of SURFACES) {
   test(`экран «${surface.name}» совпадает с эталоном`, async ({ page }) => {
-    await page.goto(pathToFileURL(join(here, 'fixtures', surface.file)).href)
-    // Полностраничный снимок: ловит регрессии раскладки целиком, не только вьюпорта.
+    await page.goto(surface.path, { waitUntil: 'networkidle' })
+    // Якорь готовности рендера — заголовок интро (снимок не раньше, чем он виден).
+    await expect(page.locator('h1')).toBeVisible()
     await expect(page).toHaveScreenshot(`${surface.name}.png`, { fullPage: true })
   })
 }

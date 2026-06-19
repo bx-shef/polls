@@ -1,15 +1,18 @@
 import { defineConfig, devices } from '@playwright/test'
 
 /**
- * Детерминированный визуальный гейт (issue #13). Стратегия: render → screenshot →
+ * Детерминированный визуальный гейт (issue #13/#39). Стратегия: render → screenshot →
  * сверка с эталоном (`toHaveScreenshot`); расхождение пикселей выше порога = провал.
- * Гейт активируется Stop-хуком (`.claude/hooks/visual-gate.sh`) на изменениях UI.
+ * Гейт активируется Stop-хуком (`.claude/hooks/visual-gate.sh`) на изменениях UI и снимает
+ * ЖИВОЙ SSR-рендер приложения (`webServer` поднимает собранное `.output`).
  *
  * Детерминизм (иначе скриншоты «плывут» и гейт бесполезен):
  * - `reducedMotion: 'reduce'` + `animations: 'disabled'` — без анимаций/переходов;
- * - фиксированные вьюпорты-брейкпоинты (десктоп/мобайл) как ОТДЕЛЬНЫЕ проекты —
- *   эталон на каждый брейкпоинт (десктоп-рейл скрыт на мобайле и т.п., docs/design.md §8);
- * - system-шрифты в фикстурах (без веб-фонтов) — чтобы рендер не зависел от загрузки сети.
+ * - фиксированные вьюпорты-брейкпоинты как ОТДЕЛЬНЫЕ проекты — эталон на каждый
+ *   (десктоп-рейл скрыт на мобайле и т.п., docs/design.md §8);
+ * - детерминированный демо-сид (`demo/seed.ts`) + `waitUntil:'networkidle'` (ресурсы
+ *   подгружены) + якорь-локатор visible (гидратация/рендер завершены) — снимок не раньше готовности;
+ * - шрифты — системные (b24ui: CSS-переменные → `system-ui`), веб-фонтов нет → рендер не зависит от сети.
  *
  * Эталоны (`*.png`) коммитятся рядом со спеками и сверяются в той же среде
  * (предустановленный chromium в /opt/pw-browsers). Малый `maxDiffPixelRatio`
@@ -21,12 +24,30 @@ export default defineConfig({
   testMatch: '**/*.visual.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
+  // Жёсткий test-timeout: при зависшем networkidle/SSR падаем за 15с, не за дефолтные 30с
+  // (быстрый выход Stop-хука). Интро рендерится <1с — запас огромный.
+  timeout: 15_000,
   reporter: process.env.CI ? 'github' : [['list']],
   // Эталоны лежат предсказуемо: test/visual/__screenshots__/<spec>/<имя>-<project>.png
   snapshotPathTemplate: '{testDir}/__screenshots__/{testFileName}/{arg}-{projectName}{ext}',
+  // Гейт сторожит ЖИВОЙ SSR-рендер приложения (#39), а не фикстуры: поднимаем собранный
+  // .output и снимаем реальные маршруты. `reuseExistingServer` локально переиспользует уже
+  // запущенный `pnpm preview` (без пересборки); в CI/Stop-хуке — собирает и поднимает сам.
+  // Готовность ждём по /api/health (Nitro). Сборка небыстрая — таймаут щедрый.
+  webServer: {
+    command: 'pnpm build && node .output/server/index.mjs',
+    url: 'http://127.0.0.1:3030/api/health',
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+    // NITRO_HOST=127.0.0.1 — сервер только на loopback (минимальная экспозиция: не 0.0.0.0).
+    // PORT/host согласованы с url/baseURL. Локально reuseExistingServer переиспользует уже
+    // запущенный сервер ТОЛЬКО на :3030 (`PORT=3030 pnpm preview`), иначе соберёт сам.
+    env: { PORT: '3030', NITRO_HOST: '127.0.0.1' }
+  },
   use: {
+    baseURL: 'http://127.0.0.1:3030',
     reducedMotion: 'reduce',
-    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#13 future) —
+    // colorScheme зафиксирован светлым (детерминизм). Тёмная тема (#34) —
     // отдельными проектами с colorScheme:'dark', когда у b24ui-экранов будет dark.
     colorScheme: 'light'
   },

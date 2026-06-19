@@ -18,7 +18,7 @@
 | `bitrix24/` | crypto/oauth/portal (OAuth-токены) | ✅ ядро готово, под тестами |
 | `server/node.ts` | node:http-адаптер (`pnpm serve`) | ✅ готово |
 | `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
-| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ инфра (фикстура; `docs/visual-gate.md`) |
+| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ на живом `/s/:key` (webServer; #39, `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
 | `server/` (Nitro) | обёртки `createApi`: `/api/` session · submit · survey/:key/current · health | ✅ привязка готова (dev-стор MemoryStore+seed) |
 | Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | 🔶 happy-path готов; гейт-привязка → #39, состояния/тема/persist → #34 |
@@ -138,8 +138,8 @@ Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #3
 чувствительное поле не попадает в бандл/рендер). Презентация (`intro`/`thanks`) — из снимка
 (#25; демо-контент в `demo/seed.ts`). Вопросы — `B24RadioGroup`/`B24CheckboxGroup` (`variant=card`)/`B24Textarea`.
 
-Дальше: привязка живого маршрута к визуальному гейту (#13 → #39, webServer+baseURL) — следующий
-PR; состояния пусто/ошибка/загрузка, deep-link `?q=N`, persist (localStorage), тёмная тема — #34.
+Маршрут привязан к визуальному гейту (#39: `webServer`+`baseURL`, гейт снимает живой `/s/:key`).
+Дальше (#34): состояния пусто/ошибка/загрузка, deep-link `?q=N`, persist (localStorage), тёмная тема.
 
 ## Инварианты
 
@@ -192,9 +192,10 @@ UI/CSS не готова, пока не увидена глазами — рен
 починка (брейкпоинты, состояния пусто/ошибка, hover/focus/disabled, тёмная тема).
 **Приватность:** скриншоты живого портала (CRM/домены/токены) не коммитим, не шлём
 в облачный чат, не кладём в CI — только dev/staging с мок-данными. Детерминированный
-гейт (Playwright + `Stop`-хук, #13) — **инфраструктура поднята** на фикстуре-заглушке
-(`pnpm test:visual`, `.claude/hooks/visual-gate.sh`); с приходом экранов фикстуры
-заменяются на маршруты приложения. Детали и порядок добавления экрана — `docs/visual-gate.md`.
+гейт (Playwright + `Stop`-хук, #13/#39) — **на живых маршрутах**: `webServer` поднимает
+собранное приложение, `pnpm test:visual` снимает реальный SSR-рендер `/s/:key` (3 брейкпоинта)
+на детерминированном сиде. `.claude/hooks/visual-gate.sh` гейтит на изменениях UI. Детали и
+порядок добавления экрана — `docs/visual-gate.md`.
 
 ## Скоуп и роадмап
 
