@@ -218,6 +218,14 @@ export const responseRecordSchema = z.object({
   /** ISO-8601 с таймзоной. */
   submittedAt: isoDatetime,
   context: crmContextSchema,
-  answers: z.array(storedAnswerSchema)
+  answers: z.array(storedAnswerSchema),
+  /**
+   * Токен приглашения, по которому сделана запись (опц.). Durable-якорь
+   * идемпотентности: PgStore кладёт его в колонку с частичным UNIQUE
+   * (portal_id, invitation_token), поэтому повторная отправка того же
+   * приглашения на ЛЮБОЙ инстанс не создаёт дубль (#3/#4, мульти-инстанс).
+   * Публичные ответы по ссылке без приглашения — без токена (дедуп не нужен).
+   */
+  invitationToken: z.string().min(1).max(256).optional()
 })
 export type ResponseRecord = z.infer<typeof responseRecordSchema>

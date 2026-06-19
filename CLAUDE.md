@@ -61,8 +61,9 @@ pnpm migrate up   # применить миграции БД (node-pg-migrate; D
   `store/pg.ts` (`PgStore`) — реализация поверх PostgreSQL: драйвер-агностичная
   (`Queryable` ≈ `pg.Pool`/pglite; запись в транзакции при поддержке драйвера),
   tenant-scoped по `portalId`; денормализация контекста в колонки + `response_product`;
-  SQL-агрегация (`aggregateNps/Csat/Distribution`) с принудительным подавлением малых N
-  на чувствительных срезах; тесты на pglite (in-process, паритет с in-memory).
+  SQL-агрегация (`aggregateNps/Csat/Distribution/NpsTrend`) с принудительным подавлением малых N
+  на чувствительных срезах; durable-идемпотентность `addResponse` по `invitation_token`
+  (`ON CONFLICT DO NOTHING`); тесты на pglite (in-process, паритет с in-memory).
   `store/cursor.ts` — helpers keyset-курсора (encode/decode/compare).
 - `api/handlers.ts` (`createApi`) — framework-agnostic HTTP-хендлеры (вход → {status, body},
   зависимости инжектируются). `survey({surveyKey})` (GET `/api/survey/:key/current`, #25) отдаёт
@@ -155,8 +156,10 @@ UI/CSS не готова, пока не увидена глазами — рен
   `stageId` под формат `triggerStages`); идемпотентность/общий стор — **#4**.
 - **#4** — анти-абьюз: ядро сделано в `src/api` (server-set `submittedAt`, nonce TTL → 409,
   honeypot → 400, rate-limit → 429, идемпотентность по invitation — single-use, #3).
-  Остаётся: общий стор nonce/лимитов/приглашений для мульти-инстанса, серверная
-  конфигурация за reverse-proxy.
+  Durable-идемпотентность записи: `response.invitation_token` + частичный UNIQUE
+  (миграция 0003) — повтор приглашения на ЛЮБОМ инстансе → `ON CONFLICT DO NOTHING`
+  (MemoryStore дублирует семантику Set'ом). Остаётся: общий стор nonce/лимитов/приглашений
+  для мульти-инстанса, серверная конфигурация за reverse-proxy.
 - **#5** — наблюдаемость: ядро сделано (`src/obs`: zero-dep структурный логгер с редакцией
   секретов, `GET /api/health` → 200/503, `installProcessHandlers` для unhandled, `x-request-id`).
   Остаётся (слой деплоя): адаптеры `Logger`→Pino / `onFatal`→Sentry, живой `/health` за
@@ -168,9 +171,11 @@ UI/CSS не готова, пока не увидена глазами — рен
 - **read-API / PgStore** — сделаны: CRUD + tenant-изоляция, keyset-пагинация,
   SQL-агрегация с принудительным подавлением малых N, денормализация, транзакции,
   идемпотентный ensure (#7 закрыт). Публичный read контура A — `GET /api/survey/:key/current`
-  (`survey()`, проекция без `invitationPolicy`, #25) — сделан. Осталось: идемпотентность
-  `addResponse` (с #4), PII-редакция на HTTP-слое и SQL-вариант `npsTrend`
-  (ISSUE [#10](https://github.com/bx-shef/polls/issues/10)); кэш/ETag для read-эндпоинтов —
+  (`survey()`, проекция без `invitationPolicy`, #25) — сделан. Идемпотентность `addResponse`
+  (durable по invitation_token, миграция 0003) и SQL-`npsTrend` (`aggregateNpsTrend`,
+  паритет с in-memory) — сделаны. Осталось: связь `response.invitation_id` с общим стором
+  приглашений (#4) и PII-редакция на HTTP-слое (нет публичного read-ответов — ISSUE
+  [#31](https://github.com/bx-shef/polls/issues/31)); кэш/ETag для read-эндпоинтов —
   ISSUE [#30](https://github.com/bx-shef/polls/issues/30).
 
 ## Документация (`docs/`)

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { PgStore, queryableFromPool, type PoolLike, type Queryable } from '../src/store/pg'
-import { byCategory, byCompany, byProduct, byVersionRange, csatFor, distributionFor, npsFor } from '../src/domain/aggregate'
+import { ANONYMITY_THRESHOLD, byCategory, byCompany, byProduct, byVersionRange, csatFor, distributionFor, npsFor, npsTrend } from '../src/domain/aggregate'
 import { buildDemo, draftV1, draftV2, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
 import { applySchema } from './helpers/schema'
@@ -224,6 +224,34 @@ describe('PgStore (pglite)', () => {
     expect((await store.currentVersion(SURVEY_KEY))?.versionNo).toBe(2)
   })
 
+  it('идемпотентность по invitation_token: повтор того же токена → тихий no-op (#3/#4)', async () => {
+    const { db, portalA, portalB } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await store.addResponse(sampleResponse({ id: 'a', invitationToken: 'tok-1' }))
+    // повтор того же токена (напр. ретрай/второй инстанс) не плодит дубль
+    await store.addResponse(sampleResponse({ id: 'b', submittedAt: '2026-04-04T10:00:00.000Z', invitationToken: 'tok-1' }))
+    expect(await store.listResponses()).toHaveLength(1)
+    // ON CONFLICT DO NOTHING не вставил и ответы дубля (children тоже не появились)
+    const ans = await db.query<{ n: number }>(
+      'select count(*)::int as n from response_answer ra join response r on r.id = ra.response_id where r.portal_id = $1',
+      [portalA]
+    )
+    expect(ans.rows[0]!.n).toBe(2) // только от первого ответа
+    // другой токен пишется нормально
+    await store.addResponse(sampleResponse({ id: 'c', invitationToken: 'tok-2' }))
+    expect(await store.listResponses()).toHaveLength(2)
+    // UNIQUE партиционирован по порталу: тот же токен в другом тенанте — отдельная запись
+    const storeB = new PgStore(db, { portalId: portalB })
+    await storeB.publish(draftV1(), 1)
+    await storeB.addResponse(sampleResponse({ id: 'd', invitationToken: 'tok-1' }))
+    expect(await storeB.listResponses()).toHaveLength(1)
+    // ответы без токена дедупу не подлежат (публичная ссылка): два проходят
+    await store.addResponse(sampleResponse({ id: 'e', context: {} }))
+    await store.addResponse(sampleResponse({ id: 'f', submittedAt: '2026-04-06T10:00:00.000Z', context: {} }))
+    expect(await store.listResponses()).toHaveLength(4)
+  })
+
   it('addResponse до публикации → ошибка; неизвестная версия → ошибка', async () => {
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA })
@@ -429,5 +457,26 @@ describe('PgStore — SQL-агрегация (паритет с in-memory на �
     expect(await store.aggregateCsat({ surveyKey: SURVEY_KEY, questionKey: CSAT_Q, companyId: 999 })).toBeNull()
     expect(await store.aggregateNps({ surveyKey: SURVEY_KEY, questionKey: 'q_нет_такого' })).toBeNull()
     expect(await store.aggregateDistribution({ surveyKey: SURVEY_KEY, questionKey: 'q_нет_такого' })).toBeNull()
+  })
+
+  it('npsTrend (SQL) совпадает с in-memory: месяц, день, версии, подавление (#10)', async () => {
+    // паритет значений/набора/порядка точек с domain/aggregate.npsTrend на том же seed
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q }, 'month'))
+      .toEqual(npsTrend(all, NPS_Q, 'month'))
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q }, 'day'))
+      .toEqual(npsTrend(all, NPS_Q, 'day'))
+    // дефолтный бакет — месяц
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q }))
+      .toEqual(npsTrend(all, NPS_Q, 'month'))
+    // срез по версии: тренд только по v1
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, versionFrom: 1, versionTo: 1 }, 'month'))
+      .toEqual(npsTrend(byVersionRange(all, 1, 1), NPS_Q, 'month'))
+    // чувствительный срез (company 101): пол ANONYMITY_THRESHOLD на каждую точку.
+    // Месячные бакеты компании 101 мельче 5 → все подавлены (паритет с пустым in-memory minN=5).
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 101 }, 'month'))
+      .toEqual(npsTrend(byCompany(all, 101), NPS_Q, 'month', ANONYMITY_THRESHOLD))
+    // пустой/неизвестный срез → []
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: 'q_нет_такого' })).toEqual([])
+    expect(await store.aggregateNpsTrend({ surveyKey: SURVEY_KEY, questionKey: NPS_Q, companyId: 999 })).toEqual([])
   })
 })

@@ -1,4 +1,4 @@
-import { ANONYMITY_THRESHOLD, meetsAnonymity } from '../domain/aggregate'
+import { ANONYMITY_THRESHOLD, meetsAnonymity, type TrendPoint } from '../domain/aggregate'
 import { compile } from '../domain/compile'
 import { round1, round2, type CsatSummary, type NpsSummary } from '../domain/metrics'
 import {
@@ -41,8 +41,11 @@ export type { Queryable } from './types'
  *   загрузки ответов в память) и ПРИНУДИТЕЛЬНО подавляют малые выборки на
  *   чувствительных срезах; PII (contactId) в агрегатах не участвует.
  *
- * Остаётся (#3/#4/#10): идемпотентность addResponse и связь invitation_id (когда
- * появится invitation-flow), PII-редакция/erasure на HTTP-слое, SQL-вариант npsTrend.
+ * Идемпотентность addResponse — durable по invitation_token (частичный UNIQUE,
+ * миграция 0003): повтор приглашения на любом инстансе → ON CONFLICT DO NOTHING (#3/#4).
+ * SQL-вариант npsTrend — aggregateNpsTrend (#10). Остаётся: связь response.invitation_id
+ * с строкой invitation (когда invitation-flow получит общий стор #4), PII-редакция на
+ * HTTP-слое (нет публичного read-ответов; вынесено в ISSUE).
  */
 
 /** Структурный минимум pg.Pool (ядро не тянет зависимость `pg`). */
@@ -299,18 +302,29 @@ export class PgStore implements IStore {
         throw new Error(`Версия ${rec.versionNo} опроса ${rec.surveyKey} не найдена`)
       }
       const c = rec.context
+      // ON CONFLICT по частичному uq_response_invitation_token (см. миграцию 0003):
+      // повтор того же invitation_token (даже с другого инстанса) → DO NOTHING, строка
+      // не вставляется и `returning id` пуст → идемпотентный no-op ниже. Токен NULL
+      // (публичный ответ без приглашения) под предикат индекса не подпадает — вставка идёт.
       const resp = await db.query<{ id: number }>(
         `insert into response
            (portal_id, survey_id, survey_version_id, version_no, deal_id, deal_category_id,
-            company_id, contact_id, responsible_id, context, submitted_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
+            company_id, contact_id, responsible_id, context, submitted_at, invitation_token)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         on conflict (portal_id, invitation_token) where invitation_token is not null do nothing
+         returning id`,
         [
           this.opts.portalId, surveyId, versionId, rec.versionNo,
           c.dealId ?? null, c.dealCategoryId ?? null, c.companyId ?? null,
-          c.contactId ?? null, c.responsibleId ?? null, JSON.stringify(c), rec.submittedAt
+          c.contactId ?? null, c.responsibleId ?? null, JSON.stringify(c), rec.submittedAt,
+          rec.invitationToken ?? null
         ]
       )
-      const responseId = resp.rows[0]!.id
+      const responseId = resp.rows[0]?.id
+      // Дубль по invitation_token: ответ уже записан (этим или соседним инстансом) —
+      // тихо выходим, не плодя ответы/товары. Это и есть durable single-use (#3/#4).
+      if (responseId == null) return
+
 
       if (rec.answers.length > 0) {
         // Один multi-VALUES INSERT вместо запроса на каждый ответ (анкета ≤ 200 вопросов).
@@ -516,6 +530,44 @@ export class PgStore implements IStore {
     if (!meetsAnonymity(n, minN)) return null
     const out: Record<string, number> = {}
     for (const row of r.rows) out[row.k] = row.c
+    return out
+  }
+
+  /**
+   * Динамика NPS по периодам (SQL-вариант domain/aggregate.npsTrend, #10). Метрику
+   * считает БД, ответы в память не грузятся. Бакеты — в UTC (как in-memory: смещение
+   * таймзоны не должно сдвигать день/месяц через полночь): `to_char(submitted_at at
+   * time zone 'UTC', …)`. Порог подавления — общий `slice()` (на чувствительном срезе
+   * пол ANONYMITY_THRESHOLD на КАЖДУЮ точку); бакеты с n < порога отбрасываются.
+   * Паритет с in-memory: тот же набор/порядок точек и те же значения метрики.
+   */
+  async aggregateNpsTrend(f: AggregateFilter, bucket: 'month' | 'day' = 'month'): Promise<TrendPoint[]> {
+    const { where, params, minN } = this.slice(f)
+    const fmt = bucket === 'month' ? 'YYYY-MM' : 'YYYY-MM-DD'
+    params.push(fmt)
+    const r = await this.db.query<{ bucket: string; n: number; promoters: number; detractors: number }>(
+      `select to_char(r.submitted_at at time zone 'UTC', $${params.length}) as bucket,
+              count(*)::int as n,
+              count(*) filter (where ra.value_number >= 9)::int as promoters,
+              count(*) filter (where ra.value_number <= 6)::int as detractors
+       ${AGG_FROM}
+       where ${where} and ra.value_number is not null
+       group by 1 order by 1 asc`,
+      params
+    )
+    const out: TrendPoint[] = []
+    for (const row of r.rows) {
+      if (!meetsAnonymity(row.n, minN)) continue
+      const passives = row.n - row.promoters - row.detractors
+      out.push({
+        bucket: row.bucket,
+        n: row.n,
+        promoters: row.promoters,
+        passives,
+        detractors: row.detractors,
+        nps: round1(((row.promoters - row.detractors) / row.n) * 100)
+      })
+    }
     return out
   }
 }

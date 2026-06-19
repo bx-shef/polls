@@ -257,6 +257,9 @@ create table response (
   csat_value        numeric,
   sentiment         numeric,
   status            text not null default 'raw',  -- raw | analyzed
+  -- durable-идемпотентность: токен приглашения, по которому записан ответ (миграция 0003).
+  -- Частичный UNIQUE ниже = single-use поверх in-memory invitation-стора (мульти-инстанс, #3/#4).
+  invitation_token  text,
   submitted_at      timestamptz default now()
 );
 create index on response (survey_id);
@@ -264,6 +267,8 @@ create index on response (company_id);
 create index on response (deal_category_id);
 create index on response (responsible_id);
 create index on response (submitted_at);
+-- повтор приглашения на любом инстансе → ON CONFLICT DO NOTHING (NULL — публичная ссылка, не дедупится):
+create unique index uq_response_invitation_token on response (portal_id, invitation_token) where invitation_token is not null;
 
 -- ── Ответ на вопрос ──
 create table response_answer (
@@ -381,7 +386,7 @@ where r.company_id = :company_id         -- все сделки клиента
 group by 1 order by 1;
 ```
 
-> Эскизы иллюстративны; рабочая реализация — `PgStore.aggregateNps/Csat/Distribution`
+> Эскизы иллюстративны; рабочая реализация — `PgStore.aggregateNps/Csat/Distribution/NpsTrend`
 > (источник чисел — `response_answer.value_number/value_choice`). Колонки
 > `response.nps_value`/`csat_value` — резерв под BI/AI-кэш: `addResponse` их
 > НЕ заполняет.
@@ -502,7 +507,7 @@ group by opt order by 2 desc;
 | `PgStore` (CRUD + tenant-изоляция `portalId`) — на pglite-тестах | Фаза 2 | ✅ |
 | Read-API: keyset-пагинация, SQL-агрегация + принудительное подавление малых N, денормализация, транзакции, идемпотентный ensure | Фаза 3 | ✅ |
 | Денормализация `triggerStages` (`survey_version.trigger_stages text[]`, GIN) + `IStore.surveysTriggeredBy` под binding-запрос «опросы по стадии»; политика version-frozen (#21) | Фаза 2–3 | ✅ [#22](https://github.com/bx-shef/polls/issues/22) |
-| Read-API остаток: идемпотентность `addResponse` (с #4), PII-редакция на HTTP-слое, SQL-вариант `npsTrend` | Деплой | 🔶 [#10](https://github.com/bx-shef/polls/issues/10) |
+| Read-API: идемпотентность `addResponse` (durable по `invitation_token`, 0003) и SQL-`npsTrend` (`aggregateNpsTrend`) — ✅; остаётся PII-редакция на HTTP-слое (нет публичного read-ответов) | Деплой | 🔶 [#31](https://github.com/bx-shef/polls/issues/31) |
 | CHECK-ограничения и лимиты длины в схеме БД | Фаза 1 | ✅ |
 | Границы payload в zod (`.max`) | Фаза 1 | ✅ |
 
@@ -511,4 +516,4 @@ group by opt order by 2 desc;
 *Спецификация — [`brief.md`](./brief.md) · Дизайн — [`design.md`](./design.md) ·
 Шаблон схемы — [`reference/survey-schema.template.json`](./reference/survey-schema.template.json).*
 
-*Последнее ревью: 2026-06-15.*
+*Последнее ревью: 2026-06-19.*

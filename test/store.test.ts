@@ -69,6 +69,21 @@ describe('MemoryStore', () => {
     ).rejects.toThrow()
   })
 
+  it('идемпотентность по invitationToken: повтор токена → no-op; без токена дедупа нет (#3/#4)', async () => {
+    const s = new MemoryStore()
+    const mk = (id: string, over: Partial<ResponseRecord> = {}): ResponseRecord => ({
+      id, surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [], ...over
+    })
+    await s.addResponse(mk('a', { invitationToken: 'tok-1' }))
+    await s.addResponse(mk('b', { invitationToken: 'tok-1' })) // повтор → no-op
+    expect(await s.listResponses()).toHaveLength(1)
+    await s.addResponse(mk('c', { invitationToken: 'tok-2' })) // другой токен → пишется
+    expect(await s.listResponses()).toHaveLength(2)
+    await s.addResponse(mk('d')) // без токена — дедупа нет
+    await s.addResponse(mk('e'))
+    expect(await s.listResponses()).toHaveLength(4)
+  })
+
   it('listResponses возвращает копию — мутация не утекает в стор', async () => {
     const s = new MemoryStore()
     await s.addResponse({ id: 'a1', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [] })
