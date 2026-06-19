@@ -1,0 +1,33 @@
+# Карта issue
+
+> Свод открытых issue со статусом и зависимостями — для быстрого онбординга сессии.
+> Roadmap-issue (крупные фазы) остаются открытыми, пока не закрыт весь скоуп фазы.
+>
+> ⚠️ **Источник:** этот список сведён вручную из `CLAUDE.md` и рабочих заметок.
+> Живой список GitHub на момент ревью был недоступен (rate-limit) — **сверить и
+> освежить в начале сессии** (`mcp__github__list_issues`, repo `bx-shef/polls`).
+
+## Открытые
+
+| # | Тема | Слой | Статус ядра | Зависит / блокирует |
+|---|---|---|---|---|
+| #4 | Анти-абьюз: общий стор nonce/лимитов/приглашений (мульти-инстанс), конфиг за reverse-proxy | деплой | ядро сделано (server-set `submittedAt`, nonce TTL→409, honeypot→400, ratelimit→429, single-use invitation) | связан с идемпотентностью `addResponse` |
+| #10 | SQL-вариант `npsTrend` + PII-редакция на HTTP-слое | store/api | открыт | независим |
+| #13 | Детерминированный гейт визуальной верификации UI (Playwright + `Stop`-хук) | UI | открыт | нужен с фазы фронта (контур A) |
+| #17 | Binding `ONCRMDEALUPDATE` (нормализует `stageId` под формат `triggerStages`) | bitrix24 | открыт | завершает invitation/trigger-flow (#3) |
+| #21 | `invitationPolicy` на уровне version-frozen (решение) | domain | вшито в схему/версию | закрытое решение, см. `decisions.md` |
+| #25 | Экраны опроса `SurveyFill` (контур A) | UI/фронт | открыт | фаза 3 roadmap; зависит от Nuxt-каркаса |
+
+## Закрытые (контекст)
+
+- **#3** — OAuth Bitrix24 + invitation-flow ядро (AES-256-GCM, refresh, startup-guard).
+- **#5** — наблюдаемость (логгер с редакцией, `/api/health`, process-хуки). Остаток — деплой.
+- **#6** — раннер миграций `node-pg-migrate` (`pnpm migrate up`).
+- **#7** — read-API / PgStore (CRUD, tenant-изоляция, keyset-пагинация, SQL-агрегация).
+- **#22** — денормализация `triggerStages` + `IStore.surveysTriggeredBy` (GIN).
+
+> Если при сверке с GitHub номера/статусы разойдутся — правит этот файл побеждает
+> GitHub (живой источник), а не наоборот.
+
+---
+*Последнее ревью: 2026-06-19.*
