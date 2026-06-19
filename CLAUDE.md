@@ -97,7 +97,8 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 - `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic «мозг» прохождения опроса
   (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
   persist-снимок (safeParse недоверенного restore), маппинг в `Submission`. Без DOM/Vue —
-  Vue-композабл фазы связки оборачивает реактивностью; визуальный гейт — #13.
+  Vue-композабл фазы связки оборачивает реактивностью (каркас Vue-слоя — ниже, `## Приложение`);
+  визуальный гейт — #13.
 
 ## Приложение (`app/`, Nuxt 4 + b24ui)
 
@@ -106,9 +107,18 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 внутри модуля), алиас `~core → src/` для доступа к типам/функциям ядра без дублирования
 логики. `app/app.vue` — `B24App` (обёртка темы) + `NuxtPage`; `app/pages/index.vue` —
 заглушка-маршрут (рендерит b24ui, подтверждает сборку). Ядровой `pnpm check` независим
-(root tsconfig типизирует только `src/test/scripts`; Nuxt — своим сгенерированным
-tsconfig). Дальше: экраны Интро/Опрос/Спасибо поверх `SurveyFill`, Nitro-обёртка
-`createApi` (`server/`), подключение маршрутов к визуальному гейту (#34).
+(root tsconfig типизирует только `src/test/scripts`; Nuxt — своим tsconfig, генерится
+`postinstall: nuxt prepare`; CI-typecheck `app/` — отдельным шагом с экранами, ISSUE
+[#36](https://github.com/bx-shef/polls/issues/36)).
+
+**Граница `~core` (важно для безопасности):** из клиентских `.vue`/composables импортируем
+ТОЛЬКО `~core/client` и `~core/domain` (чистая логика без секретов). `~core/bitrix24`,
+`~core/store`, `~core/api`, `~core/obs` — **server-only** (Nitro-роуты в `server/`): иначе
+крипто/токены/SQL попадут в клиентский бандл. Серверный слой — корневой `server/` (в Nuxt 4
+`serverDir` по умолчанию `<rootDir>/server`, доп. конфиг не нужен).
+
+Дальше: экраны Интро/Опрос/Спасибо поверх `SurveyFill`, Nitro-обёртка `createApi`
+(`server/`), подключение маршрутов к визуальному гейту (#34).
 
 ## Инварианты
 
