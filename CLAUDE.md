@@ -62,6 +62,10 @@ pnpm migrate up   # применить миграции БД (node-pg-migrate; D
   `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh POST-телом через инжектируемый fetch),
   `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh).
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
+- `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic «мозг» прохождения опроса
+  (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
+  persist-снимок (safeParse недоверенного restore), маппинг в `Submission`. Без DOM/Vue —
+  Vue-композабл фазы связки оборачивает реактивностью; визуальный гейт — #13.
 
 ## Инварианты
 

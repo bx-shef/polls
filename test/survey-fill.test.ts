@@ -239,3 +239,105 @@ describe('SurveyFill — persist (snapshot/restore)', () => {
     expect(fresh.toSubmission().answers).toEqual({})
   })
 })
+
+describe('SurveyFill — доводки ревью (guards, клавиши, restore-hardening)', () => {
+  it('клавиша-цифра → тоггл multi, включая exclusive', () => {
+    const f = new SurveyFill(demoVersion())
+    f.goTo(1) // q2 multi: x(1) y(2) none(3,excl) other(4)
+    f.selectOption(f.optionKeyByNumber(1)!)
+    f.selectOption(f.optionKeyByNumber(2)!)
+    expect(f.currentAnswer.picked).toEqual(['x', 'y'])
+    f.selectOption(f.optionKeyByNumber(3)!) // none (exclusive) — снимает прочие
+    expect(f.currentAnswer.picked).toEqual(['none'])
+  })
+
+  it('повторный клик single — остаётся выбранным (не тоггл)', () => {
+    const f = new SurveyFill(demoVersion())
+    f.selectOption('a')
+    f.selectOption('a')
+    expect(f.currentAnswer.picked).toEqual(['a'])
+  })
+
+  it('«Другое» + exclusive в multi: exclusive снимает прочие, other-текст сохраняется', () => {
+    const f = new SurveyFill(demoVersion())
+    f.goTo(1)
+    f.selectOption('other')
+    f.setOther('txt')
+    f.selectOption('x')
+    f.selectOption('none') // exclusive
+    expect(f.currentAnswer.picked).toEqual(['none'])
+    expect(f.currentAnswer.other).toBe('txt')
+    expect(f.toSubmission().answers.q2).toEqual({ values: ['none'] }) // text не уходит (other снят)
+  })
+
+  it('каноничный порядок values для 3+ выбранных', () => {
+    const f = new SurveyFill(demoVersion())
+    f.goTo(1)
+    f.selectOption('y')
+    f.selectOption('other')
+    f.selectOption('x')
+    expect(f.toSubmission().answers.q2?.values).toEqual(['x', 'y', 'other'])
+  })
+
+  it('showError сбрасывается после back', () => {
+    const f = new SurveyFill(demoVersion())
+    f.selectOption('a')
+    f.next() // → q2
+    expect(f.next()).toBe(false) // q2 required, пусто → showError
+    expect(f.state.showError).toBe(true)
+    f.back() // → q1
+    expect(f.state.showError).toBe(false)
+  })
+
+  it('selectOption на text-вопросе — no-op', () => {
+    const f = new SurveyFill(demoVersion())
+    f.goTo(2) // q3 text
+    f.selectOption('phantom')
+    expect(f.currentAnswer.picked).toEqual([])
+  })
+
+  it('deep-link goTo(2) открывает третий вопрос', () => {
+    const f = new SurveyFill(demoVersion())
+    f.goTo(2)
+    expect(f.currentQuestion.key).toBe('q3')
+  })
+
+  it('версия без вопросов — конструктор бросает', () => {
+    expect(() => new SurveyFill(ver([]))).toThrow(/без вопросов/)
+  })
+
+  it('restore с частичными ответами: остальные — пустые', () => {
+    const snap: SurveyFillSnapshot = {
+      surveyKey: 'sv',
+      versionNo: 1,
+      current: 0,
+      answers: { q1: { picked: ['a'], other: '', text: '' } }
+    }
+    const f = new SurveyFill(demoVersion(), snap)
+    expect(f.currentAnswer.picked).toEqual(['a'])
+    expect(f.toSubmission().answers).toEqual({ q1: { values: ['a'] } })
+  })
+
+  it('restore подделанного снимка (picked не массив) → старт с нуля', () => {
+    const bad = {
+      surveyKey: 'sv',
+      versionNo: 1,
+      current: 0,
+      answers: { q1: { picked: 'oops', other: '', text: '' } }
+    } as unknown as SurveyFillSnapshot
+    const f = new SurveyFill(demoVersion(), bad)
+    expect(f.state.current).toBe(0)
+    expect(f.toSubmission().answers).toEqual({})
+  })
+
+  it('restore при превышении лимитов (picked > 200) → снимок отброшен', () => {
+    const huge = {
+      surveyKey: 'sv',
+      versionNo: 1,
+      current: 0,
+      answers: { q1: { picked: Array.from({ length: 201 }, (_, i) => `k${i}`), other: '', text: '' } }
+    } as unknown as SurveyFillSnapshot
+    const f = new SurveyFill(demoVersion(), huge)
+    expect(f.toSubmission().answers).toEqual({})
+  })
+})

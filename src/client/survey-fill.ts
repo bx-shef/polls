@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { CompiledVersion, Question, RawAnswer, Submission } from '../domain/schema'
 
 /**
@@ -5,7 +6,8 @@ import type { CompiledVersion, Question, RawAnswer, Submission } from '../domain
  * Поведение — `docs/brief.md` §3–5,8, раскладка — `docs/design.md` §5. Чистая
  * логика без DOM/Vue: навигация, выбор варианта, правило `exclusive`, поле
  * «Другое», пошаговая валидация, persist-снимок и маппинг в {@link Submission}.
- * Vue-композабл (фаза визуала, b24ui) оборачивает этот класс реактивностью.
+ * Vue-композабл (фаза визуала, b24ui) оборачивает этот класс реактивностью
+ * (`shallowRef(fill.state)`); визуальный гейт — #13.
  */
 
 /** Ответ клиента на один вопрос в процессе прохождения (до маппинга в submission). */
@@ -26,16 +28,34 @@ export interface SurveyFillState {
   showError: boolean
 }
 
-/** Снимок для persist (localStorage) — самодостаточен, привязан к опросу/версии. */
-export interface SurveyFillSnapshot {
-  surveyKey: string
-  versionNo: number
-  current: number
-  answers: Record<string, QuestionAnswer>
-}
+/**
+ * Схема снимка для persist. Используется и как граница доверия при restore из
+ * localStorage (юзер может подменить): {@link SurveyFill} прогоняет вход через
+ * `safeParse` — границы (picked/other/text) отсекают раздувание payload, кривой
+ * снимок целиком отбрасывается (старт с нуля). Лимиты щедрее UI (UI режет жёстче).
+ */
+export const surveyFillSnapshotSchema = z.object({
+  surveyKey: z.string().min(1).max(200),
+  versionNo: z.number().int().positive(),
+  current: z.number().int().min(0),
+  answers: z.record(
+    z.string().max(200),
+    z.object({
+      picked: z.array(z.string().max(200)).max(200),
+      other: z.string().max(2000),
+      text: z.string().max(4000)
+    })
+  )
+})
+export type SurveyFillSnapshot = z.infer<typeof surveyFillSnapshotSchema>
 
 function emptyAnswer(): QuestionAnswer {
   return { picked: [], other: '', text: '' }
+}
+
+/** Копия ответа (массив picked тоже): защита state от мутаций через ссылку наружу. */
+function cloneAnswer(a: QuestionAnswer): QuestionAnswer {
+  return { picked: [...a.picked], other: a.other, text: a.text }
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -91,23 +111,26 @@ export class SurveyFill {
   private _state: SurveyFillState
 
   constructor(version: CompiledVersion, restored?: SurveyFillSnapshot) {
+    if (version.questions.length === 0) throw new Error('SurveyFill: версия без вопросов')
     this.version = version
     this._state = SurveyFill.initState(version, restored)
   }
 
-  private static initState(version: CompiledVersion, restored?: SurveyFillSnapshot): SurveyFillState {
+  private static initState(version: CompiledVersion, restored?: unknown): SurveyFillState {
     const answers: Record<string, QuestionAnswer> = {}
     for (const q of version.questions) answers[q.key] = emptyAnswer()
-    let current = 0
-    // Восстанавливаем черновик только для той же версии (ключи вопросов совпадают).
-    if (restored && restored.surveyKey === version.surveyKey && restored.versionNo === version.versionNo) {
+    // restored из недоверенного хранилища — валидируем на границе; кривой снимок отбрасываем.
+    const snap = restored === undefined ? undefined : surveyFillSnapshotSchema.safeParse(restored)
+    if (snap?.success && snap.data.surveyKey === version.surveyKey && snap.data.versionNo === version.versionNo) {
+      const data = snap.data
       for (const q of version.questions) {
-        const a = restored.answers[q.key]
-        if (a) answers[q.key] = { picked: [...a.picked], other: a.other ?? '', text: a.text ?? '' }
+        // Object.hasOwn — не проваливаемся в прототип при патологичном ключе (напр. "__proto__").
+        const a = Object.hasOwn(data.answers, q.key) ? data.answers[q.key] : undefined
+        if (a) answers[q.key] = { picked: [...a.picked], other: a.other, text: a.text }
       }
-      current = clamp(restored.current, 0, version.questions.length - 1)
+      return { current: clamp(data.current, 0, version.questions.length - 1), answers, showError: false }
     }
-    return { current, answers, showError: false }
+    return { current: 0, answers, showError: false }
   }
 
   get state(): SurveyFillState {
@@ -120,13 +143,14 @@ export class SurveyFill {
 
   get currentQuestion(): Question {
     const q = this.version.questions[this._state.current]
-    // current инвариантно в [0, total-1] (конструктор + clamp в next/back/goTo).
+    // current инвариантно в [0, total-1] (constructor guard + clamp в next/back/goTo).
     if (!q) throw new Error('SurveyFill: current вне диапазона вопросов')
     return q
   }
 
+  /** Копия ответа текущего вопроса (мутация наружу не бьёт по внутреннему state). */
   get currentAnswer(): QuestionAnswer {
-    return this._state.answers[this.currentQuestion.key]! // каждый вопрос инициализирован в initState
+    return cloneAnswer(this._state.answers[this.currentQuestion.key]!) // ключ есть — initState заполнил все
   }
 
   /** Имя блока текущего вопроса (для рейла/хедера), либо undefined. */
@@ -159,11 +183,12 @@ export class SurveyFill {
     return this.currentQuestion.options[n - 1]?.key
   }
 
-  /** Выбор/тоггл варианта: single — замена, multi — тоггл + exclusive. */
+  /** Выбор/тоггл варианта: single — замена, multi — тоггл + exclusive. text — no-op. */
   selectOption(optionKey: string): void {
     const q = this.currentQuestion
+    if (q.type === 'text') return // у text-вопроса нет вариантов
     const picked =
-      q.type === 'single' ? selectSingle(optionKey) : toggleMulti(q, this.currentAnswer.picked, optionKey)
+      q.type === 'single' ? selectSingle(optionKey) : toggleMulti(q, this._state.answers[q.key]!.picked, optionKey)
     this.patchAnswer(q.key, { picked })
     this.clearError()
   }
@@ -180,9 +205,9 @@ export class SurveyFill {
   }
 
   /**
-   * «Далее»/«Отправить». Если шаг невалиден — ставит showError и возвращает false
-   * (остаёмся на вопросе). Иначе продвигает (кроме последнего) и возвращает true —
-   * на последнем вопросе true означает «можно отправлять».
+   * «Далее»/«Отправить». Невалидный шаг — ставит showError, возвращает false
+   * (остаёмся). Валидный — продвигает (кроме последнего) и возвращает true; на
+   * последнем true означает «можно отправлять». Необязательный вопрос валиден всегда.
    */
   next(): boolean {
     if (!this.canAdvance) {
@@ -201,18 +226,24 @@ export class SurveyFill {
     this._state = { ...this._state, current: this._state.current - 1, showError: false }
   }
 
-  /** Прыжок на вопрос (deep-link `?q=N`); индекс клампится в диапазон. */
+  /**
+   * Прыжок на вопрос по 0-based индексу (deep-link `?q=N` → `goTo(N-1)`); индекс
+   * клампится в [0, total-1]. Линейную полноту required НЕ навязывает — это забота
+   * пошагового флоу (next) и Vue-обёртки; сервер валидирует структуру, не полноту.
+   */
   goTo(index: number): void {
     this._state = { ...this._state, current: clamp(index, 0, this.total - 1), showError: false }
   }
 
-  /** Снимок для persist (localStorage). */
+  /** Снимок для persist (localStorage) — с глубокой копией (без общих ссылок на state). */
   snapshot(): SurveyFillSnapshot {
+    const answers: Record<string, QuestionAnswer> = {}
+    for (const [k, a] of Object.entries(this._state.answers)) answers[k] = cloneAnswer(a)
     return {
       surveyKey: this.version.surveyKey,
       versionNo: this.version.versionNo,
       current: this._state.current,
-      answers: this._state.answers
+      answers
     }
   }
 
