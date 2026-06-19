@@ -30,7 +30,7 @@ exclusive, «Другое», persist-снимок, маппинг в `Submission
 | 0.6 | Read-API текущей версии: `GET /api/survey/:key/current` (хендлер + node-роутинг, проекция без `invitationPolicy`) | 0.5 | ✅ (хвост #10) |
 | 0.7 | Визуальный гейт (Playwright + Stop-хук) — инфраструктура на фикстуре-заглушке | — | ✅ (инфра #13) |
 | 1 | Nuxt 4 + b24ui каркас (`app/`, `nuxt.config`, `B24App`, заглушка-маршрут) | — | ✅ (#35); CI-typecheck app/ → #36 |
-| 2 | Nitro-привязка `createApi` (`server/api/*` + `useApi`; dev-стор MemoryStore+seed) | 1 | ✅ обёртка; прод-стор → #6, кэш/ETag → #30, body-limit → #4 |
+| 2 | Nitro-привязка `createApi` (`server/api/*` + `useApi`; dev-стор MemoryStore+seed; body-limit 64КБ) | 1 | ✅ обёртка; прод-стор/xForwardedFor → #4/#6, кэш/ETag → #30 |
 | 3 | Экраны опроса (контур A): Интро/Опрос/Спасибо поверх `SurveyFill` | 0, 0.5, 1, 2 | #13 (виз. гейт) |
 | 4 | Bitrix24-связка: invitation binding + результат в таймлайн | 2, 3 | #17, #18 |
 | 5 | Дашборд результатов (контур B): аналитика внутри Bitrix24 | 1, 3 | — |
