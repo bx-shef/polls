@@ -114,7 +114,7 @@ const { data, error } = await useAsyncData<Dashboard>(`dashboard:${surveyKey.val
         class="sm:col-span-2"
       >
         <ul class="flex flex-col gap-2">
-          <li v-for="s in data.services" :key="s.name" class="flex items-center justify-between gap-3">
+          <li v-for="(s, i) in data.services" :key="i" class="flex items-center justify-between gap-3">
             <span class="text-sm font-medium">{{ s.name }}</span>
             <div class="flex items-center gap-3 text-sm">
               <span v-if="s.nps !== null">NPS <b>{{ s.nps }}</b></span>
