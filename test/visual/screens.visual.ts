@@ -30,6 +30,13 @@ test('экран «survey» (первый вопрос) совпадает с э
 })
 
 test('экран «thanks» совпадает с эталоном', async ({ page }) => {
+  // Мокаем session+submit УСПЕХОМ: экран «Спасибо» рендерится (phase→thanks), но реальный
+  // ответ в стор НЕ пишется. Иначе гейт-прогон копит ответы в общем сторе и делает дашборд
+  // (контур B, читает тот же стор) недетерминированным. Контент «Спасибо» статичен (из версии).
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  await page.route('**/api/submit', (route) => route.fulfill({ status: 200, json: { ok: true } }))
   await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
   await page.getByRole('button', { name: 'Начать', exact: true }).click()
   await answerHappyPath(page)
