@@ -29,7 +29,8 @@ import {
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
  * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срез по услугам
- * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала) — ещё один довод закрыть auth.
+ * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала), фильтр — список версий и n по
+ * версии (перебор `?version=N`); всё это закрывает auth — ещё один довод за #47.
  * Дашборд контура B — внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
  * SQL-агрегация (PgStore) + rate-limit → #49. Сейчас данные синтетические (seed), N подавлены.
  */
@@ -51,9 +52,11 @@ export default defineEventHandler(async (event) => {
   // Доступные версии — из ВСЕХ ответов (до фильтра), чтобы селектор не «схлопывался» при срезе.
   const versions = [...new Set(allResponses.map((r) => r.versionNo))].sort((a, b) => a - b)
 
-  // Фильтр по версии (?version=N): сравнение «до/после публикации». Принимаем только
-  // существующую версию; невалидное/чужое значение игнорируем (показываем все версии).
-  const versionParam = Number(getQuery(event).version)
+  // Фильтр по версии (?version=N): сравнение «до/после публикации». `getQuery` может вернуть
+  // string|string[]|undefined — принимаем ТОЛЬКО скаляр-строку (массив/повтор не коэрсим).
+  // Принимаем лишь СУЩЕСТВУЮЩУЮ версию; невалидное/чужое значение игнорируем (все версии).
+  const rawVersion = getQuery(event).version
+  const versionParam = typeof rawVersion === 'string' ? Number(rawVersion) : NaN
   const versionFilter = Number.isInteger(versionParam) && versions.includes(versionParam) ? versionParam : null
   const responses = versionFilter != null ? byVersion(allResponses, versionFilter) : allResponses
   const n = responses.length

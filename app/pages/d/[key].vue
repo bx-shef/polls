@@ -47,6 +47,7 @@ const { data, error } = await useAsyncData<Dashboard>(
 )
 
 // Смена версии = навигация (состояние в URL): деплинк + кнопка «назад» работают сами собой.
+// `query: {}` очищает `?version` (path берётся из текущего маршрута — остаёмся на `/d/:key`).
 const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { version: v } : {} })
 </script>
 
@@ -69,7 +70,7 @@ const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { ve
         @click="selectVersion(null)"
       />
       <B24Button
-        v-for="v in data!.versions"
+        v-for="v in data?.versions ?? []"
         :key="v"
         size="sm"
         :color="selectedVersion === v ? 'air-primary' : 'air-tertiary'"
