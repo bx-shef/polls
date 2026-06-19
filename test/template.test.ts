@@ -25,12 +25,23 @@ describe('survey-schema.template.json', () => {
     expect(new Set(v.questions.map((q) => q.key)).size).toBe(25)
   })
 
-  it('содержит UX-поля фронта (intro/thanks/blocks), которые движок игнорирует', () => {
-    // intro/thanks/blocks — контракт фронта, вне SurveyDraft: surveyDraftSchema их
-    // отбрасывает (strip), но в файле-шаблоне они нужны для рендера UI.
+  it('содержит презентационные поля (intro/thanks/blocks) — часть схемы, #25', () => {
     expect(typeof raw.intro.count).toBe('string')
     expect(raw.intro.count).toContain(String(raw.questions.length)) // счётчик отражает число вопросов
     expect(raw.blocks).toHaveLength(8)
     expect(raw.thanks.title).toBeTruthy()
+  })
+
+  it('замораживает презентацию в версию-снимок (version-frozen, #25)', () => {
+    const draft = surveyDraftSchema.parse(raw)
+    const v = compile(draft, 1)
+    // intro/thanks/blocks доезжают до CompiledVersion, а не отбрасываются.
+    expect(v.intro?.cta).toBe(raw.intro.cta)
+    expect(v.intro?.meta).toEqual(raw.intro.meta)
+    expect(v.thanks?.title).toBe(raw.thanks.title)
+    expect(v.blocks).toEqual(raw.blocks)
+    // имена блоков покрывают все question.block (презентация согласована с вопросами).
+    const used = new Set(v.questions.map((q) => q.block))
+    for (const b of used) expect(v.blocks).toContain(b)
   })
 })

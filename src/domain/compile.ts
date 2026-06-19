@@ -28,6 +28,9 @@ export function compile(draft: SurveyDraft, versionNo: number, at: Date = new Da
     title: parsed.title,
     lang: parsed.lang,
     versionNo,
+    intro: parsed.intro,
+    thanks: parsed.thanks,
+    blocks: parsed.blocks,
     questions: parsed.questions,
     invitationPolicy: parsed.invitationPolicy,
     compiledAt: at.toISOString()

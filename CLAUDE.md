@@ -48,6 +48,8 @@ pnpm migrate up   # применить миграции БД (node-pg-migrate; D
   (`QUESTION_TYPES`, `METRICS`) и составные структуры (`CompiledVersion`,
   `ResponseRecord`, `CrmContext`, `StoredAnswer`) выводятся из zod-схем — TS-тип и
   runtime-валидация не расходятся. Даты — `z.string().datetime()` (ISO-8601).
+  Презентация (`intro`/`thanks`/`blocks`, #25) вшита в draft/version (version-frozen) —
+  контент экранов для Vue-слоя из снимка анкеты, не второй источник правды.
 - `domain/metrics.ts` — чистые детерминированные метрики (nps/csat/ces/distribution).
 - `domain/answers.ts` — серверная нормализация/валидация ответов (устойчива к подделке ключей).
 - `domain/compile.ts` — компиляция черновика в иммутабельную версию + `diffVersions`

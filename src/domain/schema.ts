@@ -69,11 +69,50 @@ export const invitationPolicySchema = z.object({
 })
 export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
 
+/**
+ * Презентационный слой опроса (#25): контент экранов Интро/Спасибо и
+ * упорядоченные имена блоков. Нужен Vue-слою (design.md §4/§6); едет в
+ * версию-снимок (version-frozen, как остальной контент анкеты). `SurveyFill`
+ * это не трогает — он про прохождение, а не презентацию.
+ */
+export const introSchema = z.object({
+  /** Вордмарк-бренд на интро. */
+  wordmark: z.string().max(200).optional(),
+  /** Метка года/кампании (моно). */
+  year: z.string().max(50).optional(),
+  /** Надзаголовок-кикер. */
+  kicker: z.string().max(500).optional(),
+  /** Крупный заголовок (может быть многострочным, `\n`). */
+  title: z.string().max(1000).optional(),
+  /** Лид-абзац. */
+  lead: z.string().max(2000).optional(),
+  /** Ряд «чипов» (напр. «Анонимно», «~N минут»). */
+  meta: z.array(z.string().max(200)).max(20).default([]),
+  /** Текст CTA-кнопки. */
+  cta: z.string().max(200).optional(),
+  /** Подпись под CTA (напр. «25 вопросов · 8 блоков»). */
+  count: z.string().max(200).optional()
+})
+export type Intro = z.infer<typeof introSchema>
+
+export const thanksSchema = z.object({
+  title: z.string().max(500).optional(),
+  body: z.string().max(2000).optional(),
+  note: z.string().max(2000).optional()
+})
+export type Thanks = z.infer<typeof thanksSchema>
+
 export const surveyDraftSchema = z.object({
   surveyKey: z.string().min(1).max(200),
   title: z.string().max(500),
   /** Один опрос = один язык (решение №3). */
   lang: z.string().max(20).default('ru'),
+  /** Контент экрана Интро (опц.; нужен фронту, #25). */
+  intro: introSchema.optional(),
+  /** Контент экрана Спасибо (опц.; нужен фронту, #25). */
+  thanks: thanksSchema.optional(),
+  /** Упорядоченные отображаемые имена блоков (совпадают с `question.block`). */
+  blocks: z.array(z.string().max(200)).max(50).optional(),
   questions: z.array(questionSchema).min(1).max(200),
   /** Политика приглашения (опц.): когда и каким каналом звать клиента. */
   invitationPolicy: invitationPolicySchema.optional()
@@ -124,6 +163,10 @@ export const compiledVersionSchema = z.object({
   title: z.string().max(500),
   lang: z.string().max(20),
   versionNo: z.number().int().positive(),
+  /** Презентация экранов Интро/Спасибо/имена блоков — заморожена с версией (#25). */
+  intro: introSchema.optional(),
+  thanks: thanksSchema.optional(),
+  blocks: z.array(z.string().max(200)).max(50).optional(),
   questions: z.array(questionSchema),
   /** Политика приглашения (опц.), заморожена с версией (в compiled_schema JSONB).
    *  Денормализация triggerStages под запрос «по стадии» — при binding (#17). */
