@@ -4,8 +4,9 @@ import type { Api, ApiResult } from '../api/handlers'
 import { nullLogger, type Logger } from '../obs/logger'
 
 /**
- * Минимальный HTTP-адаптер на node:http (нулевые зависимости): роутинг двух
- * эндпоинтов, лимит тела, разбор JSON, таймаут запроса (анти-slowloris).
+ * Минимальный HTTP-адаптер на node:http (нулевые зависимости): роутинг
+ * эндпоинтов (session/survey/submit/health), лимит тела, разбор JSON, таймаут
+ * запроса (анти-slowloris).
  * Прод-адаптером может быть Nitro (фаза связки) — хендлеры (`createApi`) от
  * рантайма не зависят. Модуль НЕ экспортируется из barrel (src/index.ts),
  * чтобы ядро не тянуло node:http: импортируйте напрямую из 'src/server/node'.
@@ -47,12 +48,26 @@ export function portOf(addr: ReturnType<Server['address']>): number {
   return typeof addr === 'object' && addr !== null ? addr.port : 0
 }
 
-function send(res: ServerResponse, r: ApiResult, opts: { closeConn?: boolean } = {}): void {
+/**
+ * `/api/survey/:key/current` → декодированный ключ (или null, если путь не подходит).
+ * Сегмент-ключ декодируем (`decodeURIComponent`); валидацию формы делает хендлер.
+ */
+export function surveyKeyFromPath(url: string): string | null {
+  const m = /^\/api\/survey\/([^/]+)\/current$/.exec(url)
+  if (!m || m[1] === undefined) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    return null // битый percent-encoding (URIError) → не наш ключ (предсказуемо, как и пустой сегмент)
+  }
+}
+
+function send(res: ServerResponse, r: ApiResult, opts: { closeConn?: boolean; headOnly?: boolean } = {}): void {
   res.writeHead(r.status, {
     'content-type': 'application/json; charset=utf-8',
     ...(opts.closeConn ? { connection: 'close' } : {})
   })
-  res.end(JSON.stringify(r.body))
+  res.end(opts.headOnly ? undefined : JSON.stringify(r.body)) // HEAD: статус+заголовки без тела (RFC 9110)
 }
 
 /** null = превышен лимит тела (вызывающий отвечает 413 и закрывает соединение). */
@@ -88,6 +103,15 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, maxBod
   if (url === '/api/session') {
     if (req.method !== 'GET') return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
     return send(res, await api.session({ ip }))
+  }
+
+  const surveyKey = surveyKeyFromPath(url)
+  if (surveyKey !== null) {
+    // HEAD ведём как GET (прокси/браузеры зондируют им), но без тела ответа.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return send(res, { status: 405, body: { ok: false, error: 'Метод не поддерживается' } })
+    }
+    return send(res, await api.survey({ ip, surveyKey }), { headOnly: req.method === 'HEAD' })
   }
 
   if (url === '/api/submit') {

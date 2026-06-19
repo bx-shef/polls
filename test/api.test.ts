@@ -71,6 +71,71 @@ describe('GET /api/session', () => {
   })
 })
 
+describe('GET /api/survey/:key/current (контур A)', () => {
+  /** Демо-стор, в котором currentVersion возвращает версию с презентацией и invitationPolicy. */
+  async function storeWithPresentation(): Promise<MemoryStore> {
+    const base = await buildDemo(new MemoryStore())
+    return new (class extends MemoryStore {
+      override async currentVersion(k: string) {
+        const v = await base.currentVersion(k)
+        if (!v) return undefined
+        return {
+          ...v,
+          intro: { title: 'Здравствуйте', meta: ['Анонимно'] },
+          thanks: { title: 'Спасибо!' },
+          blocks: ['О сделке', 'Команда'],
+          invitationPolicy: { triggerStages: ['DEAL:WON'], channelOrder: ['email' as const] }
+        }
+      }
+    })()
+  }
+
+  it('отдаёт текущую версию с презентацией и вопросами, БЕЗ invitationPolicy', async () => {
+    const api = createApi({ store: await storeWithPresentation() })
+    const r = await api.survey({ ip: 'a', surveyKey: SURVEY_KEY })
+    expect(r.status).toBe(200)
+    expect(r.body['ok']).toBe(true)
+    expect(r.body['schema_version']).toBe(SUPPORTED_SCHEMA_VERSION)
+    const version = r.body['version'] as Record<string, unknown>
+    expect(version['surveyKey']).toBe(SURVEY_KEY)
+    expect((version['intro'] as Record<string, unknown>)['title']).toBe('Здравствуйте')
+    expect(version['blocks']).toEqual(['О сделке', 'Команда'])
+    expect((version['thanks'] as Record<string, unknown>)['title']).toBe('Спасибо!')
+    expect(Array.isArray(version['questions'])).toBe(true)
+    expect(version['invitationPolicy']).toBeUndefined() // внутренняя CRM-конфигурация не утекает
+  })
+
+  it('неизвестный опрос → 404', async () => {
+    const { api } = await freshApi()
+    const r = await api.survey({ ip: 'a', surveyKey: 'no_such_survey' })
+    expect(r.status).toBe(404)
+  })
+
+  it('некорректный ключ (слишком длинный / пустой) → 400', async () => {
+    const { api } = await freshApi()
+    expect((await api.survey({ ip: 'a', surveyKey: 'x'.repeat(201) })).status).toBe(400)
+    expect((await api.survey({ ip: 'a', surveyKey: '' })).status).toBe(400) // контракт хендлера, независимо от роутера
+  })
+
+  it('флуд по IP режется rate-limit (429)', async () => {
+    const { api } = await freshApi({ limiter: new SlidingWindowLimiter({ limit: 1, windowMs: 60_000 }) })
+    expect((await api.survey({ ip: 'a', surveyKey: SURVEY_KEY })).status).toBe(200)
+    expect((await api.survey({ ip: 'a', surveyKey: SURVEY_KEY })).status).toBe(429)
+    expect((await api.survey({ ip: 'b', surveyKey: SURVEY_KEY })).status).toBe(200) // другой IP — свой бюджет
+  })
+
+  it('падение store → 500 (детали наружу не отдаём)', async () => {
+    const store = new (class extends MemoryStore {
+      override async currentVersion(): Promise<never> {
+        throw new Error('db down')
+      }
+    })()
+    const r = await createApi({ store, logger: nullLogger }).survey({ ip: 'a', surveyKey: SURVEY_KEY })
+    expect(r.status).toBe(500)
+    expect(r.body['error']).not.toContain('db down')
+  })
+})
+
 describe('POST /api/submit — конвейер проверок', () => {
   it('happy path: 200, запись с СЕРВЕРНЫМИ id/submittedAt и пустым context', async () => {
     const { api, store, now } = await freshApi()

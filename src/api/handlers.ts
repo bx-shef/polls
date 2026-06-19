@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { buildResponseAnswers } from '../domain/answers'
-import { rawAnswerSchema, type CrmContext } from '../domain/schema'
+import { rawAnswerSchema, type CompiledVersion, type CrmContext } from '../domain/schema'
 import type { IStore } from '../store/types'
 import { errInfo, nullLogger, type Logger } from '../obs/logger'
 import { MemoryNonceStore, type NonceStore } from './nonce'
@@ -85,6 +85,25 @@ export interface SessionInput {
   ip: string
 }
 
+export interface SurveyInput {
+  ip: string
+  surveyKey: string
+}
+
+const surveyKeySchema = z.string().min(1).max(200)
+
+/**
+ * Публичная проекция версии для контура A (GET /api/survey/:key/current):
+ * презентация + вопросы из снимка, но БЕЗ `invitationPolicy` — триггер-стадии и
+ * канал приглашения это внутренняя CRM-конфигурация, наружу её не отдаём.
+ * Тип возврата — `Omit<…, 'invitationPolicy'>`: добавят новое чувствительное
+ * поле в версию — компилятор не даст молча протечь (заставит обновить проекцию).
+ */
+function toPublicVersion(v: CompiledVersion): Omit<CompiledVersion, 'invitationPolicy'> {
+  const { invitationPolicy: _omit, ...pub } = v
+  return pub
+}
+
 export interface SubmitInput {
   ip: string
   /** Разобранный JSON тела запроса (парсит адаптер). */
@@ -93,6 +112,8 @@ export interface SubmitInput {
 
 export interface Api {
   session(input: SessionInput): Promise<ApiResult>
+  /** Текущая версия опроса для рендера (контур A): презентация + вопросы, без invitationPolicy. */
+  survey(input: SurveyInput): Promise<ApiResult>
   submit(input: SubmitInput): Promise<ApiResult>
   /** Публичный health-check (#5): 200 при живой БД, 503 при её недоступности. */
   health(): Promise<ApiResult>
@@ -126,6 +147,21 @@ export function createApi(deps: ApiDeps): Api {
       if (nonce == null) return err(503, 'Сервис перегружен, попробуйте позже')
       // schema_version — клиенту для bootstrap (контракт brief §8)
       return { status: 200, body: { nonce, schema_version: SUPPORTED_SCHEMA_VERSION } }
+    },
+
+    async survey({ ip, surveyKey }: SurveyInput): Promise<ApiResult> {
+      // GET-чтение: отдельный бюджет rate-limit (анти-перебор surveyKey).
+      if (!limiter.allow(`sv:${ip}`, now())) return err(429, 'Слишком много запросов')
+      const key = surveyKeySchema.safeParse(surveyKey)
+      if (!key.success) return err(400, 'Некорректный ключ опроса')
+      try {
+        const version = await store.currentVersion(key.data)
+        if (!version) return err(404, 'Опрос не найден')
+        return { status: 200, body: { ok: true, version: toPublicVersion(version), schema_version: SUPPORTED_SCHEMA_VERSION } }
+      } catch (e) {
+        onError(e)
+        return err(500, 'Внутренняя ошибка, попробуйте позже')
+      }
     },
 
     async submit({ ip, body }: SubmitInput): Promise<ApiResult> {
