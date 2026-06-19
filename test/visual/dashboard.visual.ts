@@ -22,6 +22,15 @@ test('дашборд совпадает с эталоном', async ({ page }) =
   await expect(page).toHaveScreenshot('dashboard.png', { fullPage: true })
 })
 
+test('дашборд (фильтр по версии) совпадает с эталоном', async ({ page }) => {
+  // Деплинк `?version=1` → SSR-срез по версии (без клика — детерминированно). На срезе v1
+  // услуги подавлены (каждый продукт < порога внутри версии) — карточки «По услугам» нет.
+  await page.goto(`/d/${SURVEY_KEY}?version=1`, { waitUntil: 'networkidle' })
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  await expect(page.getByText('Ответов: 6')).toBeVisible() // срез применён (v1 = 6 ответов)
+  await expect(page).toHaveScreenshot('dashboard-version.png', { fullPage: true })
+})
+
 test('дашборд (опрос не найден) совпадает с эталоном', async ({ page }) => {
   // SSR-fetch /api/dashboard/nonexistent → 404 → useAsyncData.error → алерт (реальный путь, без моков).
   await page.goto('/d/nonexistent-survey', { waitUntil: 'networkidle' })

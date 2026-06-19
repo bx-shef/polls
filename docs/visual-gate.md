@@ -7,8 +7,8 @@
 > Статус: **на живых маршрутах** (#39). Гейт поднимает собранное приложение (`webServer`)
 > и снимает реальный SSR-рендер b24ui-экранов на детерминированном демо-сиде. Фикстуры-заглушки
 > убраны. Покрыты контур A — intro/survey/thanks/error/submit-error (`screens.visual.ts`) и
-> контур B — дашборд/дашборд-ошибка (`dashboard.visual.ts`): 7 поверхностей × 3 брейкпоинта ×
-> 2 темы light/dark = **42 эталона** (навигация Playwright + мок провала submit).
+> контур B — дашборд/фильтр-по-версии/дашборд-ошибка (`dashboard.visual.ts`): 8 поверхностей ×
+> 3 брейкпоинта × 2 темы light/dark = **48 эталонов** (навигация Playwright + мок провала submit).
 
 ## Из чего состоит
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | Конфиг | `playwright.config.ts` | проекты-брейкпоинты, детерминизм, путь эталонов, `webServer`+`baseURL` |
 | Реестр поверхностей (контур A) | `test/visual/screens.visual.ts` | живые маршруты `/s/:key` (intro/survey/thanks/error/submit-error) + `toHaveScreenshot` |
-| Реестр поверхностей (контур B) | `test/visual/dashboard.visual.ts` | живые маршруты `/d/:key` (дашборд/дашборд-ошибка) + `toHaveScreenshot` |
+| Реестр поверхностей (контур B) | `test/visual/dashboard.visual.ts` | живые маршруты `/d/:key` (дашборд/фильтр-по-версии `?version=N`/дашборд-ошибка) + `toHaveScreenshot` |
 | Эталоны | `test/visual/__screenshots__/**/*.png` | закоммичены, сверяются в каждом прогоне |
 | Stop-хук | `.claude/hooks/visual-gate.sh` | прогоняет гейт на изменениях UI, блокирует Stop при провале |
 
