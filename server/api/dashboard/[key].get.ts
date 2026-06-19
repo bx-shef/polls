@@ -3,6 +3,7 @@ import {
   csatFor,
   distributionFor,
   npsTrend,
+  byProduct,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
@@ -13,6 +14,8 @@ import {
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
  * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
+ * Срез по услугам — NPS/CSAT по каждому продукту (`byProduct`); имя берём из денормализованного
+ * `context.products[].productName`, услуги с выборкой < порога подавляем (анонимность среза).
  *
  * Подавление малых N — ДВА уровня:
  *  1) уровень опроса: при общем n < ANONYMITY_THRESHOLD весь дашборд скрыт
@@ -61,6 +64,27 @@ export default defineEventHandler(async (event) => {
     distribution = { question: choiceQ.text, items }
   }
 
+  // Срез по услугам: перечисляем уникальные продукты (имя денормализовано в контексте),
+  // считаем NPS/CSAT по подвыборке. Услугу с n < порога подавляем (анонимность среза).
+  const productNames = new Map<number, string>()
+  for (const r of responses) {
+    for (const p of r.context.products ?? []) {
+      productNames.set(p.productId, p.productName ?? `#${p.productId}`)
+    }
+  }
+  const services = [...productNames.entries()]
+    .map(([productId, name]) => {
+      const subset = byProduct(responses, productId)
+      return {
+        name,
+        n: subset.length,
+        nps: npsKey ? npsFor(subset, npsKey).nps : null,
+        csat: csatKey ? csatFor(subset, csatKey).mean : null
+      }
+    })
+    .filter((s) => meetsAnonymity(s.n))
+    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity))
+
   return {
     ...base,
     suppressed: false as const,
@@ -68,6 +92,7 @@ export default defineEventHandler(async (event) => {
     csat: csatKey ? csatFor(responses, csatKey) : null,
     distribution,
     // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
-    trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : []
+    trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : [],
+    services
   }
 })
