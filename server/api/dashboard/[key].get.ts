@@ -4,6 +4,7 @@ import {
   distributionFor,
   npsTrend,
   byProduct,
+  byVersion,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
@@ -16,6 +17,9 @@ import {
  * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
  * Срез по услугам — NPS/CSAT по каждому продукту (`byProduct`); имя берём из денормализованного
  * `context.products[].productName`, услуги с выборкой < порога подавляем (анонимность среза).
+ * Фильтр по версии (`?version=N`, `byVersion`) — весь дашборд по одной версии (сравнение
+ * «до/после публикации»); `versions` (доступные) считаем ДО фильтра. Метаданные вопросов
+ * (ключи/метки) — всегда из ТЕКУЩЕЙ версии (версионно-безопасно по стабильному question_key).
  *
  * Подавление малых N — ДВА уровня:
  *  1) уровень опроса: при общем n < ANONYMITY_THRESHOLD весь дашборд скрыт
@@ -25,7 +29,8 @@ import {
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
  * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срез по услугам
- * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала) — ещё один довод закрыть auth.
+ * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала), фильтр — список версий и n по
+ * версии (перебор `?version=N`); всё это закрывает auth — ещё один довод за #47.
  * Дашборд контура B — внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
  * SQL-агрегация (PgStore) + rate-limit → #49. Сейчас данные синтетические (seed), N подавлены.
  */
@@ -43,10 +48,21 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: 'Опрос не найден' }
   }
 
-  const responses = await store.listResponses(surveyKey)
+  const allResponses = await store.listResponses(surveyKey)
+  // Доступные версии — из ВСЕХ ответов (до фильтра), чтобы селектор не «схлопывался» при срезе.
+  const versions = [...new Set(allResponses.map((r) => r.versionNo))].sort((a, b) => a - b)
+
+  // Фильтр по версии (?version=N): сравнение «до/после публикации». `getQuery` может вернуть
+  // string|string[]|undefined — принимаем ТОЛЬКО скаляр-строку (массив/повтор не коэрсим).
+  // Принимаем лишь СУЩЕСТВУЮЩУЮ версию; невалидное/чужое значение игнорируем (все версии).
+  const rawVersion = getQuery(event).version
+  const versionParam = typeof rawVersion === 'string' ? Number(rawVersion) : NaN
+  const versionFilter = Number.isInteger(versionParam) && versions.includes(versionParam) ? versionParam : null
+  const responses = versionFilter != null ? byVersion(allResponses, versionFilter) : allResponses
   const n = responses.length
+
   // surveyKey в ответ НЕ зеркалим (клиент знает его из URL; не отражаем недоверенный ввод).
-  const base = { ok: true as const, title: version.title, n }
+  const base = { ok: true as const, title: version.title, n, versions, version: versionFilter }
 
   if (!meetsAnonymity(n)) {
     return { ...base, suppressed: true as const, threshold: ANONYMITY_THRESHOLD }

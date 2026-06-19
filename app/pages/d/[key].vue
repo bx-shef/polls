@@ -19,6 +19,8 @@ interface Dashboard {
   trend?: TrendPoint[]
   // Срез по услугам — проекция (имя продукта + метрики подвыборки), не ядровой тип.
   services?: { name: string; n: number; nps: number | null; csat: number | null }[]
+  versions?: number[]
+  version?: number | null
 }
 
 // NPS ∈ [-100, 100] → ширина шкалы [0%, 100%] (−100→0, 0→50, 100→100). Клампим
@@ -28,9 +30,25 @@ const barWidth = (nps: number): string => `${Math.max(0, Math.min(100, (nps + 10
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
-const { data, error } = await useAsyncData<Dashboard>(`dashboard:${surveyKey.value}`, () =>
-  $fetch(`/api/dashboard/${surveyKey.value}`)
+// Фильтр по версии живёт в URL (`?version=N`) — деплинкуемый и SSR-дружелюбный (гейт снимает
+// срез без клика). Невалидное значение → null (все версии). useAsyncData рефетчит при смене.
+const selectedVersion = computed(() => {
+  const v = Number(route.query.version)
+  return Number.isInteger(v) && v > 0 ? v : null
+})
+
+const { data, error } = await useAsyncData<Dashboard>(
+  () => `dashboard:${surveyKey.value}:${selectedVersion.value ?? 'all'}`,
+  () =>
+    $fetch(`/api/dashboard/${surveyKey.value}`, {
+      query: selectedVersion.value != null ? { version: selectedVersion.value } : {}
+    }),
+  { watch: [selectedVersion] }
 )
+
+// Смена версии = навигация (состояние в URL): деплинк + кнопка «назад» работают сами собой.
+// `query: {}` очищает `?version` (path берётся из текущего маршрута — остаёмся на `/d/:key`).
+const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { version: v } : {} })
 </script>
 
 <template>
@@ -42,6 +60,24 @@ const { data, error } = await useAsyncData<Dashboard>(`dashboard:${surveyKey.val
         Ответов: {{ data.n }}
       </p>
     </header>
+
+    <div v-if="(data?.versions?.length ?? 0) > 1" class="mb-6 flex flex-wrap items-center gap-2">
+      <span class="text-sm text-gray-500 dark:text-gray-400">Версия:</span>
+      <B24Button
+        size="sm"
+        :color="selectedVersion === null ? 'air-primary' : 'air-tertiary'"
+        label="Все"
+        @click="selectVersion(null)"
+      />
+      <B24Button
+        v-for="v in data?.versions ?? []"
+        :key="v"
+        size="sm"
+        :color="selectedVersion === v ? 'air-primary' : 'air-tertiary'"
+        :label="`Версия ${v}`"
+        @click="selectVersion(v)"
+      />
+    </div>
 
     <B24Alert
       v-if="error"

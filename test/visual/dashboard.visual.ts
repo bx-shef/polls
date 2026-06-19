@@ -22,6 +22,30 @@ test('дашборд совпадает с эталоном', async ({ page }) =
   await expect(page).toHaveScreenshot('dashboard.png', { fullPage: true })
 })
 
+test('дашборд (фильтр по версии) совпадает с эталоном', async ({ page }) => {
+  // Деплинк `?version=1` → SSR-срез по версии (без клика — детерминированно). На срезе v1
+  // услуги подавлены (каждый продукт < порога внутри версии) — карточки «По услугам» нет.
+  await page.goto(`/d/${SURVEY_KEY}?version=1`, { waitUntil: 'networkidle' })
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  await expect(page.getByText('Ответов: 6')).toBeVisible() // срез применён (v1 = 6 ответов)
+  await expect(page.getByText('Динамика NPS по месяцам')).toBeVisible() // нижняя секция отрисована
+  await expect(page).toHaveScreenshot('dashboard-version.png', { fullPage: true })
+})
+
+test('клик по селектору версии меняет срез (URL + данные)', async ({ page }) => {
+  // Постоянный e2e интерактивного пути (без скриншота): navigateTo → URL → useAsyncData рефетч.
+  await page.goto(`/d/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await expect(page.getByText('Ответов: 12')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Версия 1', exact: true }).click()
+  await expect(page).toHaveURL(/version=1/)
+  await expect(page.getByText('Ответов: 6')).toBeVisible() // срез применён по клику
+
+  await page.getByRole('button', { name: 'Все', exact: true }).click()
+  await expect(page).not.toHaveURL(/version=/)
+  await expect(page.getByText('Ответов: 12')).toBeVisible() // вернулись ко всем версиям
+})
+
 test('дашборд (опрос не найден) совпадает с эталоном', async ({ page }) => {
   // SSR-fetch /api/dashboard/nonexistent → 404 → useAsyncData.error → алерт (реальный путь, без моков).
   await page.goto('/d/nonexistent-survey', { waitUntil: 'networkidle' })
