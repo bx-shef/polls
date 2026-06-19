@@ -238,6 +238,25 @@ describe('SurveyFill — persist (snapshot/restore)', () => {
     expect(fresh.state.current).toBe(0)
     expect(fresh.toSubmission().answers).toEqual({})
   })
+
+  it('снимок чужого surveyKey игнорируется (старт с нуля)', () => {
+    const f = new SurveyFill(demoVersion())
+    f.selectOption('a')
+    const alien: SurveyFillSnapshot = { ...f.snapshot(), surveyKey: 'other' }
+    const fresh = new SurveyFill(demoVersion(), alien)
+    expect(fresh.state.current).toBe(0)
+    expect(fresh.toSubmission().answers).toEqual({})
+  })
+
+  it('deep-link goTo перекрывает позицию снимка, ответы сохраняются', () => {
+    const f = new SurveyFill(demoVersion())
+    f.selectOption('a')
+    f.next() // q2, current=1
+    const restored = new SurveyFill(demoVersion(), f.snapshot())
+    restored.goTo(0) // deep-link override на q1
+    expect(restored.state.current).toBe(0)
+    expect(restored.toSubmission().answers).toEqual({ q1: { values: ['a'] } })
+  })
 })
 
 describe('SurveyFill — доводки ревью (guards, клавиши, restore-hardening)', () => {

@@ -1,4 +1,4 @@
-import { SurveyFill } from '~core/client/survey-fill'
+import { SurveyFill, surveyFillSnapshotSchema } from '~core/client/survey-fill'
 import type { PublicVersion, Question } from '~core/domain/schema'
 import type { QuestionAnswer } from '~core/client/survey-fill'
 
@@ -16,8 +16,12 @@ import type { QuestionAnswer } from '~core/client/survey-fill'
  * docs/decisions.md (почему обёртка, а не реактивный объект внутри ядра).
  *
  * Загрузку версии делает СТРАНИЦА через `useAsyncData` (SSR-payload + дедуп + рефетч при
- * смене `:key`); сюда версия/ошибка приходят через `reset()`. Persist-снимок (localStorage)
- * ядро умеет (`snapshot`/restore), но здесь пока не подключён — вынесено в #34.
+ * смене `:key`); сюда версия/ошибка приходят через `reset()`.
+ *
+ * Persist (#34): прогресс кладётся в localStorage (`snapshot()`), `hydrate()` на клиенте
+ * восстанавливает его (resume на reload) и поддерживает deep-link `?q=N`. Только клиент
+ * (localStorage нет на SSR), restore — в `onMounted` страницы (без hydration-mismatch).
+ * Снимок недоверенный → `SurveyFill` валидирует его на границе (safeParse + сверка версии).
  */
 export type SurveyPhase = 'loading' | 'error' | 'intro' | 'survey' | 'thanks'
 
@@ -37,10 +41,37 @@ export function useSurvey() {
   const phase = ref<SurveyPhase>('loading')
   const errorMsg = ref('')
   const submitting = ref(false)
+  // SurveyFill мутирует внутреннее состояние in-place — тик форсит пересчёт computed.
   const tick = ref(0)
   const bump = () => { tick.value++ }
 
-  /** Применить результат загрузки версии (из useAsyncData страницы). Реактивен к смене :key. */
+  // Гард пустого ключа: без surveyKey не трогаем localStorage (иначе мина "survey:" на всех опросах).
+  const persistKey = () => {
+    const k = version.value?.surveyKey
+    return k ? `survey:${k}` : null
+  }
+
+  function saveSnapshot() {
+    const key = persistKey()
+    if (!import.meta.client || !fill.value || !key) return
+    try {
+      localStorage.setItem(key, JSON.stringify(fill.value.snapshot()))
+    } catch { /* приватный режим/квота — persist необязателен */ }
+  }
+  function clearSnapshot() {
+    const key = persistKey()
+    if (!import.meta.client || !key) return
+    try { localStorage.removeItem(key) } catch { /* ignore */ }
+  }
+  function readSnapshot(): unknown {
+    const key = persistKey()
+    if (!import.meta.client || !key) return undefined
+    try {
+      const raw = localStorage.getItem(key)
+      return raw ? JSON.parse(raw) : undefined
+    } catch { return undefined }
+  }
+
   function reset(nextVersion: PublicVersion | null, fetchError?: unknown) {
     fill.value = null
     if (fetchError) {
@@ -56,14 +87,42 @@ export function useSurvey() {
     bump()
   }
 
-  function start() {
+  /** Построить fill (опц. из снимка) и перейти в фазу опроса; deep-link → goTo(index). */
+  function startFill(restored?: unknown, index?: number) {
     if (!version.value) return
-    // PublicVersion присваиваем как CompiledVersion: invitationPolicy опционален, его отсутствие
-    // допустимо; SurveyFill его не читает (только презентацию/вопросы).
-    fill.value = new SurveyFill(version.value)
+    // composable валидирует снимок на границе (safeParse → SurveyFillSnapshot|undefined);
+    // ядро (initState) дополнительно сверяет surveyKey/versionNo — снимок чужого опроса/версии
+    // отбрасывается (старт с нуля). Кривой снимок → undefined → свежий проход.
+    fill.value = restored === undefined
+      ? new SurveyFill(version.value)
+      : new SurveyFill(version.value, surveyFillSnapshotSchema.safeParse(restored).data)
+    if (index !== undefined) fill.value.goTo(index)
     errorMsg.value = ''
     phase.value = 'survey'
     bump()
+    saveSnapshot()
+  }
+
+  /** «Начать» с интро — всегда свежий проход (опц. deep-link `?q`). */
+  function start(index?: number) {
+    startFill(undefined, index)
+  }
+
+  /**
+   * Клиентская гидратация (вызвать в onMounted страницы): resume из localStorage и/или
+   * deep-link `?q=N`. Срабатывает только из исходной фазы intro (SSR-рендер).
+   */
+  function hydrate(deepLinkIndex?: number) {
+    if (phase.value !== 'intro' || !version.value) return
+    const snap = readSnapshot()
+    if (snap !== undefined) {
+      // Resume важнее deep-link: у вернувшегося пользователя сохранённая позиция приоритетнее
+      // ?q из ссылки (не теряем прогресс, не создаём гибрид). current берётся из снимка (initState).
+      startFill(snap)
+      return
+    }
+    if (deepLinkIndex !== undefined) startFill(undefined, deepLinkIndex)
+    // иначе — остаёмся на интро (свежий старт по кнопке)
   }
 
   const view = computed<SurveyView | null>(() => {
@@ -81,10 +140,10 @@ export function useSurvey() {
     }
   })
 
-  const selectOption = (optionKey: string) => { fill.value?.selectOption(optionKey); bump() }
-  const setOther = (text: string) => { fill.value?.setOther(text); bump() }
-  const setText = (text: string) => { fill.value?.setText(text); bump() }
-  const back = () => { fill.value?.back(); bump() }
+  const selectOption = (optionKey: string) => { fill.value?.selectOption(optionKey); bump(); saveSnapshot() }
+  const setOther = (text: string) => { fill.value?.setOther(text); bump(); saveSnapshot() }
+  const setText = (text: string) => { fill.value?.setText(text); bump(); saveSnapshot() }
+  const back = () => { fill.value?.back(); bump(); saveSnapshot() }
 
   /** «Далее»/«Отправить»: на последнем валидном шаге уходит в submit. */
   async function next() {
@@ -93,6 +152,7 @@ export function useSurvey() {
     const wasLast = f.isLast
     const ok = f.next()
     bump()
+    saveSnapshot()
     if (ok && wasLast) await submit()
   }
 
@@ -115,9 +175,11 @@ export function useSurvey() {
           answers: sub.answers
         }
       })
+      clearSnapshot() // опрос завершён — прогресс больше не восстанавливаем
       phase.value = 'thanks'
     } catch {
-      // Остаёмся на опросе, показываем ошибку отправки (nonce одноразов — повтор берёт новый).
+      // Остаёмся на опросе, показываем ошибку отправки. Снимок НЕ чистим — намеренно: повтор
+      // не теряет ответы (nonce одноразов, повтор берёт новый через /api/session).
       errorMsg.value = 'Не удалось отправить ответы. Проверьте соединение и попробуйте ещё раз.'
     } finally {
       submitting.value = false
@@ -126,6 +188,6 @@ export function useSurvey() {
 
   return {
     version, phase, errorMsg, submitting, view,
-    reset, start, selectOption, setOther, setText, back, next, submit
+    reset, start, hydrate, selectOption, setOther, setText, back, next, submit
   }
 }

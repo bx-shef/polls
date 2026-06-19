@@ -21,7 +21,7 @@
 | Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ на живом `/s/:key` (webServer; #39, `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
 | `server/` (Nitro) | обёртки `createApi`: `/api/` session · submit · survey/:key/current · health | ✅ привязка готова (dev-стор MemoryStore+seed) |
-| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | 🔶 happy-path готов; гейт-привязка → #39, состояния/тема/persist → #34 |
+| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | 🔶 happy-path + гейт (#39) + persist/deep-link ✅; survey/thanks под гейт + состояния/тема → #34 |
 | Дашборд (контур B) | аналитика внутри Bitrix24 | ⏳ не начат |
 | Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
 
@@ -139,7 +139,11 @@ Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #3
 (#25; демо-контент в `demo/seed.ts`). Вопросы — `B24RadioGroup`/`B24CheckboxGroup` (`variant=card`)/`B24Textarea`.
 
 Маршрут привязан к визуальному гейту (#39: `webServer`+`baseURL`, гейт снимает живой `/s/:key`).
-Дальше (#34): состояния пусто/ошибка/загрузка, deep-link `?q=N`, persist (localStorage), тёмная тема.
+**Persist + deep-link (#34):** прогресс кладётся в localStorage (`SurveyFill.snapshot()`), `hydrate()`
+в `onMounted` страницы восстанавливает его (resume на reload) и поддерживает `?q=N` (1-based);
+снимок чистится на успешном submit; restore недоверенный — валидируется ядром. Только клиент
+(localStorage нет на SSR) → гейт на fresh-контексте видит интро.
+Дальше (#34): экраны survey/thanks под гейт (навигация), состояния пусто/ошибка/загрузка, тёмная тема.
 
 ## Инварианты
 
