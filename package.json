@@ -38,6 +38,7 @@
     "@vitest/coverage-v8": "^2.1.8",
     "node-pg-migrate": "^8.0.4",
     "pg": "^8.21.0",
+    "tailwindcss": "^4.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

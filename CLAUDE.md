@@ -105,8 +105,11 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 Каркас контура A. Ядро остаётся в `src/` и Nuxt'ом НЕ сканируется: `nuxt.config.ts`
 (корень) задаёт `srcDir: 'app/'`, модуль `@bitrix24/b24ui-nuxt` (Tailwind/air-токены
 внутри модуля), алиас `~core → src/` для доступа к типам/функциям ядра без дублирования
-логики. `app/app.vue` — `B24App` (обёртка темы) + `NuxtPage`; `app/pages/index.vue` —
-заглушка-маршрут (рендерит b24ui, подтверждает сборку). Ядровой `pnpm check` независим
+логики. **CSS-вход обязателен:** `app/assets/css/main.css` (`@import "tailwindcss"` +
+`@import "@bitrix24/b24ui-nuxt"`) подключён через `css: [...]` — без него ни air-токены
+компонентов, ни Tailwind-утилиты не компилируются (deps: `tailwindcss`). `app/app.vue` —
+`B24App` (обёртка темы) + `NuxtPage`; `app/pages/index.vue` — заглушка-маршрут на штатных
+`B24Card`/`B24Badge`/`B24Button` (рендерит b24ui, подтверждает сборку И стилизацию). Ядровой `pnpm check` независим
 (root tsconfig типизирует только `src/test/scripts`; Nuxt — своим tsconfig, генерится
 `postinstall: nuxt prepare`; CI-typecheck `app/` — отдельным шагом с экранами, ISSUE
 [#36](https://github.com/bx-shef/polls/issues/36)).

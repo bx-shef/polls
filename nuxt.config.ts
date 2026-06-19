@@ -15,6 +15,8 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-06-19',
   srcDir: 'app/',
   modules: ['@bitrix24/b24ui-nuxt'],
+  // CSS-вход b24ui (Tailwind v4 + тема/токены) — обязателен, иначе компоненты без стилей.
+  css: ['~/assets/css/main.css'],
   // Контур A — публичный опрос (лендинг-подобный), SSR оправдан (быстрый first paint).
   ssr: true,
   devtools: { enabled: false },
