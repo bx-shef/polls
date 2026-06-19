@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { buildResponseAnswers } from '../domain/answers'
-import { rawAnswerSchema, type CompiledVersion, type CrmContext } from '../domain/schema'
+import { rawAnswerSchema, type CompiledVersion, type CrmContext, type PublicVersion } from '../domain/schema'
 import type { IStore } from '../store/types'
 import { errInfo, nullLogger, type Logger } from '../obs/logger'
 import { MemoryNonceStore, type NonceStore } from './nonce'
@@ -99,7 +99,7 @@ const surveyKeySchema = z.string().min(1).max(200)
  * Тип возврата — `Omit<…, 'invitationPolicy'>`: добавят новое чувствительное
  * поле в версию — компилятор не даст молча протечь (заставит обновить проекцию).
  */
-function toPublicVersion(v: CompiledVersion): Omit<CompiledVersion, 'invitationPolicy'> {
+function toPublicVersion(v: CompiledVersion): PublicVersion {
   const { invitationPolicy: _omit, ...pub } = v
   return pub
 }

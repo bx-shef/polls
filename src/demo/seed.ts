@@ -49,6 +49,20 @@ export function draftV1(): SurveyDraft {
     surveyKey: SURVEY_KEY,
     title: 'Постпродажный опрос',
     lang: 'ru',
+    // Презентация (version-frozen, #25) — контент экранов контура A для Vue-слоя.
+    intro: {
+      kicker: 'Опрос · 2 минуты',
+      title: 'Как прошла работа?',
+      lead: 'Пара коротких вопросов о завершённой услуге — ваш ответ помогает нам стать лучше.',
+      meta: ['Анонимно', '~2 минуты'],
+      cta: 'Начать',
+      count: '4 вопроса'
+    },
+    thanks: {
+      title: 'Спасибо за ответы!',
+      body: 'Мы учтём вашу оценку — это напрямую влияет на качество услуг.',
+      note: 'Окно можно закрыть.'
+    },
     questions: [
       { key: NPS_Q, type: 'single', metric: 'nps', required: true, text: 'Насколько вероятно порекомендуете нас?', options: scaleOptions(0, 10) },
       { key: CSAT_Q, type: 'single', metric: 'csat', required: true, text: 'Оцените качество услуги', options: csatOptions() },
