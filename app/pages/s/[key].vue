@@ -7,25 +7,31 @@ import type { PublicVersion } from '~core/domain/schema'
 // Версию грузим через useAsyncData: SSR-рендер + payload-трансфер (без двойного fetch при
 // гидрации) + автоматический рефетч при client-навигации на другой :key (watch). Ошибку
 // (404/сеть) useAsyncData ловит сам — в setup исключение не всплывает (нет 500 на SSR).
+// Ремоунт при смене опроса (/s/A → /s/B): иначе Nuxt переиспользует инстанс страницы и
+// onMounted (а с ним hydrate) не отрабатывает повторно. С ремоунтом — свежий setup + onMounted.
+definePageMeta({ key: (route) => route.path })
+
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
+// Ключ per-опрос: при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом.
 const { data, error } = await useAsyncData(
-  'survey-current',
-  () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`),
-  { watch: [surveyKey] }
+  `survey:${surveyKey.value}`,
+  () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`)
 )
 
 const { phase, version, view, errorMsg, submitting, reset, start, hydrate, selectOption, setOther, setText, back, next } =
   useSurvey()
 
-// Прокидываем результат загрузки в композабл (и при первичном рендере, и при смене :key).
+// Прокидываем результат загрузки в композабл. watch immediate срабатывает СИНХРОННО в setup
+// (до onMounted) → к моменту onMounted phase='intro', version заполнен.
 watch([data, error], () => reset(data.value?.version ?? null, error.value ?? undefined), { immediate: true })
 
-// Клиентская гидратация (после SSR): resume из localStorage + deep-link `?q=N` (1-based в URL).
+// Клиентская гидратация (после SSR, по факту монтирования): resume из localStorage +
+// deep-link `?q=N` (1-based в URL → 0-based goTo). Зависит от порядка: watch выше уже отработал.
 onMounted(() => {
   const q = route.query.q
-  const idx = typeof q === 'string' && /^\d+$/.test(q) ? Math.max(0, Number(q) - 1) : undefined
+  const idx = typeof q === 'string' && /^\d+$/.test(q) ? Math.max(0, parseInt(q, 10) - 1) : undefined
   hydrate(idx)
 })
 </script>

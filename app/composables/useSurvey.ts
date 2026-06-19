@@ -45,22 +45,29 @@ export function useSurvey() {
   const tick = ref(0)
   const bump = () => { tick.value++ }
 
-  const persistKey = () => `survey:${version.value?.surveyKey ?? ''}`
+  // Гард пустого ключа: без surveyKey не трогаем localStorage (иначе мина "survey:" на всех опросах).
+  const persistKey = () => {
+    const k = version.value?.surveyKey
+    return k ? `survey:${k}` : null
+  }
 
   function saveSnapshot() {
-    if (!import.meta.client || !fill.value) return
+    const key = persistKey()
+    if (!import.meta.client || !fill.value || !key) return
     try {
-      localStorage.setItem(persistKey(), JSON.stringify(fill.value.snapshot()))
+      localStorage.setItem(key, JSON.stringify(fill.value.snapshot()))
     } catch { /* приватный режим/квота — persist необязателен */ }
   }
   function clearSnapshot() {
-    if (!import.meta.client) return
-    try { localStorage.removeItem(persistKey()) } catch { /* ignore */ }
+    const key = persistKey()
+    if (!import.meta.client || !key) return
+    try { localStorage.removeItem(key) } catch { /* ignore */ }
   }
   function readSnapshot(): unknown {
-    if (!import.meta.client) return undefined
+    const key = persistKey()
+    if (!import.meta.client || !key) return undefined
     try {
-      const raw = localStorage.getItem(persistKey())
+      const raw = localStorage.getItem(key)
       return raw ? JSON.parse(raw) : undefined
     } catch { return undefined }
   }
@@ -80,12 +87,14 @@ export function useSurvey() {
     bump()
   }
 
-  /** Построить fill (опц. из снимка) и перейти в фазу опроса; deep-link/resume → goTo(index). */
+  /** Построить fill (опц. из снимка) и перейти в фазу опроса; deep-link → goTo(index). */
   function startFill(restored?: unknown, index?: number) {
     if (!version.value) return
+    // composable валидирует снимок на границе (safeParse → SurveyFillSnapshot|undefined);
+    // ядро (initState) дополнительно сверяет surveyKey/versionNo — снимок чужого опроса/версии
+    // отбрасывается (старт с нуля). Кривой снимок → undefined → свежий проход.
     fill.value = restored === undefined
       ? new SurveyFill(version.value)
-      // restored — недоверенный объект; конструктор сам валидирует/отбрасывает кривой снимок.
       : new SurveyFill(version.value, surveyFillSnapshotSchema.safeParse(restored).data)
     if (index !== undefined) fill.value.goTo(index)
     errorMsg.value = ''
@@ -107,7 +116,9 @@ export function useSurvey() {
     if (phase.value !== 'intro' || !version.value) return
     const snap = readSnapshot()
     if (snap !== undefined) {
-      startFill(snap, deepLinkIndex) // index undefined → SurveyFill восстановит сохранённый current
+      // Resume важнее deep-link: у вернувшегося пользователя сохранённая позиция приоритетнее
+      // ?q из ссылки (не теряем прогресс, не создаём гибрид). current берётся из снимка (initState).
+      startFill(snap)
       return
     }
     if (deepLinkIndex !== undefined) startFill(undefined, deepLinkIndex)
@@ -167,7 +178,8 @@ export function useSurvey() {
       clearSnapshot() // опрос завершён — прогресс больше не восстанавливаем
       phase.value = 'thanks'
     } catch {
-      // Остаёмся на опросе, показываем ошибку отправки (nonce одноразов — повтор берёт новый).
+      // Остаёмся на опросе, показываем ошибку отправки. Снимок НЕ чистим — намеренно: повтор
+      // не теряет ответы (nonce одноразов, повтор берёт новый через /api/session).
       errorMsg.value = 'Не удалось отправить ответы. Проверьте соединение и попробуйте ещё раз.'
     } finally {
       submitting.value = false
