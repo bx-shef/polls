@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import type { CompiledVersion } from '~core/domain/schema'
+import type { PublicVersion } from '~core/domain/schema'
 
 // Экран Спасибо: контент из презентации версии-снимка (`thanks`, version-frozen #25) с фолбэками.
-const props = defineProps<{ version: CompiledVersion }>()
+const props = defineProps<{ version: PublicVersion }>()
 const thanks = computed(() => props.version.thanks ?? {})
 </script>
 

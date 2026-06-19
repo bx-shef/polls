@@ -176,6 +176,14 @@ export const compiledVersionSchema = z.object({
 export type CompiledVersion = z.infer<typeof compiledVersionSchema>
 
 /**
+ * Публичная проекция версии для рендера контура A: всё, КРОМЕ `invitationPolicy`
+ * (внутренняя CRM-конфигурация наружу не утекает, #25). Серверный `survey()` отдаёт
+ * именно её; клиентские типы (composable/компоненты) используют этот тип, а не полный
+ * `CompiledVersion` — чтобы случайно не отрендерить/не залогировать чувствительное поле.
+ */
+export type PublicVersion = Omit<CompiledVersion, 'invitationPolicy'>
+
+/**
  * Сырой ответ клиента на один вопрос. Оба поля опциональны: пустой объект `{}`
  * означает «вопрос пропущен». Границы (.max) — защита от раздувания payload.
  */

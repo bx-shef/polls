@@ -1,13 +1,26 @@
 <script setup lang="ts">
+import type { PublicVersion } from '~core/domain/schema'
+
 // Маршрут прохождения опроса контура A: /s/:key. Оркеструет фазы (intro→survey→thanks)
-// поверх композабла useSurvey (обёртка ядрового SurveyFill). Текущая версия грузится на SSR.
+// поверх композабла useSurvey (обёртка ядрового SurveyFill).
+//
+// Версию грузим через useAsyncData: SSR-рендер + payload-трансфер (без двойного fetch при
+// гидрации) + автоматический рефетч при client-навигации на другой :key (watch). Ошибку
+// (404/сеть) useAsyncData ловит сам — в setup исключение не всплывает (нет 500 на SSR).
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
-const { phase, version, view, errorMsg, submitting, load, start, selectOption, setOther, setText, back, next } =
-  useSurvey(surveyKey.value)
+const { data, error } = await useAsyncData(
+  'survey-current',
+  () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`),
+  { watch: [surveyKey] }
+)
 
-await load()
+const { phase, version, view, errorMsg, submitting, reset, start, selectOption, setOther, setText, back, next } =
+  useSurvey()
+
+// Прокидываем результат загрузки в композабл (и при первичном рендере, и при смене :key).
+watch([data, error], () => reset(data.value?.version ?? null, error.value ?? undefined), { immediate: true })
 </script>
 
 <template>

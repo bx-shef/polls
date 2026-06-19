@@ -18,8 +18,9 @@ const otherPicked = computed(
 function onSingle(val: string | undefined) {
   if (val) emit('select', val)
 }
-// CheckboxGroup отдаёт новый массив; вычисляем изменившийся ключ и тогглим его через ядро
-// (selectOption применяет exclusive/dedup, состояние перечитывается обратно в model-value).
+// CheckboxGroup отдаёт новый массив; вычисляем изменившийся ключ и тогглим его через ядро.
+// Это адаптер под API b24ui (массив, не дельта), НЕ бизнес-логика: exclusive/dedup целиком
+// в SurveyFill.selectOption, состояние перечитывается обратно в model-value (одиночный клик).
 function onMulti(vals: string[]) {
   const cur = props.view.answer.picked
   const changed = vals.find((v) => !cur.includes(v)) ?? cur.find((v) => !vals.includes(v))

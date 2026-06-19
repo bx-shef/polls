@@ -1,15 +1,23 @@
 import { SurveyFill } from '~core/client/survey-fill'
-import type { CompiledVersion, Question } from '~core/domain/schema'
+import type { PublicVersion, Question } from '~core/domain/schema'
 import type { QuestionAnswer } from '~core/client/survey-fill'
 
 /**
  * Реактивная обёртка прохождения опроса (контур A). Вся логика — в ядровом `SurveyFill`
  * (навигация/валидация шага/«Другое»/exclusive/маппинг в Submission); композабл лишь
- * оборачивает её Vue-реактивностью (`shallowRef` + bump-тик) и зовёт публичные `/api/*`
- * (`~core/client`/`~core/domain` — чистая логика без секретов, клиентский импорт разрешён).
+ * оборачивает её Vue-реактивностью и зовёт публичные `/api/*` через `$fetch` (Nuxt-клиент).
+ * Импорт из ядра — только `~core/client` (SurveyFill) и `~core/domain` (типы): чистая
+ * логика без секретов, клиентский импорт разрешён (граница `~core`, см. CLAUDE.md).
  *
- * Фазы: loading → (error | intro) → survey → thanks. Persist-снимок (localStorage) ядро
- * умеет (`snapshot`/restore), но здесь пока не подключён — отдельный слайс.
+ * РЕАКТИВНОСТЬ (важно при правке!): `SurveyFill` хранит состояние в обычном поле и меняет
+ * его по ссылке — Vue этого не видит. Поэтому реактивность завязана на счётчик `tick`:
+ * `view` зависит от `tick`, и КАЖДАЯ мутация `fill` (`selectOption`/`next`/`back`/…) ОБЯЗАНА
+ * сопровождаться `bump()`. Снимете `bump` — UI «застынет». Решение зафиксировано в
+ * docs/decisions.md (почему обёртка, а не реактивный объект внутри ядра).
+ *
+ * Загрузку версии делает СТРАНИЦА через `useAsyncData` (SSR-payload + дедуп + рефетч при
+ * смене `:key`); сюда версия/ошибка приходят через `reset()`. Persist-снимок (localStorage)
+ * ядро умеет (`snapshot`/restore), но здесь пока не подключён — вынесено в #34.
  */
 export type SurveyPhase = 'loading' | 'error' | 'intro' | 'survey' | 'thanks'
 
@@ -23,31 +31,35 @@ export interface SurveyView {
   canAdvance: boolean
 }
 
-export function useSurvey(surveyKey: string) {
-  const version = shallowRef<CompiledVersion | null>(null)
+export function useSurvey() {
+  const version = shallowRef<PublicVersion | null>(null)
   const fill = shallowRef<SurveyFill | null>(null)
   const phase = ref<SurveyPhase>('loading')
   const errorMsg = ref('')
   const submitting = ref(false)
-  // SurveyFill мутирует внутреннее состояние in-place — тик форсит пересчёт computed.
   const tick = ref(0)
   const bump = () => { tick.value++ }
 
-  async function load() {
-    phase.value = 'loading'
-    try {
-      const res = await $fetch<{ ok: boolean; version: CompiledVersion }>(`/api/survey/${surveyKey}/current`)
-      version.value = res.version
-      phase.value = 'intro'
-    } catch (e) {
-      const code = (e as { statusCode?: number }).statusCode
+  /** Применить результат загрузки версии (из useAsyncData страницы). Реактивен к смене :key. */
+  function reset(nextVersion: PublicVersion | null, fetchError?: unknown) {
+    fill.value = null
+    if (fetchError) {
+      const code = (fetchError as { statusCode?: number }).statusCode
       errorMsg.value = code === 404 ? 'Опрос не найден или больше не активен.' : 'Не удалось загрузить опрос.'
+      version.value = null
       phase.value = 'error'
+    } else {
+      version.value = nextVersion
+      errorMsg.value = ''
+      phase.value = nextVersion ? 'intro' : 'error'
     }
+    bump()
   }
 
   function start() {
     if (!version.value) return
+    // PublicVersion присваиваем как CompiledVersion: invitationPolicy опционален, его отсутствие
+    // допустимо; SurveyFill его не читает (только презентацию/вопросы).
     fill.value = new SurveyFill(version.value)
     errorMsg.value = ''
     phase.value = 'survey'
@@ -114,6 +126,6 @@ export function useSurvey(surveyKey: string) {
 
   return {
     version, phase, errorMsg, submitting, view,
-    load, start, selectOption, setOther, setText, back, next, submit
+    reset, start, selectOption, setOther, setText, back, next, submit
   }
 }

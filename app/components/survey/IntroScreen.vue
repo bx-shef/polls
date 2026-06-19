@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { CompiledVersion } from '~core/domain/schema'
+import type { PublicVersion } from '~core/domain/schema'
 
 // Экран Интро (контур A): контент из презентации версии-снимка (`intro`, version-frozen #25),
 // с осмысленными фолбэками, если поля не заданы. Кнопка «Начать» → фаза опроса.
-const props = defineProps<{ version: CompiledVersion }>()
+const props = defineProps<{ version: PublicVersion }>()
 defineEmits<{ start: [] }>()
 
 const intro = computed(() => props.version.intro ?? {})
