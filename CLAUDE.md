@@ -37,6 +37,10 @@ pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080): /api/session, /api/submit
 pnpm migrate up   # применить миграции БД (node-pg-migrate; DATABASE_URL). Создать: pnpm migrate create
+pnpm test:visual  # визуальный гейт #13: скриншот-регрессия (Playwright). Обновить эталоны:
+                  # pnpm test:visual:update (после глазами-сверки). Браузер: pnpm visual:install.
+                  # НЕ входит в `pnpm check` — запускается Stop-хуком Claude Code при
+                  # завершении сессии на изменениях UI. См. docs/visual-gate.md
 ```
 
 Для проверок предпочитай `scripts/check.sh` / `check.ps1` — один запуск ставит
@@ -142,7 +146,9 @@ UI/CSS не готова, пока не увидена глазами — рен
 починка (брейкпоинты, состояния пусто/ошибка, hover/focus/disabled, тёмная тема).
 **Приватность:** скриншоты живого портала (CRM/домены/токены) не коммитим, не шлём
 в облачный чат, не кладём в CI — только dev/staging с мок-данными. Детерминированный
-гейт (Playwright + `Stop`-хук) — issue #13.
+гейт (Playwright + `Stop`-хук, #13) — **инфраструктура поднята** на фикстуре-заглушке
+(`pnpm test:visual`, `.claude/hooks/visual-gate.sh`); с приходом экранов фикстуры
+заменяются на маршруты приложения. Детали и порядок добавления экрана — `docs/visual-gate.md`.
 
 ## Скоуп и роадмап
 
@@ -184,6 +190,7 @@ UI/CSS не готова, пока не увидена глазами — рен
 `observability.md` (логи/health/error-tracking — #5),
 `bitrix24-integration.md` (маппинг CRM→`CrmContext` + smoke-тест связки `scripts/b24-smoke.ts`),
 `roadmap.md` (карта фаз: где мы → фронт → дашборд → деплой),
+`visual-gate.md` (детерминированный визуальный гейт #13: Playwright + Stop-хук),
 `issues.md` (карта открытых issue: статус/зависимости),
 `glossary.md` (термины: контур A/B, версия-снимок, `question_key`, invitation/CrmContext, exclusive, малые N, `portalId`),
 `decisions.md` (индекс решений — короткое «почему так»),
@@ -197,6 +204,11 @@ SessionStart-хук настроен: `.claude/hooks/session-start.sh` (заре
 Запускается синхронно и только в удалённой среде (гард по `CLAUDE_CODE_REMOTE`);
 локально — мгновенный выход. Вступает в силу для всех сессий после мержа в
 дефолтную ветку.
+
+Stop-хук визуального гейта: `.claude/hooks/visual-gate.sh` (#13) — на завершении сессии,
+если тронуты UI-поверхности, прогоняет скриншот-регрессию (`pnpm test:visual`) и блокирует
+остановку при расхождении с эталоном. Узкий триггер (чистое ядро не трогает), мягкая
+деградация без браузера. Детали — `docs/visual-gate.md`.
 
 ---
 *Последнее ревью: 2026-06-19.*
