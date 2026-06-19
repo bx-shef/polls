@@ -18,7 +18,9 @@
 | `bitrix24/` | crypto/oauth/portal (OAuth-токены) | ✅ ядро готово, под тестами |
 | `server/node.ts` | node:http-адаптер (`pnpm serve`) | ✅ готово |
 | `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
-| Фронт-экраны (контур A) | Nuxt/b24ui Интро/Опрос/Спасибо + Nitro-привязка | ⏳ не начат — следующая фаза |
+| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ инфра (фикстура; `docs/visual-gate.md`) |
+| `app/` (Nuxt 4 + b24ui) | каркас приложения контура A (`nuxt.config.ts`, `app.vue`, заглушка-маршрут) | ✅ каркас собирается/рендерит; экраны ⏳ |
+| Фронт-экраны (контур A) | Интро/Опрос/Спасибо поверх `SurveyFill` + Nitro-привязка `createApi` | ⏳ следующая фаза (#34, #10) |
 | Дашборд (контур B) | аналитика внутри Bitrix24 | ⏳ не начат |
 | Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
 
@@ -37,6 +39,8 @@ pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080): /api/session, /api/submit
 pnpm migrate up   # применить миграции БД (node-pg-migrate; DATABASE_URL). Создать: pnpm migrate create
+pnpm dev          # Nuxt-приложение контура A (app/) в dev-режиме (HMR)
+pnpm build        # сборка Nuxt (.output); pnpm preview — превью собранного
 pnpm test:visual  # визуальный гейт #13: скриншот-регрессия (Playwright). Обновить эталоны:
                   # pnpm test:visual:update (после глазами-сверки). Браузер: pnpm visual:install.
                   # НЕ входит в `pnpm check` — запускается Stop-хуком Claude Code при
@@ -94,6 +98,17 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
   persist-снимок (safeParse недоверенного restore), маппинг в `Submission`. Без DOM/Vue —
   Vue-композабл фазы связки оборачивает реактивностью; визуальный гейт — #13.
+
+## Приложение (`app/`, Nuxt 4 + b24ui)
+
+Каркас контура A. Ядро остаётся в `src/` и Nuxt'ом НЕ сканируется: `nuxt.config.ts`
+(корень) задаёт `srcDir: 'app/'`, модуль `@bitrix24/b24ui-nuxt` (Tailwind/air-токены
+внутри модуля), алиас `~core → src/` для доступа к типам/функциям ядра без дублирования
+логики. `app/app.vue` — `B24App` (обёртка темы) + `NuxtPage`; `app/pages/index.vue` —
+заглушка-маршрут (рендерит b24ui, подтверждает сборку). Ядровой `pnpm check` независим
+(root tsconfig типизирует только `src/test/scripts`; Nuxt — своим сгенерированным
+tsconfig). Дальше: экраны Интро/Опрос/Спасибо поверх `SurveyFill`, Nitro-обёртка
+`createApi` (`server/`), подключение маршрутов к визуальному гейту (#34).
 
 ## Инварианты
 
