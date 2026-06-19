@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Дашборд результатов (контур B): аналитика опроса в нативной теме b24ui (air-токены, без
 // индиго-айдентики контура A). Данные — серверный агрегат /api/dashboard/:key (domain/aggregate
-// + подавление малых N). Тонкий рендер: вся аналитика в ядре. DEV-ONLY (auth → #47).
+// + подавление малых N; распределение приходит с метками опций). Тонкий рендер. DEV-ONLY (auth → #47).
 interface NpsSummary { n: number; nps: number; promoters: number; passives: number; detractors: number }
 interface CsatSummary { n: number; mean: number; topBoxPct: number }
 interface Dashboard {
@@ -12,7 +12,7 @@ interface Dashboard {
   threshold?: number
   nps?: NpsSummary | null
   csat?: CsatSummary | null
-  distribution?: { question: string; counts: Record<string, number> } | null
+  distribution?: { question: string; items: { label: string; count: number }[] } | null
 }
 
 const route = useRoute()
@@ -21,17 +21,13 @@ const surveyKey = computed(() => String(route.params.key))
 const { data, error } = await useAsyncData<Dashboard>(`dashboard:${surveyKey.value}`, () =>
   $fetch(`/api/dashboard/${surveyKey.value}`)
 )
-
-const dist = computed(() =>
-  Object.entries(data.value?.distribution?.counts ?? {}).sort((a, b) => b[1] - a[1])
-)
 </script>
 
 <template>
   <main class="mx-auto max-w-4xl p-6">
     <header class="mb-6">
       <p class="text-sm text-gray-500 dark:text-gray-400">Результаты опроса</p>
-      <h1 class="text-2xl font-bold">{{ data?.title ?? surveyKey }}</h1>
+      <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ data?.title ?? surveyKey }}</h1>
       <p v-if="data?.n !== undefined" class="mt-1 text-sm text-gray-500 dark:text-gray-400">
         Ответов: {{ data.n }}
       </p>
@@ -68,11 +64,19 @@ const dist = computed(() =>
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Топ-бокс: {{ data.csat.topBoxPct }}%</p>
       </B24Card>
 
-      <B24Card v-if="dist.length" :title="data?.distribution?.question ?? 'Распределение'" class="sm:col-span-2">
+      <B24Card
+        v-if="data?.distribution?.items?.length"
+        :title="data.distribution.question"
+        class="sm:col-span-2"
+      >
         <ul class="flex flex-col gap-2">
-          <li v-for="[key, count] in dist" :key="key" class="flex items-center justify-between">
-            <span class="text-sm">{{ key }}</span>
-            <B24Badge color="air-secondary-accent" :label="String(count)" />
+          <li
+            v-for="item in data.distribution.items"
+            :key="item.label"
+            class="flex items-center justify-between"
+          >
+            <span class="text-sm">{{ item.label }}</span>
+            <B24Badge color="air-secondary-accent" :label="String(item.count)" />
           </li>
         </ul>
       </B24Card>

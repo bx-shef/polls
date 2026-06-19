@@ -18,7 +18,7 @@
 | `bitrix24/` | crypto/oauth/portal (OAuth-токены) | ✅ ядро готово, под тестами |
 | `server/node.ts` | node:http-адаптер (`pnpm serve`) | ✅ готово |
 | `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
-| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ живой `/s/:key`+`/d/:key`, 6 поверхностей ×(light+dark) = 36 эталонов (#39; `docs/visual-gate.md`) |
+| Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ живой `/s/:key`+`/d/:key`, 7 поверхностей ×3 брейкпоинта ×(light+dark) = 42 эталона (#39; `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | приложение: контур A (`/s/:key`) + дашборд контура B (`/d/:key`), тёмная тема | ✅ экраны готовы под гейтом |
 | `server/` (Nitro) | обёртки ядра: `/api/` session · submit · survey/:key/current · health · dashboard/:key | ✅ привязка готова (dev-стор MemoryStore+seed, общий `useStore`) |
 | Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема; тоггл темы → #45 |
@@ -133,9 +133,12 @@ Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #3
 **Дашборд контура B (`app/pages/d/[key].vue` + `server/api/dashboard/[key].get.ts`):** read-аналитика
 (NPS/CSAT/распределение) — серверный агрегат через `domain/aggregate` над общим стором; вопросы
 берутся по МЕТРИКЕ из текущей версии (не хардкод seed-ключей), малые N подавлены
-(`meetsAnonymity`). Нативная b24ui-тема (без индиго контура A). Под визуальным гейтом
-(`dashboard.visual.ts`). **DEV-ONLY:** эндпоинт пока без auth — дашборд внутри Bitrix24 под
-OAuth/портал-контекстом, auth-гейтинг + tenant-изоляция → #47.
+(`meetsAnonymity`). Распределение отдаётся с человекочитаемыми МЕТКАМИ опций (не ключами).
+Нативная b24ui-тема (без индиго контура A; собственный H1 — `text-gray-900 dark:text-white`,
+т.к. вне `B24Card` тему не наследует). Под визуальным гейтом (`dashboard.visual.ts`: дашборд +
+дашборд-ошибка × 3 брейкпоинта × 2 темы = 12 эталонов). **DEV-ONLY:** эндпоинт пока без auth/
+rate-limit (валидация ключа + 404 есть) — дашборд внутри Bitrix24 под OAuth/портал-контекстом,
+auth-гейтинг + tenant-изоляция → #47, SQL-агрегация (PgStore) + rate-limit → #49.
 
 **Экраны контура A (`app/pages/s/[key].vue` + `app/components/survey/*`):** маршрут `/s/:key`
 оркеструет фазы intro→survey→thanks через композабл `app/composables/useSurvey.ts` — тонкую
@@ -153,7 +156,7 @@ OAuth/портал-контекстом, auth-гейтинг + tenant-изоля
 (localStorage нет на SSR) → гейт на fresh-контексте видит интро.
 Тёмная тема (#34): `@nuxtjs/color-mode` (preference system, classSuffix '' → класс `.dark`) флипает
 b24ui по `prefers-color-scheme`; гейт детерминированно гоняет ОБЕ темы через colorScheme-проекты.
-Визуальный гейт: 5 поверхностей (intro/survey/thanks/error=404/submit-error) × 3 брейкпоинта × 2 темы = 30 эталонов.
+Визуальный гейт контура A: 5 поверхностей (intro/survey/thanks/error=404/submit-error) × 3 брейкпоинта × 2 темы = 30 эталонов (контур B — ещё 12, итого 42).
 Состояние submit-ошибки — под гейтом (мок провала `/api/submit`). loading/«пусто» отдельно не
 гейтятся: loading недостижим на первом paint (SSR await + watch immediate), «пусто» = 404. Тоггл темы — #45.
 
