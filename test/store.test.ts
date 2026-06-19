@@ -69,6 +69,25 @@ describe('MemoryStore', () => {
     ).rejects.toThrow()
   })
 
+  it('идемпотентность по invitationToken: повтор токена → no-op; без токена дедупа нет (#3/#4)', async () => {
+    const s = new MemoryStore()
+    const mk = (id: string, over: Partial<ResponseRecord> = {}): ResponseRecord => ({
+      id, surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [], ...over
+    })
+    await s.addResponse(mk('a', { invitationToken: 'tok-1' }))
+    await s.addResponse(mk('b', { invitationToken: 'tok-1' })) // повтор → no-op
+    const after = await s.listResponses()
+    expect(after).toHaveLength(1)
+    expect(after[0]!.id).toBe('a') // сохранён первый, не перезаписан вторым
+    await s.addResponse(mk('c', { invitationToken: 'tok-2' })) // другой токен → пишется
+    expect(await s.listResponses()).toHaveLength(2)
+    await s.addResponse(mk('d')) // без токена — дедупа нет
+    await s.addResponse(mk('e'))
+    const all = await s.listResponses()
+    expect(all).toHaveLength(4)
+    expect(all.filter((r) => r.invitationToken == null)).toHaveLength(2) // d, e — без токена
+  })
+
   it('listResponses возвращает копию — мутация не утекает в стор', async () => {
     const s = new MemoryStore()
     await s.addResponse({ id: 'a1', surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [] })

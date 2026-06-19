@@ -319,7 +319,17 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(200)
-    expect((await store.listResponses()).at(-1)!.context).toEqual(snapshot)
+    const saved = (await store.listResponses()).at(-1)!
+    expect(saved.context).toEqual(snapshot)
+    // токен приглашения проброшен в запись — durable-якорь идемпотентности стора (#3/#4)
+    expect(saved.invitationToken).toBe(inv.token)
+  })
+
+  it('submit без приглашения → запись без invitationToken (дедуп не нужен)', async () => {
+    const { api, store } = await freshApi()
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: validPayload(nonce) })).status).toBe(200)
+    expect((await store.listResponses()).at(-1)!.invitationToken).toBeUndefined()
   })
 
   it('повторное использование приглашения → 409 (идемпотентность #4)', async () => {

@@ -206,7 +206,9 @@ export function createApi(deps: ApiDeps): Api {
           versionNo: version.versionNo,
           submittedAt: now().toISOString(), // только сервер; клиентское поле игнорируется (#4)
           context, // снимок из приглашения (#3) либо {} без токена
-          answers
+          answers,
+          // токен → durable-якорь идемпотентности (стор дедуплицирует по нему, #3/#4)
+          ...(p.invitation != null ? { invitationToken: p.invitation } : {})
         })
         return { status: 200, body: { ok: true } }
       } catch (e) {

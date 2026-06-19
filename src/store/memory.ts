@@ -10,6 +10,14 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type 
 export class MemoryStore implements IStore {
   private versions: CompiledVersion[] = []
   private _responses: ResponseRecord[] = []
+  /**
+   * Токены приглашений уже записанных ответов — single-use (паритет с PgStore UNIQUE, #3/#4).
+   * Без namespace по porталу: MemoryStore — single-tenant by design (нет `portalId`,
+   * для локальной проверки/тестов/демо). Межтенантную изоляцию ключа гарантирует только
+   * PgStore (`(portal_id, invitation_token)`); если MemoryStore когда-нибудь станет
+   * мульти-тенантным — ключ Set'а нужно будет расширить порталом.
+   */
+  private seenInvitationTokens = new Set<string>()
 
   async publish(draft: SurveyDraft, versionNo: number): Promise<CompiledVersion> {
     if (await this.getVersion(draft.surveyKey, versionNo)) {
@@ -51,7 +59,14 @@ export class MemoryStore implements IStore {
     // (раньше ResponseRecord был plain interface). Zod strip отбрасывает лишние поля.
     // Инвариант «versionNo существует в сторе» обеспечивает PgStore (FK); здесь не
     // проверяется — демо/тесты добавляют ответы напрямую.
-    this._responses.push(responseRecordSchema.parse(r))
+    const rec = responseRecordSchema.parse(r)
+    // Идемпотентность по токену приглашения (паритет с частичным UNIQUE PgStore):
+    // повтор того же invitation_token — тихий no-op. Без токена дедупа нет.
+    if (rec.invitationToken != null) {
+      if (this.seenInvitationTokens.has(rec.invitationToken)) return
+      this.seenInvitationTokens.add(rec.invitationToken)
+    }
+    this._responses.push(rec)
   }
 
   async listResponses(surveyKey?: string): Promise<ResponseRecord[]> {
