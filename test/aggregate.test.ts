@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ANONYMITY_THRESHOLD,
+  breakdownBy,
   byCategory,
   byCompany,
   byProduct,
@@ -150,6 +151,62 @@ describe('byProduct — отсутствие поля products', () => {
       context: { companyId: 1 }, answers: []
     }
     expect(byProduct([rec], 1001)).toEqual([])
+  })
+})
+
+describe('breakdownBy — обобщённый срез по измерению', () => {
+  const mk = (
+    id: string,
+    nps: number,
+    o: { products?: number[]; respId?: number; respName?: string; noAnswer?: boolean } = {}
+  ): ResponseRecord => ({
+    id, surveyKey: SURVEY_KEY, versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z',
+    context: {
+      ...(o.respId != null ? { responsibleId: o.respId, responsibleName: o.respName } : {}),
+      ...(o.products ? { products: o.products.map((p) => ({ productId: p, productName: `P${p}` })) } : {})
+    },
+    answers: o.noAnswer ? [] : [{ questionKey: NPS_Q, metric: 'nps', valueChoice: [`n${nps}`], valueNumber: nps, valueText: null }]
+  })
+  const byResp = (r: ResponseRecord) =>
+    r.context.responsibleId != null ? [{ key: r.context.responsibleId, name: r.context.responsibleName ?? `#${r.context.responsibleId}` }] : []
+  const byProd = (r: ResponseRecord) =>
+    (r.context.products ?? []).map((p) => ({ key: p.productId, name: p.productName ?? `#${p.productId}` }))
+
+  it('группирует по одиночному ключу, подавляет группу с n < minN', () => {
+    const rs = [mk('a', 10, { respId: 11, respName: 'Иванов' }), mk('b', 9, { respId: 11, respName: 'Иванов' }), mk('c', 0, { respId: 12, respName: 'Петров' })]
+    expect(breakdownBy(rs, byResp, { npsKey: NPS_Q, minN: 2 })).toEqual([{ name: 'Иванов', n: 2, nps: 100, csat: null }])
+  })
+
+  it('мульти-ключ: ответ с двумя продуктами учитывается в обеих группах', () => {
+    const rs = [mk('a', 10, { products: [1, 2] }), mk('b', 9, { products: [1] }), mk('c', 3, { products: [2] })]
+    expect(breakdownBy(rs, byProd, { npsKey: NPS_Q, minN: 2 })).toEqual([
+      { name: 'P1', n: 2, nps: 100, csat: null },
+      { name: 'P2', n: 2, nps: 0, csat: null }
+    ])
+  })
+
+  it('имя — первым вхождением ключа (устойчиво к переименованию в CRM)', () => {
+    const rs = [mk('a', 10, { respId: 11, respName: 'Старое' }), mk('b', 10, { respId: 11, respName: 'Новое' })]
+    expect(breakdownBy(rs, byResp, { npsKey: NPS_Q, minN: 2 })[0]?.name).toBe('Старое')
+  })
+
+  it('метрика обнулена при её собственной выборке < minN; строка без метрик скрыта', () => {
+    const rs = [mk('a', 10, { respId: 11, respName: 'И' }), mk('b', 0, { respId: 11, respName: 'И', noAnswer: true })]
+    // группа n=2 (≥minN), но NPS-выборка =1 (<minN) → nps null, csat null → строка не выводится
+    expect(breakdownBy(rs, byResp, { npsKey: NPS_Q, minN: 2 })).toEqual([])
+  })
+
+  it('сортировка по NPS убыв., затем по имени; без метрик-ключей — пусто', () => {
+    const rs = [mk('a', 0, { respId: 12, respName: 'Б' }), mk('b', 0, { respId: 12, respName: 'Б' }), mk('c', 10, { respId: 11, respName: 'А' }), mk('d', 10, { respId: 11, respName: 'А' })]
+    expect(breakdownBy(rs, byResp, { npsKey: NPS_Q, minN: 2 }).map((r) => r.name)).toEqual(['А', 'Б'])
+    expect(breakdownBy(rs, byResp, { minN: 2 })).toEqual([]) // нет npsKey/csatKey → метрик нет → пусто
+  })
+
+  it('minN по умолчанию = ANONYMITY_THRESHOLD', () => {
+    const four = [11, 12, 13, 14].map((i) => mk(`r${i}`, 10, { respId: 11, respName: 'И' }))
+    expect(breakdownBy(four, byResp, { npsKey: NPS_Q })).toEqual([]) // n=4 < 5 → подавлено
+    expect(breakdownBy([...four, mk('r15', 10, { respId: 11, respName: 'И' })], byResp, { npsKey: NPS_Q }))
+      .toEqual([{ name: 'И', n: 5, nps: 100, csat: null }]) // n=5 ≥ ANONYMITY_THRESHOLD
   })
 })
 

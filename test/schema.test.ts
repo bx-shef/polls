@@ -81,4 +81,11 @@ describe('responseRecordSchema — валидация на границе зап
   it('crmContext с числовыми id валиден', () => {
     expect(crmContextSchema.safeParse({ companyId: 5, dealId: 9, products: [{ productId: 1 }] }).success).toBe(true)
   })
+  it('crmContext принимает денормализованные имена (опциональны)', () => {
+    expect(crmContextSchema.safeParse({ companyId: 5, companyName: 'ООО Ромашка', dealCategoryName: 'Продажи', responsibleName: 'Иванов' }).success).toBe(true)
+    expect(crmContextSchema.safeParse({ companyId: 5 }).success).toBe(true) // без имён — тоже валидно
+  })
+  it('crmContext отвергает слишком длинное имя (>500)', () => {
+    expect(crmContextSchema.safeParse({ responsibleName: 'X'.repeat(501) }).success).toBe(false)
+  })
 })

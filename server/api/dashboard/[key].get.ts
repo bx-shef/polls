@@ -3,8 +3,8 @@ import {
   csatFor,
   distributionFor,
   npsTrend,
-  byProduct,
   byVersion,
+  breakdownBy,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
@@ -15,8 +15,9 @@ import {
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
  * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
- * Срез по услугам — NPS/CSAT по каждому продукту (`byProduct`); имя берём из денормализованного
- * `context.products[].productName`, услуги с выборкой < порога подавляем (анонимность среза).
+ * Срезы (услуга/направление/ответственный/клиент) — NPS/CSAT по группам через единый `breakdown`;
+ * имена из денормализованных полей контекста (productName/dealCategoryName/responsibleName/
+ * companyName), группа с выборкой < порога подавляется (анонимность среза).
  * Фильтр по версии (`?version=N`, `byVersion`) — весь дашборд по одной версии (сравнение
  * «до/после публикации»); `versions` (доступные) считаем ДО фильтра. Метаданные вопросов
  * (ключи/метки) — всегда из ТЕКУЩЕЙ версии (версионно-безопасно по стабильному question_key).
@@ -28,9 +29,10 @@ import {
  *     `npsTrend` (параметр `minN`) — тот же порог, но применяется к бакету отдельно.
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
- * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срез по услугам
- * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала), фильтр — список версий и n по
- * версии (перебор `?version=N`); всё это закрывает auth — ещё один довод за #47.
+ * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срезы раскрывают
+ * ИМЕНА из CRM — клиентов (`companyName`) и СОТРУДНИКОВ (`responsibleName` — PII), названия
+ * услуг/направлений, плюс список версий (перебор `?version=N`). На синтетическом seed это
+ * безвредно, но перед ЛЮБЫМ реальным деплоем обязателен auth-гейт (#47); PII-редакция — #31.
  * Дашборд контура B — внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
  * SQL-агрегация (PgStore) + rate-limit → #49. Сейчас данные синтетические (seed), N подавлены.
  */
@@ -81,32 +83,30 @@ export default defineEventHandler(async (event) => {
     distribution = { question: choiceQ.text, items }
   }
 
-  // Срез по услугам. Имя берём ПЕРВЫМ вхождением productId (устойчивее к переименованию в
-  // CRM, чем «последнее выигрывает»). Ответ с несколькими продуктами учитывается в КАЖДОЙ
-  // услуге (срез по услуге, не разбиение — суммы n по услугам могут превышать общий n).
-  // Метрику показываем только если её СОБСТВЕННАЯ выборка ≥ порога (не только число ответов
-  // услуги) — узкая метрика иначе могла бы деанонимизировать. Услугу без показуемых метрик
-  // не выводим. TODO(#49): при SQL-агрегации (PgStore) логика переедет в ядровой helper.
-  const productNames = new Map<number, string>()
-  for (const r of responses) {
-    for (const p of r.context.products ?? []) {
-      if (!productNames.has(p.productId)) productNames.set(p.productId, p.productName ?? `#${p.productId}`)
-    }
-  }
-  const services = [...productNames.entries()]
-    .map(([productId, name]) => {
-      const subset = byProduct(responses, productId)
-      const npsSum = npsKey ? npsFor(subset, npsKey) : null
-      const csatSum = csatKey ? csatFor(subset, csatKey) : null
-      return {
-        name,
-        n: subset.length,
-        nps: npsSum && meetsAnonymity(npsSum.n) ? npsSum.nps : null,
-        csat: csatSum && meetsAnonymity(csatSum.n) ? csatSum.mean : null
-      }
-    })
-    .filter((s) => meetsAnonymity(s.n) && (s.nps !== null || s.csat !== null))
-    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
+  // Срезы по измерениям через ядровой `breakdownBy` (группировка + подавление малых N — там).
+  // Имена денормализованы в контексте (productName/dealCategoryName/responsibleName/companyName),
+  // фолбэк — внутренний ID вида `#11`. Ответ с несколькими услугами попадает в каждую.
+  const opts = { npsKey, csatKey }
+  const services = breakdownBy(
+    responses,
+    (r) => (r.context.products ?? []).map((p) => ({ key: p.productId, name: p.productName ?? `#${p.productId}` })),
+    opts
+  )
+  const directions = breakdownBy(
+    responses,
+    (r) => (r.context.dealCategoryId != null ? [{ key: r.context.dealCategoryId, name: r.context.dealCategoryName ?? `#${r.context.dealCategoryId}` }] : []),
+    opts
+  )
+  const responsibles = breakdownBy(
+    responses,
+    (r) => (r.context.responsibleId != null ? [{ key: r.context.responsibleId, name: r.context.responsibleName ?? `#${r.context.responsibleId}` }] : []),
+    opts
+  )
+  const clients = breakdownBy(
+    responses,
+    (r) => (r.context.companyId != null ? [{ key: r.context.companyId, name: r.context.companyName ?? `#${r.context.companyId}` }] : []),
+    opts
+  )
 
   return {
     ...base,
@@ -116,6 +116,9 @@ export default defineEventHandler(async (event) => {
     distribution,
     // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
     trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : [],
-    services
+    services,
+    directions,
+    responsibles,
+    clients
   }
 })

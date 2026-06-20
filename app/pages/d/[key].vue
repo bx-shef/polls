@@ -5,7 +5,7 @@
 // Типы метрик — из ядра (type-only: в клиентский бандл не попадают, граница ~core
 // соблюдена). Один источник правды с серверным агрегатом — расхождение ловит компилятор.
 import type { NpsSummary, CsatSummary } from '~core/domain/metrics'
-import type { TrendPoint } from '~core/domain/aggregate'
+import type { TrendPoint, BreakdownRow } from '~core/domain/aggregate'
 
 interface Dashboard {
   ok: boolean
@@ -17,8 +17,11 @@ interface Dashboard {
   csat?: CsatSummary | null
   distribution?: { question: string; items: { label: string; count: number }[] } | null
   trend?: TrendPoint[]
-  // Срез по услугам — проекция (имя продукта + метрики подвыборки), не ядровой тип.
-  services?: { name: string; n: number; nps: number | null; csat: number | null }[]
+  // Срезы — проекции (имя группы + метрики подвыборки), не ядровые типы; рендерятся BreakdownCard.
+  services?: BreakdownRow[]
+  directions?: BreakdownRow[]
+  responsibles?: BreakdownRow[]
+  clients?: BreakdownRow[]
   versions?: number[]
   version?: number | null
 }
@@ -144,22 +147,10 @@ const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { ve
         </ul>
       </B24Card>
 
-      <B24Card
-        v-if="data?.services?.length"
-        title="По услугам"
-        class="sm:col-span-2"
-      >
-        <ul class="flex flex-col gap-2">
-          <li v-for="(s, i) in data.services" :key="i" class="flex items-center justify-between gap-3">
-            <span class="text-sm font-medium">{{ s.name }}</span>
-            <div class="flex items-center gap-3 text-sm">
-              <span v-if="s.nps !== null">NPS <b>{{ s.nps }}</b></span>
-              <span v-if="s.csat !== null">CSAT <b>{{ s.csat }}</b></span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">n={{ s.n }}</span>
-            </div>
-          </li>
-        </ul>
-      </B24Card>
+      <BreakdownCard v-if="data?.services?.length" title="По услугам" :rows="data.services" />
+      <BreakdownCard v-if="data?.directions?.length" title="По направлениям" :rows="data.directions" />
+      <BreakdownCard v-if="data?.responsibles?.length" title="По ответственным" :rows="data.responsibles" />
+      <BreakdownCard v-if="data?.clients?.length" title="По клиентам" :rows="data.clients" />
     </div>
   </main>
 </template>
