@@ -83,7 +83,7 @@ echo $GHCR_PAT | docker login ghcr.io -u <github-user> --password-stdin
 
 # 2. Конфиг
 git clone https://github.com/bx-shef/polls && cd polls
-cp .env.prod.example .env.prod    # заполнить APP_DOMAIN, LETSENCRYPT_EMAIL, секреты
+cp .env.prod.example .env.prod    # заполнить DOMAIN, LETSENCRYPT_EMAIL, секреты
 
 # 3. Сеть + reverse-proxy/TLS (один раз) + приложение
 make init-network init-nginxproxy
@@ -91,11 +91,11 @@ make prod-up
 ```
 
 После этого:
-- **A-запись** домена `APP_DOMAIN` должна указывать на сервер — nginx-proxy выпустит TLS сам.
+- **A-запись** домена `DOMAIN` должна указывать на сервер — nginx-proxy выпустит TLS сам.
 - **Авто-деплой**: каждый зелёный мерж в `main` → новый образ → watchtower обновит контейнер.
   Ручной апдейт при необходимости: `make prod-redeploy`. Логи: `make prod-logs`.
 
-**Проверка:** `https://APP_DOMAIN/api/health` → `200`; опрос `https://APP_DOMAIN/s/csat_postdeal`.
+**Проверка:** `https://DOMAIN/api/health` → `200`; опрос `https://DOMAIN/s/csat_postdeal`.
 Дашборд `/d/:key` в проде закрыт авторизацией портала (см. ниже) — это by design.
 
 **Bitrix24-приложение:** зарегистрировать локальное приложение портала, прописать
