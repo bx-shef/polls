@@ -108,6 +108,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   (zod-парс недоверенного POST: событие несёт лишь `data.FIELDS.ID` + `auth`), `verifyApplicationToken`
   (constant-time сверка `application_token` — анти-форджери), `dealToCrmContext` (маппинг `crm.deal.get`
   → снимок `CrmContext`: IDs+стадия, имена — обогащением позже). Эндпоинт/`event.bind`/обогащение — #17.
+  `bitrix24/rest.ts` (`Bitrix24Rest`) — общий клиент REST API портала (основа всех исходящих вызовов:
+  `crm.deal.get`/обогащение/`event.bind`/`app.info`): SSRF-allowlist домена + `access_token` в теле POST
+  (не в URL) + анти-инъекция имени метода; HTTP инжектируется, под тестами. `dealGet` — хелпер `crm.deal.get`.
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 - `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic «мозг» прохождения опроса
   (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
