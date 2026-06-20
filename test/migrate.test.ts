@@ -48,3 +48,19 @@ describe('migrationSqls / applySchema (pglite)', () => {
     await pg.close()
   })
 })
+
+describe('applyMigrations — boot-применение (#6)', () => {
+  it('прогоняет SQL по порядку через Queryable.query', async () => {
+    const { applyMigrations } = await import('../src/store/migrate')
+    const calls: string[] = []
+    await applyMigrations({ query: async (sql: string) => { calls.push(sql); return { rows: [] } } }, ['a', 'b', 'c'])
+    expect(calls).toEqual(['a', 'b', 'c'])
+  })
+
+  it('пустой список → нет вызовов', async () => {
+    const { applyMigrations } = await import('../src/store/migrate')
+    let n = 0
+    await applyMigrations({ query: async () => { n++; return { rows: [] } } }, [])
+    expect(n).toBe(0)
+  })
+})
