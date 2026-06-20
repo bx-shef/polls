@@ -137,7 +137,8 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 1. `parseFrameAuth(raw)` — zod-парс **недоверенного** POST (параметры приходят на публичный
    эндпоинт, их может подделать кто угодно).
 2. `isAllowedPortalDomain(DOMAIN)` — **SSRF-гард**: `DOMAIN` управляем злоумышленником, а мы по нему
-   делаем исходящий REST-вызов. Allowlist — облачные `*.bitrix24.<tld>` (self-hosted переопределяет RegExp).
+   делаем исходящий REST-вызов. Allowlist — облачные `*.bitrix24.<tld>` (вкл. двойные TLD `.com.br`);
+   блок `xn--` (анти-гомоглиф), отказ при `slash`/порте/завершающей точке; self-hosted переопределяет RegExp.
 3. `verifyFrameAuth(frame, { authenticate })` — **анти-cross-tenant**: `member_id` НЕ берётся из сырого
    POST (иначе со своим валидным токеном можно выписать сессию на чужой tenant). `authenticate`
    (инжектируемый, боевой — живая проверка `AUTH_ID` через REST/OAuth) возвращает АВТОРИТЕТНЫЙ
@@ -145,11 +146,15 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
 4. `mintPortalSession(portal, secret, ttl)` — подписывает сессию (`signSession`).
 
 **Остаётся (слой связки #49):** эндпоинт `POST /api/b24/session` (читает body фрейма → `parseFrameAuth`
-→ `verifyFrameAuth` с боевым `authenticate` через `PortalTokenStore`/OAuth-refresh → `setCookie`
-`polls_portal` с `HttpOnly`+`Secure`+`SameSite=None`) + участие страницы дашборда (BX24 JS SDK в iframe).
-Нюанс cookie: браузеры блокируют third-party cookies в iframe → возможно CHIPS/partitioned cookie или
-передача токена через `postMessage`/URL (проверить на живом портале). tenant-фильтрация стора по
-`portalId` — там же (#49).
+→ `verifyFrameAuth` с боевым `authenticate` → `setCookie` `polls_portal`) + участие страницы дашборда
+(BX24 JS SDK в iframe). Требования к боевой реализации:
+- `authenticate` — ЛЁГКИЙ REST-вызов с `AUTH_ID` (НЕ OAuth-refresh: он ротирует токен → race при
+  параллельных загрузках фрейма), авторитетно возвращающий `member_id`; `AUTH_ID` передавать в
+  теле/заголовке, НЕ в query (иначе токен утечёт в access-логи прокси и `x-request-id`).
+- Cookie `polls_portal`: `HttpOnly`+`Secure`+`SameSite=None`+**`Partitioned`** (CHIPS) — браузеры
+  блокируют непартиционированные third-party cookies в iframe; fallback — токен через `postMessage`
+  (не URL). Проверить на живом портале.
+- tenant-фильтрация стора по `portalId` — там же (#49).
 
 ## Остаётся (слой связки)
 

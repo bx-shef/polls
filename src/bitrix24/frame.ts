@@ -20,16 +20,20 @@ import { signSession, type PortalSession } from '../api/session'
  * `PortalTokenStore`/OAuth) — слой связки с общим стором (#49).
  */
 
-/** Верхняя граница `AUTH_EXPIRES` (сек): 1 год — защита от переполнения Date/абсурдных TTL. */
-const MAX_AUTH_EXPIRES = 366 * 24 * 3600
+/** Верхняя граница `AUTH_EXPIRES`: с запасом под ms-timestamp (защита от переполнения Date). */
+const MAX_AUTH_EXPIRES = 1e13
 
 /** Параметры авторизации фрейма (минимум для аутентификации; прочее — LANG/PLACEMENT_OPTIONS — игнор). */
 export const frameAuthSchema = z.object({
   DOMAIN: z.string().min(1).max(253),
   member_id: z.string().min(1).max(200),
   AUTH_ID: z.string().min(1).max(4096),
-  /** unix-секунд до протухания access-token (приходит строкой из form-POST). */
-  AUTH_EXPIRES: z.coerce.number().int().nonnegative().max(MAX_AUTH_EXPIRES),
+  /**
+   * Срок access-token Bitrix24 — интерпретация зависит от способа доставки (сек-TTL в server-POST
+   * фрейма vs абсолютный ms-timestamp в `BX24.getAuth`). Ядром НЕ используется (наша сессия имеет
+   * независимый TTL), поэтому парсим МЯГКО (optional + широкая граница) — чтобы не отвергать реальный POST.
+   */
+  AUTH_EXPIRES: z.coerce.number().int().nonnegative().max(MAX_AUTH_EXPIRES).optional(),
   PLACEMENT: z.string().max(200).optional()
 })
 export type FrameAuth = z.infer<typeof frameAuthSchema>
@@ -49,11 +53,18 @@ const DEFAULT_PORTAL_DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.bitrix24\.[a-z]
 
 /** Доверенный ли хост портала (для исходящего REST-вызова). `domain` — голый хост, без схемы/порта. */
 export function isAllowedPortalDomain(domain: string, allow: RegExp = DEFAULT_PORTAL_DOMAIN): boolean {
-  if (typeof domain !== 'string' || domain.length > 253) return false
-  return allow.test(domain.toLowerCase())
+  const d = domain.toLowerCase()
+  // Блок punycode (`xn--`) — анти-гомоглиф: ASCII-regex иначе пропустил бы IDN A-label лейбла портала.
+  if (d.length > 253 || d.includes('xn--')) return false
+  return allow.test(d)
 }
 
-/** Авторитетная проверка токена фрейма: возвращает РЕАЛЬНЫЙ member_id (из живого REST/OAuth). */
+/**
+ * Авторитетная проверка токена фрейма → РЕАЛЬНЫЙ member_id владельца токена. Боевая реализация (#49):
+ * ЛЁГКИЙ REST-вызов к `https://{domain}/rest/...` с переданным `AUTH_ID`, авторитетно возвращающий
+ * member_id. НЕ через OAuth-refresh (ротирует токен → race при параллельных загрузках фрейма).
+ * `AUTH_ID` передавать в теле/заголовке, НЕ в query (иначе токен утечёт в access-логи).
+ */
 export type PortalAuthenticator = (input: { domain: string; authId: string }) => Promise<{ memberId: string }>
 
 export interface VerifyFrameOptions {
@@ -74,8 +85,9 @@ export interface VerifiedPortal {
  * авторитетного ответа, НЕ из сырого POST.
  */
 export async function verifyFrameAuth(frame: FrameAuth, opts: VerifyFrameOptions): Promise<VerifiedPortal> {
+  // Сырой DOMAIN в message НЕ включаем (недоверенный ввод → log-injection в структурный лог #49).
   if (!isAllowedPortalDomain(frame.DOMAIN, opts.allowedDomain)) {
-    throw new OAuthError(`Недоверенный домен портала: ${frame.DOMAIN}`)
+    throw new OAuthError('Недоверенный домен портала фрейма')
   }
   const { memberId } = await opts.authenticate({ domain: frame.DOMAIN, authId: frame.AUTH_ID })
   if (!memberId || memberId !== frame.member_id) {

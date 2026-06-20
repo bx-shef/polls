@@ -32,6 +32,13 @@ describe('parseFrameAuth — недоверенный POST фрейма (#47)', 
     expect(parseFrameAuth('garbage')).toBeNull()
     expect(parseFrameAuth({ ...validRaw, AUTH_EXPIRES: 'not-a-number' })).toBeNull()
   })
+
+  it('AUTH_EXPIRES: optional + мягкий — ms-timestamp проходит, отрицательное/дробное → null', () => {
+    expect(parseFrameAuth({ ...validRaw, AUTH_EXPIRES: undefined })?.AUTH_EXPIRES).toBeUndefined()
+    expect(parseFrameAuth({ ...validRaw, AUTH_EXPIRES: '1720011727002' })?.AUTH_EXPIRES).toBe(1720011727002)
+    expect(parseFrameAuth({ ...validRaw, AUTH_EXPIRES: '-1' })).toBeNull()
+    expect(parseFrameAuth({ ...validRaw, AUTH_EXPIRES: '3600.5' })).toBeNull()
+  })
 })
 
 describe('isAllowedPortalDomain — SSRF-гард (#47)', () => {
@@ -50,7 +57,13 @@ describe('isAllowedPortalDomain — SSRF-гард (#47)', () => {
       'acme.bitrix24.ru/rest',
       'acme.bitrix24.ru:8080',
       'bitrix24.ru.attacker.com',
+      'bitrix24.evil.com',
       'metadata.google.internal',
+      'acme.bitrix24.ru.', // завершающая точка (FQDN)
+      'xn--e1afmapc.bitrix24.ru', // punycode-лейбл (анти-гомоглиф)
+      'XN--E1AFMAPC.bitrix24.ru', // тот же в верхнем регистре
+      '-bad.bitrix24.ru', // дефис на краю лейбла
+      `${'a'.repeat(254)}.bitrix24.ru`, // длиннее 253
       ''
     ]) {
       expect(isAllowedPortalDomain(d)).toBe(false)
@@ -80,6 +93,11 @@ describe('verifyFrameAuth — авторитетная проверка + ант
     await expect(verifyFrameAuth(frame, { authenticate })).rejects.toBeInstanceOf(OAuthError)
   })
 
+  it('authenticate вернул пустой member_id → отказ', async () => {
+    const authenticate: PortalAuthenticator = async () => ({ memberId: '' })
+    await expect(verifyFrameAuth(frame, { authenticate })).rejects.toBeInstanceOf(OAuthError)
+  })
+
   it('недоверенный домен → отказ ДО вызова authenticate (нет SSRF)', async () => {
     const authenticate = vi.fn<PortalAuthenticator>(async () => ({ memberId: 'abc123member' }))
     const evil = parseFrameAuth({ ...validRaw, DOMAIN: 'evil.com' }) as FrameAuth
@@ -101,5 +119,11 @@ describe('mintPortalSession — выписать сессию из подтве�
     expect(session).toEqual({ portalId: 'abc123member', exp: 1000 + 3600 })
     expect(verifySession(token, SECRET, 1000)).toEqual(session)
     expect(verifySession(token, SECRET, 1000 + 3601)).toBeNull() // просрочка
+  })
+
+  it('TTL=0 → сессия немедленно просрочена (exp == now)', () => {
+    const { session, token } = mintPortalSession({ portalId: 'p', domain: 'a.bitrix24.ru' }, SECRET, 0, 1000)
+    expect(session.exp).toBe(1000)
+    expect(verifySession(token, SECRET, 1000)).toBeNull() // exp <= now
   })
 })
