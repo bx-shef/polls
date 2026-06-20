@@ -21,7 +21,7 @@
 | Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ живой `/s/:key`+`/d/:key`, 8 поверхностей ×3 брейкпоинта ×(light+dark) = 48 эталонов (#39; `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | приложение: контур A (`/s/:key`) + дашборд контура B (`/d/:key`), тёмная тема | ✅ экраны готовы под гейтом |
 | `server/` (Nitro) | обёртки ядра: `/api/` session · submit · survey/:key/current · health · dashboard/:key | ✅ привязка готова (dev-стор MemoryStore+seed, общий `useStore`) |
-| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема; тоггл темы → #45 |
+| Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема + тоггл темы (#45) |
 | Дашборд (контур B) | аналитика (`/d/:key`): NPS/CSAT/распределение поверх `domain/aggregate`, нативная b24ui-тема | 🔶 KPI-дашборд под гейтом (dev-стор); auth-гейтинг → #47 |
 | Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
 
@@ -167,7 +167,9 @@ auth-гейтинг + tenant-изоляция → #47, SQL-агрегация (P
 b24ui по `prefers-color-scheme`; гейт детерминированно гоняет ОБЕ темы через colorScheme-проекты.
 Визуальный гейт контура A: 5 поверхностей (intro/survey/thanks/error=404/submit-error) × 3 брейкпоинта × 2 темы = 30 эталонов (контур B — ещё 18, итого 48).
 Состояние submit-ошибки — под гейтом (мок провала `/api/submit`). loading/«пусто» отдельно не
-гейтятся: loading недостижим на первом paint (SSR await + watch immediate), «пусто» = 404. Тоггл темы — #45.
+гейтятся: loading недостижим на первом paint (SSR await + watch immediate), «пусто» = 404. Тоггл темы (#45):
+глобальный `B24ColorModeButton` (b24ui, fixed top-right в `app.vue`) — клик флипает preference light↔dark
+через `@nuxtjs/color-mode` (тот же storageKey); иконка солнце/луна по классу `.dark`. Доступен в обоих контурах.
 
 ## Инварианты
 
