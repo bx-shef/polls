@@ -41,8 +41,10 @@ export default defineConfig({
     timeout: 180_000,
     // NITRO_HOST=127.0.0.1 — сервер только на loopback (минимальная экспозиция: не 0.0.0.0).
     // PORT/host согласованы с url/baseURL. Локально reuseExistingServer переиспользует уже
-    // запущенный сервер ТОЛЬКО на :3030 (`PORT=3030 pnpm preview`), иначе соберёт сам.
-    env: { PORT: '3030', NITRO_HOST: '127.0.0.1' }
+    // запущенный сервер ТОЛЬКО на :3030 (`PORT=3030 DASHBOARD_DEV_OPEN=1 pnpm preview`), иначе соберёт сам.
+    // DASHBOARD_DEV_OPEN=1 — открывает дашборд без auth (#47): собранный сервер бежит как
+    // production, иначе гейт упрётся в 503 fail-closed. Боевой деплой флаг НЕ ставит (ставит секрет).
+    env: { PORT: '3030', NITRO_HOST: '127.0.0.1', DASHBOARD_DEV_OPEN: '1' }
   },
   use: {
     baseURL: 'http://127.0.0.1:3030',

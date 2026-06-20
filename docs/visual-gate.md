@@ -40,7 +40,8 @@ pnpm visual:install        # поставить chromium (в удалённой 
 pnpm test:visual           # прогон скриншот-регрессии (сверка с эталоном)
 pnpm test:visual:update    # ОСОЗНАННО обновить эталоны. ОБЯЗАТЕЛЬНО затем:
                            # git diff test/visual/__screenshots__ — сверить .png глазами перед коммитом
-PORT=3030 pnpm preview     # держать в отдельном терминале → test:visual переиспустит сервер
+PORT=3030 DASHBOARD_DEV_OPEN=1 pnpm preview  # держать в отдельном терминале → test:visual переиспустит сервер
+                           # DASHBOARD_DEV_OPEN=1 — дашборд без auth (#47): preview бежит как production
                            # (reuseExistingServer) без пересборки на каждый прогон. Порт ровно 3030!
 ```
 

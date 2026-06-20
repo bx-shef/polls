@@ -29,14 +29,17 @@ import {
  *     `npsTrend` (параметр `minN`) — тот же порог, но применяется к бакету отдельно.
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
- * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срезы раскрывают
- * ИМЕНА из CRM — клиентов (`companyName`) и СОТРУДНИКОВ (`responsibleName` — PII), названия
- * услуг/направлений, плюс список версий (перебор `?version=N`). На синтетическом seed это
- * безвредно, но перед ЛЮБЫМ реальным деплоем обязателен auth-гейт (#47); PII-редакция — #31.
- * Дашборд контура B — внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
- * SQL-агрегация (PgStore) + rate-limit → #49. Сейчас данные синтетические (seed), N подавлены.
+ * AUTH (#47): `requirePortalSession` — прод (`DASHBOARD_AUTH_SECRET`) требует валидную
+ * подписанную сессию портала, иначе 401 (срезы раскрывают ИМЕНА клиентов/`responsibleName`-PII —
+ * fail-closed). Dev/гейт — открыто (portalId='dev'). Осталось по #47: handshake Bitrix24
+ * app-фрейма (минт сессии) + tenant-фильтрация стора по portalId (PgStore-путь, #49); ещё без
+ * rate-limit (#49). PII-редакция контекста — #31. Данные пока синтетические (seed).
  */
 export default defineEventHandler(async (event) => {
+  // Гейт #47: прод без валидной сессии портала → 401/503 (не отдаём имена клиентов/сотрудников
+  // без auth); dev/гейт — открыто. tenant-фильтрация стора по portalId — на PgStore-пути (#49).
+  requirePortalSession(event)
+
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {
     setResponseStatus(event, 400)
