@@ -1,0 +1,50 @@
+# Reverse-proxy + автоматический TLS (Let's Encrypt) — ОБЩИЙ на сервере, обслуживает все проекты.
+# Поднимается ОДИН раз на сервере: make init-network init-nginxproxy.
+# На сервере, где он УЖЕ запущен (есть сеть proxy-net и контейнеры nginx-proxy/acme) — пропустить
+# (приложение просто подключится к существующему proxy-net через docker-compose.prod.yml).
+#
+# Маршрутизация: nginx-proxy слушает 80/443 и проксирует по VIRTUAL_HOST контейнеров в сети
+# proxy-net; acme-companion выпускает/продлевает сертификаты по LETSENCRYPT_HOST (email — DEFAULT_EMAIL).
+services:
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:alpine
+    container_name: nginx-proxy
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - nginx-certs:/etc/nginx/certs
+      - nginx-vhost:/etc/nginx/vhost.d
+      - nginx-html:/usr/share/nginx/html
+    restart: unless-stopped
+    networks:
+      - proxy-net
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    container_name: acme-companion
+    volumes_from:
+      - nginx-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - nginx-acme:/etc/acme.sh
+    environment:
+      # Глобальный email для всех сертификатов — приложения LETSENCRYPT_EMAIL не дублируют.
+      DEFAULT_EMAIL: ${LETSENCRYPT_EMAIL:?LETSENCRYPT_EMAIL не задан}
+    depends_on:
+      - nginx-proxy
+    restart: unless-stopped
+    networks:
+      - proxy-net
+
+volumes:
+  nginx-certs:
+  nginx-vhost:
+  nginx-html:
+  nginx-acme:
+
+networks:
+  # Общая внешняя сеть прокси (создаётся make init-network). Все проекты подключаются к ней.
+  proxy-net:
+    external: true
