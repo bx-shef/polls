@@ -168,11 +168,26 @@ third-party cookies в iframe). Fail-closed: без секрета → 503, лю
 
 ## Остаётся (слой связки)
 
-- **[#17](https://github.com/bx-shef/polls/issues/17)** — инвайт-флоу: ядро-рантайм
-  готов; `invitationPolicy` вшита, `triggerStages` индексированы (`surveysTriggeredBy`, #22).
-  Остаётся binding-endpoint `ONCRMDEALUPDATE` — он обязан нормализовать `stageId` из вебхука
-  к тому же формату, что в `triggerStages` (category-aware), иначе GIN-матч не сработает и опрос
-  молча не триггернётся; и валидировать `STAGE_ID` через zod. (#3 про OAuth-токены — закрыт.)
+- **[#17](https://github.com/bx-shef/polls/issues/17)** — триггер-биндинг `ONCRMDEALUPDATE`:
+
+  **Поток** (по докам Bitrix24, `on-crm-deal-update`): портал POST'ит событие на наш публичный
+  эндпоинт. Payload несёт ТОЛЬКО `data.FIELDS.ID` сделки + `auth` (`member_id`/`domain`/
+  `application_token`/`access_token`) — полные поля сделки события НЕ содержат.
+  1. Парс недоверенного POST — `parseDealUpdateEvent` (zod). **Сделано.**
+  2. Анти-форджери: `verifyApplicationToken` сверяет `auth.application_token` с сохранённым
+     для портала (constant-time). **Сделано.** (`application_token` выдаётся при установке.)
+  3. Догрузка сделки: `crm.deal.get(ID)` токеном портала (`PortalTokenStore.accessToken`) →
+     `dealToCrmContext` мапит `STAGE_ID`/`CATEGORY_ID`/`COMPANY_ID`/`CONTACT_ID`/`ASSIGNED_BY_ID`/
+     `OPPORTUNITY` в снимок `CrmContext`. Маппинг **сделан** (`src/bitrix24/deal-event.ts`, под тестами).
+  4. `STAGE_ID` Bitrix уже category-aware (`C1:WON` / `NEW` для дефолтной воронки) — совпадает с
+     `triggerStages` напрямую; `surveysTriggeredBy(STAGE_ID)` (GIN, #22) даёт опросы для рассылки.
+  5. Создание приглашений со снимком `CrmContext` (идемпотентно по deal+survey, чтобы повтор
+     перехода/сабмита не плодил записи — связано с durable-идемпотентностью #4).
+
+  **Осталось (живой портал):** Nitro-эндпоинт `POST /api/b24/deal-update` (оркестрация шагов 2–5);
+  регистрация обработчика `event.bind('ONCRMDEALUPDATE', …)` + хранение `application_token` при
+  OAuth-установке приложения; обогащение денормализованных имён (`crm.company.get`/`crm.category.get`/
+  `user.get`); живой smoke на тестовом портале (`scripts/b24-smoke.ts`).
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
 
