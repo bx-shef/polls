@@ -83,7 +83,7 @@ echo $GHCR_PAT | docker login ghcr.io -u <github-user> --password-stdin
 
 # 2. Конфиг
 git clone https://github.com/bx-shef/polls && cd polls
-cp .env.prod.example .env         # заполнить APP_DOMAIN, LETSENCRYPT_EMAIL, секреты
+cp .env.prod.example .env.prod    # заполнить APP_DOMAIN, LETSENCRYPT_EMAIL, секреты
 
 # 3. Сеть + reverse-proxy/TLS (один раз) + приложение
 make init-network init-nginxproxy
