@@ -3,11 +3,11 @@
 // подписанная сессия портала в cookie `polls_portal` (её читает `requirePortalSession` дашборда).
 //
 // Тонкая h3-обёртка: парс/проверка/минт — в `~core/bitrix24` (под юнит-тестами без живого портала),
-// здесь только маппинг event→ядро→статус/cookie. Fail-closed: без `DASHBOARD_AUTH_SECRET` → 503;
-// любая неудача проверки (чужой домен/мёртвый токен/cross-tenant/портал не установлен) → 401 без
-// утечки причины. Body мал (несколько полей формы) — cap ЖЁСТЧЕ submit (8КБ vs 64КБ).
+// здесь только маппинг event→ядро→статус/cookie. Rate-limit по IP (429) — до исходящего app.info.
+// Fail-closed: без `DASHBOARD_AUTH_SECRET` → 503; любая неудача проверки (чужой домен/мёртвый
+// токен/cross-tenant/портал не установлен) → 401 без утечки причины. Body мал — cap 8КБ (жёстче submit).
 import { parseFrameAuth, verifyFrameAuth, mintPortalSession, DEFAULT_SESSION_TTL_SEC } from '~core/bitrix24/frame'
-import { resolveB24Secret, useB24Authenticator } from '../../utils/b24-session'
+import { allowB24Session, resolveB24Secret, useB24Authenticator } from '../../utils/b24-session'
 
 const MAX_BODY_BYTES = 8 * 1024
 const SESSION_COOKIE = 'polls_portal'
@@ -17,6 +17,13 @@ export default defineEventHandler(async (event) => {
   if (len > MAX_BODY_BYTES) {
     setResponseStatus(event, 413)
     return { ok: false, error: 'Слишком большой запрос' }
+  }
+
+  // Rate-limit РАНО — до исходящего app.info (амплификация/DoS, release-gate #49).
+  // IP за доверенным reverse-proxy (X-Forwarded-For) — слой деплоя #4; здесь socket-IP.
+  if (!allowB24Session(getRequestIP(event) ?? '?')) {
+    setResponseStatus(event, 429)
+    return { ok: false, error: 'Слишком много запросов' }
   }
 
   // Секрет минта = секрет верификации дашборда (fail-closed без него).

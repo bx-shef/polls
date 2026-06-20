@@ -160,7 +160,8 @@ third-party cookies в iframe). Fail-closed: без секрета → 503, лю
 - Подставить `resolveMemberIdByDomain` в `setPortalResolver` через pg-Pool по `DATABASE_URL` (нужен
   Nitro-pg-Pool — общий с PgStore-стором #6). До этого `setPortalResolver` не вызван → handshake
   fail-closed (резолвер-no-op → 401 «портал не установлен»).
-- Rate-limit на `/api/b24/session` (исходящий `app.info` per request → амплификация/DoS) — **release-gate**.
+- ~~Rate-limit на `/api/b24/session`~~ — **сделано** (`allowB24Session`, 10/60с на IP; общий стор
+  лимитов для мульти-инстанса — #4).
 - tenant-фильтрация стора по `portalId`.
 - Участие страницы дашборда (BX24 JS SDK в iframe); fallback — токен через `postMessage` (не URL).
   Проверить на живом портале.

@@ -98,7 +98,9 @@ DASHBOARD_DEV_OPEN=1 node .output/server/index.mjs   # PORT=3000 по умолч
   `X-Forwarded-For` за доверенным прокси.
 - **#5/#15** — наблюдаемость на проде: логи в Pino, Sentry, метрики, живой `/health`.
 - **#17** — триггер `ONCRMDEALUPDATE` (запуск опроса по стадии сделки).
-- **#49** — rate-limit на `/api/b24/session` (release-gate перед публичным проде).
+
+> Rate-limit на `/api/b24/session` (release-gate) — уже сделан (10/60с на IP); за доверенным
+> reverse-proxy включите `X-Forwarded-For` (общий стор лимитов для мульти-инстанса — #4).
 
 ## Здоровье и эксплуатация
 

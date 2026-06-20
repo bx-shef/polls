@@ -1,6 +1,7 @@
 import { createPortalAuthenticator } from '~core/bitrix24/authenticate'
 import { type PortalAuthenticator } from '~core/bitrix24/frame'
 import { isStrongSecret } from '~core/api/session'
+import { SlidingWindowLimiter } from '~core/api/ratelimit'
 
 /**
  * Привязка handshake app-фрейма Bitrix24 к Nitro (ISSUE #47/#49). SERVER-ONLY: `~core/bitrix24`
@@ -43,4 +44,17 @@ export function setPortalResolver(fn: (domain: string) => Promise<string | undef
 /** Боевой `PortalAuthenticator` для роута: `app.info` к `{domain}` + резолв member_id (см. authenticate.ts). */
 export function useB24Authenticator(): PortalAuthenticator {
   return createPortalAuthenticator({ resolveMemberId: (domain) => resolveMemberId(domain) })
+}
+
+/**
+ * Rate-limit handshake-эндпоинта `/api/b24/session` (release-gate #49). Каждый валидный POST
+ * инициирует исходящий `app.info` к домену из тела → без лимита это вектор амплификации/DoS
+ * и перебор токенов. Handshake — редкая операция (загрузка фрейма), потому потолок низкий.
+ * In-memory, на инстанс (общий стор лимитов для мульти-инстанса — #4, как и прочий анти-абьюз).
+ */
+const sessionLimiter = new SlidingWindowLimiter({ limit: 10, windowMs: 60_000 })
+
+/** true — запрос с этого IP допущен (и учтён); false — лимит исчерпан (→ 429). */
+export function allowB24Session(ip: string, now: Date = new Date()): boolean {
+  return sessionLimiter.allow(ip, now)
 }
