@@ -3,11 +3,58 @@ import {
   csatFor,
   distributionFor,
   npsTrend,
-  byProduct,
   byVersion,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
+import type { ResponseRecord } from '~core/domain/schema'
+
+/** Строка среза по измерению: имя группы + метрики подвыборки. */
+interface BreakdownRow {
+  name: string
+  n: number
+  nps: number | null
+  csat: number | null
+}
+
+/**
+ * Обобщённый срез по измерению. `pairsOf` достаёт из ответа пары (ключ группы, имя) — массив,
+ * т.к. один ответ может попасть в несколько групп (напр. сделка с двумя услугами). Имя фиксируем
+ * ПЕРВЫМ вхождением ключа (устойчиво к переименованию в CRM). Метрику показываем только при её
+ * СОБСТВЕННОЙ выборке ≥ порога; группу с малым N или без показуемых метрик не выводим. Сортировка
+ * по NPS убыв., затем по имени (стабильно). TODO(#49): при SQL-агрегации (PgStore) переедет в ядро.
+ */
+function breakdown(
+  responses: ResponseRecord[],
+  pairsOf: (r: ResponseRecord) => Array<{ key: string | number; name: string }>,
+  npsKey: string | undefined,
+  csatKey: string | undefined
+): BreakdownRow[] {
+  const groups = new Map<string | number, { name: string; rs: ResponseRecord[] }>()
+  for (const r of responses) {
+    const seen = new Set<string | number>() // не двоим ответ в одной группе при повторе ключа
+    for (const { key, name } of pairsOf(r)) {
+      if (seen.has(key)) continue
+      seen.add(key)
+      const g = groups.get(key)
+      if (g) g.rs.push(r)
+      else groups.set(key, { name, rs: [r] })
+    }
+  }
+  return [...groups.values()]
+    .map(({ name, rs }) => {
+      const npsSum = npsKey ? npsFor(rs, npsKey) : null
+      const csatSum = csatKey ? csatFor(rs, csatKey) : null
+      return {
+        name,
+        n: rs.length,
+        nps: npsSum && meetsAnonymity(npsSum.n) ? npsSum.nps : null,
+        csat: csatSum && meetsAnonymity(csatSum.n) ? csatSum.mean : null
+      }
+    })
+    .filter((row) => meetsAnonymity(row.n) && (row.nps !== null || row.csat !== null))
+    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
+}
 
 /**
  * GET /api/dashboard/:key — агрегаты опроса для дашборда (контур B). Считается СЕРВЕРНО через
@@ -15,8 +62,9 @@ import {
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
  * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
- * Срез по услугам — NPS/CSAT по каждому продукту (`byProduct`); имя берём из денормализованного
- * `context.products[].productName`, услуги с выборкой < порога подавляем (анонимность среза).
+ * Срезы (услуга/направление/ответственный/клиент) — NPS/CSAT по группам через единый `breakdown`;
+ * имена из денормализованных полей контекста (productName/dealCategoryName/responsibleName/
+ * companyName), группа с выборкой < порога подавляется (анонимность среза).
  * Фильтр по версии (`?version=N`, `byVersion`) — весь дашборд по одной версии (сравнение
  * «до/после публикации»); `versions` (доступные) считаем ДО фильтра. Метаданные вопросов
  * (ключи/метки) — всегда из ТЕКУЩЕЙ версии (версионно-безопасно по стабильному question_key).
@@ -81,32 +129,34 @@ export default defineEventHandler(async (event) => {
     distribution = { question: choiceQ.text, items }
   }
 
-  // Срез по услугам. Имя берём ПЕРВЫМ вхождением productId (устойчивее к переименованию в
-  // CRM, чем «последнее выигрывает»). Ответ с несколькими продуктами учитывается в КАЖДОЙ
-  // услуге (срез по услуге, не разбиение — суммы n по услугам могут превышать общий n).
-  // Метрику показываем только если её СОБСТВЕННАЯ выборка ≥ порога (не только число ответов
-  // услуги) — узкая метрика иначе могла бы деанонимизировать. Услугу без показуемых метрик
-  // не выводим. TODO(#49): при SQL-агрегации (PgStore) логика переедет в ядровой helper.
-  const productNames = new Map<number, string>()
-  for (const r of responses) {
-    for (const p of r.context.products ?? []) {
-      if (!productNames.has(p.productId)) productNames.set(p.productId, p.productName ?? `#${p.productId}`)
-    }
-  }
-  const services = [...productNames.entries()]
-    .map(([productId, name]) => {
-      const subset = byProduct(responses, productId)
-      const npsSum = npsKey ? npsFor(subset, npsKey) : null
-      const csatSum = csatKey ? csatFor(subset, csatKey) : null
-      return {
-        name,
-        n: subset.length,
-        nps: npsSum && meetsAnonymity(npsSum.n) ? npsSum.nps : null,
-        csat: csatSum && meetsAnonymity(csatSum.n) ? csatSum.mean : null
-      }
-    })
-    .filter((s) => meetsAnonymity(s.n) && (s.nps !== null || s.csat !== null))
-    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
+  // Срезы по измерениям (услуга/направление/ответственный/клиент) через единый `breakdown`.
+  // Имена денормализованы в контексте (productName/dealCategoryName/responsibleName/companyName),
+  // фолбэк на ID. Ответ с несколькими услугами попадает в каждую (суммы n по группам могут
+  // превышать общий n). Малые N и узкие метрики подавлены внутри `breakdown` (анонимность среза).
+  const services = breakdown(
+    responses,
+    (r) => (r.context.products ?? []).map((p) => ({ key: p.productId, name: p.productName ?? `#${p.productId}` })),
+    npsKey,
+    csatKey
+  )
+  const directions = breakdown(
+    responses,
+    (r) => (r.context.dealCategoryId != null ? [{ key: r.context.dealCategoryId, name: r.context.dealCategoryName ?? `#${r.context.dealCategoryId}` }] : []),
+    npsKey,
+    csatKey
+  )
+  const responsibles = breakdown(
+    responses,
+    (r) => (r.context.responsibleId != null ? [{ key: r.context.responsibleId, name: r.context.responsibleName ?? `#${r.context.responsibleId}` }] : []),
+    npsKey,
+    csatKey
+  )
+  const clients = breakdown(
+    responses,
+    (r) => (r.context.companyId != null ? [{ key: r.context.companyId, name: r.context.companyName ?? `#${r.context.companyId}` }] : []),
+    npsKey,
+    csatKey
+  )
 
   return {
     ...base,
@@ -116,6 +166,9 @@ export default defineEventHandler(async (event) => {
     distribution,
     // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
     trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : [],
-    services
+    services,
+    directions,
+    responsibles,
+    clients
   }
 })

@@ -135,6 +135,12 @@ export const crmContextSchema = z.object({
   contactId: z.number().optional(),
   responsibleId: z.number().optional(),
   dealAmount: z.number().optional(),
+  // Денормализованные имена (снимок на момент закрытия сделки) — чтобы срезы дашборда
+  // (клиент/направление/ответственный) читались без обращения к CRM-справочникам, по аналогии
+  // с `crmProduct.productName`. Опциональны: при отсутствии срез падает на ID.
+  companyName: z.string().max(500).optional(),
+  dealCategoryName: z.string().max(500).optional(),
+  responsibleName: z.string().max(500).optional(),
   products: z.array(crmProductSchema).max(50).optional()
 })
 export type CrmContext = z.infer<typeof crmContextSchema>

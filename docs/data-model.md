@@ -252,6 +252,9 @@ create table response (
   company_id        bigint,
   contact_id        bigint,
   responsible_id    bigint,
+  -- ИМЕНА подписей срезов (companyName/dealCategoryName/responsibleName) живут в JSONB `context`
+  -- (lossless, миграция не нужна); срезы дашборда контура B читают их оттуда. SQL-агрегация по
+  -- имени (отдельные колонки/JOIN на справочник) — при PgStore-пути дашборда (#49).
   -- кэш метрик:
   nps_value         int,
   csat_value        numeric,

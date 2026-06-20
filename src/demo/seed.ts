@@ -18,6 +18,7 @@ export const COMMENT_Q = 'q_comment'
 export const PRODUCT_NAMES: Record<number, string> = { 1001: 'Внедрение', 1002: 'Поддержка' }
 export const CATEGORY_NAMES: Record<number, string> = { 1: 'Продажи', 2: 'Сервис' }
 export const RESPONSIBLE_NAMES: Record<number, string> = { 11: 'Иванов', 12: 'Петров', 13: 'Сидорова' }
+export const COMPANY_NAMES: Record<number, string> = { 101: 'ООО Ромашка', 102: 'ИП Сидоров' }
 
 function scaleOptions(from: number, to: number): Option[] {
   const out: Option[] = []
@@ -143,8 +144,11 @@ export async function buildDemo(store: IStore = new MemoryStore()): Promise<ISto
       context: {
         dealId: 5000 + idx + 1,
         companyId: e.companyId,
+        companyName: COMPANY_NAMES[e.companyId] ?? `#${e.companyId}`,
         dealCategoryId: e.dealCategoryId,
+        dealCategoryName: CATEGORY_NAMES[e.dealCategoryId] ?? `#${e.dealCategoryId}`,
         responsibleId: e.responsibleId,
+        responsibleName: RESPONSIBLE_NAMES[e.responsibleId] ?? `#${e.responsibleId}`,
         products: e.products.map((productId) => ({ productId, productName: PRODUCT_NAMES[productId] ?? `#${productId}` }))
       },
       answers
