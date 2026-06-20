@@ -22,14 +22,17 @@ test('экран «intro» совпадает с эталоном', async ({ pag
 })
 
 test('тоггл темы (#45) флипает класс .dark', async ({ page }) => {
-  // Нативный B24ColorModeButton (aria-label «Switch to …») меняет preference → класс на <html>.
-  // Без скриншота: проверяем поведение клика (гейт-проекты уже снимают обе темы детерминированно).
+  // Нативный B24ColorModeButton меняет preference @nuxtjs/color-mode → класс на <html>.
+  // Без скриншота: поведение клика (гейт-проекты уже снимают обе темы детерминированно).
   await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
   await expect(page.getByRole('button', { name: 'Начать', exact: true })).toBeVisible()
+  // Локатор по aria-label (EN-хардкод B24ColorModeButton); видимость = color-mode гидратирован.
+  const toggle = page.getByRole('button', { name: /Switch to (dark|light) mode/ })
+  await expect(toggle).toBeVisible()
   const html = page.locator('html')
   const wasDark = await html.evaluate((el) => el.classList.contains('dark'))
-  await page.getByRole('button', { name: /Switch to (dark|light) mode/ }).click()
-  await expect.poll(() => html.evaluate((el) => el.classList.contains('dark'))).toBe(!wasDark)
+  await toggle.click()
+  await expect.poll(() => html.evaluate((el) => el.classList.contains('dark')), { timeout: 10_000 }).toBe(!wasDark)
 })
 
 test('экран «survey» (первый вопрос) совпадает с эталоном', async ({ page }) => {
