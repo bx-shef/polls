@@ -17,6 +17,24 @@ import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from '
 /** Запас до истечения: обновляемся заранее, чтобы не отдать почти-протухший токен (60 с). */
 const REFRESH_SKEW_MS = 60_000
 
+/**
+ * Авторитетный резолвер install-маппинга `domain → member_id` для handshake app-фрейма (#47/#49):
+ * по уже-провалидированному (SSRF-allowlist) домену портала отдаёт его `member_id` из таблицы
+ * `portal` (заполняется при OAuth-установке, `PortalTokenStore.save`). undefined — портал не
+ * установлен (handshake тогда fail-closed). Драйвер-агностично (`Queryable` — pg.Pool/pglite).
+ *
+ * Это боевая подмена no-op-резолвера, который `verifyFrameAuth`/`createPortalAuthenticator`
+ * получают инжекцией (Nitro: `setPortalResolver`). member_id берётся из БД, НЕ из недоверенного
+ * POST — анти-cross-tenant (сверку с заявленным делает `verifyFrameAuth`).
+ */
+export async function resolveMemberIdByDomain(db: Queryable, domain: string): Promise<string | undefined> {
+  const r = await db.query<{ member_id: string }>(
+    'select member_id from portal where domain = $1 limit 1',
+    [domain]
+  )
+  return r.rows[0]?.member_id
+}
+
 export class PortalTokenStore {
   constructor(
     private readonly db: Queryable,

@@ -10,7 +10,7 @@ import {
   type HttpResponse,
   type OAuthTokens
 } from '../src/bitrix24/oauth'
-import { PortalTokenStore } from '../src/bitrix24/portal'
+import { PortalTokenStore, resolveMemberIdByDomain } from '../src/bitrix24/portal'
 import type { Queryable } from '../src/store/types'
 
 const KEY_HEX = randomBytes(32).toString('hex')
@@ -362,5 +362,34 @@ describe('PortalTokenStore (pglite)', () => {
     const oauth = refreshTo({ member_id: 'OTHER', access_token: 'X', refresh_token: 'Y' })
     await expect(store.accessToken('m-mm', oauth, now)).rejects.toThrow(/чужого портала/)
     expect((await store.load('m-mm'))?.accessToken).toBe('OLD') // токен m-mm не затронут
+  })
+})
+
+describe('resolveMemberIdByDomain (pglite) — резолвер domain → member_id (#47/#49)', () => {
+  let pg: PGlite
+  let db: Queryable
+
+  beforeAll(async () => {
+    pg = new PGlite()
+    await applySchema(pg)
+    db = pg as unknown as Queryable
+    // Две установки (как после OAuth-install): домен → member_id.
+    await db.query(
+      `insert into portal (member_id, domain, tokens) values
+         ('m-acme', 'acme.bitrix24.ru', '{}'::jsonb),
+         ('m-shop', 'shop.bitrix24.com.br', '{}'::jsonb)`
+    )
+  })
+  afterAll(async () => {
+    await pg.close()
+  })
+
+  it('установленный домен → его member_id (авторитетный источник, не из POST)', async () => {
+    expect(await resolveMemberIdByDomain(db, 'acme.bitrix24.ru')).toBe('m-acme')
+    expect(await resolveMemberIdByDomain(db, 'shop.bitrix24.com.br')).toBe('m-shop')
+  })
+
+  it('неизвестный домен → undefined (портал не установлен ⇒ handshake fail-closed)', async () => {
+    expect(await resolveMemberIdByDomain(db, 'evil.bitrix24.ru')).toBeUndefined()
   })
 })
