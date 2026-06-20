@@ -31,7 +31,7 @@ exclusive, «Другое», persist-снимок, маппинг в `Submission
 | 0.7 | Визуальный гейт (Playwright + Stop-хук) — инфраструктура на фикстуре-заглушке | — | ✅ (инфра #13) |
 | 1 | Nuxt 4 + b24ui каркас (`app/`, `nuxt.config`, `B24App`, заглушка-маршрут) | — | ✅ (#35); CI-typecheck app/ → #36 |
 | 2 | Nitro-привязка `createApi` (`server/api/*` + `useApi`; dev-стор MemoryStore+seed; body-limit 64КБ) | 1 | ✅ обёртка; прод-стор/xForwardedFor → #4/#6, кэш/ETag → #30 |
-| 3 | Экраны опроса (контур A): Интро/Опрос/Спасибо (`/s/:key`) + `useSurvey` | 0, 0.5, 1, 2 | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема; тоггл темы → #45 |
+| 3 | Экраны опроса (контур A): Интро/Опрос/Спасибо (`/s/:key`) + `useSurvey` | 0, 0.5, 1, 2 | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема + тоггл темы (#45) |
 | 4 | Bitrix24-связка: invitation binding + результат в таймлайн | 2, 3 | #17, #18 |
 | 5 | Дашборд результатов (контур B): `/d/:key` NPS/CSAT/распределение/тренд NPS/срезы (услуга·направление·ответственный·клиент)/фильтр по версии поверх `domain/aggregate` | 1, 3 | 🔶 KPI + тренд + 4 среза (денормализация имён в `CrmContext`) + фильтр по версии под гейтом (dev); auth-гейтинг + tenant → #47, SQL-агрегация → #49 |
 | 6 | Деплой-слой: Docker/TLS/мульти-инстанс/наблюдаемость | 2 | #4, #15, #10 (хвост) |
