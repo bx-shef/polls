@@ -68,23 +68,40 @@ DASHBOARD_DEV_OPEN=1 node .output/server/index.mjs   # PORT=3000 по умолч
 - [ ] Переключение светлая/тёмная тема (кнопка справа сверху).
 - [ ] `/api/health` отвечает 200.
 
-## Прод-режим (постоянные данные + портал)
+## Прод-режим (сервер + домен + TLS, авто-деплой)
 
-> Требует завершения привязки PgStore (#6) — см. «Остаётся».
+Деплой устроен как непрерывная доставка: **мерж в `main` → GitHub Actions собирает образ в
+GHCR (`ghcr.io/bx-shef/polls:latest`) → watchtower на сервере подтягивает его сам** (~5 мин).
+TLS — Let's Encrypt через nginx-proxy. Постоянное хранение в PostgreSQL включается в #6
+(до него приложение бежит на демо-сторе — данные эфемерны).
 
-1. **Поднять БД и применить схему:**
-   ```bash
-   POSTGRES_PASSWORD=... docker compose --profile prod up -d db
-   DATABASE_URL=postgres://polls:...@localhost:5432/polls pnpm migrate up
-   ```
-2. **Запустить приложение** с сильным `DASHBOARD_AUTH_SECRET`, `NUXT_BITRIX_TOKEN_KEY`
-   и `DATABASE_URL`. Без `DASHBOARD_DEV_OPEN` (дашборд под авторизацией портала).
-3. **Reverse-proxy + TLS**: терминировать HTTPS на nginx/Caddy, проксировать на
-   контейнер `app:3000`. Дашборд во фрейме портала требует HTTPS (cookie `Secure`,
-   `SameSite=None; Partitioned`).
-4. **Bitrix24-приложение**: зарегистрировать локальное приложение портала, прописать
-   `NUXT_B24_CLIENT_ID/SECRET`, указать путь дашборда как placement. Обмен токенов и
-   handshake фрейма (`POST /api/b24/session`) уже реализованы в ядре.
+**Разовая настройка сервера:**
+
+```bash
+# 1. Залогиниться в GHCR (образ приватный) — PAT с правом read:packages
+echo $GHCR_PAT | docker login ghcr.io -u <github-user> --password-stdin
+
+# 2. Конфиг
+git clone https://github.com/bx-shef/polls && cd polls
+cp .env.prod.example .env         # заполнить APP_DOMAIN, LETSENCRYPT_EMAIL, секреты
+
+# 3. Сеть + reverse-proxy/TLS (один раз) + приложение
+make init-network init-nginxproxy
+make prod-up
+```
+
+После этого:
+- **A-запись** домена `APP_DOMAIN` должна указывать на сервер — nginx-proxy выпустит TLS сам.
+- **Авто-деплой**: каждый зелёный мерж в `main` → новый образ → watchtower обновит контейнер.
+  Ручной апдейт при необходимости: `make prod-redeploy`. Логи: `make prod-logs`.
+
+**Проверка:** `https://APP_DOMAIN/api/health` → `200`; опрос `https://APP_DOMAIN/s/csat_postdeal`.
+Дашборд `/d/:key` в проде закрыт авторизацией портала (см. ниже) — это by design.
+
+**Bitrix24-приложение:** зарегистрировать локальное приложение портала, прописать
+`NUXT_B24_CLIENT_ID/SECRET`, указать путь дашборда как placement (HTTPS обязателен — cookie
+`Secure; SameSite=None; Partitioned`). Обмен токенов и handshake фрейма (`POST /api/b24/session`)
+уже реализованы в ядре; резолвер портала подключается с PgStore (#6).
 
 ### Что остаётся доделать для полноценного прода
 
