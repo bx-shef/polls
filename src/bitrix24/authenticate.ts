@@ -56,7 +56,7 @@ export function createPortalAuthenticator(opts: CreateAuthenticatorOptions): Por
       body = undefined
     }
 
-    if (!res.ok || !body || body.error || body.result === undefined) {
+    if (!res.ok || !body || body.error || body.result == null) {
       // Содержимое токена в сообщение не включаем; описание ошибки от Bitrix безопасно.
       throw new OAuthError(`Bitrix24 отклонил токен фрейма: ${body?.error_description ?? body?.error ?? `HTTP ${res.status}`}`)
     }

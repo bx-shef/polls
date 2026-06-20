@@ -5,7 +5,7 @@
 // Тонкая h3-обёртка: парс/проверка/минт — в `~core/bitrix24` (под юнит-тестами без живого портала),
 // здесь только маппинг event→ядро→статус/cookie. Fail-closed: без `DASHBOARD_AUTH_SECRET` → 503;
 // любая неудача проверки (чужой домен/мёртвый токен/cross-tenant/портал не установлен) → 401 без
-// утечки причины. Body мал (несколько полей формы) — cap паритетен submit-логике.
+// утечки причины. Body мал (несколько полей формы) — cap ЖЁСТЧЕ submit (8КБ vs 64КБ).
 import { parseFrameAuth, verifyFrameAuth, mintPortalSession, DEFAULT_SESSION_TTL_SEC } from '~core/bitrix24/frame'
 import { resolveB24Secret, useB24Authenticator } from '../../utils/b24-session'
 

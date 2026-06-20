@@ -64,6 +64,13 @@ describe('createPortalAuthenticator — боевой PortalAuthenticator (#47/#4
     await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).rejects.toBeInstanceOf(OAuthError)
   })
 
+  it('ok-статус (200), но тело не-JSON (json() бросил) → OAuthError', async () => {
+    const resolveMemberId = vi.fn(async () => 'abc123member')
+    const authenticate = createPortalAuthenticator({ resolveMemberId, fetch: async () => resp(200, null, true) })
+    await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).rejects.toBeInstanceOf(OAuthError)
+    expect(resolveMemberId).not.toHaveBeenCalled()
+  })
+
   it('сеть недоступна → OAuthError', async () => {
     const authenticate = createPortalAuthenticator({
       resolveMemberId: async () => 'abc123member',

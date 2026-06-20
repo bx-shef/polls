@@ -21,6 +21,15 @@ export const MIN_SECRET_LEN = 32
 /** Sentinel-portalId для dev-открытого режима (не коллидирует с реальным `member_id`). */
 export const DEV_PORTAL_ID = '__dev__'
 
+/**
+ * Достаточно ли силён серверный секрет для подписи/проверки сессии: задан и длиной ≥ {@link MIN_SECRET_LEN}.
+ * Единый предикат для всех точек, решающих fail-closed по секрету (гейт дашборда И минт сессии портала) —
+ * чтобы пороги не разъезжались (минтим то, что гейт сможет проверить тем же критерием).
+ */
+export function isStrongSecret(secret: string | undefined): secret is string {
+  return !!secret && secret.length >= MIN_SECRET_LEN
+}
+
 const b64url = (buf: Buffer): string => buf.toString('base64url')
 const hmacRaw = (payload: string, secret: string): Buffer =>
   createHmac('sha256', secret).update(payload).digest()
@@ -92,7 +101,7 @@ export function resolveDashboardAuth(
   now: number = Math.floor(Date.now() / 1000)
 ): DashboardAuthDecision {
   if (env.secret) {
-    if (env.secret.length < MIN_SECRET_LEN) return { ok: false, status: 503 }
+    if (!isStrongSecret(env.secret)) return { ok: false, status: 503 }
     const session = verifySession(token, env.secret, now)
     return session ? { ok: true, session } : { ok: false, status: 401 }
   }

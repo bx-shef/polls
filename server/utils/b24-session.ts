@@ -1,6 +1,6 @@
 import { createPortalAuthenticator } from '~core/bitrix24/authenticate'
 import { type PortalAuthenticator } from '~core/bitrix24/frame'
-import { MIN_SECRET_LEN } from '~core/api/session'
+import { isStrongSecret } from '~core/api/session'
 
 /**
  * Привязка handshake app-фрейма Bitrix24 к Nitro (ISSUE #47/#49). SERVER-ONLY: `~core/bitrix24`
@@ -17,7 +17,8 @@ export type B24SecretResult = { ok: true; secret: string } | { ok: false; status
  * что гейт дашборда сможет проверить тем же секретом.
  */
 export function resolveB24Secret(secret: string | undefined = process.env.DASHBOARD_AUTH_SECRET): B24SecretResult {
-  if (!secret || secret.length < MIN_SECRET_LEN) return { ok: false, status: 503 }
+  // Тот же предикат, что у гейта дашборда (`resolveDashboardAuth`) — пороги не разъезжаются.
+  if (!isStrongSecret(secret)) return { ok: false, status: 503 }
   return { ok: true, secret }
 }
 
