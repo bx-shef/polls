@@ -133,7 +133,11 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 (`useApi()` + `useStore()`, инстанс на процесс: пока MemoryStore+seed для dev-паритета с
 `pnpm serve`, ОДИН стор на `/api/*` и дашборд; прод-стор/PgStore + общий анти-абьюз — слой
 деплоя #4/#6) + роуты `server/api/`: `GET /api/session`, `POST /api/submit`,
-`GET /api/survey/:key/current`, `GET /api/health`, `GET /api/dashboard/:key` (контур B).
+`GET /api/survey/:key/current`, `GET /api/health`, `GET /api/dashboard/:key` (контур B),
+`POST /api/b24/session` (#47, handshake app-фрейма Bitrix24 → подписанная сессия в cookie `polls_portal`:
+парс/`verifyFrameAuth`/минт — в ядре, обёртка минтит секретом `DASHBOARD_AUTH_SECRET` и ставит cookie
+`SameSite=None; Secure; Partitioned` для iframe; fail-closed: без секрета → 503, неудача проверки → 401;
+резолвер `domain → member_id` инжектируем — PgStore-привязка в #49, до неё handshake fail-closed).
 Логика — в ядре, обёртки только мапят `event → api.*(...)`/статус (+ body-limit 64КБ на
 submit, паритет с `node.ts`; невалидный JSON отвергает h3 — формат h3, не ядровой). Типизируются
 Nitro-tsconfig, не ядровым `pnpm check` (CI-typecheck server/app → #36); живой smoke — `pnpm build` + curl.
