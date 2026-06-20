@@ -1,8 +1,10 @@
 # Деплой-команды (см. docs/admin-setup.md). Образ собирает CI в GHCR на мерже в main;
 # на сервере watchtower подтягивает новый latest сам — ручной redeploy обычно не нужен.
+# Переменные окружения берутся из .env.prod (конвенция сервера; docker compose по умолчанию
+# читал бы .env, поэтому файл указан явно через --env-file).
 
-COMPOSE_PROD = docker compose -f docker-compose.prod.yml
-COMPOSE_PROXY = docker compose -f docker-compose.nginxproxy.yml
+COMPOSE_PROD = docker compose --env-file .env.prod -f docker-compose.prod.yml
+COMPOSE_PROXY = docker compose --env-file .env.prod -f docker-compose.nginxproxy.yml
 
 .PHONY: init-network init-nginxproxy prod-up prod-redeploy prod-down prod-logs
 
