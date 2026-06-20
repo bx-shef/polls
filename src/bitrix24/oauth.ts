@@ -11,7 +11,7 @@ import { z } from 'zod'
  */
 
 /** Верхняя граница `expires_in` (сек): 1 год. Защита от переполнения Date. */
-const MAX_EXPIRES_IN = 366 * 24 * 3600
+export const MAX_EXPIRES_IN = 366 * 24 * 3600
 
 /** Нормализованные токены (то, что шифруется и хранится). */
 export const oauthTokensSchema = z.object({
@@ -23,7 +23,10 @@ export const oauthTokensSchema = z.object({
   domain: z.string().max(200).optional(),
   // SSRF: при использовании как URL исходящих REST-вызовов (фаза связки) хост
   // обязательно валидировать по allowlist (*.bitrix24.ru/.com/...), не localhost/RFC-1918.
-  clientEndpoint: z.string().max(500).optional()
+  clientEndpoint: z.string().max(500).optional(),
+  // application_token приложения↔портал (выдаётся при установке) — для верификации входящих
+  // событий/роботов (анти-форджери, #17). Хранится в том же зашифрованном blob, без миграции.
+  applicationToken: z.string().min(1).max(200).optional()
 })
 export type OAuthTokens = z.infer<typeof oauthTokensSchema>
 
