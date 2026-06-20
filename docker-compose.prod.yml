@@ -1,69 +1,46 @@
-# Прод-стек приложения (deploy на сервере). Образ берётся из GHCR (собран CI на мерже в main),
-# watchtower сам подтягивает новый `latest`. TLS терминирует отдельный стек nginx-proxy
-# (docker-compose.nginxproxy.yml) — приложение получает HTTPS через VIRTUAL_HOST/LETSENCRYPT_HOST.
+# Прод-стек приложения — для /home/bitrix/polls/ на сервере.
+# Конвенция сервера: общий reverse-proxy (nginx-proxy + acme-companion) уже запущен и
+# обслуживает все проекты через ВНЕШНЮЮ сеть `proxy-net`. Этот файл только подключает
+# приложение к ней — отдельный nginx-proxy поднимать НЕ нужно.
 #
-# Запуск (см. Makefile + docs/admin-setup.md):
-#   make init-network init-nginxproxy   # один раз: сеть + reverse-proxy/TLS
-#   make prod-up                        # поднять приложение
+# Образ собирает CI в GHCR на мерже в main; watchtower подтягивает новый latest сам.
+# Запуск: make prod-up  (см. Makefile + docs/admin-setup.md).
 #
-# Постоянное хранение (PostgreSQL) включается в #6: раскомментировать сервисы db/migrate
-# и DATABASE_URL у app. Пока app бежит на встроенном демо-сторе (данные эфемерны).
+# Постоянное хранение (PostgreSQL) включается в #6 — до этого app на встроенном демо-сторе.
 services:
   app:
     image: ghcr.io/bx-shef/polls:latest
-    restart: unless-stopped
+    container_name: polls
     expose:
-      - '3000' # наружу — только через nginx-proxy (TLS), порт не публикуется
+      - '3000' # Nuxt/nitro слушает 3000; наружу — только через nginx-proxy (TLS)
     environment:
-      # nginx-proxy + acme-companion: домен и сертификат Let's Encrypt.
-      # Переменная DOMAIN — конвенция сервера (единый .env.prod со всеми проектами).
-      VIRTUAL_HOST: '${DOMAIN:?DOMAIN не задан}'
-      VIRTUAL_PORT: '3000'
-      LETSENCRYPT_HOST: '${DOMAIN}'
-      LETSENCRYPT_EMAIL: '${LETSENCRYPT_EMAIL:?LETSENCRYPT_EMAIL не задан}'
+      # nginx-proxy + acme-companion маршрутизируют по домену и выпускают TLS.
+      # Email берётся из глобального DEFAULT_EMAIL acme-companion (в app не дублируем).
+      VIRTUAL_HOST: ${DOMAIN}
+      VIRTUAL_PORT: 3000
+      LETSENCRYPT_HOST: ${DOMAIN}
       # Секрет сессии дашборда/handshake (>= 32). Без него прод-дашборд fail-closed (503).
-      DASHBOARD_AUTH_SECRET: '${DASHBOARD_AUTH_SECRET:?DASHBOARD_AUTH_SECRET не задан}'
+      DASHBOARD_AUTH_SECRET: ${DASHBOARD_AUTH_SECRET:?DASHBOARD_AUTH_SECRET не задан}
       # Ключ шифрования OAuth-токенов Bitrix24 (AES-256-GCM, 64 hex). Нужен при связке портала.
-      NUXT_BITRIX_TOKEN_KEY: '${NUXT_BITRIX_TOKEN_KEY:-}'
+      NUXT_BITRIX_TOKEN_KEY: ${NUXT_BITRIX_TOKEN_KEY:-}
       # PostgreSQL (#6): раскомментировать с появлением PgStore-привязки.
-      # DATABASE_URL: 'postgres://polls:${POSTGRES_PASSWORD}@db:5432/polls'
+      # DATABASE_URL: postgres://polls:${POSTGRES_PASSWORD}@db:5432/polls
+    restart: unless-stopped
+    networks:
+      - proxy-net
     labels:
       # watchtower обновляет только помеченные контейнеры.
       - 'com.centurylinklabs.watchtower.enable=true'
-    networks:
-      - proxy
 
   watchtower:
     image: containrrr/watchtower
-    restart: unless-stopped
+    environment:
+      - DOCKER_API_VERSION=1.47
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # GHCR-приватный образ требует docker login на сервере (config.json пробрасывается).
-      - ${HOME}/.docker/config.json:/config.json:ro
     command: --interval 300 --cleanup --label-enable
-    networks:
-      - proxy
-
-  # PostgreSQL — включается в #6 (постоянное хранение). До этого app на демо-сторе.
-  # db:
-  #   image: postgres:16-alpine
-  #   restart: unless-stopped
-  #   environment:
-  #     POSTGRES_USER: polls
-  #     POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}'
-  #     POSTGRES_DB: polls
-  #   volumes:
-  #     - db-data:/var/lib/postgresql/data
-  #   networks: [proxy]
-  #   healthcheck:
-  #     test: ['CMD-SHELL', 'pg_isready -U polls -d polls']
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 10
+    restart: unless-stopped
 
 networks:
-  proxy:
+  proxy-net:
     external: true
-    name: nginxproxy
-# volumes:
-#   db-data:
