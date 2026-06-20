@@ -16,9 +16,10 @@ services:
       - '3000' # наружу — только через nginx-proxy (TLS), порт не публикуется
     environment:
       # nginx-proxy + acme-companion: домен и сертификат Let's Encrypt.
-      VIRTUAL_HOST: '${APP_DOMAIN:?APP_DOMAIN не задан}'
+      # Переменная DOMAIN — конвенция сервера (единый .env.prod со всеми проектами).
+      VIRTUAL_HOST: '${DOMAIN:?DOMAIN не задан}'
       VIRTUAL_PORT: '3000'
-      LETSENCRYPT_HOST: '${APP_DOMAIN}'
+      LETSENCRYPT_HOST: '${DOMAIN}'
       LETSENCRYPT_EMAIL: '${LETSENCRYPT_EMAIL:?LETSENCRYPT_EMAIL не задан}'
       # Секрет сессии дашборда/handshake (>= 32). Без него прод-дашборд fail-closed (503).
       DASHBOARD_AUTH_SECRET: '${DASHBOARD_AUTH_SECRET:?DASHBOARD_AUTH_SECRET не задан}'
