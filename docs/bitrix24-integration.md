@@ -188,6 +188,27 @@ third-party cookies в iframe). Fail-closed: без секрета → 503, лю
   регистрация обработчика `event.bind('ONCRMDEALUPDATE', …)` + хранение `application_token` при
   OAuth-установке приложения; обогащение денормализованных имён (`crm.company.get`/`crm.category.get`/
   `user.get`); живой smoke на тестовом портале (`scripts/b24-smoke.ts`).
+
+- **[#17](https://github.com/bx-shef/polls/issues/17) (роботы автоматизации — предпочтительный триггер)** —
+  альтернатива/дополнение к вебхуку `ONCRMDEALUPDATE`: робот бизнес-процессов (`bizproc.robot.add`).
+
+  **Почему лучше вебхука:** пользователь сам ставит робот «Запустить опрос» на нужную стадию в
+  правилах автоматизации сделки — НЕ нужно матчить `STAGE_ID` против `triggerStages` (стадию выбирает
+  админ портала визуально, по категориям/воронкам). Это нативный для Bitrix UX и точнее по срабатыванию.
+
+  **Регистрация (при установке, через `client.callMethod`):** `bizproc.robot.add` с `CODE` (уникальный),
+  `HANDLER` (наш `https://{домен}/api/b24/robot` — тот же домен, что установка), `NAME` (лок. «Запустить
+  опрос»), `DOCUMENT_TYPE`/`FILTER` = `['crm','CCrmDocumentDeal','DEAL']`, `PROPERTIES` (напр. выбор опроса),
+  `USE_SUBSCRIPTION:'N'` (опрос асинхронен — ответа процессу не ждём). Требует прав админа + контекста приложения.
+
+  **Срабатывание:** Bitrix POST'ит на `HANDLER` контекст документа (`document_id` вида
+  `['crm','CCrmDocumentDeal','DEAL_759']`), значения `PROPERTIES`, `auth` (с `member_id`/`domain`/токеном).
+  Хендлер: верификация → извлечь deal id из `document_id` → `crm.deal.get` → `dealToCrmContext` → создать
+  приглашение (как шаги 3–5 выше). Парсинг `document_id`/робот-POST — ядровой кусок (по аналогии с
+  `deal-event.ts`), эндпоинт+`robot.add`+smoke — живой портал.
+
+  **Симметрия (направление «результат → CRM», #18):** `crm.automation.trigger.add` — внешний триггер,
+  который ДВИГАЕТ сделку при событии приложения (опрос пройден → продвинуть стадию/записать в таймлайн).
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
 
