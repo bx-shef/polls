@@ -12,4 +12,5 @@ blob-report/
 .env
 .env.*
 !.env.example
+!.env.prod.example
 .DS_Store
