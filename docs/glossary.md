@@ -26,7 +26,13 @@
   меньше порога (`ANONYMITY_THRESHOLD`/`meetsAnonymity`) — защита анонимности.
   Ответственность слоя чтения/PgStore, не «сырых» агрегатов.
 - **`portalId`** — tenant-ключ: 1 портал = 1 инстанс = своя БД (решение №7).
-  PgStore tenant-scoped по нему; кросс-портальной мультитенантности нет.
+  PgStore tenant-scoped по нему; кросс-портальной мультитенантности нет. Численно = `member_id`
+  портала Bitrix24.
+- **`member_id`** — стабильный идентификатор портала Bitrix24 (= `portalId`). В handshake фрейма
+  берётся НЕ из сырого POST, а из авторитетной проверки токена (анти-cross-tenant, #47).
+- **Handshake фрейма** — обмен параметров `BX24.getAuth` (`DOMAIN`/`member_id`/`AUTH_ID`),
+  которые портал отдаёт iframe-приложению, на подписанную сессию дашборда (cookie `polls_portal`).
+  Ядро — `src/bitrix24/frame.ts` (#47): SSRF-allowlist домена + сверка `member_id`.
 - **Keyset-пагинация** — курсорная пагинация по стабильному ключу (`listResponsesPage`),
   без OFFSET. Helpers — `store/cursor.ts`.
 - **`triggerStages`** — денормализованные стадии-триггеры опроса (под binding сделки);
@@ -35,4 +41,4 @@
   version-frozen (решение #21). См. `decisions.md`.
 
 ---
-*Последнее ревью: 2026-06-19.*
+*Последнее ревью: 2026-06-20.*

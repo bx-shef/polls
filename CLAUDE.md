@@ -94,6 +94,11 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   ротации ключа + `loadTokenKey` startup-guard),
   `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh POST-телом через инжектируемый fetch),
   `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh).
+  `bitrix24/frame.ts` (#47, handshake app-фрейма — ЯДРО-рантайм): `parseFrameAuth` (zod-парс недоверенного
+  POST `BX24.getAuth`), `isAllowedPortalDomain` (SSRF-allowlist `*.bitrix24.<tld>`), `verifyFrameAuth`
+  (инжектируемый авторитетный `authenticate` + СВЕРКА `member_id` — анти-cross-tenant; `portalId` из
+  авторитетного источника, не из POST), `mintPortalSession` (подписанная сессия для cookie `polls_portal`).
+  Привязка эндпоинта `/api/b24/session` + cookie + боевой `authenticate` (через `PortalTokenStore`) — #49.
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 - `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic «мозг» прохождения опроса
   (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
