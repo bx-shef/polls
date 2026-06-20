@@ -1,21 +1,14 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// upSql — ЕДИНЫЙ с прод-boot-применением (src/store/migrate), чтобы тест применял ту же схему.
+import { upSql } from '../../src/store/migrate'
+
+export { upSql }
 
 // Каталог миграций — ЕДИНЫЙ источник схемы и для node-pg-migrate (прод гоняет эти
 // же .sql на Postgres, #6), и для pglite-тестов (здесь, in-process WASM-Postgres).
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url))
-
-// up-секция .sql-миграции — ТОЧНОЕ зеркало node-pg-migrate (sqlMigration.getActions):
-// есть «-- Up Migration» → от него до «-- Down Migration» (или до конца файла);
-// нет up-маркера → ВЕСЬ файл (как и node-pg-migrate), чтобы тест применял ту же
-// схему, что прод (даже при «битом» файле с одним лишь down-маркером).
-export function upSql(content: string): string {
-  const up = content.search(/^\s*--[\s-]*up\s+migration/im)
-  const down = content.search(/^\s*--[\s-]*down\s+migration/im)
-  if (up >= 0) return content.slice(up, down > up ? down : undefined)
-  return content
-}
 
 /** SQL всех миграций по порядку имени файла (0001_, 0002_, …). */
 export function migrationSqls(): string[] {

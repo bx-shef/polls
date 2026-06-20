@@ -18,8 +18,10 @@ RUN pnpm build
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-# .output самодостаточен (nitro бандлит прод-зависимости) — node_modules не нужны.
+# .output самодостаточен (nitro бандлит прод-зависимости, включая pg) — node_modules не нужны.
 COPY --from=build /app/.output ./.output
+# Миграции применяются на старте (src/store/migrate, #6) — нужны в рантайме рядом с cwd (/app).
+COPY --from=build /app/migrations ./migrations
 # Непривилегированный пользователь (образ node уже содержит `node`).
 USER node
 EXPOSE 3000

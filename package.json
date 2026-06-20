@@ -30,6 +30,7 @@
     "@bitrix24/b24ui-nuxt": "^2.8.0",
     "@nuxtjs/color-mode": "^4.0.1",
     "nuxt": "^4.4.8",
+    "pg": "^8.21.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -38,7 +39,6 @@
     "@types/node": "^22.10.2",
     "@vitest/coverage-v8": "^2.1.8",
     "node-pg-migrate": "^8.0.4",
-    "pg": "^8.21.0",
     "tailwindcss": "^4.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
