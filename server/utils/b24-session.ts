@@ -23,14 +23,19 @@ export function resolveB24Secret(secret: string | undefined = process.env.DASHBO
 }
 
 /**
- * Резолвер install-маппинга `domain → member_id` (таблица `portal`). #49: подключается к PgStore
- * (`select member_id from portal where domain=$1`) при настроенном `DATABASE_URL`. Пока стора нет
- * (Nitro на MemoryStore+seed, #6) — резолвер всегда `undefined` ⇒ handshake fail-closed (401:
- * «портал не установлен»). Инжектируем, чтобы #49 подменил его без правки роута.
+ * Резолвер install-маппинга `domain → member_id` (таблица `portal`). Боевая реализация —
+ * ядровая `resolveMemberIdByDomain(db, domain)` (`~core/bitrix24/portal`, под pglite-тестами):
+ * её подставляет через `setPortalResolver` слой инициализации стора, когда появится pg-Pool
+ * (по `DATABASE_URL`, #6/#49). Пока стора нет (Nitro на MemoryStore+seed) — дефолт всегда
+ * `undefined` ⇒ handshake fail-closed (401: «портал не установлен»). Инжектируем, чтобы #49
+ * подменил резолвер без правки роута.
  */
 let resolveMemberId: (domain: string) => Promise<string | undefined> = async () => undefined
 
-/** #49: подменить резолвер на PgStore-backed (вызывается из слоя инициализации стора). */
+/**
+ * #49: подменить резолвер на боевой (обёртка над `resolveMemberIdByDomain` с pg-Pool):
+ * `setPortalResolver((d) => resolveMemberIdByDomain(pool, d))`. Зовётся из слоя инициализации стора.
+ */
 export function setPortalResolver(fn: (domain: string) => Promise<string | undefined>): void {
   resolveMemberId = fn
 }

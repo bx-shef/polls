@@ -93,7 +93,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 - `bitrix24/crypto.ts` (`TokenCipher` AES-256-GCM с `kid` в blob — форвард-совместимость
   ротации ключа + `loadTokenKey` startup-guard),
   `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh POST-телом через инжектируемый fetch),
-  `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh).
+  `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh;
+  `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
+  под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).
   `bitrix24/frame.ts` (#47, handshake app-фрейма — ЯДРО-рантайм): `parseFrameAuth` (zod-парс недоверенного
   POST `BX24.getAuth`), `isAllowedPortalDomain` (SSRF-allowlist `*.bitrix24.<tld>`), `verifyFrameAuth`
   (инжектируемый авторитетный `authenticate` + СВЕРКА `member_id` — анти-cross-tenant; `portalId` из
