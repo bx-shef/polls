@@ -76,24 +76,28 @@ TLS — Let's Encrypt через ОБЩИЙ nginx-proxy сервера (внеш
 другими проектами). Постоянное хранение в PostgreSQL включается в #6 (до него — демо-стор,
 данные эфемерны).
 
-**Предпосылки сервера** (как у соседних проектов `currency-converter` и др.):
-- запущен общий `nginx-proxy` + `acme-companion` на внешней сети **`proxy-net`** (с `DEFAULT_EMAIL`);
-- пакет образа `ghcr.io/bx-shef/polls` сделан **public** (чтобы watchtower тянул без креденшелов,
-  как остальные `bx-shef/*`).
+**Подготовка образа:** пакет `ghcr.io/bx-shef/polls` сделать **public** (чтобы watchtower тянул
+обновления без креденшелов, как остальные `bx-shef/*`). Иначе первый `make prod-up` потребует
+`docker login ghcr.io` (PAT с `read:packages`), а авто-обновления watchtower работать не будут.
 
-**Разовая настройка проекта** (`/home/bitrix/polls/`):
+**Деплой-файлы проекта** (`/home/bitrix/polls/`, репозиторий публичный — raw без авторизации):
 
 ```bash
-# 1. Залогиниться в GHCR (для первого pull) — PAT с правом read:packages
-echo $GHCR_PAT | docker login ghcr.io -u <github-user> --password-stdin
-
-# 2. Деплой-файлы (репозиторий публичный — raw без авторизации) + .env.prod
 BASE=https://raw.githubusercontent.com/bx-shef/polls/main
-curl -fsSL $BASE/docker-compose.prod.yml -o docker-compose.prod.yml
-curl -fsSL $BASE/Makefile                -o Makefile
-curl -fsSL $BASE/.env.prod.example        -o .env.prod   # заполнить DOMAIN + секреты
+curl -fsSL $BASE/docker-compose.prod.yml       -o docker-compose.prod.yml
+curl -fsSL $BASE/docker-compose.nginxproxy.yml -o docker-compose.nginxproxy.yml
+curl -fsSL $BASE/Makefile                       -o Makefile
+curl -fsSL $BASE/.env.prod.example              -o .env.prod   # заполнить DOMAIN + секреты
+```
 
-# 3. Поднять (подключится к существующему proxy-net)
+**Запуск — два случая:**
+
+```bash
+# A) ЧИСТЫЙ сервер (тиражирование): поднять общий прокси/сеть с нуля, затем приложение.
+make init-network init-nginxproxy   # требует LETSENCRYPT_EMAIL в .env.prod
+make prod-up
+
+# B) Сервер с УЖЕ поднятым nginx-proxy на proxy-net (как bx-shef): только приложение.
 make prod-up
 ```
 
