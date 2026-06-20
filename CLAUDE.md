@@ -104,6 +104,10 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `https://{domain}/rest/app.info` (доказывает живость токена для портала) + резолв `member_id` из
   install-маппинга `domain → member_id` (таблица `portal`); HTTP/резолвер инжектируются (под тестами).
   Привязка эндпоинта `/api/b24/session` + cookie (общий стор) — #49.
+  `bitrix24/deal-event.ts` (#17, триггер-биндинг `ONCRMDEALUPDATE` — ЯДРО): `parseDealUpdateEvent`
+  (zod-парс недоверенного POST: событие несёт лишь `data.FIELDS.ID` + `auth`), `verifyApplicationToken`
+  (constant-time сверка `application_token` — анти-форджери), `dealToCrmContext` (маппинг `crm.deal.get`
+  → снимок `CrmContext`: IDs+стадия, имена — обогащением позже). Эндпоинт/`event.bind`/обогащение — #17.
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 - `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic «мозг» прохождения опроса
   (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
