@@ -11,7 +11,7 @@ import { z } from 'zod'
  */
 
 /** Верхняя граница `expires_in` (сек): 1 год. Защита от переполнения Date. */
-const MAX_EXPIRES_IN = 366 * 24 * 3600
+export const MAX_EXPIRES_IN = 366 * 24 * 3600
 
 /** Нормализованные токены (то, что шифруется и хранится). */
 export const oauthTokensSchema = z.object({

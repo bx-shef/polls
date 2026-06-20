@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { oauthTokensSchema, type OAuthTokens } from './oauth'
+import { oauthTokensSchema, MAX_EXPIRES_IN, type OAuthTokens } from './oauth'
 
 /**
  * Установка приложения на портал (ISSUE #17) — ЯДРО-рантайм. При установке локального/тиражного
@@ -11,10 +11,7 @@ import { oauthTokensSchema, type OAuthTokens } from './oauth'
  * HTTP/стор/клиент инжектируются → под тестами без живого портала.
  */
 
-/** Верхняя граница `expires_in` (сек): 1 год (защита от переполнения Date). */
-const MAX_EXPIRES_IN = 366 * 24 * 3600
-
-/** Недоверенный POST установки (минимум; прочие поля игнорируются). */
+/** Недоверенный POST установки (минимум; прочие поля игнорируются). `MAX_EXPIRES_IN` — общий с oauth. */
 export const installEventSchema = z.object({
   auth: z.object({
     access_token: z.string().min(1).max(4096),
@@ -71,6 +68,8 @@ export function surveyRobotParams(handlerUrl: string): Record<string, unknown> {
  * Оркестрация установки: нормализовать токены → сохранить → зарегистрировать робот. Порядок важен:
  * робот регистрируется ПОСЛЕ сохранения токенов (регистрация идёт токеном этого же портала).
  * `saveTokens`/`registerRobot` инжектируются (Nitro: `PortalTokenStore.save` + `client.callMethod`).
+ * Частичный отказ (токены сохранены, робот — нет) безопасен: повторная установка идемпотентна по
+ * стабильному `CODE` робота; вызывающий может ретраить установку.
  */
 export async function handleInstall(
   ev: InstallEvent,

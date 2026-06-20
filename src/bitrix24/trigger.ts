@@ -24,6 +24,14 @@ export interface TriggerResult {
  * Возвращает созданные приглашения (токены → ссылки рассылает слой доставки). Идемпотентность
  * «повтор перехода не плодит запись» — на уровне записи ответа (#4, durable по токену); здесь
  * каждый переход выписывает новый токен (один проход опроса = один токен).
+ *
+ * ИНВАРИАНТЫ слоя связки (ядро их НЕ обеспечивает — как SSRF-allowlist в oauth.ts):
+ *  1. **Tenant-изоляция:** `store` ОБЯЗАН быть scoped на АВТОРИТЕТНЫЙ портал события (PgStore по
+ *     `portalId`, полученному из `auth.member_id`, не из POST). Иначе `stageId` одного портала
+ *     триггернёт опрос другого (cross-tenant). `surveysTriggeredBy`/`currentVersion` фильтруют по
+ *     `portalId` инстанса стора — поэтому передавать сюда нужно стор НУЖНОГО портала.
+ *  2. **Анти-форджери:** `context` строится из АВТОРИТЕТНОГО `crm.deal.get` ТОЛЬКО ПОСЛЕ успешной
+ *     `verifyApplicationToken` (deal-event.ts). Вызов этой функции без сверки токена = open-trigger.
  */
 export async function handleDealTrigger(deps: {
   store: TriggerStore
