@@ -2,7 +2,9 @@
 // Каркас-заглушка корневого маршрута: подтверждает, что Nuxt + b24ui рендерят страницу
 // ШТАТНЫМИ компонентами (B24Card / B24Badge / B24Button) на air-токенах темы — без
 // ручной вёрстки и хардкод-цветов, поэтому светлая/тёмная тема работают из коробки.
-// Реальные экраны Интро/Опрос/Спасибо (на SurveyFill + b24ui) — следующая фаза (#34, контур A).
+// У `/` нет своего опроса (опросы адресуются по `:key`), поэтому кнопка ведёт на
+// демо-опрос (сид) — чтобы корень не был тупиком при показе/тесте.
+const DEMO_SURVEY = '/s/csat_postdeal'
 </script>
 
 <template>
@@ -19,7 +21,7 @@
 
       <div class="flex flex-col items-center gap-6">
         <B24Badge color="air-secondary-accent" size="md" label="Опрос · контур A" />
-        <B24Button color="air-primary" size="lg" label="Начать" />
+        <B24Button color="air-primary" size="lg" label="Начать" @click="navigateTo(DEMO_SURVEY)" />
       </div>
     </B24Card>
   </div>

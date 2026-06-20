@@ -20,7 +20,9 @@ services:
       # Без него дашборд fail-closed (503 в проде); для демо см. DASHBOARD_DEV_OPEN.
       DASHBOARD_AUTH_SECRET: "${DASHBOARD_AUTH_SECRET:-}"
       # Демо-режим: открыть дашборд без сессии портала (НЕ для прода — утечёт PII).
-      DASHBOARD_DEV_OPEN: "${DASHBOARD_DEV_OPEN:-}"
+      # Дефолт =1 ИМЕННО для этого демо-compose (показ/ручной тест) — чтобы дашборд
+      # открывался без забываемого префикса. Прод использует docker-compose.prod.yml (без этого).
+      DASHBOARD_DEV_OPEN: "${DASHBOARD_DEV_OPEN:-1}"
     restart: unless-stopped
 
   db:
