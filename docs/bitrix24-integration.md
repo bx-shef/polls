@@ -125,6 +125,32 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
   `CATEGORY_ID=0`), дедуп по `dealId`, отправка ссылки по `chooseChannel`, запись
   пропуска в таймлайн. Поверх `src/bitrix24/`.
 
+## Handshake app-фрейма дашборда (#47) — аутентификация контура B
+
+Дашборд (`/d/:key`) живёт в iframe портала Bitrix24. При загрузке фрейма Bitrix24 отдаёт
+параметры авторизации (`BX24.getAuth`): `DOMAIN`, `member_id`, `AUTH_ID` (access-token),
+`AUTH_EXPIRES`, и т.д. Приложение обменивает их на свою подписанную сессию (cookie `polls_portal`,
+см. `src/api/session.ts`), которой гейтится эндпоинт дашборда (`requirePortalSession`).
+
+Ядро-рантайм handshake — `src/bitrix24/frame.ts` (под тестами `test/frame.test.ts`, без живого портала):
+
+1. `parseFrameAuth(raw)` — zod-парс **недоверенного** POST (параметры приходят на публичный
+   эндпоинт, их может подделать кто угодно).
+2. `isAllowedPortalDomain(DOMAIN)` — **SSRF-гард**: `DOMAIN` управляем злоумышленником, а мы по нему
+   делаем исходящий REST-вызов. Allowlist — облачные `*.bitrix24.<tld>` (self-hosted переопределяет RegExp).
+3. `verifyFrameAuth(frame, { authenticate })` — **анти-cross-tenant**: `member_id` НЕ берётся из сырого
+   POST (иначе со своим валидным токеном можно выписать сессию на чужой tenant). `authenticate`
+   (инжектируемый, боевой — живая проверка `AUTH_ID` через REST/OAuth) возвращает АВТОРИТЕТНЫЙ
+   `member_id`; он сверяется с заявленным — расхождение → отказ. `portalId` = авторитетный `member_id`.
+4. `mintPortalSession(portal, secret, ttl)` — подписывает сессию (`signSession`).
+
+**Остаётся (слой связки #49):** эндпоинт `POST /api/b24/session` (читает body фрейма → `parseFrameAuth`
+→ `verifyFrameAuth` с боевым `authenticate` через `PortalTokenStore`/OAuth-refresh → `setCookie`
+`polls_portal` с `HttpOnly`+`Secure`+`SameSite=None`) + участие страницы дашборда (BX24 JS SDK в iframe).
+Нюанс cookie: браузеры блокируют third-party cookies в iframe → возможно CHIPS/partitioned cookie или
+передача токена через `postMessage`/URL (проверить на живом портале). tenant-фильтрация стора по
+`portalId` — там же (#49).
+
 ## Остаётся (слой связки)
 
 - **[#17](https://github.com/bx-shef/polls/issues/17)** — инвайт-флоу: ядро-рантайм
@@ -136,4 +162,4 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
 
 ---
-*Последнее ревью: 2026-06-15.*
+*Последнее ревью: 2026-06-20.*
