@@ -1,0 +1,17 @@
+# Build-контекст образа: только то, что нужно `pnpm install` + `pnpm build`.
+node_modules
+.output
+.nuxt
+.git
+.github
+dist
+coverage
+test-results
+*.log
+.env
+.env.*
+!.env.example
+# Артефакты визуального гейта и playwright — в образ не нужны.
+**/__screenshots__
+playwright-report
+.claude
