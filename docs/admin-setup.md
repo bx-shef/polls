@@ -72,26 +72,33 @@ DASHBOARD_DEV_OPEN=1 node .output/server/index.mjs   # PORT=3000 по умолч
 
 Деплой устроен как непрерывная доставка: **мерж в `main` → GitHub Actions собирает образ в
 GHCR (`ghcr.io/bx-shef/polls:latest`) → watchtower на сервере подтягивает его сам** (~5 мин).
-TLS — Let's Encrypt через nginx-proxy. Постоянное хранение в PostgreSQL включается в #6
-(до него приложение бежит на демо-сторе — данные эфемерны).
+TLS — Let's Encrypt через ОБЩИЙ nginx-proxy сервера (внешняя сеть `proxy-net` уже поднята
+другими проектами). Постоянное хранение в PostgreSQL включается в #6 (до него — демо-стор,
+данные эфемерны).
 
-**Разовая настройка сервера:**
+**Предпосылки сервера** (как у соседних проектов `currency-converter` и др.):
+- запущен общий `nginx-proxy` + `acme-companion` на внешней сети **`proxy-net`** (с `DEFAULT_EMAIL`);
+- пакет образа `ghcr.io/bx-shef/polls` сделан **public** (чтобы watchtower тянул без креденшелов,
+  как остальные `bx-shef/*`).
+
+**Разовая настройка проекта** (`/home/bitrix/polls/`):
 
 ```bash
-# 1. Залогиниться в GHCR (образ приватный) — PAT с правом read:packages
+# 1. Залогиниться в GHCR (для первого pull) — PAT с правом read:packages
 echo $GHCR_PAT | docker login ghcr.io -u <github-user> --password-stdin
 
-# 2. Конфиг
-git clone https://github.com/bx-shef/polls && cd polls
-cp .env.prod.example .env.prod    # заполнить DOMAIN, LETSENCRYPT_EMAIL, секреты
+# 2. Деплой-файлы (репозиторий публичный — raw без авторизации) + .env.prod
+BASE=https://raw.githubusercontent.com/bx-shef/polls/main
+curl -fsSL $BASE/docker-compose.prod.yml -o docker-compose.prod.yml
+curl -fsSL $BASE/Makefile                -o Makefile
+curl -fsSL $BASE/.env.prod.example        -o .env.prod   # заполнить DOMAIN + секреты
 
-# 3. Сеть + reverse-proxy/TLS (один раз) + приложение
-make init-network init-nginxproxy
+# 3. Поднять (подключится к существующему proxy-net)
 make prod-up
 ```
 
 После этого:
-- **A-запись** домена `DOMAIN` должна указывать на сервер — nginx-proxy выпустит TLS сам.
+- **A-запись** домена `DOMAIN` → сервер; nginx-proxy выпустит TLS сам (email из глобального acme).
 - **Авто-деплой**: каждый зелёный мерж в `main` → новый образ → watchtower обновит контейнер.
   Ручной апдейт при необходимости: `make prod-redeploy`. Логи: `make prod-logs`.
 
