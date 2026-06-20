@@ -20,7 +20,7 @@
 | #31 | PII-редакция на HTTP-границе (ляжет с read-эндпоинтом ответов контура B) | store/api | открыт | нет публичного read-ответов → нет калл-сайта; не плодим dead code |
 | #10 | Read-API хвост: `GET /api/survey/:key/current` ✅ (#29), SQL-`npsTrend` ✅, PII-редакция → #31 | store/api | открыт (хвост → #31) | основное сделано; остался только PII-хвост (#31) |
 | #4 | Серверный анти-абьюз: общий стор nonce/лимитов/приглашений (мульти-инстанс), `X-Forwarded-For` | деплой | ядро для 1 инстанса ✅ (#11); durable-идемпотентность ответа ✅ (0003) | общий стор → мульти-инстанс; связь `invitation_id` с #17 |
-| #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | открыт | `/api/dashboard/:key` сейчас DEV-ONLY (без auth); блокируется OAuth #3 ✅ / порталом #17 |
+| #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | открыт (гейт сделан) | `requirePortalSession` + подписанная сессия (`src/api/session.ts`) — fail-closed в проде, dev-открыто по `DASHBOARD_DEV_OPEN`. Осталось: handshake Bitrix24 app-фрейма (минт сессии) + tenant-фильтр стора (PgStore #49) |
 | #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность | store/api | открыт (заведён в сессии) | сейчас агрегат in-memory над сидом; для реальных данных — SQL + ужесточение подавления |
 
 ## Закрытые (контекст)
