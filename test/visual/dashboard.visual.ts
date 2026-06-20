@@ -19,6 +19,7 @@ test('дашборд совпадает с эталоном', async ({ page }) =
   // Якоря нижних секций: тренд и срез по услугам отрисованы — снимок fullPage берёт их целиком.
   await expect(page.getByText('Динамика NPS по месяцам')).toBeVisible()
   await expect(page.getByText('По услугам')).toBeVisible()
+  await expect(page.getByText('По клиентам')).toBeVisible() // последний срез отрисован (готовность низа)
   await expect(page).toHaveScreenshot('dashboard.png', { fullPage: true })
 })
 

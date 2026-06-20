@@ -5,7 +5,7 @@
 // Типы метрик — из ядра (type-only: в клиентский бандл не попадают, граница ~core
 // соблюдена). Один источник правды с серверным агрегатом — расхождение ловит компилятор.
 import type { NpsSummary, CsatSummary } from '~core/domain/metrics'
-import type { TrendPoint } from '~core/domain/aggregate'
+import type { TrendPoint, BreakdownRow } from '~core/domain/aggregate'
 
 interface Dashboard {
   ok: boolean
@@ -25,7 +25,6 @@ interface Dashboard {
   versions?: number[]
   version?: number | null
 }
-interface BreakdownRow { name: string; n: number; nps: number | null; csat: number | null }
 
 // NPS ∈ [-100, 100] → ширина шкалы [0%, 100%] (−100→0, 0→50, 100→100). Клампим
 // на случай аномального значения в ответе (клиент JSON не валидирует) — полоса не вылезет.

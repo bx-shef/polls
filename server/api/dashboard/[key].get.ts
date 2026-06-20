@@ -4,57 +4,10 @@ import {
   distributionFor,
   npsTrend,
   byVersion,
+  breakdownBy,
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
-import type { ResponseRecord } from '~core/domain/schema'
-
-/** Строка среза по измерению: имя группы + метрики подвыборки. */
-interface BreakdownRow {
-  name: string
-  n: number
-  nps: number | null
-  csat: number | null
-}
-
-/**
- * Обобщённый срез по измерению. `pairsOf` достаёт из ответа пары (ключ группы, имя) — массив,
- * т.к. один ответ может попасть в несколько групп (напр. сделка с двумя услугами). Имя фиксируем
- * ПЕРВЫМ вхождением ключа (устойчиво к переименованию в CRM). Метрику показываем только при её
- * СОБСТВЕННОЙ выборке ≥ порога; группу с малым N или без показуемых метрик не выводим. Сортировка
- * по NPS убыв., затем по имени (стабильно). TODO(#49): при SQL-агрегации (PgStore) переедет в ядро.
- */
-function breakdown(
-  responses: ResponseRecord[],
-  pairsOf: (r: ResponseRecord) => Array<{ key: string | number; name: string }>,
-  npsKey: string | undefined,
-  csatKey: string | undefined
-): BreakdownRow[] {
-  const groups = new Map<string | number, { name: string; rs: ResponseRecord[] }>()
-  for (const r of responses) {
-    const seen = new Set<string | number>() // не двоим ответ в одной группе при повторе ключа
-    for (const { key, name } of pairsOf(r)) {
-      if (seen.has(key)) continue
-      seen.add(key)
-      const g = groups.get(key)
-      if (g) g.rs.push(r)
-      else groups.set(key, { name, rs: [r] })
-    }
-  }
-  return [...groups.values()]
-    .map(({ name, rs }) => {
-      const npsSum = npsKey ? npsFor(rs, npsKey) : null
-      const csatSum = csatKey ? csatFor(rs, csatKey) : null
-      return {
-        name,
-        n: rs.length,
-        nps: npsSum && meetsAnonymity(npsSum.n) ? npsSum.nps : null,
-        csat: csatSum && meetsAnonymity(csatSum.n) ? csatSum.mean : null
-      }
-    })
-    .filter((row) => meetsAnonymity(row.n) && (row.nps !== null || row.csat !== null))
-    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
-}
 
 /**
  * GET /api/dashboard/:key — агрегаты опроса для дашборда (контур B). Считается СЕРВЕРНО через
@@ -76,9 +29,10 @@ function breakdown(
  *     `npsTrend` (параметр `minN`) — тот же порог, но применяется к бакету отдельно.
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
- * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срез по услугам
- * вдобавок раскрывает НАЗВАНИЯ продуктов (CRM-данные портала), фильтр — список версий и n по
- * версии (перебор `?version=N`); всё это закрывает auth — ещё один довод за #47.
+ * ⚠️ DEV-ONLY: эндпоинт пока БЕЗ авторизации/rate-limit/tenant-изоляции. Срезы раскрывают
+ * ИМЕНА из CRM — клиентов (`companyName`) и СОТРУДНИКОВ (`responsibleName` — PII), названия
+ * услуг/направлений, плюс список версий (перебор `?version=N`). На синтетическом seed это
+ * безвредно, но перед ЛЮБЫМ реальным деплоем обязателен auth-гейт (#47); PII-редакция — #31.
  * Дашборд контура B — внутри Bitrix24 (под OAuth/портал-контекстом); auth-гейтинг + tenant (portalId) → #47,
  * SQL-агрегация (PgStore) + rate-limit → #49. Сейчас данные синтетические (seed), N подавлены.
  */
@@ -129,33 +83,29 @@ export default defineEventHandler(async (event) => {
     distribution = { question: choiceQ.text, items }
   }
 
-  // Срезы по измерениям (услуга/направление/ответственный/клиент) через единый `breakdown`.
+  // Срезы по измерениям через ядровой `breakdownBy` (группировка + подавление малых N — там).
   // Имена денормализованы в контексте (productName/dealCategoryName/responsibleName/companyName),
-  // фолбэк на ID. Ответ с несколькими услугами попадает в каждую (суммы n по группам могут
-  // превышать общий n). Малые N и узкие метрики подавлены внутри `breakdown` (анонимность среза).
-  const services = breakdown(
+  // фолбэк — внутренний ID вида `#11`. Ответ с несколькими услугами попадает в каждую.
+  const opts = { npsKey, csatKey }
+  const services = breakdownBy(
     responses,
     (r) => (r.context.products ?? []).map((p) => ({ key: p.productId, name: p.productName ?? `#${p.productId}` })),
-    npsKey,
-    csatKey
+    opts
   )
-  const directions = breakdown(
+  const directions = breakdownBy(
     responses,
     (r) => (r.context.dealCategoryId != null ? [{ key: r.context.dealCategoryId, name: r.context.dealCategoryName ?? `#${r.context.dealCategoryId}` }] : []),
-    npsKey,
-    csatKey
+    opts
   )
-  const responsibles = breakdown(
+  const responsibles = breakdownBy(
     responses,
     (r) => (r.context.responsibleId != null ? [{ key: r.context.responsibleId, name: r.context.responsibleName ?? `#${r.context.responsibleId}` }] : []),
-    npsKey,
-    csatKey
+    opts
   )
-  const clients = breakdown(
+  const clients = breakdownBy(
     responses,
     (r) => (r.context.companyId != null ? [{ key: r.context.companyId, name: r.context.companyName ?? `#${r.context.companyId}` }] : []),
-    npsKey,
-    csatKey
+    opts
   )
 
   return {

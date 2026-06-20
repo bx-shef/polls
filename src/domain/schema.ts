@@ -138,6 +138,7 @@ export const crmContextSchema = z.object({
   // Денормализованные имена (снимок на момент закрытия сделки) — чтобы срезы дашборда
   // (клиент/направление/ответственный) читались без обращения к CRM-справочникам, по аналогии
   // с `crmProduct.productName`. Опциональны: при отсутствии срез падает на ID.
+  // ВНИМАНИЕ: `responsibleName` — PII (ФИО сотрудника); PII-редакция `context` — #31.
   companyName: z.string().max(500).optional(),
   dealCategoryName: z.string().max(500).optional(),
   responsibleName: z.string().max(500).optional(),

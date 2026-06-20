@@ -147,3 +147,53 @@ export function npsTrend(
     .map(([b, vals]) => ({ bucket: b, ...nps(vals) }))
     .filter((p) => p.n >= minN)
 }
+
+/** Строка среза по измерению: имя группы + NPS/CSAT подвыборки (либо `null`, если подавлены). */
+export interface BreakdownRow {
+  name: string
+  /** Число ОТВЕТОВ в группе (не число ответивших на конкретную метрику — те могут быть меньше). */
+  n: number
+  nps: number | null
+  csat: number | null
+}
+
+/**
+ * Обобщённый срез по измерению (услуга/направление/ответственный/клиент). `pairsOf` достаёт из
+ * ответа пары (ключ группы, имя) — МАССИВ, т.к. один ответ может попасть в несколько групп
+ * (сделка с двумя услугами); для одиночных измерений — массив из 0–1 элемента. Имя фиксируем
+ * ПЕРВЫМ вхождением ключа (устойчиво к переименованию в CRM). Анонимность — ДВА независимых
+ * гейта (любой скрывает): группа с числом ответов < `minN` не выводится; метрика обнуляется,
+ * если её СОБСТВЕННАЯ выборка < `minN`. Строку без хотя бы одной метрики не выводим (нечего
+ * показать + имя не раскрывается без агрегата). Сортировка по NPS убыв., затем по имени.
+ */
+export function breakdownBy(
+  rs: ResponseRecord[],
+  pairsOf: (r: ResponseRecord) => Array<{ key: string | number; name: string }>,
+  opts: { npsKey?: string; csatKey?: string; minN?: number } = {}
+): BreakdownRow[] {
+  const minN = opts.minN ?? ANONYMITY_THRESHOLD
+  const groups = new Map<string | number, { name: string; rs: ResponseRecord[] }>()
+  for (const r of rs) {
+    const seen = new Set<string | number>() // один ответ — не дважды в одну группу (повтор ключа)
+    for (const { key, name } of pairsOf(r)) {
+      if (seen.has(key)) continue
+      seen.add(key)
+      const g = groups.get(key)
+      if (g) g.rs.push(r)
+      else groups.set(key, { name, rs: [r] })
+    }
+  }
+  return [...groups.values()]
+    .map(({ name, rs: gr }) => {
+      const npsSum = opts.npsKey ? npsFor(gr, opts.npsKey) : null
+      const csatSum = opts.csatKey ? csatFor(gr, opts.csatKey) : null
+      return {
+        name,
+        n: gr.length,
+        nps: npsSum && meetsAnonymity(npsSum.n, minN) ? npsSum.nps : null,
+        csat: csatSum && meetsAnonymity(csatSum.n, minN) ? csatSum.mean : null
+      }
+    })
+    .filter((row) => meetsAnonymity(row.n, minN) && (row.nps !== null || row.csat !== null))
+    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
+}
