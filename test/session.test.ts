@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto'
 import {
   DEV_PORTAL_ID,
   MIN_SECRET_LEN,
+  isStrongSecret,
   resolveDashboardAuth,
   signSession,
   verifySession,
@@ -65,6 +66,18 @@ describe('session — подписанный токен портала (#47)', (
     const numId = Buffer.from(JSON.stringify({ portalId: 123, exp: future })).toString('base64url')
     const numSig = createHmac('sha256', SECRET).update(numId).digest('base64url')
     expect(verifySession(`${numId}.${numSig}`, SECRET)).toBeNull() // portalId не строка
+  })
+})
+
+describe('isStrongSecret — общий предикат силы секрета (#47/#49)', () => {
+  it('задан и ≥ MIN_SECRET_LEN → true', () => {
+    expect(isStrongSecret(SECRET)).toBe(true)
+    expect(isStrongSecret('a'.repeat(MIN_SECRET_LEN))).toBe(true)
+  })
+  it('пустой/undefined/короче порога → false (fail-closed)', () => {
+    expect(isStrongSecret(undefined)).toBe(false)
+    expect(isStrongSecret('')).toBe(false)
+    expect(isStrongSecret('a'.repeat(MIN_SECRET_LEN - 1))).toBe(false)
   })
 })
 

@@ -141,20 +141,25 @@ B24_WEBHOOK_URL='…' B24_DEAL_ID=<id> B24_DEAL_LIMIT=20 pnpm exec tsx scripts/b
    блок `xn--` (анти-гомоглиф), отказ при `slash`/порте/завершающей точке; self-hosted переопределяет RegExp.
 3. `verifyFrameAuth(frame, { authenticate })` — **анти-cross-tenant**: `member_id` НЕ берётся из сырого
    POST (иначе со своим валидным токеном можно выписать сессию на чужой tenant). `authenticate`
-   (инжектируемый, боевой — живая проверка `AUTH_ID` через REST/OAuth) возвращает АВТОРИТЕТНЫЙ
+   (инжектируемый, боевой — живая проверка `AUTH_ID` через REST) возвращает АВТОРИТЕТНЫЙ
    `member_id`; он сверяется с заявленным — расхождение → отказ. `portalId` = авторитетный `member_id`.
 4. `mintPortalSession(portal, secret, ttl)` — подписывает сессию (`signSession`).
 
-**Остаётся (слой связки #49):** эндпоинт `POST /api/b24/session` (читает body фрейма → `parseFrameAuth`
-→ `verifyFrameAuth` с боевым `authenticate` → `setCookie` `polls_portal`) + участие страницы дашборда
-(BX24 JS SDK в iframe). Требования к боевой реализации:
-- `authenticate` — ЛЁГКИЙ REST-вызов с `AUTH_ID` (НЕ OAuth-refresh: он ротирует токен → race при
-  параллельных загрузках фрейма), авторитетно возвращающий `member_id`; `AUTH_ID` передавать в
-  теле/заголовке, НЕ в query (иначе токен утечёт в access-логи прокси и `x-request-id`).
-- Cookie `polls_portal`: `HttpOnly`+`Secure`+`SameSite=None`+**`Partitioned`** (CHIPS) — браузеры
-  блокируют непартиционированные third-party cookies в iframe; fallback — токен через `postMessage`
-  (не URL). Проверить на живом портале.
-- tenant-фильтрация стора по `portalId` — там же (#49).
+**Сделано:** боевой `authenticate` (`src/bitrix24/authenticate.ts:createPortalAuthenticator`) — ЛЁГКИЙ
+REST-вызов `app.info` к `https://{domain}/rest/app.info` с `AUTH_ID` В ТЕЛЕ POST (НЕ в query → не утечёт
+в access-логи; НЕ OAuth-refresh → нет ротации/race); `member_id` резолвится из install-маппинга
+`domain → member_id` (таблица `portal`). Эндпоинт `POST /api/b24/session` (`server/api/b24/session.post.ts`):
+`parseFrameAuth` → `verifyFrameAuth` → `mintPortalSession(DASHBOARD_AUTH_SECRET)` → `setCookie polls_portal`
+(`HttpOnly`+`Secure`+`SameSite=None`+**`Partitioned`** CHIPS — браузеры блокируют непартиционированные
+third-party cookies в iframe). Fail-closed: без секрета → 503, любая неудача проверки → 401 без утечки причины.
+
+**Остаётся (слой связки #49):**
+- PgStore-резолвер `domain → member_id` (`setPortalResolver` подменяет дефолтный no-op → fail-closed 401):
+  `select member_id from portal where domain=$1`. До него handshake fail-closed (портал «не установлен»).
+- Rate-limit на `/api/b24/session` (исходящий `app.info` per request → амплификация/DoS) — **release-gate**.
+- tenant-фильтрация стора по `portalId`.
+- Участие страницы дашборда (BX24 JS SDK в iframe); fallback — токен через `postMessage` (не URL).
+  Проверить на живом портале.
 
 ## Остаётся (слой связки)
 

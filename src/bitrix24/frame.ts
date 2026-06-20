@@ -16,8 +16,9 @@ import { signSession, type PortalSession } from '../api/session'
  *     его с заявленным в POST; расхождение → отказ.
  *
  * HTTP инжектируется (`authenticate`) — логика проверяется юнит-тестами без живого портала.
- * Привязка эндпоинта (`/api/b24/session` + cookie) и боевой `authenticate` (через
- * `PortalTokenStore`/OAuth) — слой связки с общим стором (#49).
+ * Боевой `authenticate` — `createPortalAuthenticator` (`authenticate.ts`): `app.info` к `{domain}` +
+ * резолв `member_id` из install-маппинга. Осталось: привязка эндпоинта (`/api/b24/session` + cookie)
+ * с общим стором (#49).
  */
 
 /** Верхняя граница `AUTH_EXPIRES`: с запасом под ms-timestamp (защита от переполнения Date). */
@@ -60,10 +61,11 @@ export function isAllowedPortalDomain(domain: string, allow: RegExp = DEFAULT_PO
 }
 
 /**
- * Авторитетная проверка токена фрейма → РЕАЛЬНЫЙ member_id владельца токена. Боевая реализация (#49):
- * ЛЁГКИЙ REST-вызов к `https://{domain}/rest/...` с переданным `AUTH_ID`, авторитетно возвращающий
- * member_id. НЕ через OAuth-refresh (ротирует токен → race при параллельных загрузках фрейма).
- * `AUTH_ID` передавать в теле/заголовке, НЕ в query (иначе токен утечёт в access-логи).
+ * Авторитетная проверка токена фрейма → РЕАЛЬНЫЙ member_id владельца токена. Боевая реализация —
+ * `createPortalAuthenticator` (`authenticate.ts`): ЛЁГКИЙ REST-вызов `app.info` к
+ * `https://{domain}/rest/app.info` с переданным `AUTH_ID` (доказывает, что токен жив и принадлежит
+ * порталу) + резолв member_id из install-маппинга `domain → member_id`. НЕ через OAuth-refresh
+ * (ротирует токен → race). `AUTH_ID` — в теле POST, НЕ в query (иначе токен утечёт в access-логи).
  */
 export type PortalAuthenticator = (input: { domain: string; authId: string }) => Promise<{ memberId: string }>
 
