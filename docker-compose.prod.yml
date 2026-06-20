@@ -1,0 +1,68 @@
+# Прод-стек приложения (deploy на сервере). Образ берётся из GHCR (собран CI на мерже в main),
+# watchtower сам подтягивает новый `latest`. TLS терминирует отдельный стек nginx-proxy
+# (docker-compose.nginxproxy.yml) — приложение получает HTTPS через VIRTUAL_HOST/LETSENCRYPT_HOST.
+#
+# Запуск (см. Makefile + docs/admin-setup.md):
+#   make init-network init-nginxproxy   # один раз: сеть + reverse-proxy/TLS
+#   make prod-up                        # поднять приложение
+#
+# Постоянное хранение (PostgreSQL) включается в #6: раскомментировать сервисы db/migrate
+# и DATABASE_URL у app. Пока app бежит на встроенном демо-сторе (данные эфемерны).
+services:
+  app:
+    image: ghcr.io/bx-shef/polls:latest
+    restart: unless-stopped
+    expose:
+      - '3000' # наружу — только через nginx-proxy (TLS), порт не публикуется
+    environment:
+      # nginx-proxy + acme-companion: домен и сертификат Let's Encrypt.
+      VIRTUAL_HOST: '${APP_DOMAIN:?APP_DOMAIN не задан}'
+      VIRTUAL_PORT: '3000'
+      LETSENCRYPT_HOST: '${APP_DOMAIN}'
+      LETSENCRYPT_EMAIL: '${LETSENCRYPT_EMAIL:?LETSENCRYPT_EMAIL не задан}'
+      # Секрет сессии дашборда/handshake (>= 32). Без него прод-дашборд fail-closed (503).
+      DASHBOARD_AUTH_SECRET: '${DASHBOARD_AUTH_SECRET:?DASHBOARD_AUTH_SECRET не задан}'
+      # Ключ шифрования OAuth-токенов Bitrix24 (AES-256-GCM, 64 hex). Нужен при связке портала.
+      NUXT_BITRIX_TOKEN_KEY: '${NUXT_BITRIX_TOKEN_KEY:-}'
+      # PostgreSQL (#6): раскомментировать с появлением PgStore-привязки.
+      # DATABASE_URL: 'postgres://polls:${POSTGRES_PASSWORD}@db:5432/polls'
+    labels:
+      # watchtower обновляет только помеченные контейнеры.
+      - 'com.centurylinklabs.watchtower.enable=true'
+    networks:
+      - proxy
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # GHCR-приватный образ требует docker login на сервере (config.json пробрасывается).
+      - ${HOME}/.docker/config.json:/config.json:ro
+    command: --interval 300 --cleanup --label-enable
+    networks:
+      - proxy
+
+  # PostgreSQL — включается в #6 (постоянное хранение). До этого app на демо-сторе.
+  # db:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: polls
+  #     POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}'
+  #     POSTGRES_DB: polls
+  #   volumes:
+  #     - db-data:/var/lib/postgresql/data
+  #   networks: [proxy]
+  #   healthcheck:
+  #     test: ['CMD-SHELL', 'pg_isready -U polls -d polls']
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+
+networks:
+  proxy:
+    external: true
+    name: nginxproxy
+# volumes:
+#   db-data:
