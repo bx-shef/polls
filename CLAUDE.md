@@ -108,6 +108,10 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   (zod-парс недоверенного POST: событие несёт лишь `data.FIELDS.ID` + `auth`), `verifyApplicationToken`
   (constant-time сверка `application_token` — анти-форджери), `dealToCrmContext` (маппинг `crm.deal.get`
   → снимок `CrmContext`: IDs+стадия, имена — обогащением позже). Эндпоинт/`event.bind`/обогащение — #17.
+  `bitrix24/client.ts` (`createPortalClient`/`callMethod`/`dealGet`) — серверный REST-клиент портала
+  на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`): основа всех исходящих вызовов (`crm.deal.get`/
+  обогащение/`event.bind`/`app.info`). Тонкие хелперы разбирают `AjaxResult` → `result | throw`,
+  тестируются через структурный `PortalClient` (мок без сети). Полный набор токенов — из install-обмена (#17).
 - `demo/seed.ts` — детерминированный демо-набор (общий для `verify` и тестов).
 - `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic «мозг» прохождения опроса
   (контур A): навигация/deep-link, валидация шага, single/multi + exclusive, «Другое»,
