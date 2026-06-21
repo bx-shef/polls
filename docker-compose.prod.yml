@@ -23,6 +23,11 @@ services:
       DASHBOARD_AUTH_SECRET: ${DASHBOARD_AUTH_SECRET:?DASHBOARD_AUTH_SECRET не задан}
       # Ключ шифрования OAuth-токенов Bitrix24 (AES-256-GCM, 64 hex). Нужен при связке портала.
       NUXT_BITRIX_TOKEN_KEY: ${NUXT_BITRIX_TOKEN_KEY:-}
+      # Домен приложения В КОНТЕЙНЕРЕ (для HANDLER-URL встроек при установке, #17).
+      DOMAIN: ${DOMAIN}
+      # OAuth-приложение портала (client_id/secret из настроек приложения Bitrix24) — для установки.
+      NUXT_B24_CLIENT_ID: ${NUXT_B24_CLIENT_ID:-}
+      NUXT_B24_CLIENT_SECRET: ${NUXT_B24_CLIENT_SECRET:-}
       # PostgreSQL (#6): постоянное хранение. Миграции применяются приложением на старте.
       # Без DATABASE_URL приложение падает обратно на эфемерный MemoryStore.
       DATABASE_URL: postgres://polls:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/polls
