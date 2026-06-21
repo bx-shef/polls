@@ -6,10 +6,12 @@ import {
   surveyRobotParams,
   surveyPlacements,
   parsePlacementDealId,
+  parsePlacementTaskId,
   handleInstall,
   SURVEY_ROBOT_CODE,
   PLACEMENT_DEAL_ACTIVITY,
-  PLACEMENT_ANALYTICS_MENU
+  PLACEMENT_ANALYTICS_MENU,
+  PLACEMENT_TASK_VIEW
 } from '../src/bitrix24/install'
 import type { OAuthTokens } from '../src/bitrix24/oauth'
 
@@ -112,13 +114,31 @@ describe('surveyRobotParams (#17)', () => {
 })
 
 describe('surveyPlacements (#17)', () => {
-  it('виджет сделки + дашборд в аналитике, HANDLER на нашем домене', () => {
+  it('виджеты сделки + задачи + дашборд в аналитике, HANDLER на нашем домене', () => {
     const ps = surveyPlacements('https://polls.bx-shef.by/')
-    expect(ps.map((p) => p.PLACEMENT)).toEqual([PLACEMENT_DEAL_ACTIVITY, PLACEMENT_ANALYTICS_MENU])
+    expect(ps.map((p) => p.PLACEMENT)).toEqual([PLACEMENT_DEAL_ACTIVITY, PLACEMENT_ANALYTICS_MENU, PLACEMENT_TASK_VIEW])
     // хвостовой слеш baseUrl убран, HANDLER абсолютный https
     expect(ps[0]!.HANDLER).toBe('https://polls.bx-shef.by/b24/deal-widget')
     expect(ps[1]!.HANDLER).toBe('https://polls.bx-shef.by/b24/dashboard')
+    expect(ps[2]!.HANDLER).toBe('https://polls.bx-shef.by/b24/task-widget')
     expect(ps[0]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по сделке')
+    expect(ps[2]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по задаче')
+  })
+})
+
+describe('parsePlacementTaskId (задача)', () => {
+  it('JSON-строка {"taskId":"812"} → 812', () => {
+    expect(parsePlacementTaskId('{"taskId":"812"}')).toBe(812)
+  })
+  it('объект с TASK_ID / ID → число', () => {
+    expect(parsePlacementTaskId({ TASK_ID: 5 })).toBe(5)
+    expect(parsePlacementTaskId({ ID: '9' })).toBe(9)
+  })
+  it('битый JSON / нет id / 0 / мусор → undefined', () => {
+    expect(parsePlacementTaskId('{not json')).toBeUndefined()
+    expect(parsePlacementTaskId('{"X":1}')).toBeUndefined()
+    expect(parsePlacementTaskId('{"taskId":"0"}')).toBeUndefined()
+    expect(parsePlacementTaskId(null)).toBeUndefined()
   })
 })
 

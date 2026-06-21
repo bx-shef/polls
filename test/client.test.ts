@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, taskGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -48,6 +48,20 @@ describe('dealGet (#17)', () => {
     const deal = await dealGet(c, 759)
     expect(deal).toMatchObject({ ID: '759', STAGE_ID: 'NEW' })
     expect(c.calls[0]).toEqual(['crm.deal.get', { id: 759 }])
+  })
+})
+
+describe('taskGet (задача)', () => {
+  it('зовёт tasks.task.get с taskId+select и разворачивает { task }', async () => {
+    const c = client(ok({ task: { id: 812, title: 'T', responsibleId: 5, ufCrmTask: ['D_6529'] } }))
+    const task = await taskGet(c, 812)
+    expect(task).toMatchObject({ id: 812, responsibleId: 5, ufCrmTask: ['D_6529'] })
+    expect((c.calls[0] as [string, { taskId: number }])[0]).toBe('tasks.task.get')
+    expect((c.calls[0] as [string, { taskId: number }])[1].taskId).toBe(812)
+  })
+  it('разворачивает { item } (REST v3)', async () => {
+    const c = client(ok({ item: { id: 9, crmItemIds: ['C_45'] } }))
+    expect(await taskGet(c, 9)).toMatchObject({ id: 9, crmItemIds: ['C_45'] })
   })
 })
 

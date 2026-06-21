@@ -116,7 +116,12 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `leadToCrmContext`/`spaItemToCrmContext`/`contactToCrmContext`/`companyToCrmContext` (поля REST →
   `CrmContext`; `dealStageId` = обобщённый триггер-ключ: STATUS_ID лида/stageId СП, переименование → #next) + `ENTITY_MAPPERS`
   (полнота по `ENTITY_TYPES`, страховка типов). Эндпоинт/`event.bind`/обогащение/плейсменты — фаза связки.
-  `bitrix24/client.ts` (`createPortalClient`/`callMethod`/`dealGet`) — серверный REST-клиент портала
+  `bitrix24/task.ts` (`taskToCrmContext`/`parseTaskCrmBindings`) — РУЧНОЙ запуск опроса из карточки
+  задачи (плейсмент `TASK_VIEW_SIDEBAR`, у задачи нет стадии воронки → только вручную, аналог виджета
+  сделки): `tasks.task.get` → снимок `CrmContext` (responsibleId + CRM-привязки `dealId`/`contactId`/
+  `companyId` из `crmItemIds`/`ufCrmTask`). Виджет `app/pages/b24/task-widget.vue` + эндпоинт
+  `server/api/b24/task-invite.post.ts` (зеркало deal-invite: frame-handshake → `taskGet` → `createSurveyInvitation`).
+  `bitrix24/client.ts` (`createPortalClient`/`callMethod`/`dealGet`/`taskGet`) — серверный REST-клиент портала
   на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`): основа всех исходящих вызовов (`crm.deal.get`/
   обогащение/`event.bind`/`app.info`). Тонкие хелперы разбирают `AjaxResult` → `result | throw`,
   тестируются через структурный `PortalClient` (мок без сети). Полный набор токенов — из install-обмена (#17).
