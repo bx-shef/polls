@@ -147,6 +147,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 деплоя #4/#6) + роуты `server/api/`: `GET /api/session`, `POST /api/submit`,
 `GET /api/survey/:key/current`, `GET /api/health`, `GET /api/dashboard/:key` (контур B),
 `GET /api/admin/surveys` (список опросов портала для админ-UI, auth-гейт `requirePortalSession`, fail-closed),
+`GET /api/admin/surveys/:key` (текущая версия как редактируемый черновик — `versionToDraft`),
+`POST /api/admin/surveys/:key/publish` (публикация новой версии из черновика `SurveyDraft`; номер
+версии назначает сервер `currentVersionNo+1`; 409 конфликт/422 невалидный/500 инфра),
 `POST /api/b24/session` (#47, handshake app-фрейма Bitrix24 → подписанная сессия в cookie `polls_portal`:
 парс/`verifyFrameAuth`/минт — в ядре, обёртка минтит секретом `DASHBOARD_AUTH_SECRET` и ставит cookie
 `SameSite=None; Secure; Partitioned` для iframe; fail-closed: без секрета → 503, неудача проверки → 401;
