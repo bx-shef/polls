@@ -26,6 +26,10 @@
 | NEW | Действие «очистить данные за период» в дашборде/админке | app/store | предложен | сейчас вручную SQL по `response` (tenant-scoped); нужен UI-action поверх. См. `survey-management.md` |
 | NEW | Доп. точки встройки Bitrix24 (вкладка сделки `CRM_DEAL_DETAIL_TAB`, лиды/контакты, `LEFT_MENU`, imbot-доставка) | bitrix24 | предложен | поверх готового `client.ts`/`placement.bind`, без переделки ядра. См. `survey-management.md` |
 | NEW | Прогрессивное раскрытие дашборда (первый экран = NPS/CSAT + топ-срезы; глубокие срезы — по клику) | app | предложен | ядро всё считает — вопрос подачи; см. рефлексию в `survey-management.md` |
+| NEW | Мульти-сущность: датчик опроса для lead/spa/contact/company (`<entity>ToCrmContext` + плейсменты их карточек + обобщить `deal-event`/виджет) | bitrix24 | предложен (модель готова: `entityType`/`spaEntityTypeId` в схеме) | боевой триггер пока только `deal`; `spa` требует `crm.item.get` + tenant-scope (IDOR-риск, security-ревью). См. фазы в `survey-management.md` |
+| NEW | Триггер по задаче (`task`): отдельный binding `ONTASKUPDATE` по статусу (у задачи нет `stageId` воронки) | bitrix24 | предложен | `task` в `ENTITY_TYPES` задекларирован, но `surveysTriggeredBy(stageId)` для него не сработает — нужен иной механизм |
+| NEW | `surveysTriggeredBy` мульти-сущность: составная фильтрация `(entityType, stageId)` + денормализация `entityType`/`spaEntityTypeId` из JSONB в колонки PgStore | store | предложен | сейчас GIN по `trigger_stages` работает для deal; namespace стадий spa другой |
+| NEW | Админ-UI: список опросов с фильтром (по сущности/направлению) + редактор с привязкой к сущности — макеты на основе шаблонов печатных форм Bitrix24 | app | предложен | развитие «Админ-UI создания опросов»; референс — UI шаблонов печатных форм (список+фильтр / карточка с привязкой к сущностям) |
 
 ## Закрытые (контекст)
 
