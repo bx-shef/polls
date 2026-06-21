@@ -31,11 +31,11 @@
     "@bitrix24/b24ui-nuxt": "^2.8.0",
     "@nuxtjs/color-mode": "^4.0.1",
     "nuxt": "^4.4.8",
-    "pg": "^8.21.0",
+    "pg": "^8.22.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.1",
+    "@electric-sql/pglite": "^0.5.3",
     "@playwright/test": "^1.61.0",
     "@types/node": "^22.10.2",
     "@vitest/coverage-v8": "^2.1.8",
