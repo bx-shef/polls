@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { compile, diffVersions, isComparable } from '../src/domain/compile'
+import { compile, diffVersions, isComparable, versionToDraft } from '../src/domain/compile'
 import { draftV1, draftV2, CSAT_Q, LIKED_Q, NPS_Q, COMMENT_Q } from '../src/demo/seed'
-import { compiledVersionSchema, type SurveyDraft } from '../src/domain/schema'
+import { compiledVersionSchema, surveyDraftSchema, type SurveyDraft } from '../src/domain/schema'
 
 describe('compile', () => {
   it('замораживает черновик в версию', () => {
@@ -178,5 +178,34 @@ describe('diffVersions — состав + score одновременно', () =>
 describe('compiledVersionSchema — round-trip', () => {
   it('compile(...) проходит собственную схему (включая compiledAt как ISO)', () => {
     expect(compiledVersionSchema.safeParse(compile(draftV1(), 1)).success).toBe(true)
+  })
+})
+
+describe('versionToDraft — обратная проекция для редактора', () => {
+  it('round-trip: compile(draft)→versionToDraft даёт эквивалентный черновик (без versionNo/compiledAt)', () => {
+    const draft = surveyDraftSchema.parse(draftV1()) // нормализуем дефолты для сравнения
+    const back = versionToDraft(compile(draft, 3))
+    expect(back).toEqual(draft)
+    expect(back).not.toHaveProperty('versionNo')
+    expect(back).not.toHaveProperty('compiledAt')
+  })
+
+  it('сохраняет invitationPolicy (в отличие от публичной проекции)', () => {
+    const v = compile(
+      {
+        surveyKey: 's', title: 't', lang: 'ru',
+        questions: [{ key: 'q', type: 'single', metric: 'nps', required: true, text: '?', options: [{ key: 'n10', label: '10', score: 10 }] }],
+        invitationPolicy: { entityType: 'spa', spaEntityTypeId: 1056, triggerStages: ['DT1056:WON'], channelOrder: ['email'] }
+      },
+      1
+    )
+    expect(versionToDraft(v).invitationPolicy).toMatchObject({ entityType: 'spa', spaEntityTypeId: 1056 })
+  })
+
+  it('повторная публикация спроецированного черновика даёт ту же анкету', () => {
+    const v1 = compile(draftV2(), 5)
+    const republished = compile(versionToDraft(v1), 6)
+    // вопросы идентичны → diff целиком unchanged (сопоставимость ряда сохранена)
+    expect(Object.values(diffVersions(v1, republished)).every((c) => c === 'unchanged')).toBe(true)
   })
 })

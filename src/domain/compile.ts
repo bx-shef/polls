@@ -37,6 +37,26 @@ export function compile(draft: SurveyDraft, versionNo: number, at: Date = new Da
   }
 }
 
+/**
+ * Обратная проекция версии в редактируемый черновик (для админ-UI: «загрузить опрос на
+ * правку»). Отбрасывает машинные поля версии (`versionNo`/`compiledAt`) и валидирует через
+ * `surveyDraftSchema` — на выходе гарантированно валидный `SurveyDraft`, который можно
+ * отдать в редактор и затем переопубликовать новой версией. В отличие от публичной проекции
+ * (`PublicVersion`), СОХРАНЯЕТ `invitationPolicy` — админу нужна привязка-датчик для правки.
+ */
+export function versionToDraft(v: CompiledVersion): SurveyDraft {
+  return surveyDraftSchema.parse({
+    surveyKey: v.surveyKey,
+    title: v.title,
+    lang: v.lang,
+    intro: v.intro,
+    thanks: v.thanks,
+    blocks: v.blocks,
+    questions: v.questions,
+    invitationPolicy: v.invitationPolicy
+  })
+}
+
 export type ChangeClass = 'unchanged' | 'text' | 'options' | 'semantic' | 'added' | 'removed'
 
 /** Классы изменений, при которых временной ряд остаётся сопоставимым. */
