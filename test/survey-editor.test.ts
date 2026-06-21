@@ -27,6 +27,12 @@ describe('collectKeys', () => {
   })
 })
 
+describe('collectKeys', () => {
+  it('пустой массив → пустой Set', () => {
+    expect(collectKeys([]).size).toBe(0)
+  })
+})
+
 describe('uniqueKey', () => {
   it('возвращает наименьший свободный prefix_N', () => {
     expect(uniqueKey('q', new Set())).toBe('q_1')
@@ -46,6 +52,11 @@ describe('addQuestion', () => {
     addQuestion(qs)
     expect(qs).toHaveLength(2)
     expect(qs[1]).toMatchObject({ key: 'q_2', type: 'single', metric: 'choice', required: true, text: '', options: [] })
+  })
+  it('на пустом списке даёт q_1', () => {
+    const qs: EditorQuestion[] = []
+    addQuestion(qs)
+    expect(qs[0]!.key).toBe('q_1')
   })
 })
 
@@ -91,6 +102,11 @@ describe('structureErrors', () => {
   })
   it('текстовый вопрос без опций — валиден', () => {
     expect(structureErrors([q({ type: 'text', options: [] })])).toEqual([])
+  })
+  it('смешанный кейс: текст ок + single без опций → ровно 1 ошибка на вопрос 2', () => {
+    const errs = structureErrors([q({ type: 'text', options: [] }), q({ type: 'single', options: [] })])
+    expect(errs).toHaveLength(1)
+    expect(errs[0]).toContain('Вопрос 2')
   })
   it('вопрос с выбором и опцией — валиден', () => {
     expect(structureErrors([q({ type: 'single', options: [{ key: 'o_1', label: 'a' }] })])).toEqual([])

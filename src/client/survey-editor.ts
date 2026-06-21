@@ -9,14 +9,21 @@ import { QUESTION_TYPES, METRICS } from '../domain/schema'
  * `surveyDraftSchema` + `compile()`; здесь — лишь грубые правила, чтобы не слать заведомо битый черновик.
  */
 
-/** Опция в редакторе (структурно совместима с domain `Option`; score опционален/nullable). */
+/**
+ * Опция в редакторе. Структурно совместима с domain `Option`, но НЕ реэкспортируем доменный тип:
+ * редактор — упрощённая проекция (без `isOther`/`isExclusive`, read-only при рендере). score nullable.
+ */
 export interface EditorOption {
   key: string
   label: string
   score?: number | null
 }
 
-/** Вопрос в редакторе (структурно совместим с domain `Question`). */
+/**
+ * Вопрос в редакторе. `type`/`metric` — НАМЕРЕННО широкие `string` (а не доменные union'ы): редактор
+ * терпим к любому значению из селекта, авторитетная проверка — на сервере (`compile()`). Для проверок
+ * «тип с выбором» используем {@link CHOICE_TYPES}, а не хардкод строк.
+ */
 export interface EditorQuestion {
   key: string
   type: string
@@ -29,6 +36,9 @@ export interface EditorQuestion {
 /** Канонические перечни из ядра — UI строит из них списки (новый тип/метрика появится сам). */
 export const TYPE_VALUES = QUESTION_TYPES
 export const METRIC_VALUES = METRICS
+
+/** Типы вопросов с вариантами ответа (нужны опции). Единый источник для UI и валидации. */
+export const CHOICE_TYPES: ReadonlySet<string> = new Set(['single', 'multi'])
 
 /** Все занятые ключи (вопросы + их опции) — база для генерации новых без коллизий. */
 export function collectKeys(questions: readonly EditorQuestion[]): Set<string> {
@@ -66,7 +76,7 @@ export function addQuestion(questions: EditorQuestion[]): void {
   })
 }
 
-/** Добавляет пустую опцию (label '', score null) к вопросу по индексу. */
+/** Добавляет пустую опцию (label '', score null) к вопросу с индексом `qi`; при неверном индексе — no-op. */
 export function addOption(questions: EditorQuestion[], qi: number): void {
   const q = questions[qi]
   if (!q) return
@@ -88,7 +98,7 @@ export function structureErrors(questions: readonly EditorQuestion[]): string[] 
   const errs: string[] = []
   if (!questions.length) errs.push('Добавьте хотя бы один вопрос.')
   questions.forEach((q, i) => {
-    if ((q.type === 'single' || q.type === 'multi') && q.options.length === 0) {
+    if (CHOICE_TYPES.has(q.type) && q.options.length === 0) {
       errs.push(`Вопрос ${i + 1}: для типа с выбором нужна хотя бы одна опция.`)
     }
   })

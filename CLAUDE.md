@@ -17,7 +17,7 @@
 | `obs/` | логгер/health/process-хуки | ✅ готово, под тестами |
 | `bitrix24/` | crypto/oauth/portal (OAuth-токены) | ✅ ядро готово, под тестами |
 | `server/node.ts` | node:http-адаптер (`pnpm serve`) | ✅ готово |
-| `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A, без DOM) | ✅ готово, под тестами (#24) |
+| `client/` | `SurveyFill` — «мозг» прохождения опроса (контур A); `survey-editor` — логика конструктора (admin, без DOM) | ✅ готово, под тестами (#24) |
 | Визуальный гейт | Playwright скриншот-регрессия + Stop-хук (#13) | ✅ живой `/s/:key`+`/d/:key`, 8 поверхностей ×3 брейкпоинта ×(light+dark) = 48 эталонов (#39; `docs/visual-gate.md`) |
 | `app/` (Nuxt 4 + b24ui) | приложение: контур A (`/s/:key`) + дашборд контура B (`/d/:key`), тёмная тема | ✅ экраны готовы под гейтом |
 | `server/` (Nitro) | обёртки ядра: `/api/` session · submit · survey/:key/current · health · dashboard/:key | ✅ привязка готова (dev-стор MemoryStore+seed, общий `useStore`) |
@@ -126,6 +126,11 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   persist-снимок (safeParse недоверенного restore), маппинг в `Submission`. Без DOM/Vue —
   Vue-композабл фазы связки оборачивает реактивностью (каркас Vue-слоя — ниже, `## Приложение`);
   визуальный гейт — #13.
+- `client/survey-editor.ts` — framework-agnostic логика КОНСТРУКТОРА опроса (admin-UI): генерация
+  стабильных ключей (`uniqueKey`/`collectKeys`), добавить/удалить/переставить вопросы и опции
+  (`addQuestion`/`addOption`/`moveItem`), структурная валидация (`structureErrors`, `CHOICE_TYPES`) и
+  нормализация к публикации (`normalizeForPublish`). Vue-страница держит реактивное состояние и зовёт
+  чистые функции; под юнит-тестами.
 
 ## Приложение (`app/`, Nuxt 4 + b24ui)
 
