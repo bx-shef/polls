@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { crmContextSchema, ENTITY_TYPES, type CrmContext, type EntityType } from '../domain/schema'
-import { num, posId } from './deal-event'
+import { num, posId, dealToCrmContext } from './deal-event'
 
 /**
  * Обобщённый триггер-биндинг CRM-событий (фаза мульти-сущность) — ЯДРО-рантайм, без HTTP/портала.
@@ -147,3 +147,20 @@ export const ENTITY_MAPPERS: Record<EntityType, ((f: Record<string, unknown>) =>
 // Страховка компиляции: ENTITY_MAPPERS покрывает ровно ENTITY_TYPES (рассинхрон → ошибка типов).
 const _entityCoverage: Record<(typeof ENTITY_TYPES)[number], unknown> = ENTITY_MAPPERS
 void _entityCoverage
+
+/**
+ * Диспетчер «REST-поля сущности → `CrmContext`» по `entityType` (binding-слой мульти-сущности, #34).
+ * Роутит на `ENTITY_MAPPERS`; спец-случай `deal` — на `dealToCrmContext` (исторически в deal-event.ts).
+ * `task` НЕ поддержан этим путём (задача — вне CRM, ручной запуск из виджета `task.ts`) → бросает.
+ * Вызывать ТОЛЬКО после верификации события (`verifyApplicationToken`) и догрузки `item` авторитетным
+ * `entityGet` — `item` недоверен до этого (анти-форджери/IDOR, см. шапку).
+ */
+export function entityToCrmContext(
+  entityType: EntityType,
+  item: Record<string, unknown>
+): CrmContext {
+  if (entityType === 'deal') return dealToCrmContext(item)
+  const mapper = ENTITY_MAPPERS[entityType]
+  if (!mapper) throw new Error(`entityToCrmContext: нет маппера для '${entityType}' (вне CRM-пути)`)
+  return mapper(item)
+}

@@ -78,6 +78,34 @@ export async function taskGet(client: PortalClient, taskId: number): Promise<Rec
   return inner
 }
 
+/** REST-метод догрузки полей по типу CRM-сущности (binding-слой мульти-сущности, #34). */
+const ENTITY_GET_METHOD: Record<'deal' | 'lead' | 'contact' | 'company', string> = {
+  deal: 'crm.deal.get',
+  lead: 'crm.lead.get',
+  contact: 'crm.contact.get',
+  company: 'crm.company.get'
+}
+
+/**
+ * Догрузка полей CRM-сущности по типу (для `entityToCrmContext`, #34). Сделка/лид/контакт/компания —
+ * `crm.<entity>.get({id})`; смарт-процесс (`spa`) — `crm.item.get({entityTypeId, id})` (нужен
+ * `spaEntityTypeId`) с разворотом `{ item }`. Задача (`task`) идёт отдельным путём (`taskGet`) — здесь
+ * не поддержана. Вызывать токеном портала ТОЛЬКО после верификации события (анти-форджери/IDOR).
+ */
+export async function entityGet(
+  client: PortalClient,
+  entityType: 'deal' | 'lead' | 'spa' | 'contact' | 'company',
+  id: number,
+  spaEntityTypeId?: number
+): Promise<Record<string, unknown>> {
+  if (entityType === 'spa') {
+    if (!spaEntityTypeId) throw new Bitrix24CallError('entityGet: для spa нужен spaEntityTypeId')
+    const result = await callMethod<Record<string, unknown>>(client, 'crm.item.get', { entityTypeId: spaEntityTypeId, id })
+    return (result.item ?? result) as Record<string, unknown>
+  }
+  return callMethod<Record<string, unknown>>(client, ENTITY_GET_METHOD[entityType], { id })
+}
+
 /**
  * Минимальные `B24OAuthParams` из auth фрейма/виджета (есть лишь `domain`+`accessToken`+`memberId`) —
  * для разового вызова от имени пользователя (виджет карточки сделки → `crm.deal.get`, #17).

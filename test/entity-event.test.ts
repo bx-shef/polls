@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   parseEntityUpdateEvent,
+  entityToCrmContext,
   leadToCrmContext,
   spaItemToCrmContext,
   contactToCrmContext,
@@ -100,5 +101,25 @@ describe('мапперы сущность→CrmContext', () => {
     expect(typeof ENTITY_MAPPERS.spa).toBe('function')
     expect(typeof ENTITY_MAPPERS.contact).toBe('function')
     expect(typeof ENTITY_MAPPERS.company).toBe('function')
+  })
+})
+
+describe('entityToCrmContext (диспетчер #34)', () => {
+  it('deal → dealToCrmContext (STAGE_ID, числа-строки коэрцятся)', () => {
+    const ctx = entityToCrmContext('deal', { ID: '5', STAGE_ID: 'WON', COMPANY_ID: '42' })
+    expect(ctx).toMatchObject({ dealId: 5, dealStageId: 'WON', companyId: 42 })
+  })
+  it('lead → STATUS_ID в dealStageId', () => {
+    expect(entityToCrmContext('lead', { STATUS_ID: 'CONVERTED' })).toMatchObject({ dealStageId: 'CONVERTED' })
+  })
+  it('spa → stageId в dealStageId', () => {
+    expect(entityToCrmContext('spa', { stageId: 'DT1056:WON', companyId: 1 })).toMatchObject({ dealStageId: 'DT1056:WON', companyId: 1 })
+  })
+  it('contact/company → сам как id, без стадии', () => {
+    expect(entityToCrmContext('contact', { ID: '7' })).toEqual({ contactId: 7 })
+    expect(entityToCrmContext('company', { ID: '9' })).toEqual({ companyId: 9 })
+  })
+  it('task → бросает (вне CRM-пути)', () => {
+    expect(() => entityToCrmContext('task', {})).toThrow()
   })
 })
