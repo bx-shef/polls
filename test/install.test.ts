@@ -26,17 +26,37 @@ const validRaw = {
   }
 }
 
-describe('parseInstallEvent (#17)', () => {
-  it('валидный POST → expires_in коэрсится, auth разобран', () => {
+describe('parseInstallEvent — event-формат ONAPPINSTALL (#17)', () => {
+  it('валидный POST → нормализованный InstallAuth', () => {
     const e = parseInstallEvent(validRaw)
-    expect(e?.auth.member_id).toBe('m-abc')
-    expect(e?.auth.expires_in).toBe(3600)
-    expect(e?.auth.application_token).toBe('app-tok-xyz')
+    expect(e?.memberId).toBe('m-abc')
+    expect(e?.expiresIn).toBe(3600)
+    expect(e?.applicationToken).toBe('app-tok-xyz')
+    expect(e?.accessToken).toBe('AT-1')
   })
-  it('нет auth/токена/мусор → null', () => {
-    expect(parseInstallEvent({ auth: { ...validRaw.auth, application_token: '' } })).toBeNull()
+  it('нет токена/мусор → null', () => {
+    expect(parseInstallEvent({ auth: { ...validRaw.auth, access_token: '' } })).toBeNull()
     expect(parseInstallEvent({ auth: undefined })).toBeNull()
     expect(parseInstallEvent('garbage')).toBeNull()
+  })
+})
+
+describe('parseInstallEvent — install-страница (плоские поля) (#17)', () => {
+  it('AUTH_ID/REFRESH_ID/DOMAIN/member_id → InstallAuth (app_token опционален)', () => {
+    const e = parseInstallEvent({
+      DOMAIN: 'acme.bitrix24.ru',
+      AUTH_ID: 'AT-page',
+      REFRESH_ID: 'RT-page',
+      AUTH_EXPIRES: '3600',
+      member_id: 'm-page',
+      status: 'L'
+    })
+    expect(e).toMatchObject({ accessToken: 'AT-page', refreshToken: 'RT-page', memberId: 'm-page', domain: 'acme.bitrix24.ru', expiresIn: 3600 })
+    expect(e?.applicationToken).toBeUndefined() // install-страница его не шлёт
+  })
+  it('AUTH_EXPIRES отсутствует → дефолт 3600', () => {
+    const e = parseInstallEvent({ DOMAIN: 'a.bitrix24.ru', AUTH_ID: 'x', REFRESH_ID: 'y', member_id: 'm' })
+    expect(e?.expiresIn).toBe(3600)
   })
 })
 

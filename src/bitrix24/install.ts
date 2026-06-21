@@ -12,66 +12,130 @@ import type { B24OAuthParams } from './client'
  * HTTP/стор/клиент инжектируются → под тестами без живого портала.
  */
 
-/** Недоверенный POST установки (минимум; прочие поля игнорируются). `MAX_EXPIRES_IN` — общий с oauth. */
-export const installEventSchema = z.object({
-  auth: z.object({
-    access_token: z.string().min(1).max(4096),
-    refresh_token: z.string().min(1).max(4096),
-    expires_in: z.coerce.number().int().positive().max(MAX_EXPIRES_IN),
-    member_id: z.string().min(1).max(200),
-    domain: z.string().min(1).max(253),
-    application_token: z.string().min(1).max(200),
-    client_endpoint: z.string().max(500).optional(),
-    // Доп. поля install-`auth` для построения клиента B24OAuth (опциональны — парс остаётся мягким).
-    server_endpoint: z.string().max(500).optional(),
-    scope: z.string().max(500).optional(),
-    status: z.string().max(10).optional(),
-    user_id: z.coerce.number().int().nonnegative().optional(),
-    expires: z.coerce.number().int().nonnegative().max(1e13).optional()
-  })
-})
-export type InstallEvent = z.infer<typeof installEventSchema>
-
-/** Безопасно распарсить POST установки → `InstallEvent` или `null` (мусор/неполнота). */
-export function parseInstallEvent(raw: unknown): InstallEvent | null {
-  const r = installEventSchema.safeParse(raw)
-  return r.success ? r.data : null
+/**
+ * Нормализованная install-авторизация — ЕДИНАЯ для двух форматов, которыми Bitrix присылает установку:
+ *  - **install-страница** (iframe-обработчик): плоские поля формы `AUTH_ID`/`REFRESH_ID`/`AUTH_EXPIRES`/
+ *    `member_id`/`DOMAIN` (+ `DOMAIN` часто в query);
+ *  - **событие `ONAPPINSTALL`** (server-to-server): `auth.access_token`/… (несёт `application_token`).
+ * `applicationToken` опционален: install-страница его НЕ шлёт — он приходит позже с событием/роботом
+ * (захватывается там для верификации). Доп. поля (`scope`/`status`/`expires`/…) — для клиента `B24OAuth`.
+ */
+export interface InstallAuth {
+  accessToken: string
+  refreshToken: string
+  expiresIn: number
+  memberId: string
+  domain: string
+  applicationToken?: string
+  clientEndpoint?: string
+  serverEndpoint?: string
+  scope?: string
+  status?: string
+  userId?: number
+  expires?: number
 }
 
-/** Нормализация install-`auth` → `OAuthTokens` (с `applicationToken`); `expiresAt` из `expires_in`. */
-export function installToTokens(ev: InstallEvent, now: Date = new Date()): OAuthTokens {
-  const a = ev.auth
+/** Формат серверного события `ONAPPINSTALL`: `{ auth: { access_token, … } }`. */
+const eventAuthSchema = z.object({
+  access_token: z.string().min(1).max(4096),
+  refresh_token: z.string().min(1).max(4096),
+  expires_in: z.coerce.number().int().positive().max(MAX_EXPIRES_IN),
+  member_id: z.string().min(1).max(200),
+  domain: z.string().min(1).max(253),
+  application_token: z.string().min(1).max(200).optional(),
+  client_endpoint: z.string().max(500).optional(),
+  server_endpoint: z.string().max(500).optional(),
+  scope: z.string().max(500).optional(),
+  status: z.string().max(10).optional(),
+  user_id: z.coerce.number().int().nonnegative().optional(),
+  expires: z.coerce.number().int().nonnegative().max(1e13).optional()
+})
+
+/** Формат install-страницы (плоские поля формы; `DOMAIN`/`member_id` могут прийти из query). */
+const pageAuthSchema = z.object({
+  AUTH_ID: z.string().min(1).max(4096),
+  REFRESH_ID: z.string().min(1).max(4096),
+  AUTH_EXPIRES: z.coerce.number().int().positive().max(MAX_EXPIRES_IN).optional(),
+  member_id: z.string().min(1).max(200),
+  DOMAIN: z.string().min(1).max(253),
+  application_token: z.string().min(1).max(200).optional(),
+  status: z.string().max(10).optional()
+})
+
+/**
+ * Безопасно распарсить недоверенный POST установки (любого из двух форматов) → `InstallAuth` | `null`.
+ * Сначала пробуем event-формат (`auth.*`), затем install-страницу (плоские поля). `raw` — обычно
+ * объединение query+body (DOMAIN install-страницы приходит в query).
+ */
+export function parseInstallEvent(raw: unknown): InstallAuth | null {
+  if (raw && typeof raw === 'object' && 'auth' in (raw as Record<string, unknown>)) {
+    const e = eventAuthSchema.safeParse((raw as { auth: unknown }).auth)
+    if (e.success) {
+      const a = e.data
+      return {
+        accessToken: a.access_token,
+        refreshToken: a.refresh_token,
+        expiresIn: a.expires_in,
+        memberId: a.member_id,
+        domain: a.domain,
+        applicationToken: a.application_token,
+        clientEndpoint: a.client_endpoint,
+        serverEndpoint: a.server_endpoint,
+        scope: a.scope,
+        status: a.status,
+        userId: a.user_id,
+        expires: a.expires
+      }
+    }
+  }
+  const p = pageAuthSchema.safeParse(raw)
+  if (p.success) {
+    const a = p.data
+    return {
+      accessToken: a.AUTH_ID,
+      refreshToken: a.REFRESH_ID,
+      expiresIn: a.AUTH_EXPIRES ?? 3600,
+      memberId: a.member_id,
+      domain: a.DOMAIN,
+      applicationToken: a.application_token,
+      status: a.status
+    }
+  }
+  return null
+}
+
+/** Нормализация install-авторизации → `OAuthTokens` (с `applicationToken`); `expiresAt` из `expiresIn`. */
+export function installToTokens(a: InstallAuth, now: Date = new Date()): OAuthTokens {
   return oauthTokensSchema.parse({
-    memberId: a.member_id,
-    accessToken: a.access_token,
-    refreshToken: a.refresh_token,
-    expiresAt: new Date(now.getTime() + a.expires_in * 1000).toISOString(),
+    memberId: a.memberId,
+    accessToken: a.accessToken,
+    refreshToken: a.refreshToken,
+    expiresAt: new Date(now.getTime() + a.expiresIn * 1000).toISOString(),
     domain: a.domain,
-    clientEndpoint: a.client_endpoint,
-    applicationToken: a.application_token
+    clientEndpoint: a.clientEndpoint,
+    applicationToken: a.applicationToken
   })
 }
 
 /**
- * Маппинг install-`auth` → `B24OAuthParams` для построения серверного клиента `B24OAuth`
- * (`createPortalClient`). Install-событие несёт полный набор токенов; недостающие опциональные
- * поля получают разумные дефолты (`expires` из `expires_in`, `serverEndpoint` — официальный oauth).
+ * Маппинг install-авторизации → `B24OAuthParams` для клиента `B24OAuth` (`createPortalClient`).
+ * Недостающие поля получают дефолты (`expires` из `expiresIn`, `serverEndpoint` — официальный oauth,
+ * `applicationToken` — пустой, т.к. для исходящих вызовов используется access-token, не он).
  */
-export function installToB24Params(ev: InstallEvent, now: Date = new Date()): B24OAuthParams {
-  const a = ev.auth
+export function installToB24Params(a: InstallAuth, now: Date = new Date()): B24OAuthParams {
   const nowSec = Math.floor(now.getTime() / 1000)
   return {
-    applicationToken: a.application_token,
-    userId: a.user_id ?? 0,
-    memberId: a.member_id,
-    accessToken: a.access_token,
-    refreshToken: a.refresh_token,
-    expires: a.expires ?? nowSec + a.expires_in,
-    expiresIn: a.expires_in,
+    applicationToken: a.applicationToken ?? '',
+    userId: a.userId ?? 0,
+    memberId: a.memberId,
+    accessToken: a.accessToken,
+    refreshToken: a.refreshToken,
+    expires: a.expires ?? nowSec + a.expiresIn,
+    expiresIn: a.expiresIn,
     scope: a.scope ?? '',
     domain: a.domain,
-    clientEndpoint: a.client_endpoint ?? `https://${a.domain}/rest/`,
-    serverEndpoint: a.server_endpoint ?? 'https://oauth.bitrix.info/rest/',
+    clientEndpoint: a.clientEndpoint ?? `https://${a.domain}/rest/`,
+    serverEndpoint: a.serverEndpoint ?? 'https://oauth.bitrix.info/rest/',
     status: (a.status ?? 'L') as B24OAuthParams['status']
   }
 }
@@ -160,14 +224,14 @@ export function parsePlacementDealId(placementOptions: unknown): number | undefi
  * повторная установка идемпотентна по стабильным CODE/PLACEMENT; вызывающий может ретраить.
  */
 export async function handleInstall(
-  ev: InstallEvent,
+  auth: InstallAuth,
   deps: {
     saveTokens: (tokens: OAuthTokens) => Promise<void>
     registerIntegrations: (tokens: OAuthTokens) => Promise<void>
     now?: Date
   }
 ): Promise<OAuthTokens> {
-  const tokens = installToTokens(ev, deps.now)
+  const tokens = installToTokens(auth, deps.now)
   await deps.saveTokens(tokens)
   await deps.registerIntegrations(tokens)
   return tokens
