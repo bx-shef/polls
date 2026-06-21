@@ -29,19 +29,27 @@ const { data, error } = await useAsyncData<{ ok: boolean; surveys: SurveySummary
   () => $fetch('/api/admin/surveys')
 )
 
+useHead({ title: 'Опросы — управление' })
+
 // Фильтр по типу сущности живёт в URL (?entity=lead) — деплинкуемый, SSR-дружелюбный, гейт
 // снимает срез без клика. 'all' / неизвестное → без фильтра.
 const route = useRoute()
 const entityFilter = computed(() => String(route.query.entity ?? 'all'))
-const setFilter = (e: string) => navigateTo({ query: e === 'all' ? {} : { entity: e } })
+// replace: фильтр не засоряет историю браузера (кнопка «назад» не листает по срезам).
+const setFilter = (e: string) => navigateTo({ query: e === 'all' ? {} : { entity: e } }, { replace: true })
 
 const surveys = computed(() => data.value?.surveys ?? [])
 const filtered = computed(() =>
   entityFilter.value === 'all' ? surveys.value : surveys.value.filter((s) => s.entityType === entityFilter.value)
 )
 
-// Кнопки фильтра — только типы, реально встречающиеся в списке (+ «Все»).
-const presentEntities = computed(() => [...new Set(surveys.value.map((s) => s.entityType).filter(Boolean))] as string[])
+// Кнопки фильтра — только типы, реально встречающиеся в списке (+ «Все»); порядок стабильно
+// отсортирован (детерминизм для будущего визуального гейта).
+const presentEntities = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const s of surveys.value) if (s.entityType) set.add(s.entityType)
+  return [...set].sort()
+})
 </script>
 
 <template>
@@ -67,6 +75,7 @@ const presentEntities = computed(() => [...new Set(surveys.value.map((s) => s.en
           :color="entityFilter === 'all' ? 'air-primary' : 'air-tertiary'"
           size="sm"
           label="Все"
+          :aria-pressed="entityFilter === 'all'"
           @click="setFilter('all')"
         />
         <B24Button
@@ -75,6 +84,7 @@ const presentEntities = computed(() => [...new Set(surveys.value.map((s) => s.en
           :color="entityFilter === e ? 'air-primary' : 'air-tertiary'"
           size="sm"
           :label="ENTITY_LABELS[e as keyof typeof ENTITY_LABELS] ?? e"
+          :aria-pressed="entityFilter === e"
           @click="setFilter(e)"
         />
       </div>

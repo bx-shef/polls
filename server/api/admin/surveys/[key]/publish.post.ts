@@ -8,6 +8,11 @@ import { logger } from '../../../../utils/api'
  * монотонность гарантируются сервером, не доверяем телу). Ключ в URL должен совпадать с
  * `body.surveyKey` (не публикуем под чужим ключом). Ответ: `{ ok: true, versionNo }`.
  *
+ * Оптимистичная блокировка: опц. `body.expectedVersionNo` — номер текущей версии, который клиент
+ * загружал в редактор. Если он разошёлся с реальной текущей (кто-то опубликовал в промежутке) →
+ * 409, чтобы правка не затёрла молча чужую публикацию. Поле опционально (back-compat); читается
+ * ДО `surveyDraftSchema.safeParse` (схема strip'ает неизвестные ключи, поле в черновик не утекает).
+ *
  * Статусы: 400 (битый ключ/JSON h3), 401/503 (auth), 413 (тело > 64КБ), 409 (ключ URL≠тело ИЛИ
  * конфликт версии — номер уже занят), 422 (невалидный черновик/дубль question_key), 500 (инфра-сбой
  * стора — пробрасывается, не маскируется под 422). Body-limit по content-length — паритет с
@@ -33,7 +38,12 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: 'Некорректный ключ опроса' }
   }
 
-  const parsed = surveyDraftSchema.safeParse(await readBody(event))
+  const rawBody = await readBody(event)
+  // expectedVersionNo читаем ДО парса черновика (схема его strip'ает). undefined/NaN → проверку пропускаем.
+  const rawExpected = (rawBody as { expectedVersionNo?: unknown } | null)?.expectedVersionNo
+  const expectedVersionNo = typeof rawExpected === 'number' && Number.isInteger(rawExpected) ? rawExpected : undefined
+
+  const parsed = surveyDraftSchema.safeParse(rawBody)
   if (!parsed.success) {
     setResponseStatus(event, 422)
     return { ok: false, error: 'Невалидный черновик опроса' }
@@ -48,7 +58,13 @@ export default defineEventHandler(async (event) => {
   // сессии (session.portalId), не из тела/URL.
   const store = await useStore()
   const current = await store.currentVersion(surveyKey)
-  const nextVersion = (current?.versionNo ?? 0) + 1
+  const currentNo = current?.versionNo ?? 0
+  // Оптимистичная блокировка: клиент загружал currentNo'; если реальная текущая ушла вперёд — конфликт.
+  if (expectedVersionNo !== undefined && expectedVersionNo !== currentNo) {
+    setResponseStatus(event, 409)
+    return { ok: false, error: 'Опрос изменён другим пользователем — обновите страницу и повторите' }
+  }
+  const nextVersion = currentNo + 1
   try {
     await store.publish(parsed.data, nextVersion)
   } catch (e) {
