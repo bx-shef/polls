@@ -167,6 +167,12 @@ export function surveyRobotParams(handlerUrl: string): Record<string, unknown> {
  */
 export const PLACEMENT_DEAL_ACTIVITY = 'CRM_DEAL_DETAIL_ACTIVITY'
 export const PLACEMENT_ANALYTICS_MENU = 'CRM_ANALYTICS_MENU'
+/**
+ * Виджет в карточке задачи: ручной запуск опроса по задаче (у задачи нет стадии воронки — только
+ * ручной запуск, аналог `CRM_DEAL_DETAIL_ACTIVITY`). `TASK_VIEW_SIDEBAR` — боковая панель карточки;
+ * handler получает `PLACEMENT_OPTIONS={taskId}` + `AUTH_ID`. Код сверить на портале `placement.list`.
+ */
+export const PLACEMENT_TASK_VIEW = 'TASK_VIEW_SIDEBAR'
 
 /** Параметры одной встройки для `placement.bind`. */
 export interface PlacementSpec {
@@ -194,6 +200,12 @@ export function surveyPlacements(baseUrl: string): PlacementSpec[] {
       HANDLER: `${base}/b24/dashboard`,
       TITLE: 'Опросы — аналитика',
       LANG_ALL: { en: { TITLE: 'Surveys — analytics' }, ru: { TITLE: 'Опросы — аналитика' } }
+    },
+    {
+      PLACEMENT: PLACEMENT_TASK_VIEW,
+      HANDLER: `${base}/b24/task-widget`,
+      TITLE: 'Опрос по задаче',
+      LANG_ALL: { en: { TITLE: 'Task survey' }, ru: { TITLE: 'Опрос по задаче' } }
     }
   ]
 }
@@ -213,6 +225,26 @@ export function parsePlacementDealId(placementOptions: unknown): number | undefi
   }
   if (typeof opts !== 'object' || opts === null) return undefined
   const id = Number((opts as { ID?: unknown }).ID)
+  return Number.isInteger(id) && id > 0 ? id : undefined
+}
+
+/**
+ * Парс `PLACEMENT_OPTIONS` виджета карточки задачи (`TASK_VIEW_SIDEBAR`): JSON-СТРОКА или объект →
+ * числовой id задачи. Ключ зависит от версии плейсмента — пробуем `taskId`/`TASK_ID`/`ID`.
+ * undefined — мусор/нет ID (виджет открыт вне задачи).
+ */
+export function parsePlacementTaskId(placementOptions: unknown): number | undefined {
+  let opts: unknown = placementOptions
+  if (typeof placementOptions === 'string') {
+    try {
+      opts = JSON.parse(placementOptions)
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof opts !== 'object' || opts === null) return undefined
+  const o = opts as { taskId?: unknown; TASK_ID?: unknown; ID?: unknown }
+  const id = Number(o.taskId ?? o.TASK_ID ?? o.ID)
   return Number.isInteger(id) && id > 0 ? id : undefined
 }
 

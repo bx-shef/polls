@@ -63,6 +63,22 @@ export function dealGet(client: PortalClient, dealId: number): Promise<Record<st
 }
 
 /**
+ * `tasks.task.get` → поля задачи (для `taskToCrmContext`, ручной запуск из карточки задачи).
+ * Результат вложен (`{ task }` в REST v2 / `{ item }` в v3) — разворачиваем во внутренний объект.
+ * `select` запрашивает явно нужные поля + `UF_CRM_TASK`/`crmItemIds` (по умолчанию не отдаются).
+ */
+export async function taskGet(client: PortalClient, taskId: number): Promise<Record<string, unknown>> {
+  // `*` тянет стандартные поля (вкл. v3 `crmItemIds`/`responsible`); `UF_CRM_TASK` (легаси-привязка)
+  // по умолчанию НЕ возвращается — запрашиваем явно. Точный набор сверить на портале (#issue live-smoke).
+  const result = await callMethod<Record<string, unknown>>(client, 'tasks.task.get', {
+    taskId,
+    select: ['*', 'UF_CRM_TASK']
+  })
+  const inner = (result.task ?? result.item ?? result) as Record<string, unknown>
+  return inner
+}
+
+/**
  * Минимальные `B24OAuthParams` из auth фрейма/виджета (есть лишь `domain`+`accessToken`+`memberId`) —
  * для разового вызова от имени пользователя (виджет карточки сделки → `crm.deal.get`, #17).
  * Недостающие поля — безопасные дефолты; refresh не задействуется (один синхронный вызов).
