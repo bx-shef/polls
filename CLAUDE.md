@@ -294,6 +294,8 @@ UI/CSS не готова, пока не увидена глазами — рен
 
 `process.md` (как работает приложение — простыми словами), `concept.md` (концепция для клиента),
 `admin-setup.md` (установка/деплой: демо+прод, секреты, эксплуатация, тест-лист),
+`survey-management.md` (как устроены опросы, где добавить вопрос, как чистить данные за период,
+доп. точки встройки, рефлексия о сложности аналитики),
 `brief.md` (спецификация), `design.md` (b24ui), `data-model.md` (PostgreSQL + аналитика),
 `observability.md` (логи/health/error-tracking — #5),
 `bitrix24-integration.md` (маппинг CRM→`CrmContext` + smoke-тест связки `scripts/b24-smoke.ts`),
