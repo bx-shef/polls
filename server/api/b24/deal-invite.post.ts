@@ -44,6 +44,10 @@ export default defineEventHandler(async (event) => {
     const deal = await dealGet(client, dealId)
     const context = dealToCrmContext(deal)
 
+    // ⚠️ TENANT (#49): `useStore()` сейчас SINGLE-TENANT (один PgStore на инстанс приложения) —
+    // приложение обслуживает ОДИН портал. Подтверждённый `portal.portalId` тут НЕ выбирает стор.
+    // Для мульти-портала ОБЯЗАТЕЛЕН scoped-стор по `portal.portalId` (member_id → portal.id), иначе
+    // портал A создаст приглашение в данных портала B (инвариант createSurveyInvitation). Гейт — #49.
     const store = await useStore()
     const res = await createSurveyInvitation({ store, invitations: useInvitations(), surveyKey: DEFAULT_SURVEY, context })
     if (!res) {
