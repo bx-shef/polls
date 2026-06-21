@@ -4,6 +4,7 @@ import { MemoryInvitationStore } from '../src/api/invitation'
 import { invitationPolicySchema, type CrmContext, type InvitationPolicy } from '../src/domain/schema'
 
 const policy = (over: Partial<InvitationPolicy> = {}): InvitationPolicy => ({
+  entityType: 'deal',
   triggerStages: ['WON', 'C2:WON'],
   channelOrder: ['email', 'sms'],
   ...over
@@ -41,8 +42,18 @@ describe('domain/schema: invitationPolicySchema', () => {
     expect(invitationPolicySchema.safeParse({ channelOrder: ['email', 'email'] }).success).toBe(false)
     expect(invitationPolicySchema.safeParse({ channelOrder: ['sms', 'email'] }).success).toBe(true)
   })
-  it('дефолты: пустые triggerStages + [email, sms]', () => {
-    expect(invitationPolicySchema.parse({})).toEqual({ triggerStages: [], channelOrder: ['email', 'sms'] })
+  it('дефолты: entityType=deal + пустые triggerStages + [email, sms]', () => {
+    expect(invitationPolicySchema.parse({})).toEqual({ entityType: 'deal', triggerStages: [], channelOrder: ['email', 'sms'] })
+  })
+  it('entityType из перечисления: lead/spa/task ок, мусор отвергается', () => {
+    expect(invitationPolicySchema.parse({ entityType: 'lead' }).entityType).toBe('lead')
+    expect(invitationPolicySchema.parse({ entityType: 'task' }).entityType).toBe('task')
+    expect(invitationPolicySchema.safeParse({ entityType: 'invoice' }).success).toBe(false)
+  })
+  it('spaEntityTypeId — положительное целое для смарт-процесса', () => {
+    expect(invitationPolicySchema.parse({ entityType: 'spa', spaEntityTypeId: 1056 }).spaEntityTypeId).toBe(1056)
+    expect(invitationPolicySchema.safeParse({ spaEntityTypeId: 0 }).success).toBe(false)
+    expect(invitationPolicySchema.safeParse({ spaEntityTypeId: -1 }).success).toBe(false)
   })
 })
 

@@ -84,7 +84,7 @@ describe('GET /api/survey/:key/current (контур A)', () => {
           intro: { title: 'Здравствуйте', meta: ['Анонимно'] },
           thanks: { title: 'Спасибо!' },
           blocks: ['О сделке', 'Команда'],
-          invitationPolicy: { triggerStages: ['DEAL:WON'], channelOrder: ['email' as const] }
+          invitationPolicy: { entityType: 'deal' as const, triggerStages: ['DEAL:WON'], channelOrder: ['email' as const] }
         }
       }
     })()

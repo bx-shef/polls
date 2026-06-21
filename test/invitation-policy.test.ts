@@ -8,7 +8,7 @@ import { applySchema } from './helpers/schema'
 
 // Базовые свойства invitationPolicySchema (дефолты, отказ на дублях каналов) покрыты
 // в test/invitation.test.ts. Здесь — вшивание политики в draft/version/store.
-const POLICY: InvitationPolicy = { triggerStages: ['C1:WON', 'EXECUTING'], channelOrder: ['sms', 'email'] }
+const POLICY: InvitationPolicy = { entityType: 'deal', triggerStages: ['C1:WON', 'EXECUTING'], channelOrder: ['sms', 'email'] }
 
 function draft(over: Partial<SurveyDraft> = {}): SurveyDraft {
   return {
@@ -40,7 +40,7 @@ describe('invitationPolicy в surveyDraft', () => {
       questions: [{ key: 'q', type: 'text', metric: 'text', text: '?' }],
       invitationPolicy: {}
     })
-    expect(compile(parsed, 1).invitationPolicy).toEqual({ triggerStages: [], channelOrder: ['email', 'sms'] })
+    expect(compile(parsed, 1).invitationPolicy).toEqual({ entityType: 'deal', triggerStages: [], channelOrder: ['email', 'sms'] })
   })
 })
 
@@ -55,7 +55,7 @@ describe('compile вшивает invitationPolicy в версию', () => {
 
   it('diffVersions НЕ зависит от смены политики (ряд остаётся сопоставим)', () => {
     const v1 = compile(draft(), 1)
-    const v2 = compile(draft({ invitationPolicy: { triggerStages: ['OTHER'], channelOrder: ['email'] } }), 2)
+    const v2 = compile(draft({ invitationPolicy: { entityType: 'deal', triggerStages: ['OTHER'], channelOrder: ['email'] } }), 2)
     // Вопросы идентичны → все unchanged; политика приглашения на классы изменений не влияет.
     expect(Object.values(diffVersions(v1, v2)).every((c) => c === 'unchanged')).toBe(true)
   })

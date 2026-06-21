@@ -25,6 +25,16 @@ export const NUMERIC_METRICS = new Set<Metric>(['nps', 'csat', 'ces', 'scale'])
 export const INVITE_CHANNELS = ['email', 'sms'] as const
 export type InviteChannel = (typeof INVITE_CHANNELS)[number]
 
+/**
+ * Тип сущности Bitrix24, к которой привязан опрос (датчик запуска). На каждое направление
+ * и тип сущности можно завести 1+ опрос. `deal` — дефолт (обратная совместимость: ранние
+ * опросы без поля считаются «по сделке»). `spa` — смарт-процесс (crm.item, динамический тип),
+ * `task` — задача (модуль задач, вне CRM-воронок). Стадии/статусы триггера портал-специфичны
+ * и лежат в `invitationPolicy.triggerStages`.
+ */
+export const ENTITY_TYPES = ['deal', 'lead', 'spa', 'contact', 'company', 'task'] as const
+export type EntityType = (typeof ENTITY_TYPES)[number]
+
 /** ISO-8601 с таймзоной (напр. `2026-04-03T10:00:00.000Z`). */
 const isoDatetime = z.string().datetime({ offset: true })
 
@@ -58,6 +68,17 @@ export type Question = z.infer<typeof questionSchema>
  * вшита в него и в compiledVersion (#17); persists в survey_version.compiled_schema.
  */
 export const invitationPolicySchema = z.object({
+  /**
+   * Тип сущности-датчика (deal/lead/spa/contact/company/task). Дефолт `deal` —
+   * обратная совместимость с опросами без явной привязки. `triggerStages` трактуются
+   * в терминах этой сущности (стадии сделки / статусы лида / стадии смарт-процесса и т.п.).
+   */
+  entityType: z.enum(ENTITY_TYPES).default('deal'),
+  /**
+   * id смарт-процесса (`entityTypeId` crm.item), когда `entityType === 'spa'` —
+   * динамические типы различаются только числовым id. Для прочих сущностей не нужен.
+   */
+  spaEntityTypeId: z.number().int().positive().optional(),
   /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
   triggerStages: z.array(z.string().min(1).max(200)).max(50).default([]),
   /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей.
