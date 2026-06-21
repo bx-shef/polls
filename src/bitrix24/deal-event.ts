@@ -53,14 +53,14 @@ export function verifyApplicationToken(received: string, expected: string): bool
   return a.length === b.length && timingSafeEqual(a, b)
 }
 
-/** Число из REST-значения (строки/числа); пусто/NaN → undefined. */
-function num(v: unknown): number | undefined {
+/** Число из REST-значения (строки/числа); пусто/NaN → undefined. Общий хелпер мапперов сущностей. */
+export function num(v: unknown): number | undefined {
   if (v == null || v === '') return undefined
   const n = Number(v)
   return Number.isFinite(n) ? n : undefined
 }
 /** Положительный id (0/пусто = «нет связи» → undefined). */
-function posId(v: unknown): number | undefined {
+export function posId(v: unknown): number | undefined {
   const n = num(v)
   return n && n > 0 ? n : undefined
 }
