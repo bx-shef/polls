@@ -15,7 +15,8 @@ import {
   type IStore,
   type Queryable,
   type ResponsePage,
-  type ResponsePageOptions
+  type ResponsePageOptions,
+  type SurveySummary
 } from './types'
 // Re-export для обратной совместимости: исторически Queryable жил здесь.
 export type { Queryable } from './types'
@@ -289,6 +290,31 @@ export class PgStore implements IStore {
       [this.opts.portalId, stageId]
     )
     return r.rows.map((row) => row.survey_key)
+  }
+
+  async listSurveys(): Promise<SurveySummary[]> {
+    // Сводка по текущей версии каждого опроса портала. Привязка-датчик — из compiled_schema
+    // (JSONB); trigger_stages берём из денормализованной колонки (тот же источник, что GIN).
+    const r = await this.db.query<{ compiled_schema: unknown }>(
+      `select sv.compiled_schema from survey s
+       join survey_group g on g.id = s.group_id
+       join survey_version sv on sv.id = s.current_version_id
+       where g.portal_id = $1
+       order by s.survey_key`,
+      [this.opts.portalId]
+    )
+    return r.rows.map((row) => {
+      const v = compiledVersionSchema.parse(row.compiled_schema)
+      return {
+        surveyKey: v.surveyKey,
+        title: v.title,
+        lang: v.lang,
+        currentVersionNo: v.versionNo,
+        entityType: v.invitationPolicy?.entityType,
+        spaEntityTypeId: v.invitationPolicy?.spaEntityTypeId,
+        triggerStages: v.invitationPolicy?.triggerStages ?? []
+      }
+    })
   }
 
   async addResponse(r: ResponseRecord): Promise<void> {

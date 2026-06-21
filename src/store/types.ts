@@ -1,4 +1,4 @@
-import type { CompiledVersion, ResponseRecord, SurveyDraft } from '../domain/schema'
+import type { CompiledVersion, EntityType, ResponseRecord, SurveyDraft } from '../domain/schema'
 
 /** Размер страницы read-API: дефолт и потолок (защита от тяжёлых выборок). */
 export const DEFAULT_PAGE_SIZE = 100
@@ -16,6 +16,23 @@ export const MAX_PAGE_SIZE = 500
 export interface Queryable {
   query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
   transaction?<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>
+}
+
+/**
+ * Сводка опроса для админ-списка (экран «Опросы», фаза мульти-сущность): ключ, заголовок,
+ * номер текущей версии и привязка-датчик (тип сущности + триггеры) из текущей версии.
+ * Без вопросов/презентации — это лёгкая проекция для списка/фильтра, деталь грузится отдельно.
+ */
+export interface SurveySummary {
+  surveyKey: string
+  title: string
+  lang: string
+  currentVersionNo: number
+  /** Тип сущности-датчика; undefined, если у текущей версии нет invitationPolicy. */
+  entityType?: EntityType
+  spaEntityTypeId?: number
+  /** Стадии/статусы-триггеры текущей версии (для фильтра по направлению). */
+  triggerStages: string[]
 }
 
 export interface ResponsePageOptions {
@@ -53,6 +70,12 @@ export interface IStore {
    * отсортировано по survey_key. Набор ограничен числом активных опросов портала (без пагинации).
    */
   surveysTriggeredBy(stageId: string): Promise<string[]>
+  /**
+   * Сводки всех опросов (по их ТЕКУЩЕЙ версии) для админ-списка. Tenant-scoped (PgStore),
+   * отсортировано по survey_key. Набор ограничен числом опросов портала (без пагинации —
+   * опросов на портал немного; при росте добавить keyset). Опросы без версий не существуют.
+   */
+  listSurveys(): Promise<SurveySummary[]>
   /**
    * Сохраняет завершённую анкету (валидирует запись на границе). Инвариант:
    * `versionNo` записи должен существовать в сторе — в PgStore это FK на survey_version.
