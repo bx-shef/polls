@@ -53,6 +53,14 @@ describe('compile вшивает invitationPolicy в версию', () => {
     expect(compile(draft({ invitationPolicy: undefined }), 1).invitationPolicy).toBeUndefined()
   })
 
+  it('SPA-вариант: entityType+spaEntityTypeId доходят до версии без потерь', () => {
+    const spa = compile(
+      draft({ invitationPolicy: { entityType: 'spa', spaEntityTypeId: 1056, triggerStages: ['DT1056:WON'], channelOrder: ['email'] } }),
+      1
+    ).invitationPolicy
+    expect(spa).toMatchObject({ entityType: 'spa', spaEntityTypeId: 1056 })
+  })
+
   it('diffVersions НЕ зависит от смены политики (ряд остаётся сопоставим)', () => {
     const v1 = compile(draft(), 1)
     const v2 = compile(draft({ invitationPolicy: { entityType: 'deal', triggerStages: ['OTHER'], channelOrder: ['email'] } }), 2)
@@ -85,6 +93,10 @@ describe('политика переживает запись/чтение и з�
       expect((await store.getVersion('pol_survey', 1))?.invitationPolicy).toEqual(POLICY)
       expect((await store.getVersion('pol_survey', 2))?.invitationPolicy).toBeUndefined()
       expect((await store.currentVersion('pol_survey'))?.invitationPolicy).toBeUndefined()
+      // SPA-вариант: spaEntityTypeId переживает JSONB-раунд-трип
+      const spaPolicy: InvitationPolicy = { entityType: 'spa', spaEntityTypeId: 1056, triggerStages: ['DT1056:WON'], channelOrder: ['email'] }
+      await store.publish(draft({ surveyKey: 'spa_survey', invitationPolicy: spaPolicy }), 1)
+      expect((await store.getVersion('spa_survey', 1))?.invitationPolicy).toEqual(spaPolicy)
     } finally {
       await pg.close()
     }

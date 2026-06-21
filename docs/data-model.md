@@ -347,6 +347,10 @@ create index on answer_insight (theme);
 > Методы сверены по REST-докам Bitrix24. `crm.deal.*` и `crm.deal.productrows.get`
 > рабочие; современные аналоги — `crm.item.get` / `crm.item.productrow.list`
 > (entityTypeId = 2 для сделок).
+>
+> Не путать: `invitationPolicy.entityType` (схема) — это ЛОГИЧЕСКИЙ тип-датчик опроса
+> (`deal`/`lead`/`spa`/…), надстройка над числовыми Bitrix24-`entityTypeId`. Для `spa`
+> конкретный смарт-процесс задаётся отдельным `spaEntityTypeId` (= числовой `entityTypeId`).
 
 ---
 

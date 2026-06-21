@@ -31,6 +31,11 @@ export type InviteChannel = (typeof INVITE_CHANNELS)[number]
  * опросы без поля считаются «по сделке»). `spa` — смарт-процесс (crm.item, динамический тип),
  * `task` — задача (модуль задач, вне CRM-воронок). Стадии/статусы триггера портал-специфичны
  * и лежат в `invitationPolicy.triggerStages`.
+ *
+ * ВНИМАНИЕ (фаза мульти-сущность): сейчас боевой триггер — ТОЛЬКО `deal` (`deal-event.ts` +
+ * `surveysTriggeredBy` по `stageId`). Прочие типы — задекларированы в модели, но датчик ещё не
+ * подключён: у `task` нет `stageId` в смысле воронки (нужен отдельный binding `ONTASKUPDATE`),
+ * у `spa` — свой namespace стадий. До реализации фазы выбор не-deal сущности приглашений не создаёт.
  */
 export const ENTITY_TYPES = ['deal', 'lead', 'spa', 'contact', 'company', 'task'] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
@@ -77,8 +82,9 @@ export const invitationPolicySchema = z.object({
   /**
    * id смарт-процесса (`entityTypeId` crm.item), когда `entityType === 'spa'` —
    * динамические типы различаются только числовым id. Для прочих сущностей не нужен.
+   * Верхняя граница — INT4_MAX (id Bitrix24 укладываются; защита от мусора в payload).
    */
-  spaEntityTypeId: z.number().int().positive().optional(),
+  spaEntityTypeId: z.number().int().positive().max(2147483647).optional(),
   /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
   triggerStages: z.array(z.string().min(1).max(200)).max(50).default([]),
   /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей.
