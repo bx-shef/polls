@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   parseInstallEvent,
   installToTokens,
+  installToB24Params,
   surveyRobotParams,
   surveyPlacements,
   parsePlacementDealId,
@@ -51,6 +52,32 @@ describe('installToTokens (#17)', () => {
       applicationToken: 'app-tok-xyz'
     })
     expect(t.expiresAt).toBe('2026-06-20T11:00:00.000Z') // now + 3600s
+  })
+})
+
+describe('installToB24Params (#17)', () => {
+  it('полный auth → B24OAuthParams', () => {
+    const ev = parseInstallEvent({
+      auth: { ...validRaw.auth, user_id: '1', scope: 'crm,bizproc', status: 'L', server_endpoint: 'https://oauth.bitrix.info/rest/' }
+    })!
+    const p = installToB24Params(ev)
+    expect(p).toMatchObject({
+      memberId: 'm-abc',
+      accessToken: 'AT-1',
+      refreshToken: 'RT-1',
+      applicationToken: 'app-tok-xyz',
+      userId: 1,
+      scope: 'crm,bizproc',
+      status: 'L'
+    })
+  })
+  it('минимальный auth → дефолты (clientEndpoint/serverEndpoint/status/userId)', () => {
+    const p = installToB24Params(parseInstallEvent(validRaw)!, new Date('2026-06-20T10:00:00.000Z'))
+    expect(p.clientEndpoint).toBe('https://acme.bitrix24.ru/rest/')
+    expect(p.serverEndpoint).toBe('https://oauth.bitrix.info/rest/')
+    expect(p.status).toBe('L')
+    expect(p.userId).toBe(0)
+    expect(p.expires).toBe(Math.floor(new Date('2026-06-20T10:00:00.000Z').getTime() / 1000) + 3600)
   })
 })
 

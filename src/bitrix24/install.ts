@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { oauthTokensSchema, MAX_EXPIRES_IN, type OAuthTokens } from './oauth'
+import type { B24OAuthParams } from './client'
 
 /**
  * Установка приложения на портал (ISSUE #17) — ЯДРО-рантайм. При установке локального/тиражного
@@ -20,7 +21,13 @@ export const installEventSchema = z.object({
     member_id: z.string().min(1).max(200),
     domain: z.string().min(1).max(253),
     application_token: z.string().min(1).max(200),
-    client_endpoint: z.string().max(500).optional()
+    client_endpoint: z.string().max(500).optional(),
+    // Доп. поля install-`auth` для построения клиента B24OAuth (опциональны — парс остаётся мягким).
+    server_endpoint: z.string().max(500).optional(),
+    scope: z.string().max(500).optional(),
+    status: z.string().max(10).optional(),
+    user_id: z.coerce.number().int().nonnegative().optional(),
+    expires: z.coerce.number().int().nonnegative().max(1e13).optional()
   })
 })
 export type InstallEvent = z.infer<typeof installEventSchema>
@@ -43,6 +50,30 @@ export function installToTokens(ev: InstallEvent, now: Date = new Date()): OAuth
     clientEndpoint: a.client_endpoint,
     applicationToken: a.application_token
   })
+}
+
+/**
+ * Маппинг install-`auth` → `B24OAuthParams` для построения серверного клиента `B24OAuth`
+ * (`createPortalClient`). Install-событие несёт полный набор токенов; недостающие опциональные
+ * поля получают разумные дефолты (`expires` из `expires_in`, `serverEndpoint` — официальный oauth).
+ */
+export function installToB24Params(ev: InstallEvent, now: Date = new Date()): B24OAuthParams {
+  const a = ev.auth
+  const nowSec = Math.floor(now.getTime() / 1000)
+  return {
+    applicationToken: a.application_token,
+    userId: a.user_id ?? 0,
+    memberId: a.member_id,
+    accessToken: a.access_token,
+    refreshToken: a.refresh_token,
+    expires: a.expires ?? nowSec + a.expires_in,
+    expiresIn: a.expires_in,
+    scope: a.scope ?? '',
+    domain: a.domain,
+    clientEndpoint: a.client_endpoint ?? `https://${a.domain}/rest/`,
+    serverEndpoint: a.server_endpoint ?? 'https://oauth.bitrix.info/rest/',
+    status: (a.status ?? 'L') as B24OAuthParams['status']
+  }
 }
 
 /** Уникальный код робота автоматизации приложения (стабилен — повторная установка обновляет). */
