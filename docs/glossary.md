@@ -39,6 +39,10 @@
   `entityType`); индексируются GIN, читаются `IStore.surveysTriggeredBy` (#22).
 - **`entityType`** — тип сущности-датчика Bitrix24 в `invitationPolicy` (deal/lead/spa/contact/
   company/task; дефолт deal). Для `spa` обязателен `spaEntityTypeId` (id смарт-процесса) — инвариант схемы.
+- **`CrmContext.dealStageId`** — обобщённый «триггер-ключ» снимка контекста: для сделки `STAGE_ID`,
+  для лида `STATUS_ID`, для смарт-процесса `stageId`; у контакта/компании не заполняется (ручной
+  запуск из виджета). Имя историческое («deal»); `surveysTriggeredBy` матчит его по строке.
+  Переименование в `entityStageId` — отдельный рефактор (#next, после стабилизации всех сущностей).
 - **`invitationPolicy`** — политика приглашений (датчик: `entityType`/`spaEntityTypeId`/`triggerStages`/
   `channelOrder`), вшитая в схему/версию на уровне version-frozen (решение #21). См. `decisions.md`.
 

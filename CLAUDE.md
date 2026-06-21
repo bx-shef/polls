@@ -110,6 +110,12 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   (zod-парс недоверенного POST: событие несёт лишь `data.FIELDS.ID` + `auth`), `verifyApplicationToken`
   (constant-time сверка `application_token` — анти-форджери), `dealToCrmContext` (маппинг `crm.deal.get`
   → снимок `CrmContext`: IDs+стадия, имена — обогащением позже). Эндпоинт/`event.bind`/обогащение — #17.
+  `bitrix24/entity-event.ts` (фаза мульти-сущность — ЯДРО): обобщает триггер на лид/смарт-процесс/
+  контакт/компанию — `parseEntityUpdateEvent` (недоверенный POST `ONCRM<ENTITY>UPDATE`/
+  `ONCRMDYNAMICITEMUPDATE_<typeId>` → `{entityType,id,spaEntityTypeId?,auth}`) + мапперы
+  `leadToCrmContext`/`spaItemToCrmContext`/`contactToCrmContext`/`companyToCrmContext` (поля REST →
+  `CrmContext`; `dealStageId` = обобщённый триггер-ключ: STATUS_ID лида/stageId СП, переименование → #next) + `ENTITY_MAPPERS`
+  (полнота по `ENTITY_TYPES`, страховка типов). Эндпоинт/`event.bind`/обогащение/плейсменты — фаза связки.
   `bitrix24/client.ts` (`createPortalClient`/`callMethod`/`dealGet`) — серверный REST-клиент портала
   на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`): основа всех исходящих вызовов (`crm.deal.get`/
   обогащение/`event.bind`/`app.info`). Тонкие хелперы разбирают `AjaxResult` → `result | throw`,
