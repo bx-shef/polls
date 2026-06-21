@@ -4,6 +4,7 @@ import { createApi, type Api } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
+import { MemoryInvitationStore } from '~core/api/invitation'
 import { PgStore, queryableFromPool } from '~core/store/pg'
 import { applyMigrations, upSql } from '~core/store/migrate'
 import { ensureDefaultPortal, seedDemoIfEmpty } from '~core/store/bootstrap'
@@ -92,6 +93,17 @@ export function useApi(): Promise<Api> {
   return apiPromise
 }
 
+/**
+ * ОБЩИЙ стор приглашений на процесс: его пишет триггер/виджет (создаёт приглашение по сделке) и
+ * расходует `submit` — поэтому createApi получает ИМЕННО этот инстанс, а не создаёт свой.
+ * In-memory (один инстанс); durable-стор приглашений в БД — #4.
+ */
+let invitationStore: MemoryInvitationStore | undefined
+export function useInvitations(): MemoryInvitationStore {
+  if (!invitationStore) invitationStore = new MemoryInvitationStore()
+  return invitationStore
+}
+
 async function buildApi(): Promise<Api> {
   const store = await useStore()
   // Щедрый лимитер для dev/gate-сервера: SSR-рендер сам дёргает /api/survey/:key/current
@@ -100,5 +112,5 @@ async function buildApi(): Promise<Api> {
   // (она по IP за доверенным прокси + общий стор — #4/#6); здесь высокий потолок убирает
   // ложные 429, оставляя ceiling от примитивного флуда.
   const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
-  return createApi({ store, logger, limiter })
+  return createApi({ store, logger, limiter, invitations: useInvitations() })
 }

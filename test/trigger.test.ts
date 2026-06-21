@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { handleDealTrigger, dealIdFromDocumentId, type TriggerStore } from '../src/bitrix24/trigger'
+import { handleDealTrigger, createSurveyInvitation, dealIdFromDocumentId, type TriggerStore } from '../src/bitrix24/trigger'
 import { MemoryInvitationStore } from '../src/api/invitation'
 import type { CompiledVersion, CrmContext } from '../src/domain/schema'
 
@@ -66,6 +66,29 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
       context: ctx()
     })
     expect(res).toEqual([])
+  })
+})
+
+describe('createSurveyInvitation — ручной запуск по сделке (#17)', () => {
+  it('опубликованная версия → приглашение с контекстом', async () => {
+    const invitations = new MemoryInvitationStore()
+    const res = await createSurveyInvitation({
+      store: store({}, { csat_postdeal: 2 }),
+      invitations,
+      surveyKey: 'csat_postdeal',
+      context: ctx()
+    })
+    expect(res).toMatchObject({ surveyKey: 'csat_postdeal', versionNo: 2 })
+    expect(invitations.peek(res!.token, new Date())?.context.dealId).toBe(759)
+  })
+  it('нет опубликованной версии → null', async () => {
+    const res = await createSurveyInvitation({
+      store: store({}, {}),
+      invitations: new MemoryInvitationStore(),
+      surveyKey: 'ghost',
+      context: ctx()
+    })
+    expect(res).toBeNull()
   })
 })
 

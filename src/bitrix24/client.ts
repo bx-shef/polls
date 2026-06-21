@@ -61,3 +61,26 @@ export async function callMethod<T = unknown>(client: PortalClient, method: stri
 export function dealGet(client: PortalClient, dealId: number): Promise<Record<string, unknown>> {
   return callMethod<Record<string, unknown>>(client, 'crm.deal.get', { id: dealId })
 }
+
+/**
+ * Минимальные `B24OAuthParams` из auth фрейма/виджета (есть лишь `domain`+`accessToken`+`memberId`) —
+ * для разового вызова от имени пользователя (виджет карточки сделки → `crm.deal.get`, #17).
+ * Недостающие поля — безопасные дефолты; refresh не задействуется (один синхронный вызов).
+ */
+export function frameToB24Params(auth: { domain: string; accessToken: string; memberId: string }): B24OAuthParams {
+  const nowSec = Math.floor(Date.now() / 1000)
+  return {
+    applicationToken: '',
+    userId: 0,
+    memberId: auth.memberId,
+    accessToken: auth.accessToken,
+    refreshToken: '',
+    expires: nowSec + 3600,
+    expiresIn: 3600,
+    scope: '',
+    domain: auth.domain,
+    clientEndpoint: `https://${auth.domain}/rest/`,
+    serverEndpoint: 'https://oauth.bitrix.info/rest/',
+    status: 'L' as B24OAuthParams['status']
+  }
+}

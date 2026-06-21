@@ -70,3 +70,25 @@ export function dealIdFromDocumentId(documentId: unknown): number | undefined {
   const id = Number(m[1])
   return Number.isInteger(id) && id > 0 ? id : undefined
 }
+
+/**
+ * Создать приглашение на КОНКРЕТНЫЙ опрос по сделке (ручной запуск из виджета карточки сделки —
+ * `CRM_DEAL_DETAIL_ACTIVITY`, охват на всех тарифах). В отличие от `handleDealTrigger` (по стадии),
+ * опрос задан явно. Возвращает приглашение или `null`, если у опроса нет опубликованной версии.
+ * Tenant-инвариант тот же: `store` ОБЯЗАН быть scoped на портал виджета (см. `handleDealTrigger`).
+ */
+export async function createSurveyInvitation(deps: {
+  store: Pick<IStore, 'currentVersion'>
+  invitations: InvitationStore
+  surveyKey: string
+  context: CrmContext
+  now?: Date
+}): Promise<TriggerResult | null> {
+  const version = await deps.store.currentVersion(deps.surveyKey)
+  if (!version) return null
+  const inv = deps.invitations.create(
+    { surveyKey: deps.surveyKey, versionNo: version.versionNo, context: deps.context },
+    deps.now ?? new Date()
+  )
+  return { surveyKey: deps.surveyKey, versionNo: version.versionNo, token: inv.token }
+}
