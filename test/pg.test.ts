@@ -108,6 +108,30 @@ describe('PgStore (pglite)', () => {
     expect(await store.listResponses('other_survey')).toHaveLength(0)
   })
 
+  it('listSurveys — сводка по текущей версии + tenant-изоляция + привязка из JSONB', async () => {
+    const { db, portalA, portalB } = await fresh()
+    const storeA = new PgStore(db, { portalId: portalA })
+    const storeB = new PgStore(db, { portalId: portalB })
+    await storeA.publish(draftV1(), 1)
+    await storeA.publish(draftV2(), 2) // текущая = v2
+    await storeA.publish(
+      {
+        surveyKey: 'spa_nps',
+        title: 'NPS по СП',
+        lang: 'ru',
+        questions: [{ key: 'q', type: 'single', metric: 'nps', required: true, text: '?', options: [{ key: 'n10', label: '10', score: 10 }] }],
+        invitationPolicy: { entityType: 'spa', spaEntityTypeId: 1056, triggerStages: ['DT1056:WON'], channelOrder: ['email'] }
+      },
+      1
+    )
+    const list = await storeA.listSurveys()
+    expect(list.map((x) => x.surveyKey)).toEqual([SURVEY_KEY, 'spa_nps']) // отсортировано по ключу
+    expect(list.find((x) => x.surveyKey === SURVEY_KEY)).toMatchObject({ currentVersionNo: 2, triggerStages: [] })
+    expect(list.find((x) => x.surveyKey === 'spa_nps')).toMatchObject({ entityType: 'spa', spaEntityTypeId: 1056, triggerStages: ['DT1056:WON'] })
+    // tenant-изоляция: портал B не видит опросы портала A
+    expect(await storeB.listSurveys()).toEqual([])
+  })
+
   it('tenant-изоляция: данные одного портала не видны другому', async () => {
     const { db, portalA, portalB } = await fresh()
     const storeA = new PgStore(db, { portalId: portalA })

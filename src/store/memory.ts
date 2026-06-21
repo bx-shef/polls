@@ -1,7 +1,7 @@
 import { compile } from '../domain/compile'
 import { responseRecordSchema, type CompiledVersion, type ResponseRecord, type SurveyDraft } from '../domain/schema'
 import { afterKeyset, decodeCursor, encodeCursor, keysetCmp } from './cursor'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions } from './types'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions, type SurveySummary } from './types'
 
 /**
  * In-memory реализация {@link IStore} — для локальной проверки итога и тестов.
@@ -52,6 +52,28 @@ export class MemoryStore implements IStore {
       if (v.invitationPolicy?.triggerStages.includes(stageId)) out.push(key)
     }
     return out.sort()
+  }
+
+  async listSurveys(): Promise<SurveySummary[]> {
+    // O(n) скан this.versions — допустимо для in-memory стора (тесты/демо); в PgStore это SQL
+    // по current_version_id. Семантика «текущая = max versionNo» совпадает с PgStore (там
+    // current_version_id проставляет publish как max).
+    const current = new Map<string, CompiledVersion>()
+    for (const v of this.versions) {
+      const prev = current.get(v.surveyKey)
+      if (!prev || v.versionNo > prev.versionNo) current.set(v.surveyKey, v)
+    }
+    return [...current.values()]
+      .map((v) => ({
+        surveyKey: v.surveyKey,
+        title: v.title,
+        lang: v.lang,
+        currentVersionNo: v.versionNo,
+        entityType: v.invitationPolicy?.entityType,
+        spaEntityTypeId: v.invitationPolicy?.spaEntityTypeId,
+        triggerStages: v.invitationPolicy?.triggerStages ?? []
+      }))
+      .sort((a, b) => a.surveyKey.localeCompare(b.surveyKey))
   }
 
   async addResponse(r: ResponseRecord): Promise<void> {
