@@ -19,6 +19,10 @@ describe('MemoryStore', () => {
     expect((await s.currentVersion(SURVEY_KEY))?.versionNo).toBe(2)
   })
 
+  it('listSurveys — пустой стор → []', async () => {
+    expect(await new MemoryStore().listSurveys()).toEqual([])
+  })
+
   it('listSurveys — сводка по текущей версии (back-compat: без политики → undefined/[])', async () => {
     const s = new MemoryStore()
     await s.publish(draftV1(), 1)
@@ -27,6 +31,18 @@ describe('MemoryStore', () => {
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({ surveyKey: SURVEY_KEY, currentVersionNo: 2, triggerStages: [] })
     expect(list[0]!.entityType).toBeUndefined()
+  })
+
+  it('listSurveys — сортировка по survey_key (вставка не по алфавиту)', async () => {
+    const s = new MemoryStore()
+    const mini = (key: string) => ({
+      surveyKey: key, title: key, lang: 'ru',
+      questions: [{ key: 'q', type: 'text' as const, metric: 'text' as const, required: true, text: '?', options: [] }]
+    })
+    await s.publish(mini('zebra'), 1)
+    await s.publish(mini('alpha'), 1)
+    await s.publish(mini('mike'), 1)
+    expect((await s.listSurveys()).map((x) => x.surveyKey)).toEqual(['alpha', 'mike', 'zebra'])
   })
 
   it('listSurveys — привязка-датчик из текущей версии (entityType/spaEntityTypeId/triggerStages)', async () => {

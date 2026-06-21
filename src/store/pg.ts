@@ -3,6 +3,7 @@ import { compile } from '../domain/compile'
 import { round1, round2, type CsatSummary, type NpsSummary } from '../domain/metrics'
 import {
   compiledVersionSchema,
+  invitationPolicySchema,
   responseRecordSchema,
   type CompiledVersion,
   type ResponseRecord,
@@ -293,10 +294,26 @@ export class PgStore implements IStore {
   }
 
   async listSurveys(): Promise<SurveySummary[]> {
-    // Сводка по текущей версии каждого опроса портала. Привязка-датчик — из compiled_schema
-    // (JSONB); trigger_stages берём из денормализованной колонки (тот же источник, что GIN).
-    const r = await this.db.query<{ compiled_schema: unknown }>(
-      `select sv.compiled_schema from survey s
+    // Лёгкая проекция: тащим из JSONB только нужные скаляры (не весь compiled_schema со
+    // всеми вопросами — `SurveySummary` их не содержит), а triggerStages берём из
+    // денормализованной колонки (тот же источник, что GIN). Привязку-датчик
+    // (entityType/spaEntityTypeId) парсим точечно из поддерева invitation_policy.
+    const r = await this.db.query<{
+      survey_key: string
+      title: string
+      lang: string
+      version_no: number
+      invitation_policy: unknown
+      trigger_stages: string[] | null
+    }>(
+      `select
+         sv.compiled_schema->>'surveyKey' as survey_key,
+         sv.compiled_schema->>'title' as title,
+         sv.compiled_schema->>'lang' as lang,
+         (sv.compiled_schema->>'versionNo')::int as version_no,
+         sv.compiled_schema->'invitationPolicy' as invitation_policy,
+         sv.trigger_stages as trigger_stages
+       from survey s
        join survey_group g on g.id = s.group_id
        join survey_version sv on sv.id = s.current_version_id
        where g.portal_id = $1
@@ -304,15 +321,16 @@ export class PgStore implements IStore {
       [this.opts.portalId]
     )
     return r.rows.map((row) => {
-      const v = compiledVersionSchema.parse(row.compiled_schema)
+      // invitation_policy может быть null (опрос без политики) — парсим только при наличии.
+      const policy = row.invitation_policy != null ? invitationPolicySchema.parse(row.invitation_policy) : undefined
       return {
-        surveyKey: v.surveyKey,
-        title: v.title,
-        lang: v.lang,
-        currentVersionNo: v.versionNo,
-        entityType: v.invitationPolicy?.entityType,
-        spaEntityTypeId: v.invitationPolicy?.spaEntityTypeId,
-        triggerStages: v.invitationPolicy?.triggerStages ?? []
+        surveyKey: row.survey_key,
+        title: row.title,
+        lang: row.lang,
+        currentVersionNo: row.version_no,
+        entityType: policy?.entityType,
+        spaEntityTypeId: policy?.spaEntityTypeId,
+        triggerStages: row.trigger_stages ?? []
       }
     })
   }

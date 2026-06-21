@@ -26,10 +26,12 @@ export interface Queryable {
 export interface SurveySummary {
   surveyKey: string
   title: string
+  /** Язык анкеты (один опрос = один язык, решение №3). */
   lang: string
   currentVersionNo: number
   /** Тип сущности-датчика; undefined, если у текущей версии нет invitationPolicy. */
   entityType?: EntityType
+  /** id смарт-процесса (только при entityType=spa). */
   spaEntityTypeId?: number
   /** Стадии/статусы-триггеры текущей версии (для фильтра по направлению). */
   triggerStages: string[]
@@ -72,8 +74,8 @@ export interface IStore {
   surveysTriggeredBy(stageId: string): Promise<string[]>
   /**
    * Сводки всех опросов (по их ТЕКУЩЕЙ версии) для админ-списка. Tenant-scoped (PgStore),
-   * отсортировано по survey_key. Набор ограничен числом опросов портала (без пагинации —
-   * опросов на портал немного; при росте добавить keyset). Опросы без версий не существуют.
+   * отсортировано по survey_key. Без пагинации — MVP-ограничение (опросов на портал ожидается
+   * немного); при росте добавить keyset. Опросы без опубликованных версий в выборку не попадают.
    */
   listSurveys(): Promise<SurveySummary[]>
   /**

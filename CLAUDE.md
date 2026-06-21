@@ -66,7 +66,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 - `domain/aggregate.ts` — агрегация на 4 уровнях (опрос/услуга/клиент/направление) + KPI/тренд;
   срезы по версии (`byVersion`/`byVersionRange`), `npsTrend(minN)`.
 - `store/types.ts` (`IStore`) + `store/memory.ts` (`MemoryStore`) — контракт хранилища
-  (методы async, вкл. keyset-пагинацию `listResponsesPage`) и in-memory реализация.
+  (методы async, вкл. keyset-пагинацию `listResponsesPage` и `listSurveys()` — лёгкую сводку
+  всех опросов по текущей версии: ключ/заголовок/версия + привязка-датчик entityType/triggerStages,
+  для админ-списка) и in-memory реализация.
   `store/pg.ts` (`PgStore`) — реализация поверх PostgreSQL: драйвер-агностичная
   (`Queryable` ≈ `pg.Pool`/pglite; запись в транзакции при поддержке драйвера),
   tenant-scoped по `portalId`; денормализация контекста в колонки + `response_product`;
@@ -144,6 +146,7 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 `pnpm serve`, ОДИН стор на `/api/*` и дашборд; прод-стор/PgStore + общий анти-абьюз — слой
 деплоя #4/#6) + роуты `server/api/`: `GET /api/session`, `POST /api/submit`,
 `GET /api/survey/:key/current`, `GET /api/health`, `GET /api/dashboard/:key` (контур B),
+`GET /api/admin/surveys` (список опросов портала для админ-UI, auth-гейт `requirePortalSession`, fail-closed),
 `POST /api/b24/session` (#47, handshake app-фрейма Bitrix24 → подписанная сессия в cookie `polls_portal`:
 парс/`verifyFrameAuth`/минт — в ядре, обёртка минтит секретом `DASHBOARD_AUTH_SECRET` и ставит cookie
 `SameSite=None; Secure; Partitioned` для iframe; fail-closed: без секрета → 503, неудача проверки → 401;

@@ -55,7 +55,9 @@ export class MemoryStore implements IStore {
   }
 
   async listSurveys(): Promise<SurveySummary[]> {
-    // Для каждого surveyKey берём версию с максимальным versionNo (= текущую).
+    // O(n) скан this.versions — допустимо для in-memory стора (тесты/демо); в PgStore это SQL
+    // по current_version_id. Семантика «текущая = max versionNo» совпадает с PgStore (там
+    // current_version_id проставляет publish как max).
     const current = new Map<string, CompiledVersion>()
     for (const v of this.versions) {
       const prev = current.get(v.surveyKey)

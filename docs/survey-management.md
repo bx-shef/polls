@@ -44,6 +44,15 @@
 2. **Через стор** (программно): `await store.publish(draft, versionNo)` — на любом `IStore`
    (Memory/Pg). Это же делает `seedDemoIfEmpty` при первом старте на пустой БД.
 
+## Точка входа админ-UI (список опросов)
+
+Список опросов портала — `GET /api/admin/surveys` (auth: `requirePortalSession`, fail-closed):
+возвращает `{ ok, surveys: SurveySummary[] }` — по каждому опросу ключ, заголовок, язык, номер
+текущей версии и привязку-датчик (`entityType`/`spaEntityTypeId`/`triggerStages`). Это основа
+экрана-списка с фильтром по сущности/направлению (макет на основе шаблонов печатных форм Bitrix24).
+Tenant-scoped внутри PgStore по `portalId`; мульти-тенант + rate-limit — #49. CRUD-черновиков и
+сам визуальный конструктор — следующие фазы (см. «Дальше»).
+
 ## Как добавить новый вопрос
 
 1. В черновике (`SurveyDraft.blocks[].questions[]`) добавить вопрос с **новым стабильным
