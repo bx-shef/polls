@@ -6,21 +6,42 @@
 
 ## Где мы
 
-✅ **Ядро** (`domain` / `store` / `api` / `obs` / `bitrix24` / `server`) — готово под
-тестами (покрытие ~100% + `pnpm verify`). Это framework-agnostic движок + HTTP-слой
-с анти-абьюзом, PgStore, OAuth-ядром Bitrix24, наблюдаемостью.
+### Состояние (июнь 2026 — LIVE)
 
-✅ **Контур A начат:** `client/survey-fill.ts` (`SurveyFill`) — framework-agnostic
-«мозг» прохождения опроса (навигация/deep-link, валидация шага, single/multi +
-exclusive, «Другое», persist-снимок, маппинг в `Submission`), под тестами (#24).
-Без DOM/Vue — экраны и Vue-композабл оборачивают его в фазе связки.
+✅ **Ядро** под тестами (~100% + `pnpm verify`): движок, версионирование, агрегация 4 уровней,
+PgStore, анти-абьюз, OAuth/handshake/триггер Bitrix24, REST-клиент на `@bitrix24/b24jssdk`.
+✅ **Оба контура UI** (`/s/:key`, `/d/:key`) под визуальным гейтом, тёмная тема.
+✅ **Развёрнуто вживую:** `https://polls.bx-shef.by` (TLS), авто-CD (merge→GHCR→watchtower),
+**PostgreSQL** (данные сохраняются), деплой тиражируем.
+✅ **Bitrix24 — установка работает:** приложение ставится (`/api/b24/install` → токены +
+регистрация робота `bizproc.robot.add` и плейсментов `CRM_DEAL_DETAIL_ACTIVITY`/`CRM_ANALYTICS_MENU`).
+Дашборд в портале — handshake `/b24/dashboard` (фрейм → `/api/b24/session` → cookie → `/d/:key`).
 
-## Куда движемся (фазы связки и деплоя)
+### Что дальше — понятный план (по приоритету)
+
+**Связка с порталом → end-to-end «сделка → опрос → дашборд»:**
+1. **Дашборд в iframe** — URL приложения портала = `/b24/dashboard`, проверить загрузку (резолвер
+   `domain → member_id` активен после установки).
+2. **Срабатывание триггера** — `POST /api/b24/robot` + виджет `/b24/deal-widget`: верификация →
+   `crm.deal.get` → `dealToCrmContext` → `handleDealTrigger` → приглашение. Ядро готово
+   (`trigger.ts`/`deal-event.ts`/`client.ts`) — нужна Nitro/Vue-обвязка.
+3. **Доставка опроса** адресату (ссылка в таймлайн сделки `crm.activity` / email) + захват
+   `application_token` из первого события (верификация робота).
+4. **Обогащение имён** (company/category/user.get) — срезы дашборда по именам, не ID.
+5. **Tenant-изоляция дашборда** при нескольких порталах (`member_id → portal.id → scoped PgStore`).
+
+**Продуктовые хвосты (в [`issues.md`](./issues.md), не блокеры):** админ-UI опросов · очистка
+данных за период · прогрессивное раскрытие дашборда · доп. плейсменты (вкладка сделки/лиды/левое
+меню/imbot) · наблюдаемость прода (Pino/Sentry, #15) · общий стор анти-абьюза (#4).
+Управление/встройки/рефлексия — [`survey-management.md`](./survey-management.md); потоки Bitrix —
+[`bitrix24-integration.md`](./bitrix24-integration.md).
+
+## История фаз (как пришли сюда)
 
 ```
-[✅ ядро] → [✅ SurveyFill (мозг контура A)] → [✅ виз. гейт #13] → [✅ Nuxt+b24ui каркас]
-              → [✅ Nitro-привязка createApi] → [✅ экраны опроса (контур A) + гейт + тёмная тема]
-                  → [🔶 дашборд (контур B): KPI + тренд NPS] → [⏳ деплой-слой]
+[✅ ядро] → [✅ SurveyFill] → [✅ виз. гейт] → [✅ Nuxt+b24ui] → [✅ Nitro createApi]
+   → [✅ экраны контура A] → [✅ дашборд контура B] → [✅ деплой live + PostgreSQL]
+      → [✅ установка Bitrix24] → [🔶 срабатывание триггера + дашборд в iframe]
 ```
 
 | Фаза | Что | Зависит от | Issue |
