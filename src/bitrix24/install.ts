@@ -65,22 +65,79 @@ export function surveyRobotParams(handlerUrl: string): Record<string, unknown> {
 }
 
 /**
- * Оркестрация установки: нормализовать токены → сохранить → зарегистрировать робот. Порядок важен:
- * робот регистрируется ПОСЛЕ сохранения токенов (регистрация идёт токеном этого же портала).
- * `saveTokens`/`registerRobot` инжектируются (Nitro: `PortalTokenStore.save` + `client.callMethod`).
- * Частичный отказ (токены сохранены, робот — нет) безопасен: повторная установка идемпотентна по
- * стабильному `CODE` робота; вызывающий может ретраить установку.
+ * Коды встроек (placement). Робот зависит от тарифа → плейсменты дают охват на ВСЕХ тарифах:
+ *  - `CRM_DEAL_DETAIL_ACTIVITY` — виджет в карточке сделки: ручной запуск опроса по сделке
+ *    (handler получает `PLACEMENT_OPTIONS={ID: dealId}` + `AUTH_ID`);
+ *  - `CRM_ANALYTICS_MENU` — пункт в меню CRM-аналитики: сюда затянут дашборд (без `PLACEMENT_OPTIONS`).
+ */
+export const PLACEMENT_DEAL_ACTIVITY = 'CRM_DEAL_DETAIL_ACTIVITY'
+export const PLACEMENT_ANALYTICS_MENU = 'CRM_ANALYTICS_MENU'
+
+/** Параметры одной встройки для `placement.bind`. */
+export interface PlacementSpec {
+  PLACEMENT: string
+  HANDLER: string
+  TITLE: string
+  LANG_ALL?: Record<string, { TITLE: string }>
+}
+
+/**
+ * Встройки приложения для `placement.bind` (по `baseUrl` приложения, напр. `https://polls.bx-shef.by`):
+ * виджет запуска опроса в карточке сделки + дашборд в меню CRM-аналитики. HANDLER'ы — на нашем домене.
+ */
+export function surveyPlacements(baseUrl: string): PlacementSpec[] {
+  const base = baseUrl.replace(/\/+$/, '')
+  return [
+    {
+      PLACEMENT: PLACEMENT_DEAL_ACTIVITY,
+      HANDLER: `${base}/b24/deal-widget`,
+      TITLE: 'Опрос по сделке',
+      LANG_ALL: { en: { TITLE: 'Deal survey' }, ru: { TITLE: 'Опрос по сделке' } }
+    },
+    {
+      PLACEMENT: PLACEMENT_ANALYTICS_MENU,
+      HANDLER: `${base}/b24/dashboard`,
+      TITLE: 'Опросы — аналитика',
+      LANG_ALL: { en: { TITLE: 'Surveys — analytics' }, ru: { TITLE: 'Опросы — аналитика' } }
+    }
+  ]
+}
+
+/**
+ * Парс `PLACEMENT_OPTIONS` виджета карточки сделки (`CRM_DEAL_DETAIL_ACTIVITY`): приходит JSON-СТРОКОЙ
+ * `{"ID":"3473"}` → числовой id сделки. undefined — мусор/нет ID (виджет открыт вне сделки).
+ */
+export function parsePlacementDealId(placementOptions: unknown): number | undefined {
+  let opts: unknown = placementOptions
+  if (typeof placementOptions === 'string') {
+    try {
+      opts = JSON.parse(placementOptions)
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof opts !== 'object' || opts === null) return undefined
+  const id = Number((opts as { ID?: unknown }).ID)
+  return Number.isInteger(id) && id > 0 ? id : undefined
+}
+
+/**
+ * Оркестрация установки: нормализовать токены → сохранить → зарегистрировать встройки (робот +
+ * плейсменты). Порядок важен: регистрация ПОСЛЕ сохранения токенов (идёт токеном этого же портала).
+ * `saveTokens`/`registerIntegrations` инжектируются (Nitro: `PortalTokenStore.save` + серия
+ * `client.callMethod('bizproc.robot.add' | 'placement.bind', …)`). Частичный отказ безопасен:
+ * повторная установка идемпотентна по стабильным CODE/PLACEMENT; вызывающий может ретраить.
  */
 export async function handleInstall(
   ev: InstallEvent,
   deps: {
     saveTokens: (tokens: OAuthTokens) => Promise<void>
-    registerRobot: (tokens: OAuthTokens) => Promise<void>
+    registerIntegrations: (tokens: OAuthTokens) => Promise<void>
     now?: Date
   }
 ): Promise<OAuthTokens> {
   const tokens = installToTokens(ev, deps.now)
   await deps.saveTokens(tokens)
-  await deps.registerRobot(tokens)
+  await deps.registerIntegrations(tokens)
   return tokens
 }

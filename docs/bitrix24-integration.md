@@ -209,6 +209,18 @@ third-party cookies в iframe). Fail-closed: без секрета → 503, лю
 
   **Симметрия (направление «результат → CRM», #18):** `crm.automation.trigger.add` — внешний триггер,
   который ДВИГАЕТ сделку при событии приложения (опрос пройден → продвинуть стадию/записать в таймлайн).
+
+- **[#17] Встройки-виджеты (охват на ВСЕХ тарифах)** — робот зависит от тарифа, поэтому при установке
+  регистрируем ещё два плейсмента (`placement.bind`, ядро: `surveyPlacements`/`PLACEMENT_*`):
+  - **`CRM_DEAL_DETAIL_ACTIVITY`** (`HANDLER` `…/b24/deal-widget`) — виджет в карточке сделки: ручной
+    запуск опроса по сделке. Handler получает `PLACEMENT_OPTIONS` JSON-строкой `{"ID":dealId}`
+    (`parsePlacementDealId`) + `AUTH_ID` → `crm.deal.get` → `dealToCrmContext` → приглашение.
+  - **`CRM_ANALYTICS_MENU`** (`HANDLER` `…/b24/dashboard`) — дашборд контура B в меню CRM-аналитики
+    (без `PLACEMENT_OPTIONS`; рендерит `/d/:key` после handshake фрейма #47).
+
+  Регистрация всех встроек (робот + 2 плейсмента) — в `handleInstall.registerIntegrations` при установке.
+  Осталось (живой портал): Nitro-эндпоинт `/api/b24/install` + Vue-страницы виджетов (`/b24/deal-widget`,
+  `/b24/dashboard`) с frame-handshake (#47) + боевой `B24OAuth`-клиент.
 - **[#4](https://github.com/bx-shef/polls/issues/4)** — идемпотентность `addResponse`
   по invitation (чтобы повтор перехода/сабмита не плодил записи).
 
