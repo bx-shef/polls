@@ -87,7 +87,17 @@ export const invitationPolicySchema = z.object({
     .array(z.enum(INVITE_CHANNELS))
     .refine((a) => new Set(a).size === a.length, { message: 'channelOrder: каналы не должны повторяться' })
     .default(['email', 'sms'])
-})
+  })
+  // Инвариант: spaEntityTypeId осмыслен ТОЛЬКО для смарт-процесса (spa требует id, прочие — запрещают),
+  // иначе тихо-проглоченное поле = скрытая неконсистентность привязки.
+  .superRefine((p, ctx) => {
+    if (p.entityType === 'spa' && p.spaEntityTypeId === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['spaEntityTypeId'], message: 'spaEntityTypeId обязателен для entityType=spa' })
+    }
+    if (p.entityType !== 'spa' && p.spaEntityTypeId !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['spaEntityTypeId'], message: 'spaEntityTypeId допустим только при entityType=spa' })
+    }
+  })
 export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
 
 /**

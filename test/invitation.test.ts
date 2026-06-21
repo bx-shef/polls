@@ -52,8 +52,16 @@ describe('domain/schema: invitationPolicySchema', () => {
   })
   it('spaEntityTypeId — положительное целое для смарт-процесса', () => {
     expect(invitationPolicySchema.parse({ entityType: 'spa', spaEntityTypeId: 1056 }).spaEntityTypeId).toBe(1056)
-    expect(invitationPolicySchema.safeParse({ spaEntityTypeId: 0 }).success).toBe(false)
-    expect(invitationPolicySchema.safeParse({ spaEntityTypeId: -1 }).success).toBe(false)
+    expect(invitationPolicySchema.safeParse({ entityType: 'spa', spaEntityTypeId: 0 }).success).toBe(false)
+    expect(invitationPolicySchema.safeParse({ entityType: 'spa', spaEntityTypeId: -1 }).success).toBe(false)
+  })
+  it('инвариант spaEntityTypeId↔entityType: spa требует id, прочие — запрещают', () => {
+    // spa без id — отказ
+    expect(invitationPolicySchema.safeParse({ entityType: 'spa' }).success).toBe(false)
+    // не-spa с id — отказ (тихо-проглоченное поле)
+    expect(invitationPolicySchema.safeParse({ entityType: 'deal', spaEntityTypeId: 42 }).success).toBe(false)
+    // дефолтный deal без id — ок
+    expect(invitationPolicySchema.safeParse({}).success).toBe(true)
   })
 })
 
