@@ -114,7 +114,7 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   контакт/компанию — `parseEntityUpdateEvent` (недоверенный POST `ONCRM<ENTITY>UPDATE`/
   `ONCRMDYNAMICITEMUPDATE_<typeId>` → `{entityType,id,spaEntityTypeId?,auth}`) + мапперы
   `leadToCrmContext`/`spaItemToCrmContext`/`contactToCrmContext`/`companyToCrmContext` (поля REST →
-  `CrmContext`; `dealStageId` = обобщённый триггер-ключ: STATUS_ID лида/stageId СП) + `ENTITY_MAPPERS`
+  `CrmContext`; `dealStageId` = обобщённый триггер-ключ: STATUS_ID лида/stageId СП, переименование → #next) + `ENTITY_MAPPERS`
   (полнота по `ENTITY_TYPES`, страховка типов). Эндпоинт/`event.bind`/обогащение/плейсменты — фаза связки.
   `bitrix24/client.ts` (`createPortalClient`/`callMethod`/`dealGet`) — серверный REST-клиент портала
   на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`): основа всех исходящих вызовов (`crm.deal.get`/

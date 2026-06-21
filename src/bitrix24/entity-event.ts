@@ -24,8 +24,8 @@ const EVENT_TO_ENTITY: Record<string, EntityType> = {
   ONCRMDEALUPDATE: 'deal',
   ONCRMLEADUPDATE: 'lead',
   ONCRMCONTACTUPDATE: 'contact',
-  ONCRMCOMPANYUPDATE: 'company',
-  ONCRMDYNAMICITEMUPDATE: 'spa'
+  ONCRMCOMPANYUPDATE: 'company'
+  // spa (ONCRMDYNAMICITEMUPDATE[_<typeId>]) обрабатывается отдельно — у него суффикс с typeId.
 }
 
 /** Auth недоверенного POST (общий для всех событий). */
@@ -33,6 +33,8 @@ const eventAuthSchema = z.object({
   member_id: z.string().min(1).max(200),
   domain: z.string().min(1).max(253),
   application_token: z.string().min(1).max(200),
+  // Битрикс кладёт access_token пользователя в событие; мапперы его НЕ читают (исходящие вызовы
+  // идут токеном портала из PortalTokenStore). Пробрасываем транзитом — НЕ логировать (секрет).
   access_token: z.string().min(1).max(4096).optional()
 })
 
@@ -51,7 +53,11 @@ const entityUpdateEventSchema = z.object({
 export interface EntityUpdateEvent {
   entityType: EntityType
   id: number
-  /** entityTypeId смарт-процесса (только при entityType=spa). */
+  /**
+   * entityTypeId смарт-процесса (только при entityType=spa). НЕДОВЕРЕННО до `verifyApplicationToken`:
+   * это значение из POST-тела, и binding-слой обязан проверить `application_token` ПЕРЕД любым
+   * `crm.item.get(spaEntityTypeId, id)` — иначе IDOR/cross-tenant (запрос чужого смарт-процесса).
+   */
   spaEntityTypeId?: number
   auth: z.infer<typeof eventAuthSchema>
 }
@@ -65,16 +71,18 @@ export function parseEntityUpdateEvent(raw: unknown): EntityUpdateEvent | null {
   const r = entityUpdateEventSchema.safeParse(raw)
   if (!r.success) return null
   const evt = r.data.event.toUpperCase()
-  // Смарт-процесс шлёт `ONCRMDYNAMICITEMUPDATE_<typeId>` — нормализуем к базовому имени.
-  const baseEvent = evt.startsWith('ONCRMDYNAMICITEMUPDATE') ? 'ONCRMDYNAMICITEMUPDATE' : evt
-  const entityType = EVENT_TO_ENTITY[baseEvent]
+  // Смарт-процесс шлёт `ONCRMDYNAMICITEMUPDATE_<typeId>` (точное имя ИЛИ с разделителем `_`,
+  // не `ONCRMDYNAMICITEMUPDATEXXX`) — нормализуем к базовому имени.
+  const isDynamic = evt === 'ONCRMDYNAMICITEMUPDATE' || evt.startsWith('ONCRMDYNAMICITEMUPDATE_')
+  const entityType = isDynamic ? 'spa' : EVENT_TO_ENTITY[evt]
   if (!entityType) return null
-  return {
-    entityType,
-    id: r.data.data.FIELDS.ID,
-    spaEntityTypeId: entityType === 'spa' ? r.data.data.FIELDS.ENTITY_TYPE_ID : undefined,
-    auth: r.data.auth
+  let spaEntityTypeId: number | undefined
+  if (entityType === 'spa') {
+    // typeId из FIELDS, иначе fallback из числового суффикса имени события (`..._1056` → 1056).
+    const fromSuffix = isDynamic ? num(evt.slice('ONCRMDYNAMICITEMUPDATE_'.length)) : undefined
+    spaEntityTypeId = r.data.data.FIELDS.ENTITY_TYPE_ID ?? (fromSuffix && fromSuffix > 0 ? fromSuffix : undefined)
   }
+  return { entityType, id: r.data.data.FIELDS.ID, spaEntityTypeId, auth: r.data.auth }
 }
 
 /**
@@ -118,6 +126,7 @@ export function contactToCrmContext(contact: Record<string, unknown>): CrmContex
   })
 }
 
+/** `crm.company.get` → `CrmContext`. Компания несёт себя как `companyId`; пайплайн-стадии нет. */
 export function companyToCrmContext(company: Record<string, unknown>): CrmContext {
   return crmContextSchema.parse({
     companyId: posId(company.ID),

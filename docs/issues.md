@@ -30,6 +30,8 @@
 | NEW | Триггер по задаче (`task`): отдельный binding `ONTASKUPDATE` по статусу (у задачи нет `stageId` воронки) | bitrix24 | предложен | `task` в `ENTITY_TYPES` задекларирован, но `surveysTriggeredBy(stageId)` для него не сработает — нужен иной механизм |
 | NEW | `surveysTriggeredBy` мульти-сущность: составная фильтрация `(entityType, stageId)` + денормализация `entityType`/`spaEntityTypeId` из JSONB в колонки PgStore | store | предложен | сейчас GIN по `trigger_stages` работает для deal; namespace стадий spa другой |
 | NEW | Админ-UI: список опросов с фильтром (по сущности/направлению) + редактор с привязкой к сущности — макеты на основе шаблонов печатных форм Bitrix24 | app | предложен | развитие «Админ-UI создания опросов»; референс — UI шаблонов печатных форм (список+фильтр / карточка с привязкой к сущностям) |
+| NEW | Рефактор `CrmContext.dealStageId` → `entityStageId` (обобщённый триггер-ключ) | domain/store | предложен | сейчас поле перегружено семантикой (STATUS_ID лида/stageId СП); переименование тянет схему + миграцию + денормализацию PgStore — после стабилизации всех сущностей |
+| NEW | Binding-слой мульти-сущности: `event.bind` на ONCRM<ENTITY>UPDATE + эндпоинт → `parseEntityUpdateEvent` → роутинг на `ENTITY_MAPPERS` (deal=null → `dealToCrmContext`) → приглашение | bitrix24 | предложен (ядро парс/мапперов готово, #82+) | требует живой портал; `verifyApplicationToken` ПЕРЕД `crm.*.get` (IDOR/cross-tenant по `spaEntityTypeId`) |
 
 ## Закрытые (контекст)
 

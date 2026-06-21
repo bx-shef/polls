@@ -32,6 +32,24 @@ describe('parseEntityUpdateEvent — недоверенный POST → деск�
     expect(r).toMatchObject({ entityType: 'spa', id: 7, spaEntityTypeId: 1056 })
   })
 
+  it('spa: spaEntityTypeId — fallback из суффикса имени, если нет ENTITY_TYPE_ID', () => {
+    const r = parseEntityUpdateEvent({ event: 'ONCRMDYNAMICITEMUPDATE_1056', data: { FIELDS: { ID: 7 } }, auth })
+    expect(r).toMatchObject({ entityType: 'spa', id: 7, spaEntityTypeId: 1056 })
+  })
+
+  it('spa без typeId (ни поля, ни суффикса) → spaEntityTypeId undefined', () => {
+    expect(parseEntityUpdateEvent({ event: 'ONCRMDYNAMICITEMUPDATE', data: { FIELDS: { ID: 7 } }, auth })?.spaEntityTypeId).toBeUndefined()
+  })
+
+  it('ENTITY_TYPE_ID из FIELDS приоритетнее суффикса', () => {
+    const r = parseEntityUpdateEvent({ event: 'ONCRMDYNAMICITEMUPDATE_1056', data: { FIELDS: { ID: 7, ENTITY_TYPE_ID: 2000 } }, auth })
+    expect(r?.spaEntityTypeId).toBe(2000)
+  })
+
+  it('похожее-но-не-то имя (ONCRMDYNAMICITEMUPDATEX) → null', () => {
+    expect(parseEntityUpdateEvent({ event: 'ONCRMDYNAMICITEMUPDATEX', data: { FIELDS: { ID: 1 } }, auth })).toBeNull()
+  })
+
   it('неизвестное событие / мусор / нет id → null', () => {
     expect(parseEntityUpdateEvent({ event: 'ONCRMINVOICEUPDATE', data: { FIELDS: { ID: 1 } }, auth })).toBeNull()
     expect(parseEntityUpdateEvent({ event: 'ONCRMLEADUPDATE', data: { FIELDS: { ID: 0 } }, auth })).toBeNull()
@@ -56,6 +74,17 @@ describe('мапперы сущность→CrmContext', () => {
   it('смарт-процесс: camelCase-поля', () => {
     const ctx = spaItemToCrmContext({ stageId: 'DT1056:WON', companyId: 202, assignedById: 12, opportunity: 700 })
     expect(ctx).toMatchObject({ dealStageId: 'DT1056:WON', companyId: 202, responsibleId: 12, dealAmount: 700 })
+  })
+
+  it('стадия не строка (число из CRM) → dealStageId undefined', () => {
+    expect(leadToCrmContext({ STATUS_ID: 123, COMPANY_ID: '1' }).dealStageId).toBeUndefined()
+    expect(spaItemToCrmContext({ stageId: 5, companyId: 1 }).dealStageId).toBeUndefined()
+  })
+
+  it('пустой объект → все поля undefined (CrmContext gracefully пуст)', () => {
+    expect(leadToCrmContext({})).toEqual({})
+    expect(spaItemToCrmContext({})).toEqual({})
+    expect(companyToCrmContext({})).toEqual({})
   })
 
   it('контакт/компания: сам как id, без стадии', () => {
