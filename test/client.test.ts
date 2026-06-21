@@ -63,6 +63,10 @@ describe('taskGet (задача)', () => {
     const c = client(ok({ item: { id: 9, crmItemIds: ['C_45'] } }))
     expect(await taskGet(c, 9)).toMatchObject({ id: 9, crmItemIds: ['C_45'] })
   })
+  it('fallback: без обёртки task/item возвращает сам result', async () => {
+    const c = client(ok({ id: 3, responsibleId: 1 }))
+    expect(await taskGet(c, 3)).toMatchObject({ id: 3, responsibleId: 1 })
+  })
 })
 
 describe('frameToB24Params (#17)', () => {

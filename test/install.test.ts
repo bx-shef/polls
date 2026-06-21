@@ -134,11 +134,16 @@ describe('parsePlacementTaskId (задача)', () => {
     expect(parsePlacementTaskId({ TASK_ID: 5 })).toBe(5)
     expect(parsePlacementTaskId({ ID: '9' })).toBe(9)
   })
-  it('битый JSON / нет id / 0 / мусор → undefined', () => {
+  it('числовое значение в JSON (не строкой)', () => {
+    expect(parsePlacementTaskId('{"taskId":812}')).toBe(812)
+  })
+  it('битый JSON / нет id / 0 / отрицательное / мусор → undefined', () => {
     expect(parsePlacementTaskId('{not json')).toBeUndefined()
     expect(parsePlacementTaskId('{"X":1}')).toBeUndefined()
     expect(parsePlacementTaskId('{"taskId":"0"}')).toBeUndefined()
+    expect(parsePlacementTaskId('{"taskId":"-5"}')).toBeUndefined()
     expect(parsePlacementTaskId(null)).toBeUndefined()
+    expect(parsePlacementTaskId(undefined)).toBeUndefined()
   })
 })
 

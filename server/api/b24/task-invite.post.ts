@@ -6,10 +6,13 @@
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
 import { createPortalClient, taskGet, frameToB24Params } from '~core/bitrix24/client'
 import { taskToCrmContext } from '~core/bitrix24/task'
+import { parsePlacementTaskId } from '~core/bitrix24/install'
 import { createSurveyInvitation } from '~core/bitrix24/trigger'
 import { allowB24Session, useB24Authenticator } from '../../utils/b24-session'
 import { useStore, useInvitations, logger } from '../../utils/api'
 
+// Какой опрос запускать с карточки задачи. Хардкод (паритет с deal-invite); конфиг «entityType →
+// surveyKey» — отдельный issue (см. docs/issues.md).
 const DEFAULT_SURVEY = 'csat_postdeal'
 
 export default defineEventHandler(async (event) => {
@@ -18,8 +21,12 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: 'Слишком много запросов' }
   }
 
-  const body = await readBody(event).catch(() => ({}))
-  const taskId = Number((body as { taskId?: unknown }).taskId)
+  const body = (await readBody(event).catch(() => ({}))) as { taskId?: unknown; PLACEMENT_OPTIONS?: unknown }
+  // taskId: из явного поля (виджет распарсил placement options client-side) ИЛИ fallback — из сырых
+  // PLACEMENT_OPTIONS через ядровой парсер (терпим к JSON-строке/ключам taskId/TASK_ID/ID).
+  const taskId = (Number.isInteger(Number(body.taskId)) && Number(body.taskId) > 0
+    ? Number(body.taskId)
+    : parsePlacementTaskId(body.PLACEMENT_OPTIONS)) ?? 0
   const frame = parseFrameAuth(body)
   if (!frame || !Number.isInteger(taskId) || taskId <= 0) {
     setResponseStatus(event, 400)

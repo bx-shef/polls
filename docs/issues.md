@@ -32,6 +32,9 @@
 | NEW | Админ-UI: список опросов с фильтром (по сущности/направлению) + редактор с привязкой к сущности — макеты на основе шаблонов печатных форм Bitrix24 | app | ✅ реализовано (#83 список+фильтр, #86+фаза5 конструктор) | референс выдержан; остаток — полировка (drag-and-drop, `/admin/*` в визуальный гейт) |
 | NEW | `/admin/*` в визуальный гейт #13 (список + конструктор; light/dark × брейкпоинты) | UI | предложен | экраны сверены глазами, эталоны не сняты; добавить `*.visual.ts` + `DASHBOARD_DEV_OPEN=1`. См. `visual-gate.md` |
 | NEW | Рефактор `CrmContext.dealStageId` → `entityStageId` (обобщённый триггер-ключ) | domain/store | предложен | сейчас поле перегружено семантикой (STATUS_ID лида/stageId СП); переименование тянет схему + миграцию + денормализацию PgStore — после стабилизации всех сущностей |
+| NEW | Выбор опроса по типу сущности: `DEFAULT_SURVEY` хардкод одинаков для сделки/задачи — нужна маппинг `entityType → surveyKey` (конфиг/БД) | app/store | предложен | сейчас `csat_postdeal` для всех виджетов; имя семантически неверно для задачи |
+| NEW | Проверка прав пользователя на задачу/сделку в `*-invite` (виджет): авторизованный юзер может запросить чужой `taskId`/`dealId` той же компании | bitrix24 | предложен | REST ограничивает токеном юзера, но стоит сверять `responsible`/участника с `frame.member_id`→userId |
+| NEW | Унификация `parsePlacementDealId`/`parsePlacementTaskId` → `parsePlacementEntityId(options, keys)` (одна структура) | bitrix24 | предложен (минор-рефактор) | две функции с идентичной формой |
 | NEW | Binding-слой мульти-сущности: `event.bind` на ONCRM<ENTITY>UPDATE + эндпоинт → `parseEntityUpdateEvent` → роутинг на `ENTITY_MAPPERS` (deal=null → `dealToCrmContext`) → приглашение | bitrix24 | предложен (ядро парс/мапперов готово, #82+) | требует живой портал; `verifyApplicationToken` ПЕРЕД `crm.*.get` (IDOR/cross-tenant по `spaEntityTypeId`) |
 
 ## Закрытые (контекст)

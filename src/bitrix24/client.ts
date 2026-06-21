@@ -68,9 +68,11 @@ export function dealGet(client: PortalClient, dealId: number): Promise<Record<st
  * `select` запрашивает явно нужные поля + `UF_CRM_TASK`/`crmItemIds` (по умолчанию не отдаются).
  */
 export async function taskGet(client: PortalClient, taskId: number): Promise<Record<string, unknown>> {
+  // `*` тянет стандартные поля (вкл. v3 `crmItemIds`/`responsible`); `UF_CRM_TASK` (легаси-привязка)
+  // по умолчанию НЕ возвращается — запрашиваем явно. Точный набор сверить на портале (#issue live-smoke).
   const result = await callMethod<Record<string, unknown>>(client, 'tasks.task.get', {
     taskId,
-    select: ['ID', 'TITLE', 'RESPONSIBLE_ID', 'UF_CRM_TASK']
+    select: ['*', 'UF_CRM_TASK']
   })
   const inner = (result.task ?? result.item ?? result) as Record<string, unknown>
   return inner

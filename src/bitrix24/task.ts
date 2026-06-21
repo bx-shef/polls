@@ -51,6 +51,7 @@ export function parseTaskCrmBindings(bindings: unknown): TaskCrmBindings {
  * (`dealId`/`contactId`/`companyId`) из `crmItemIds`/`ufCrmTask`. Имя ответственного — денормализуем,
  * если REST вернул `responsible.name` (PII, как `responsibleName` сделки; редакция — #31).
  * Толерантен к v2 (`responsibleId`/`RESPONSIBLE_ID`) и v3 (`responsible.id`/`responsible.name`).
+ * NB: привязки/UF задача отдаёт только при явном `select` (см. `taskGet`) — по умолчанию их нет.
  */
 export function taskToCrmContext(task: Record<string, unknown>): CrmContext {
   const ctx: CrmContext = {}

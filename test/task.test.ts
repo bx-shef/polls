@@ -18,10 +18,11 @@ describe('parseTaskCrmBindings', () => {
   it('регистронезависим', () => {
     expect(parseTaskCrmBindings(['d_8'])).toEqual({ dealId: 8 })
   })
-  it('мусор / не массив / нечисловой id → пусто', () => {
+  it('мусор / не массив / нечисловой id / нулевой id → пусто', () => {
     expect(parseTaskCrmBindings('D_1')).toEqual({})
     expect(parseTaskCrmBindings(null)).toEqual({})
     expect(parseTaskCrmBindings([42, 'D_x', 'CO_'])).toEqual({})
+    expect(parseTaskCrmBindings(['D_0'])).toEqual({}) // ноль не позитивный
   })
 })
 
@@ -41,6 +42,12 @@ describe('taskToCrmContext', () => {
   })
   it('UF_CRM_TASK (легаси верхним регистром поля)', () => {
     expect(taskToCrmContext({ UF_CRM_TASK: ['D_1'] })).toEqual({ dealId: 1 })
+  })
+  it('RESPONSIBLE_ID верхним регистром (v2)', () => {
+    expect(taskToCrmContext({ RESPONSIBLE_ID: '7' })).toEqual({ responsibleId: 7 })
+  })
+  it('responsible.id числом (не строкой)', () => {
+    expect(taskToCrmContext({ responsible: { id: 17 } })).toEqual({ responsibleId: 17 })
   })
   it('без привязок и ответственного → пустой контекст', () => {
     expect(taskToCrmContext({ id: 1, title: 'x' })).toEqual({})
