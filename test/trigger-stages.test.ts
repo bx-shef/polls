@@ -11,7 +11,7 @@ const QUESTIONS: SurveyDraft['questions'] = [
 ]
 
 function draft(surveyKey: string, triggerStages: string[]): SurveyDraft {
-  return { surveyKey, title: surveyKey, lang: 'ru', questions: QUESTIONS, invitationPolicy: { triggerStages, channelOrder: ['email', 'sms'] } }
+  return { surveyKey, title: surveyKey, lang: 'ru', questions: QUESTIONS, invitationPolicy: { entityType: 'deal', triggerStages, channelOrder: ['email', 'sms'] } }
 }
 
 // Опрос вообще без invitationPolicy — путь `?? []` и «не попадает в результат».

@@ -35,10 +35,12 @@
   Ядро — `src/bitrix24/frame.ts` (#47): SSRF-allowlist домена + сверка `member_id`.
 - **Keyset-пагинация** — курсорная пагинация по стабильному ключу (`listResponsesPage`),
   без OFFSET. Helpers — `store/cursor.ts`.
-- **`triggerStages`** — денормализованные стадии-триггеры опроса (под binding сделки);
-  индексируются GIN, читаются `IStore.surveysTriggeredBy` (#22).
-- **`invitationPolicy`** — политика приглашений, вшитая в схему/версию на уровне
-  version-frozen (решение #21). См. `decisions.md`.
+- **`triggerStages`** — денормализованные стадии/статусы-триггеры опроса (под binding сущности
+  `entityType`); индексируются GIN, читаются `IStore.surveysTriggeredBy` (#22).
+- **`entityType`** — тип сущности-датчика Bitrix24 в `invitationPolicy` (deal/lead/spa/contact/
+  company/task; дефолт deal). Для `spa` обязателен `spaEntityTypeId` (id смарт-процесса) — инвариант схемы.
+- **`invitationPolicy`** — политика приглашений (датчик: `entityType`/`spaEntityTypeId`/`triggerStages`/
+  `channelOrder`), вшитая в схему/версию на уровне version-frozen (решение #21). См. `decisions.md`.
 
 ---
 *Последнее ревью: 2026-06-20.*

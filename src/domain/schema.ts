@@ -25,6 +25,21 @@ export const NUMERIC_METRICS = new Set<Metric>(['nps', 'csat', 'ces', 'scale'])
 export const INVITE_CHANNELS = ['email', 'sms'] as const
 export type InviteChannel = (typeof INVITE_CHANNELS)[number]
 
+/**
+ * Тип сущности Bitrix24, к которой привязан опрос (датчик запуска). На каждое направление
+ * и тип сущности можно завести 1+ опрос. `deal` — дефолт (обратная совместимость: ранние
+ * опросы без поля считаются «по сделке»). `spa` — смарт-процесс (crm.item, динамический тип),
+ * `task` — задача (модуль задач, вне CRM-воронок). Стадии/статусы триггера портал-специфичны
+ * и лежат в `invitationPolicy.triggerStages`.
+ *
+ * ВНИМАНИЕ (фаза мульти-сущность): сейчас боевой триггер — ТОЛЬКО `deal` (`deal-event.ts` +
+ * `surveysTriggeredBy` по `stageId`). Прочие типы — задекларированы в модели, но датчик ещё не
+ * подключён: у `task` нет `stageId` в смысле воронки (нужен отдельный binding `ONTASKUPDATE`),
+ * у `spa` — свой namespace стадий. До реализации фазы выбор не-deal сущности приглашений не создаёт.
+ */
+export const ENTITY_TYPES = ['deal', 'lead', 'spa', 'contact', 'company', 'task'] as const
+export type EntityType = (typeof ENTITY_TYPES)[number]
+
 /** ISO-8601 с таймзоной (напр. `2026-04-03T10:00:00.000Z`). */
 const isoDatetime = z.string().datetime({ offset: true })
 
@@ -58,6 +73,18 @@ export type Question = z.infer<typeof questionSchema>
  * вшита в него и в compiledVersion (#17); persists в survey_version.compiled_schema.
  */
 export const invitationPolicySchema = z.object({
+  /**
+   * Тип сущности-датчика (deal/lead/spa/contact/company/task). Дефолт `deal` —
+   * обратная совместимость с опросами без явной привязки. `triggerStages` трактуются
+   * в терминах этой сущности (стадии сделки / статусы лида / стадии смарт-процесса и т.п.).
+   */
+  entityType: z.enum(ENTITY_TYPES).default('deal'),
+  /**
+   * id смарт-процесса (`entityTypeId` crm.item), когда `entityType === 'spa'` —
+   * динамические типы различаются только числовым id. Для прочих сущностей не нужен.
+   * Верхняя граница — INT4_MAX (id Bitrix24 укладываются; защита от мусора в payload).
+   */
+  spaEntityTypeId: z.number().int().positive().max(2147483647).optional(),
   /** stage_id Bitrix24, переход в которые запускает опрос (портал-специфичны). */
   triggerStages: z.array(z.string().min(1).max(200)).max(50).default([]),
   /** Порядок проб каналов: первый доступный — победитель (см. chooseChannel). Без дублей.
@@ -66,7 +93,17 @@ export const invitationPolicySchema = z.object({
     .array(z.enum(INVITE_CHANNELS))
     .refine((a) => new Set(a).size === a.length, { message: 'channelOrder: каналы не должны повторяться' })
     .default(['email', 'sms'])
-})
+  })
+  // Инвариант: spaEntityTypeId осмыслен ТОЛЬКО для смарт-процесса (spa требует id, прочие — запрещают),
+  // иначе тихо-проглоченное поле = скрытая неконсистентность привязки.
+  .superRefine((p, ctx) => {
+    if (p.entityType === 'spa' && p.spaEntityTypeId === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['spaEntityTypeId'], message: 'spaEntityTypeId обязателен для entityType=spa' })
+    }
+    if (p.entityType !== 'spa' && p.spaEntityTypeId !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['spaEntityTypeId'], message: 'spaEntityTypeId допустим только при entityType=spa' })
+    }
+  })
 export type InvitationPolicy = z.infer<typeof invitationPolicySchema>
 
 /**
