@@ -3,8 +3,12 @@ import {
   parseInstallEvent,
   installToTokens,
   surveyRobotParams,
+  surveyPlacements,
+  parsePlacementDealId,
   handleInstall,
-  SURVEY_ROBOT_CODE
+  SURVEY_ROBOT_CODE,
+  PLACEMENT_DEAL_ACTIVITY,
+  PLACEMENT_ANALYTICS_MENU
 } from '../src/bitrix24/install'
 import type { OAuthTokens } from '../src/bitrix24/oauth'
 
@@ -60,18 +64,44 @@ describe('surveyRobotParams (#17)', () => {
   })
 })
 
+describe('surveyPlacements (#17)', () => {
+  it('виджет сделки + дашборд в аналитике, HANDLER на нашем домене', () => {
+    const ps = surveyPlacements('https://polls.bx-shef.by/')
+    expect(ps.map((p) => p.PLACEMENT)).toEqual([PLACEMENT_DEAL_ACTIVITY, PLACEMENT_ANALYTICS_MENU])
+    // хвостовой слеш baseUrl убран, HANDLER абсолютный https
+    expect(ps[0]!.HANDLER).toBe('https://polls.bx-shef.by/b24/deal-widget')
+    expect(ps[1]!.HANDLER).toBe('https://polls.bx-shef.by/b24/dashboard')
+    expect(ps[0]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по сделке')
+  })
+})
+
+describe('parsePlacementDealId (#17)', () => {
+  it('JSON-строка {"ID":"3473"} → 3473', () => {
+    expect(parsePlacementDealId('{"ID":"3473"}')).toBe(3473)
+  })
+  it('объект {ID:5} → 5', () => {
+    expect(parsePlacementDealId({ ID: 5 })).toBe(5)
+  })
+  it('битый JSON / нет ID / 0 / мусор → undefined', () => {
+    expect(parsePlacementDealId('{not json')).toBeUndefined()
+    expect(parsePlacementDealId('{"X":1}')).toBeUndefined()
+    expect(parsePlacementDealId('{"ID":"0"}')).toBeUndefined()
+    expect(parsePlacementDealId(null)).toBeUndefined()
+  })
+})
+
 describe('handleInstall — оркестрация (#17)', () => {
-  it('сохраняет токены, ЗАТЕМ регистрирует робот (порядок)', async () => {
+  it('сохраняет токены, ЗАТЕМ регистрирует встройки (порядок)', async () => {
     const order: string[] = []
     const saveTokens = vi.fn(async (_t: OAuthTokens) => {
       order.push('save')
     })
-    const registerRobot = vi.fn(async (_t: OAuthTokens) => {
-      order.push('robot')
+    const registerIntegrations = vi.fn(async (_t: OAuthTokens) => {
+      order.push('register')
     })
-    const tokens = await handleInstall(parseInstallEvent(validRaw)!, { saveTokens, registerRobot })
-    expect(order).toEqual(['save', 'robot']) // робот после сохранения
+    const tokens = await handleInstall(parseInstallEvent(validRaw)!, { saveTokens, registerIntegrations })
+    expect(order).toEqual(['save', 'register']) // регистрация после сохранения
     expect(saveTokens).toHaveBeenCalledWith(expect.objectContaining({ memberId: 'm-abc', applicationToken: 'app-tok-xyz' }))
-    expect(registerRobot).toHaveBeenCalledWith(tokens)
+    expect(registerIntegrations).toHaveBeenCalledWith(tokens)
   })
 })
