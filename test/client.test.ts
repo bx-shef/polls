@@ -78,8 +78,9 @@ describe('entityGet (#34 binding-слой)', () => {
       ['company', 'crm.company.get']
     ] as const) {
       const c = client(ok({ ID: '1' }))
-      await entityGet(c, entity, 1)
+      const r = await entityGet(c, entity, 1)
       expect(c.calls[0]).toEqual([method, { id: 1 }])
+      expect(r).toMatchObject({ ID: '1' })
     }
   })
   it('spa → crm.item.get({entityTypeId,id}) с разворотом { item }', async () => {
@@ -90,6 +91,10 @@ describe('entityGet (#34 binding-слой)', () => {
   })
   it('spa без spaEntityTypeId → бросает', async () => {
     await expect(entityGet(client(ok({})), 'spa', 7)).rejects.toBeInstanceOf(Bitrix24CallError)
+  })
+  it('spa: ответ без item (не найдено) → бросает, не возвращает null', async () => {
+    await expect(entityGet(client(ok({ item: null })), 'spa', 7, 1056)).rejects.toBeInstanceOf(Bitrix24CallError)
+    await expect(entityGet(client(ok({})), 'spa', 7, 1056)).rejects.toBeInstanceOf(Bitrix24CallError)
   })
 })
 

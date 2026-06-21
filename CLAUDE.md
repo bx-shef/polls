@@ -117,8 +117,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `CrmContext`; `dealStageId` = обобщённый триггер-ключ: STATUS_ID лида/stageId СП, переименование → #next) + `ENTITY_MAPPERS`
   (полнота по `ENTITY_TYPES`, страховка типов). `entityToCrmContext(entityType, item)` — диспетчер
   роутинга на `ENTITY_MAPPERS` (+ спец-случай deal → `dealToCrmContext`; task бросает — вне CRM); связка
-  с `entityGet` (`client.ts`, REST-метод по типу) → `handleDealTrigger` по `dealStageId` (#34, ядро готово).
-  Эндпоинт/`event.bind`/обогащение — фаза связки (живой портал).
+  с `entityGet` (`client.ts`, REST-метод по типу). Полученный `CrmContext` передаётся в существующий
+  `handleDealTrigger` (`trigger.ts`) по `dealStageId` (стадия лида/СП). Диспетчер+`entityGet` готовы (#34);
+  Nitro-эндпоинт `ONCRM<ENTITY>UPDATE`+`event.bind`, соединяющий цепочку — фаза связки (живой портал).
   `bitrix24/task.ts` (`taskToCrmContext`/`parseTaskCrmBindings`) — РУЧНОЙ запуск опроса из карточки
   задачи (плейсмент `TASK_VIEW_SIDEBAR`, у задачи нет стадии воронки → только вручную, аналог виджета
   сделки): `tasks.task.get` → снимок `CrmContext` (responsibleId + CRM-привязки `dealId`/`contactId`/

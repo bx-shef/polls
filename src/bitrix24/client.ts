@@ -1,4 +1,5 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
+import type { EntityType } from '../domain/schema'
 
 /**
  * Серверный REST-клиент портала Bitrix24 на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`) —
@@ -78,8 +79,15 @@ export async function taskGet(client: PortalClient, taskId: number): Promise<Rec
   return inner
 }
 
-/** REST-метод догрузки полей по типу CRM-сущности (binding-слой мульти-сущности, #34). */
-const ENTITY_GET_METHOD: Record<'deal' | 'lead' | 'contact' | 'company', string> = {
+/** CRM-сущности, догружаемые через `crm.*.get` (всё, кроме `task` — у задачи свой путь `taskGet`). */
+export type CrmEntityType = Exclude<EntityType, 'task'>
+
+/**
+ * REST-метод догрузки полей по типу CRM-сущности (binding-слой #34). `deal` включён для удобства
+ * единого пути `entityGet(c,'deal',id)`, хотя в боевом deal-флоу обычно зовётся `dealGet`/`dealToCrmContext`.
+ * `spa` здесь нет — у него отдельный метод (`crm.item.get` с `entityTypeId`), ветка ниже.
+ */
+const ENTITY_GET_METHOD: Record<Exclude<CrmEntityType, 'spa'>, string> = {
   deal: 'crm.deal.get',
   lead: 'crm.lead.get',
   contact: 'crm.contact.get',
@@ -94,14 +102,17 @@ const ENTITY_GET_METHOD: Record<'deal' | 'lead' | 'contact' | 'company', string>
  */
 export async function entityGet(
   client: PortalClient,
-  entityType: 'deal' | 'lead' | 'spa' | 'contact' | 'company',
+  entityType: CrmEntityType,
   id: number,
   spaEntityTypeId?: number
 ): Promise<Record<string, unknown>> {
   if (entityType === 'spa') {
     if (!spaEntityTypeId) throw new Bitrix24CallError('entityGet: для spa нужен spaEntityTypeId')
     const result = await callMethod<Record<string, unknown>>(client, 'crm.item.get', { entityTypeId: spaEntityTypeId, id })
-    return (result.item ?? result) as Record<string, unknown>
+    // crm.item.get кладёт сущность в `item`; пусто/не-объект (не найдено) → ошибка, а не «тихий» null.
+    const item = result.item
+    if (!item || typeof item !== 'object') throw new Bitrix24CallError('crm.item.get: пустой item')
+    return item as Record<string, unknown>
   }
   return callMethod<Record<string, unknown>>(client, ENTITY_GET_METHOD[entityType], { id })
 }
