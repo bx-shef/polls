@@ -35,7 +35,8 @@
 | NEW | Выбор опроса по типу сущности: `DEFAULT_SURVEY` хардкод одинаков для сделки/задачи — нужна маппинг `entityType → surveyKey` (конфиг/БД) | app/store | предложен | сейчас `csat_postdeal` для всех виджетов; имя семантически неверно для задачи |
 | NEW | Проверка прав пользователя на задачу/сделку в `*-invite` (виджет): авторизованный юзер может запросить чужой `taskId`/`dealId` той же компании | bitrix24 | предложен | REST ограничивает токеном юзера, но стоит сверять `responsible`/участника с `frame.member_id`→userId |
 | NEW | Унификация `parsePlacementDealId`/`parsePlacementTaskId` → `parsePlacementEntityId(options, keys)` (одна структура) | bitrix24 | предложен (минор-рефактор) | две функции с идентичной формой |
-| NEW | Binding-слой мульти-сущности: `event.bind` на ONCRM<ENTITY>UPDATE + эндпоинт → `parseEntityUpdateEvent` → роутинг на `ENTITY_MAPPERS` (deal=null → `dealToCrmContext`) → приглашение | bitrix24 | предложен (ядро парс/мапперов готово, #82+) | требует живой портал; `verifyApplicationToken` ПЕРЕД `crm.*.get` (IDOR/cross-tenant по `spaEntityTypeId`) |
+| NEW | Унификация `dealToCrmContext` → `ENTITY_MAPPERS['deal']` (убрать спец-ветку в `entityToCrmContext`) | bitrix24 | предложен (минор-рефактор) | сейчас deal обрабатывается отдельно (исторически в deal-event.ts); после унификации диспетчер чище |
+| NEW | Binding-слой мульти-сущности: `event.bind` на ONCRM<ENTITY>UPDATE + эндпоинт → `parseEntityUpdateEvent` → `entityGet` → `entityToCrmContext` → `handleDealTrigger` (по стадии) | bitrix24 | ЯДРО ГОТОВО (диспетчер `entityToCrmContext` + `entityGet` REST-по-типу под тестами); остался эндпоинт+`event.bind` | требует живой портал; `verifyApplicationToken` ПЕРЕД `entityGet` (IDOR/cross-tenant по `spaEntityTypeId`). Стадия лида/СП кладётся в `dealStageId` → `surveysTriggeredBy` срабатывает тем же `handleDealTrigger` |
 
 ## Закрытые (контекст)
 

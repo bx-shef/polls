@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, taskGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, taskGet, entityGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -66,6 +66,35 @@ describe('taskGet (задача)', () => {
   it('fallback: без обёртки task/item возвращает сам result', async () => {
     const c = client(ok({ id: 3, responsibleId: 1 }))
     expect(await taskGet(c, 3)).toMatchObject({ id: 3, responsibleId: 1 })
+  })
+})
+
+describe('entityGet (#34 binding-слой)', () => {
+  it('deal/lead/contact/company → crm.<entity>.get({id})', async () => {
+    for (const [entity, method] of [
+      ['deal', 'crm.deal.get'],
+      ['lead', 'crm.lead.get'],
+      ['contact', 'crm.contact.get'],
+      ['company', 'crm.company.get']
+    ] as const) {
+      const c = client(ok({ ID: '1' }))
+      const r = await entityGet(c, entity, 1)
+      expect(c.calls[0]).toEqual([method, { id: 1 }])
+      expect(r).toMatchObject({ ID: '1' })
+    }
+  })
+  it('spa → crm.item.get({entityTypeId,id}) с разворотом { item }', async () => {
+    const c = client(ok({ item: { id: 7, stageId: 'DT1056:WON' } }))
+    const r = await entityGet(c, 'spa', 7, 1056)
+    expect(c.calls[0]).toEqual(['crm.item.get', { entityTypeId: 1056, id: 7 }])
+    expect(r).toMatchObject({ id: 7, stageId: 'DT1056:WON' })
+  })
+  it('spa без spaEntityTypeId → бросает', async () => {
+    await expect(entityGet(client(ok({})), 'spa', 7)).rejects.toBeInstanceOf(Bitrix24CallError)
+  })
+  it('spa: ответ без item (не найдено) → бросает, не возвращает null', async () => {
+    await expect(entityGet(client(ok({ item: null })), 'spa', 7, 1056)).rejects.toBeInstanceOf(Bitrix24CallError)
+    await expect(entityGet(client(ok({})), 'spa', 7, 1056)).rejects.toBeInstanceOf(Bitrix24CallError)
   })
 })
 
