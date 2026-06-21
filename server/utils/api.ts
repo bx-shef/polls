@@ -23,8 +23,16 @@ import { setPortalResolver } from './b24-session'
  */
 let storePromise: Promise<IStore> | undefined
 let apiPromise: Promise<Api> | undefined
+/** pg-Queryable активного PgStore (для PortalTokenStore установки, #17); undefined на MemoryStore. */
+let pgDb: Queryable | undefined
 
-const logger: Logger = createJsonLogger({ base: { svc: 'polls' } })
+export const logger: Logger = createJsonLogger({ base: { svc: 'polls' } })
+
+/** pg-Queryable, если приложение на PgStore (DATABASE_URL задан); иначе undefined. Гарантирует инициализацию стора. */
+export async function usePortalDb(): Promise<Queryable | undefined> {
+  await useStore()
+  return pgDb
+}
 
 export function useStore(): Promise<IStore> {
   if (!storePromise) {
@@ -60,6 +68,7 @@ async function buildStore(): Promise<IStore> {
   const { Pool } = await import('pg')
   const pool = new Pool({ connectionString: url })
   const db: Queryable = queryableFromPool(pool)
+  pgDb = db // доступен для PortalTokenStore (установка #17)
   await applyMigrations(db, readMigrationSqls())
   const portalId = await ensureDefaultPortal(db)
   const store = new PgStore(db, { portalId })
