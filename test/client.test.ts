@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -48,5 +48,20 @@ describe('dealGet (#17)', () => {
     const deal = await dealGet(c, 759)
     expect(deal).toMatchObject({ ID: '759', STAGE_ID: 'NEW' })
     expect(c.calls[0]).toEqual(['crm.deal.get', { id: 759 }])
+  })
+})
+
+describe('frameToB24Params (#17)', () => {
+  it('минимальный auth → B24OAuthParams с дефолтами', () => {
+    const p = frameToB24Params({ domain: 'acme.bitrix24.ru', accessToken: 'AT', memberId: 'm-1' })
+    expect(p).toMatchObject({
+      memberId: 'm-1',
+      accessToken: 'AT',
+      domain: 'acme.bitrix24.ru',
+      clientEndpoint: 'https://acme.bitrix24.ru/rest/',
+      serverEndpoint: 'https://oauth.bitrix.info/rest/',
+      status: 'L'
+    })
+    expect(p.expiresIn).toBe(3600)
   })
 })
