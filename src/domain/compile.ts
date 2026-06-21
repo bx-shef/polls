@@ -43,6 +43,8 @@ export function compile(draft: SurveyDraft, versionNo: number, at: Date = new Da
  * `surveyDraftSchema` — на выходе гарантированно валидный `SurveyDraft`, который можно
  * отдать в редактор и затем переопубликовать новой версией. В отличие от публичной проекции
  * (`PublicVersion`), СОХРАНЯЕТ `invitationPolicy` — админу нужна привязка-датчик для правки.
+ * `.parse` не бросит на версиях, созданных через `store.publish`/`compile` (они уже прошли
+ * `surveyDraftSchema`); сторонний источник версии — теоретический, round-trip под тестами.
  */
 export function versionToDraft(v: CompiledVersion): SurveyDraft {
   return surveyDraftSchema.parse({

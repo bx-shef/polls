@@ -190,6 +190,17 @@ describe('versionToDraft — обратная проекция для редак
     expect(back).not.toHaveProperty('compiledAt')
   })
 
+  it('опрос без invitationPolicy → остаётся undefined (не подставляет дефолт)', () => {
+    const back = versionToDraft(compile(draftV1(), 1)) // seed-черновик без политики
+    expect(back.invitationPolicy).toBeUndefined()
+  })
+
+  it('сохраняет презентацию intro/thanks/blocks', () => {
+    const back = versionToDraft(compile(draftV1(), 1))
+    expect(back.intro?.title).toBe('Как прошла работа?')
+    expect(back.thanks?.title).toBe('Спасибо за ответы!')
+  })
+
   it('сохраняет invitationPolicy (в отличие от публичной проекции)', () => {
     const v = compile(
       {
