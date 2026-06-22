@@ -227,7 +227,7 @@ export function parsePlacementEntityId(placementOptions: unknown, keys: readonly
   if (typeof opts !== 'object' || opts === null) return undefined
   const o = opts as Record<string, unknown>
   for (const k of keys) {
-    if (o[k] === undefined) continue
+    if (o[k] == null) continue // null/undefined — пропускаем (паритет с `a ?? b ?? c`)
     const id = Number(o[k])
     if (Number.isInteger(id) && id > 0) return id
   }

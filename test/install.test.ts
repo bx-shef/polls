@@ -132,8 +132,10 @@ describe('parsePlacementEntityId (общий)', () => {
     expect(parsePlacementEntityId('{"TASK_ID":"5"}', ['taskId', 'TASK_ID', 'ID'])).toBe(5)
     expect(parsePlacementEntityId({ ID: 9 }, ['ID'])).toBe(9)
   })
-  it('первый ключ невалиден (0) → fall-through к следующему валидному', () => {
+  it('первый ключ невалиден (0) или undefined → fall-through к следующему валидному', () => {
     expect(parsePlacementEntityId({ taskId: 0, ID: 7 }, ['taskId', 'ID'])).toBe(7)
+    expect(parsePlacementEntityId({ taskId: undefined, ID: 7 }, ['taskId', 'ID'])).toBe(7)
+    expect(parsePlacementEntityId({ taskId: null, ID: 7 }, ['taskId', 'ID'])).toBe(7) // паритет с ??
   })
   it('битый JSON / не объект / нет валидных ключей → undefined', () => {
     expect(parsePlacementEntityId('{nope', ['ID'])).toBeUndefined()
