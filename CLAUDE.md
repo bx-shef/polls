@@ -116,7 +116,7 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `leadToCrmContext`/`spaItemToCrmContext`/`contactToCrmContext`/`companyToCrmContext` (поля REST →
   `CrmContext`; `dealStageId` = обобщённый триггер-ключ: STATUS_ID лида/stageId СП, переименование → #next) + `ENTITY_MAPPERS`
   (полнота по `ENTITY_TYPES`, страховка типов). `entityToCrmContext(entityType, item)` — диспетчер
-  роутинга на `ENTITY_MAPPERS` (+ спец-случай deal → `dealToCrmContext`; task бросает — вне CRM); связка
+  роутинга на `ENTITY_MAPPERS` (deal → `dealToCrmContext`; task бросает — вне CRM); связка
   с `entityGet` (`client.ts`, REST-метод по типу). Полученный `CrmContext` передаётся в существующий
   `handleDealTrigger` (`trigger.ts`) по `dealStageId` (стадия лида/СП). Диспетчер+`entityGet` готовы (#34);
   Nitro-эндпоинт `ONCRM<ENTITY>UPDATE`+`event.bind`, соединяющий цепочку — фаза связки (живой портал).

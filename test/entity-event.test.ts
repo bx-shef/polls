@@ -94,8 +94,8 @@ describe('мапперы сущность→CrmContext', () => {
     expect(companyToCrmContext({ ID: '202', ASSIGNED_BY_ID: '12' })).toMatchObject({ companyId: 202, responsibleId: 12 })
   })
 
-  it('ENTITY_MAPPERS покрывает все типы; deal/task без авто-маппинга', () => {
-    expect(ENTITY_MAPPERS.deal).toBeNull()
+  it('ENTITY_MAPPERS покрывает все типы; deal маппится, task без авто-маппинга', () => {
+    expect(typeof ENTITY_MAPPERS.deal).toBe('function')
     expect(ENTITY_MAPPERS.task).toBeNull()
     expect(typeof ENTITY_MAPPERS.lead).toBe('function')
     expect(typeof ENTITY_MAPPERS.spa).toBe('function')
