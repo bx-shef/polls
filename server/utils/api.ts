@@ -5,6 +5,7 @@ import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { MemoryInvitationStore } from '~core/api/invitation'
+import { surveyRoutingFromEnv } from '~core/bitrix24/survey-routing'
 import { PgStore, queryableFromPool } from '~core/store/pg'
 import { applyMigrations, upSql } from '~core/store/migrate'
 import { ensureDefaultPortal, seedDemoIfEmpty } from '~core/store/bootstrap'
@@ -102,6 +103,17 @@ let invitationStore: MemoryInvitationStore | undefined
 export function useInvitations(): MemoryInvitationStore {
   if (!invitationStore) invitationStore = new MemoryInvitationStore()
   return invitationStore
+}
+
+/**
+ * Маршрутизация опросов по сущности (`SURVEY_KEY_<ENTITY>`/`SURVEY_KEY_DEFAULT`) — собирается ОДИН РАЗ
+ * на процесс (конфиг статичен на время жизни инстанса), как `useStore`/`useInvitations`. Виджеты
+ * (deal-/task-invite) зовут `surveyKeyForEntity(entity, useSurveyRouting().routing, .fallback)`.
+ */
+let surveyRouting: ReturnType<typeof surveyRoutingFromEnv> | undefined
+export function useSurveyRouting(): ReturnType<typeof surveyRoutingFromEnv> {
+  if (!surveyRouting) surveyRouting = surveyRoutingFromEnv(process.env)
+  return surveyRouting
 }
 
 async function buildApi(): Promise<Api> {

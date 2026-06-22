@@ -26,13 +26,16 @@ export function surveyKeyForEntity(
   fallback: string = DEFAULT_SURVEY_KEY
 ): string {
   const k = routing[entityType]
-  return k && k.trim() ? k.trim() : fallback
+  if (k && k.trim()) return k.trim()
+  // fallback тоже обрезаем и страхуем от пустого (прямой вызов с пробельным fallback).
+  return fallback.trim() || DEFAULT_SURVEY_KEY
 }
 
 /**
  * Собирает {@link SurveyRouting} из переменных окружения вида `SURVEY_KEY_<ENTITY>`
  * (`SURVEY_KEY_DEAL`, `SURVEY_KEY_TASK`, …). Неизвестные/пустые — пропускаются. Источник env
  * инжектируется (тестируемо). Дефолтный опрос задаёт `SURVEY_KEY_DEFAULT` (иначе {@link DEFAULT_SURVEY_KEY}).
+ * Чистая функция; server-слой (`useSurveyRouting`) собирает её ОДИН РАЗ на процесс (конфиг статичен).
  */
 export function surveyRoutingFromEnv(env: Record<string, string | undefined>): {
   routing: SurveyRouting
