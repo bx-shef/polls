@@ -125,6 +125,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   сделки): `tasks.task.get` → снимок `CrmContext` (responsibleId + CRM-привязки `dealId`/`contactId`/
   `companyId` из `crmItemIds`/`ufCrmTask`). Виджет `app/pages/b24/task-widget.vue` + эндпоинт
   `server/api/b24/task-invite.post.ts` (зеркало deal-invite: frame-handshake → `taskGet` → `createSurveyInvitation`).
+  `bitrix24/survey-routing.ts` (`surveyKeyForEntity`/`surveyRoutingFromEnv`) — какой опрос запускать по
+  сущности: env-конфиг `SURVEY_KEY_<ENTITY>`/`SURVEY_KEY_DEFAULT` с дефолтом (вместо хардкода в виджетах),
+  под тестами; UI-маппинг entityType→surveyKey — отдельный issue.
   `bitrix24/client.ts` (`createPortalClient`/`callMethod`/`dealGet`/`taskGet`) — серверный REST-клиент портала
   на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`): основа всех исходящих вызовов (`crm.deal.get`/
   обогащение/`event.bind`/`app.info`). Тонкие хелперы разбирают `AjaxResult` → `result | throw`,
