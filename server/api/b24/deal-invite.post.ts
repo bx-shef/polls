@@ -7,10 +7,12 @@ import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
 import { createPortalClient, dealGet, frameToB24Params } from '~core/bitrix24/client'
 import { dealToCrmContext } from '~core/bitrix24/deal-event'
 import { createSurveyInvitation } from '~core/bitrix24/trigger'
+import { surveyKeyForEntity } from '~core/bitrix24/survey-routing'
 import { allowB24Session, useB24Authenticator } from '../../utils/b24-session'
-import { useStore, useInvitations, logger } from '../../utils/api'
+import { useStore, useInvitations, useSurveyRouting, logger } from '../../utils/api'
 
-const DEFAULT_SURVEY = 'csat_postdeal'
+// Какой опрос запускать по сделке — из конфигурации портала (env `SURVEY_KEY_DEAL`/`SURVEY_KEY_DEFAULT`),
+// с дефолтом. UI-маппинг entityType→surveyKey — отдельный issue.
 
 export default defineEventHandler(async (event) => {
   if (!allowB24Session(getRequestIP(event) ?? '?')) {
@@ -49,7 +51,9 @@ export default defineEventHandler(async (event) => {
     // Для мульти-портала ОБЯЗАТЕЛЕН scoped-стор по `portal.portalId` (member_id → portal.id), иначе
     // портал A создаст приглашение в данных портала B (инвариант createSurveyInvitation). Гейт — #49.
     const store = await useStore()
-    const res = await createSurveyInvitation({ store, invitations: useInvitations(), surveyKey: DEFAULT_SURVEY, context })
+    const { routing, fallback } = useSurveyRouting()
+    const surveyKey = surveyKeyForEntity('deal', routing, fallback)
+    const res = await createSurveyInvitation({ store, invitations: useInvitations(), surveyKey, context })
     if (!res) {
       setResponseStatus(event, 422)
       return { ok: false, error: 'Опрос не опубликован' }
