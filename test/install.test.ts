@@ -7,6 +7,7 @@ import {
   surveyPlacements,
   parsePlacementDealId,
   parsePlacementTaskId,
+  parsePlacementEntityId,
   handleInstall,
   SURVEY_ROBOT_CODE,
   PLACEMENT_DEAL_ACTIVITY,
@@ -123,6 +124,21 @@ describe('surveyPlacements (#17)', () => {
     expect(ps[2]!.HANDLER).toBe('https://polls.bx-shef.by/b24/task-widget')
     expect(ps[0]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по сделке')
     expect(ps[2]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по задаче')
+  })
+})
+
+describe('parsePlacementEntityId (общий)', () => {
+  it('перебирает ключи-кандидаты по порядку, берёт первый валидный', () => {
+    expect(parsePlacementEntityId('{"TASK_ID":"5"}', ['taskId', 'TASK_ID', 'ID'])).toBe(5)
+    expect(parsePlacementEntityId({ ID: 9 }, ['ID'])).toBe(9)
+  })
+  it('первый ключ невалиден (0) → fall-through к следующему валидному', () => {
+    expect(parsePlacementEntityId({ taskId: 0, ID: 7 }, ['taskId', 'ID'])).toBe(7)
+  })
+  it('битый JSON / не объект / нет валидных ключей → undefined', () => {
+    expect(parsePlacementEntityId('{nope', ['ID'])).toBeUndefined()
+    expect(parsePlacementEntityId(42, ['ID'])).toBeUndefined()
+    expect(parsePlacementEntityId({ X: 1 }, ['ID'])).toBeUndefined()
   })
 })
 

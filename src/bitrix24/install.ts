@@ -211,10 +211,11 @@ export function surveyPlacements(baseUrl: string): PlacementSpec[] {
 }
 
 /**
- * Парс `PLACEMENT_OPTIONS` виджета карточки сделки (`CRM_DEAL_DETAIL_ACTIVITY`): приходит JSON-СТРОКОЙ
- * `{"ID":"3473"}` → числовой id сделки. undefined — мусор/нет ID (виджет открыт вне сделки).
+ * Парс `PLACEMENT_OPTIONS` виджета карточки (JSON-СТРОКА или объект) → положительный числовой id
+ * сущности. `keys` — порядок ключей-кандидатов (зависит от плейсмента). undefined — мусор/битый JSON/
+ * нет id/непозитивный (виджет открыт вне сущности). Общая основа для сделки/задачи и будущих сущностей.
  */
-export function parsePlacementDealId(placementOptions: unknown): number | undefined {
+export function parsePlacementEntityId(placementOptions: unknown, keys: readonly string[]): number | undefined {
   let opts: unknown = placementOptions
   if (typeof placementOptions === 'string') {
     try {
@@ -224,28 +225,23 @@ export function parsePlacementDealId(placementOptions: unknown): number | undefi
     }
   }
   if (typeof opts !== 'object' || opts === null) return undefined
-  const id = Number((opts as { ID?: unknown }).ID)
-  return Number.isInteger(id) && id > 0 ? id : undefined
+  const o = opts as Record<string, unknown>
+  for (const k of keys) {
+    if (o[k] === undefined) continue
+    const id = Number(o[k])
+    if (Number.isInteger(id) && id > 0) return id
+  }
+  return undefined
 }
 
-/**
- * Парс `PLACEMENT_OPTIONS` виджета карточки задачи (`TASK_VIEW_SIDEBAR`): JSON-СТРОКА или объект →
- * числовой id задачи. Ключ зависит от версии плейсмента — пробуем `taskId`/`TASK_ID`/`ID`.
- * undefined — мусор/нет ID (виджет открыт вне задачи).
- */
+/** Id сделки из `PLACEMENT_OPTIONS` виджета `CRM_DEAL_DETAIL_ACTIVITY` (`{"ID":"3473"}`). */
+export function parsePlacementDealId(placementOptions: unknown): number | undefined {
+  return parsePlacementEntityId(placementOptions, ['ID'])
+}
+
+/** Id задачи из `PLACEMENT_OPTIONS` виджета `TASK_VIEW_SIDEBAR` (ключ зависит от версии плейсмента). */
 export function parsePlacementTaskId(placementOptions: unknown): number | undefined {
-  let opts: unknown = placementOptions
-  if (typeof placementOptions === 'string') {
-    try {
-      opts = JSON.parse(placementOptions)
-    } catch {
-      return undefined
-    }
-  }
-  if (typeof opts !== 'object' || opts === null) return undefined
-  const o = opts as { taskId?: unknown; TASK_ID?: unknown; ID?: unknown }
-  const id = Number(o.taskId ?? o.TASK_ID ?? o.ID)
-  return Number.isInteger(id) && id > 0 ? id : undefined
+  return parsePlacementEntityId(placementOptions, ['taskId', 'TASK_ID', 'ID'])
 }
 
 /**

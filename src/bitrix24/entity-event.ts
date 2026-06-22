@@ -135,14 +135,14 @@ export function companyToCrmContext(company: Record<string, unknown>): CrmContex
   })
 }
 
-/** Защита от рассинхрона: каждый EntityType имеет маппер ИЛИ помечен «без авто-маппинга». */
+/** Защита от рассинхрона: каждый EntityType имеет маппер ИЛИ помечен «без авто-маппинга» (вне CRM-пути). */
 export const ENTITY_MAPPERS: Record<EntityType, ((f: Record<string, unknown>) => CrmContext) | null> = {
-  deal: null, // в deal-event.ts (dealToCrmContext) — исторически отдельно
+  deal: dealToCrmContext, // исторически живёт в deal-event.ts; здесь — единый роутинг
   lead: leadToCrmContext,
   spa: spaItemToCrmContext,
   contact: contactToCrmContext,
   company: companyToCrmContext,
-  task: null // задача — вне CRM, отдельный binding (ONTASKUPDATE), не crm.*.get
+  task: null // задача — вне CRM, отдельный binding (ручной виджет task.ts), не crm.*.get
 }
 
 // Страховка компиляции: ENTITY_MAPPERS покрывает ровно ENTITY_TYPES (рассинхрон → ошибка типов).
@@ -151,7 +151,7 @@ void _entityCoverage
 
 /**
  * Диспетчер «REST-поля сущности → `CrmContext`» по `entityType` (binding-слой мульти-сущности, #34).
- * Роутит на `ENTITY_MAPPERS`; спец-случай `deal` — на `dealToCrmContext` (исторически в deal-event.ts).
+ * Роутит на `ENTITY_MAPPERS` (deal → `dealToCrmContext`, исторически в deal-event.ts).
  * `task` НЕ поддержан этим путём (задача — вне CRM, ручной запуск из виджета `task.ts`) → бросает.
  * Вызывать ТОЛЬКО после верификации события (`verifyApplicationToken`) и догрузки `item` авторитетным
  * `entityGet` — `item` недоверен до этого (анти-форджери/IDOR, см. шапку). Для `spa` `item` — результат
@@ -161,7 +161,6 @@ export function entityToCrmContext(
   entityType: EntityType,
   item: Record<string, unknown>
 ): CrmContext {
-  if (entityType === 'deal') return dealToCrmContext(item)
   const mapper = ENTITY_MAPPERS[entityType]
   if (!mapper) throw new Error(`entityToCrmContext: нет маппера для '${entityType}' (вне CRM-пути)`)
   return mapper(item)
