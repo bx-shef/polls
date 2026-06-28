@@ -12,7 +12,7 @@
 
 | # | Тема | Слой | Статус | Зависит / блокирует |
 |---|---|---|---|---|
-| #95 | Миграция с deprecated `callMethod` → `b24.actions.v{2,3}.*` (после bump b24jssdk 2.0) | bitrix24 | открыт (заведён 2026-06-28) | тех-долг от апгрейда SDK; лучше делать вместе с live-smoke #17; `src/bitrix24/client.ts` |
+| #95 | Миграция с deprecated `callMethod` → `actions.v2.call.make` (после bump b24jssdk 2.0) | bitrix24 | ✅ сделано (PR на мерж) | `src/bitrix24/client.ts` переведён на `actions.v2.call.make` (REST v2); мок теста обновлён; решение в `decisions.md` |
 | #25 | Презентационные поля опроса (`intro`/`thanks`/`blockLabels`) в схеме — до Nuxt-слоя | domain | открыт | **блокер экранов** intro/thanks; version-frozen (как #21) |
 | #18 | Результат анкеты → таймлайн сделки (`crm.activity.*`) + result-viewer (HTML, печать/PDF) | bitrix24 | открыт | симметрия к #17; зависит от OAuth (#3 ✅), PII (#10) |
 | #17 | Invitation binding `ONCRMDEALUPDATE` + вшивание `invitationPolicy` в схему/PgStore | bitrix24 | открыт (ядро парс/верификации/маппинга сделано) | `invitationPolicy` version-frozen (#21), `triggerStages`+`surveysTriggeredBy` (#22), invitation-flow (#16). Ядро триггера: `src/bitrix24/deal-event.ts` (`parseDealUpdateEvent` + `verifyApplicationToken` анти-форджери + `dealToCrmContext` из `crm.deal.get`) под тестами. Осталось (живой портал): эндпоинт `POST /api/b24/deal-update` → верификация → `crm.deal.get` токеном портала → `surveysTriggeredBy` → создание приглашений (идемпотентно по deal+survey); регистрация `event.bind` + хранение `application_token` при OAuth-установке; обогащение имён (company/category/user.get); живой smoke. **Триггеры:** робот `bizproc.robot.add` (зависит от тарифа) + для охвата на ВСЕХ тарифах — плейсменты `placement.bind`: `CRM_DEAL_DETAIL_ACTIVITY` (виджет запуска опроса в карточке сделки, `PLACEMENT_OPTIONS={ID}`) и `CRM_ANALYTICS_MENU` (дашборд в меню CRM-аналитики). Ядро: `install.ts` (`surveyRobotParams`/`surveyPlacements`/`parsePlacementDealId`/`handleInstall`), `trigger.ts` (`handleDealTrigger`/`dealIdFromDocumentId`) — под тестами. Симметрия результат→CRM — `crm.automation.trigger.add` (#18). REST — `client.ts` (b24jssdk). Осталось: Nitro-эндпоинты `/api/b24/install`+`/api/b24/robot` + Vue-виджеты (`/b24/deal-widget`,`/b24/dashboard`) с handshake #47 + боевой B24OAuth. Связан с #4 |
@@ -55,4 +55,4 @@
 > а не наоборот.
 
 ---
-*Последнее ревью: 2026-06-21.*
+*Последнее ревью: 2026-06-28.*

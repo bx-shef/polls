@@ -25,15 +25,21 @@ export class Bitrix24CallError extends Error {
   }
 }
 
-/** Результат `callMethod` SDK — минимум, который мы читаем (`AjaxResult` ему удовлетворяет). */
+/** Конверт ответа SDK (`AjaxResult` ему удовлетворяет): успех + данные + ошибки. */
 export interface CallResult {
   isSuccess: boolean
   getData(): unknown
   getErrorMessages(): string[]
 }
-/** Минимальный портальный клиент: `B24OAuth`/`B24Hook`/`B24Frame` удовлетворяют структурно. */
+/**
+ * Минимальный портальный клиент: реальные `B24OAuth`/`B24Hook`/`B24Frame` удовлетворяют
+ * структурно. Вызов метода — через НЕ-deprecated `actions.v2.call.make` (b24jssdk 2.0; REST v2,
+ * как и прежде). Старый `callMethod` помечен deprecated в SDK и здесь больше не используется (#95).
+ */
 export interface PortalClient {
-  callMethod(method: string, params?: object, start?: number): Promise<CallResult>
+  actions: {
+    v2: { call: { make(options: { method: string; params?: object; requestId?: string }): Promise<CallResult> } }
+  }
 }
 
 /** Создать серверный портальный клиент (b24jssdk `B24OAuth`) из сохранённых токенов + секрета приложения. */
@@ -47,7 +53,7 @@ export function createPortalClient(auth: B24OAuthParams, secret: B24OAuthSecret)
  * работал с чистым `result`.
  */
 export async function callMethod<T = unknown>(client: PortalClient, method: string, params: object = {}): Promise<T> {
-  const res = await client.callMethod(method, params)
+  const res = await client.actions.v2.call.make({ method, params })
   if (!res.isSuccess) {
     throw new Bitrix24CallError(res.getErrorMessages().join('; ') || `Bitrix24 ${method}: ошибка`)
   }

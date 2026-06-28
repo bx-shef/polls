@@ -8,13 +8,14 @@ function ok(result: unknown): CallResult {
 function fail(...msgs: string[]): CallResult {
   return { isSuccess: false, getData: () => null, getErrorMessages: () => msgs }
 }
-/** Мок PortalClient с заданным результатом. */
+/** Мок PortalClient с заданным результатом (вызов через actions.v2.call.make, #95). */
 function client(res: CallResult): PortalClient & { calls: unknown[][] } {
   const calls: unknown[][] = []
-  return { calls, callMethod: vi.fn(async (...a: unknown[]) => (calls.push(a), res)) }
+  const make = vi.fn(async (opts: { method: string; params?: object }) => (calls.push([opts.method, opts.params]), res))
+  return { calls, actions: { v2: { call: { make } } } }
 }
 
-describe('callMethod — обёртка над b24jssdk (#17)', () => {
+describe('callMethod — обёртка над b24jssdk actions.v2 (#17/#95)', () => {
   it('успех → result; метод и params проброшены', async () => {
     const c = client(ok({ ID: '5', STAGE_ID: 'C1:WON' }))
     const r = await callMethod(c, 'crm.deal.get', { id: 5 })

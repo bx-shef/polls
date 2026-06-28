@@ -377,10 +377,10 @@ Stop-хук визуального гейта: `.claude/hooks/visual-gate.sh` (#
 ## Версии стека Bitrix24
 
 `@bitrix24/b24jssdk ^2.0` (мажор; наш тонкий слой `src/bitrix24/client.ts` —
-`B24OAuth`/`callMethod`/`AjaxResult` — совместим: breaking changes 2.0 касаются v3-роутинга,
+`B24OAuth`/`actions.v2.call.make`/`AjaxResult` — совместим: breaking changes 2.0 касаются v3-роутинга,
 авто-детекта версии и ключей batch-ошибок, не нашего пути) и `@bitrix24/b24ui-nuxt ^2.9`.
-`callMethod` помечен deprecated в пользу `b24.actions.v{2,3}.*` — миграция вынесена в follow-up
-(#95; см. `docs/decisions.md`). Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
+Тонкий слой зовёт портал через НЕ-deprecated `actions.v2.call.make` (REST v2; миграция
+с deprecated `callMethod` выполнена в #95 — см. `docs/decisions.md`). Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
 *Последнее ревью: 2026-06-28.*
