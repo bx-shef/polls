@@ -20,7 +20,7 @@ onMounted(async () => {
     if (!a) throw new Error('нет данных авторизации')
     auth = { domain: a.domain, member_id: a.member_id, access_token: a.access_token }
     // ID сделки из параметров плейсмента ({ID: '759'}).
-    const opts = (b24 as unknown as { placement?: { options?: Record<string, unknown> } }).placement?.options
+    const opts = b24.placement.options
     const id = Number(opts?.ID)
     dealId.value = Number.isInteger(id) && id > 0 ? id : undefined
     phase.value = 'ready'

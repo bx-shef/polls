@@ -358,5 +358,29 @@ Stop-хук визуального гейта: `.claude/hooks/visual-gate.sh` (#
 остановку при расхождении с эталоном. Узкий триггер (чистое ядро не трогает), мягкая
 деградация без браузера. Детали — `docs/visual-gate.md`.
 
+## Reporting Kit (вендорный бандл `reporting-kit/`)
+
+Переносимый набор отчётности и работы с агентом из базы знаний
+(`bx-shef/ai-agent` → `reporting-kit/`): навыки `/report-status`, `/report-digest`,
+`/report-questions` (готовят текст отчёта; отправляет `scripts/tg-send.sh` только по
+явной команде) + проверки + собственный CI. Лежит **как есть**, самодостаточным
+каталогом — это упрощает синхронизацию с источником.
+
+- **Не линтуется** нашими проверками; `.github/workflows/` бандла GitHub не запускает
+  (активны только workflow в корневом `.github/`) — kit инертен, это эталон/инструмент.
+- **Навыки kit** Claude Code подхватывает автоматически, но они **scoped** к каталогу
+  `reporting-kit/` (срабатывают при работе с файлами под ним).
+- **Карта проекта для отчётов** — `reporting-kit/docs/project-map.md` (заполнена под polls).
+- **Секреты Telegram** (`TG_BOT_TOKEN`/`TG_CHAT_ID`) — только локально/в окружении,
+  не в git (`reporting-kit/.gitignore` игнорирует `.env`). Детали — `reporting-kit/README.md`.
+
+## Версии стека Bitrix24
+
+`@bitrix24/b24jssdk ^2.0` (мажор; наш тонкий слой `src/bitrix24/client.ts` —
+`B24OAuth`/`callMethod`/`AjaxResult` — совместим: breaking changes 2.0 касаются v3-роутинга,
+авто-детекта версии и ключей batch-ошибок, не нашего пути) и `@bitrix24/b24ui-nuxt ^2.9`.
+`callMethod` помечен deprecated в пользу `b24.actions.v{2,3}.*` — миграция вынесена в follow-up
+(#95; см. `docs/decisions.md`). Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
+
 ---
-*Последнее ревью: 2026-06-21.*
+*Последнее ревью: 2026-06-28.*
