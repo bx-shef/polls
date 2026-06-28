@@ -12,7 +12,7 @@
 
 | # | Тема | Слой | Статус | Зависит / блокирует |
 |---|---|---|---|---|
-| #36 | CI-typecheck `app/` + энфорс границы `~core` (клиент ≠ server-only ядро) | UI/CI | 🔶 частично (граница — ✅) | Граница форсится `pnpm check:boundary` (`scripts/check-core-boundary.ts`) + CI-шаг, под юнит-тестами; **остаётся** vue-tsc-typecheck `app/` в CI |
+| #36 | CI-typecheck `app/` + энфорс границы `~core` (клиент ≠ server-only ядро) | UI/CI | ✅ закрыт | Граница — `pnpm check:boundary` (`scripts/check-core-boundary.ts`) + CI-шаг, под юнит-тестами; vue-tsc-typecheck `app/`+`server/` — `pnpm typecheck:app` (отд. CI-шаг, 0 ошибок) |
 | #95 | Миграция с deprecated `callMethod` → `actions.v2.call.make` (после bump b24jssdk 2.0) | bitrix24 | ✅ закрыт (PR #97) | `src/bitrix24/client.ts` на `actions.v2.call.make` (REST v2); мок теста обновлён; решение в `decisions.md` |
 | #25 | Презентационные поля опроса (`intro`/`thanks`/`blockLabels`) в схеме — до Nuxt-слоя | domain | открыт | **блокер экранов** intro/thanks; version-frozen (как #21) |
 | #18 | Результат анкеты → таймлайн сделки (`crm.activity.*`) + result-viewer (HTML, печать/PDF) | bitrix24 | открыт | симметрия к #17; зависит от OAuth (#3 ✅), PII (#10) |
