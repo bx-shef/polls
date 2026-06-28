@@ -248,7 +248,7 @@ export function parsePlacementTaskId(placementOptions: unknown): number | undefi
  * Оркестрация установки: нормализовать токены → сохранить → зарегистрировать встройки (робот +
  * плейсменты). Порядок важен: регистрация ПОСЛЕ сохранения токенов (идёт токеном этого же портала).
  * `saveTokens`/`registerIntegrations` инжектируются (Nitro: `PortalTokenStore.save` + серия
- * `client.callMethod('bizproc.robot.add' | 'placement.bind', …)`). Частичный отказ безопасен:
+ * `callMethod(client, 'bizproc.robot.add' | 'placement.bind', …)` поверх `actions.v2`). Частичный отказ безопасен:
  * повторная установка идемпотентна по стабильным CODE/PLACEMENT; вызывающий может ретраить.
  */
 export async function handleInstall(
