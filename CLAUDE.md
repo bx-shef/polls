@@ -38,6 +38,7 @@ pnpm test         # vitest
 pnpm test:cov     # vitest + покрытие (пороги 85% в vitest.config.ts; CI гейтит этим).
                   # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
+pnpm check:boundary  # гард границы ~core (#36): клиент app/** не тянет server-only ядро (отд. шаг CI)
 pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080): /api/session, /api/submit
 pnpm migrate up   # применить миграции БД (node-pg-migrate; DATABASE_URL). Создать: pnpm migrate create
 pnpm dev          # Nuxt-приложение контура A (app/) в dev-режиме (HMR)
@@ -163,6 +164,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
 `~core/store`, `~core/api`, `~core/obs` — **server-only** (Nitro-роуты в `server/`): иначе
 крипто/токены/SQL попадут в клиентский бандл. Серверный слой — корневой `server/` (в Nuxt 4
 `serverDir` по умолчанию `<rootDir>/server`, доп. конфиг не нужен).
+Граница **форсится в CI** (#36): `pnpm check:boundary` (`scripts/check-core-boundary.ts`) проваливает
+CI-шаг (exit 1), если `app/**` импортирует server-only сегмент ядра (или обходит альяс прямым путём в `src/{bitrix24,store,api,obs}`);
+чистая логика разбора — под юнит-тестами (`test/core-boundary.test.ts`). Остаётся по #36 — vue-tsc-typecheck `app/` в CI.
 
 **Nitro-привязка ядра (`server/`):** тонкие обёртки над `createApi` — `server/utils/api.ts`
 (`useApi()` + `useStore()`, инстанс на процесс: пока MemoryStore+seed для dev-паритета с
