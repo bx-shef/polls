@@ -18,6 +18,7 @@
     "serve": "tsx scripts/serve.ts",
     "migrate": "node-pg-migrate",
     "check": "pnpm typecheck && pnpm test:cov && pnpm verify",
+    "check:boundary": "tsx scripts/check-core-boundary.ts",
     "dev": "nuxt dev",
     "build": "nuxt build",
     "preview": "nuxt preview",
