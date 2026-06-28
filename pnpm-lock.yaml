@@ -36,12 +36,15 @@ importers:
       '@types/node':
         specifier: ^22.10.2
         version: 22.19.20
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
       '@vitest/coverage-v8':
         specifier: ^2.1.8
         version: 2.1.9(vitest@2.1.9(@types/node@22.19.20)(lightningcss@1.32.0)(terser@5.48.0))
       node-pg-migrate:
         specifier: ^8.0.4
-        version: 8.0.4(pg@8.22.0)
+        version: 8.0.4(@types/pg@8.20.0)(pg@8.22.0)
       tailwindcss:
         specifier: ^4.3.1
         version: 4.3.1
@@ -2016,6 +2019,9 @@ packages:
 
   '@types/node@22.19.20':
     resolution: {integrity: sha512-6tELRwSDYWW9EdZhbeZmYGZ1/7Djkt+Ah3/ScEYT9cDord7UJzasR/4D3VONg9tQI5CDp+/CZC1AXj2pCFOvpw==}
+
+  '@types/pg@8.20.0':
+    resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
 
   '@types/resolve@1.20.2':
     resolution: {integrity: sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==}
@@ -6695,6 +6701,12 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/pg@8.20.0':
+    dependencies:
+      '@types/node': 22.19.20
+      pg-protocol: 1.15.0
+      pg-types: 2.2.0
+
   '@types/resolve@1.20.2': {}
 
   '@types/web-bluetooth@0.0.20': {}
@@ -8353,11 +8365,13 @@ snapshots:
 
   node-mock-http@1.0.4: {}
 
-  node-pg-migrate@8.0.4(pg@8.22.0):
+  node-pg-migrate@8.0.4(@types/pg@8.20.0)(pg@8.22.0):
     dependencies:
       glob: 11.1.0
       pg: 8.22.0
       yargs: 17.7.2
+    optionalDependencies:
+      '@types/pg': 8.20.0
 
   node-releases@2.0.48: {}
 

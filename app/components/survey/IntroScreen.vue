@@ -6,7 +6,7 @@ import type { PublicVersion } from '~core/domain/schema'
 const props = defineProps<{ version: PublicVersion }>()
 defineEmits<{ start: [] }>()
 
-const intro = computed(() => props.version.intro ?? {})
+const intro = computed<NonNullable<PublicVersion['intro']>>(() => props.version.intro ?? { meta: [] })
 const title = computed(() => intro.value.title ?? props.version.title)
 </script>
 
