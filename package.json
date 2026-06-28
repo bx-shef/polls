@@ -19,6 +19,7 @@
     "migrate": "node-pg-migrate",
     "check": "pnpm typecheck && pnpm test:cov && pnpm verify",
     "check:boundary": "tsx scripts/check-core-boundary.ts",
+    "typecheck:app": "nuxt typecheck",
     "dev": "nuxt dev",
     "build": "nuxt build",
     "preview": "nuxt preview",
@@ -44,6 +45,7 @@
     "tailwindcss": "^4.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "vue-tsc": "^2.2.12"
   }
 }
