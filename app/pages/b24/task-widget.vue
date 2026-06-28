@@ -20,7 +20,7 @@ onMounted(async () => {
     if (!a) throw new Error('нет данных авторизации')
     auth = { domain: a.domain, member_id: a.member_id, access_token: a.access_token }
     // ID задачи из параметров плейсмента (ключ зависит от версии: taskId/TASK_ID/ID).
-    const opts = (b24 as unknown as { placement?: { options?: Record<string, unknown> } }).placement?.options
+    const opts = b24.placement.options
     const id = Number(opts?.taskId ?? opts?.TASK_ID ?? opts?.ID)
     taskId.value = Number.isInteger(id) && id > 0 ? id : undefined
     phase.value = 'ready'

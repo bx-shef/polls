@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@bitrix24/b24jssdk':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: ^2.0.0
+        version: 2.0.0
       '@bitrix24/b24ui-nuxt':
-        specifier: ^2.8.0
-        version: 2.8.0(@internationalized/date@3.12.2)(@internationalized/number@3.6.7)(@tiptap/extensions@3.27.1(@tiptap/core@3.27.1(@tiptap/pm@3.27.1))(@tiptap/pm@3.27.1))(@tiptap/y-tiptap@3.0.5(prosemirror-model@1.25.9)(prosemirror-state@1.4.4)(prosemirror-view@1.41.9)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31))(axios@1.18.0)(embla-carousel@8.6.0)(magicast@0.5.3)(tailwindcss@4.3.1)(typescript@5.9.3)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue-router@5.1.0(@vue/compiler-sfc@3.5.38)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))(yjs@13.6.31)(zod@3.25.76)
+        specifier: ^2.9.0
+        version: 2.9.0(@internationalized/date@3.12.2)(@internationalized/number@3.6.7)(@tiptap/extensions@3.27.1(@tiptap/core@3.27.1(@tiptap/pm@3.27.1))(@tiptap/pm@3.27.1))(@tiptap/y-tiptap@3.0.5(prosemirror-model@1.25.9)(prosemirror-state@1.4.4)(prosemirror-view@1.41.9)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31))(axios@1.18.0)(embla-carousel@8.6.0)(magicast@0.5.3)(tailwindcss@4.3.1)(typescript@5.9.3)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue-router@5.1.0(@vue/compiler-sfc@3.5.38)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))(yjs@13.6.31)(zod@3.25.76)
       '@nuxtjs/color-mode':
         specifier: ^4.0.1
         version: 4.0.1(magicast@0.5.3)
@@ -214,12 +214,12 @@ packages:
     peerDependencies:
       vue: ^3.5.24
 
-  '@bitrix24/b24jssdk@1.3.0':
-    resolution: {integrity: sha512-v39TqbCb4zvHOA8E7drR19i0Lgs6K1tXpicAwmSMpIXUJSCz6l8cJrFDZ17THiJaWeTAo1h3S1ZqEZ9zjaBetw==}
+  '@bitrix24/b24jssdk@2.0.0':
+    resolution: {integrity: sha512-cM2SMLB/Z7bP3ObKmrmO75/etYpvbxOMIcDB8bZNafLOd+oTPeN868h9xcmQRUIr17MVmVisy681Ap89a8Ff8A==}
     engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
 
-  '@bitrix24/b24ui-nuxt@2.8.0':
-    resolution: {integrity: sha512-mHiwISps+L586UAA3ERelupEVabnfo8wWKBPvLZg7FEeKApgdGDheuOkALbMz5fxtIhc/PHKz3abcrBCW7lHRw==}
+  '@bitrix24/b24ui-nuxt@2.9.0':
+    resolution: {integrity: sha512-EbYaEoO5DzaNsy2jwKMMWGQV+Kcfr6+QZCLq2P2nEfTj4twk9wNgGHD0C/FXVWppPOd1WBEkm8SbVCuyQgcH6A==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -4039,8 +4039,8 @@ packages:
     resolution: {integrity: sha512-iETxpjK6YoRWJG5o6hXLwvjYAoW+FEZn9os0PD/b6AP6xQwsa/Y7lCVgIixBbUPMfhu+i2LtdeAqVTgGlQarfA==}
     hasBin: true
 
-  reka-ui@2.9.7:
-    resolution: {integrity: sha512-aX7foYYR20v4+majO58OJJdBNfLMm0eJb448l9N4JVy8JB7GXOr4H/S4a+J1pkcoxZH8Cb7YHpJ855+miAm7sA==}
+  reka-ui@2.10.0:
+    resolution: {integrity: sha512-HIUVfSBM/AyGkcUI7aiOxxMc4N+0UD2ZEun8dcrT0H4fveotEoeDdvzyZu97eeEvEa1H9oGHoOpApkfxlgnC7g==}
     peerDependencies:
       vue: '>= 3.4.0'
 
@@ -5108,7 +5108,7 @@ snapshots:
     dependencies:
       vue: 3.5.38(typescript@5.9.3)
 
-  '@bitrix24/b24jssdk@1.3.0':
+  '@bitrix24/b24jssdk@2.0.0':
     dependencies:
       '@types/luxon': 3.7.2
       axios: 1.18.0
@@ -5118,7 +5118,7 @@ snapshots:
       - debug
       - supports-color
 
-  '@bitrix24/b24ui-nuxt@2.8.0(@internationalized/date@3.12.2)(@internationalized/number@3.6.7)(@tiptap/extensions@3.27.1(@tiptap/core@3.27.1(@tiptap/pm@3.27.1))(@tiptap/pm@3.27.1))(@tiptap/y-tiptap@3.0.5(prosemirror-model@1.25.9)(prosemirror-state@1.4.4)(prosemirror-view@1.41.9)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31))(axios@1.18.0)(embla-carousel@8.6.0)(magicast@0.5.3)(tailwindcss@4.3.1)(typescript@5.9.3)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue-router@5.1.0(@vue/compiler-sfc@3.5.38)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))(yjs@13.6.31)(zod@3.25.76)':
+  '@bitrix24/b24ui-nuxt@2.9.0(@internationalized/date@3.12.2)(@internationalized/number@3.6.7)(@tiptap/extensions@3.27.1(@tiptap/core@3.27.1(@tiptap/pm@3.27.1))(@tiptap/pm@3.27.1))(@tiptap/y-tiptap@3.0.5(prosemirror-model@1.25.9)(prosemirror-state@1.4.4)(prosemirror-view@1.41.9)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31))(axios@1.18.0)(embla-carousel@8.6.0)(magicast@0.5.3)(tailwindcss@4.3.1)(typescript@5.9.3)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue-router@5.1.0(@vue/compiler-sfc@3.5.38)(vite@7.3.5(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))(yjs@13.6.31)(zod@3.25.76)':
     dependencies:
       '@bitrix24/b24icons-nuxt': 2.0.7(magicast@0.5.3)(vue@3.5.38(typescript@5.9.3))
       '@bitrix24/b24icons-vue': 2.0.7(vue@3.5.38(typescript@5.9.3))
@@ -5170,7 +5170,7 @@ snapshots:
       motion-v: 2.3.0(@vueuse/core@14.3.0(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))
       ohash: 2.0.11
       pathe: 2.0.3
-      reka-ui: 2.9.7(vue@3.5.38(typescript@5.9.3))
+      reka-ui: 2.10.0(vue@3.5.38(typescript@5.9.3))
       scule: 1.3.0
       tailwind-merge: 3.6.0
       tailwind-variants: 3.2.2(tailwind-merge@3.6.0)(tailwindcss@4.3.1)
@@ -5181,7 +5181,7 @@ snapshots:
       unplugin: 3.0.0
       unplugin-auto-import: 21.0.0(@nuxt/kit@4.4.8(magicast@0.5.3))(@vueuse/core@14.3.0(vue@3.5.38(typescript@5.9.3)))
       unplugin-vue-components: 32.1.0(@nuxt/kit@4.4.8(magicast@0.5.3))(vue@3.5.38(typescript@5.9.3))
-      vaul-vue: 0.4.1(reka-ui@2.9.7(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))
+      vaul-vue: 0.4.1(reka-ui@2.10.0(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3))
       vue-component-type-helpers: 3.3.5
     optionalDependencies:
       '@internationalized/date': 3.12.2
@@ -8944,7 +8944,7 @@ snapshots:
 
   regexp-tree@0.1.27: {}
 
-  reka-ui@2.9.7(vue@3.5.38(typescript@5.9.3)):
+  reka-ui@2.10.0(vue@3.5.38(typescript@5.9.3)):
     dependencies:
       '@floating-ui/dom': 1.7.6
       '@floating-ui/vue': 1.1.11(vue@3.5.38(typescript@5.9.3))
@@ -9474,10 +9474,10 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  vaul-vue@0.4.1(reka-ui@2.9.7(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3)):
+  vaul-vue@0.4.1(reka-ui@2.10.0(vue@3.5.38(typescript@5.9.3)))(vue@3.5.38(typescript@5.9.3)):
     dependencies:
       '@vueuse/core': 10.11.1(vue@3.5.38(typescript@5.9.3))
-      reka-ui: 2.9.7(vue@3.5.38(typescript@5.9.3))
+      reka-ui: 2.10.0(vue@3.5.38(typescript@5.9.3))
       vue: 3.5.38(typescript@5.9.3)
     transitivePeerDependencies:
       - '@vue/composition-api'
