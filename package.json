@@ -38,15 +38,15 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.3",
-    "@playwright/test": "^1.61.0",
-    "@types/node": "^22.10.2",
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.0.1",
     "@types/pg": "^8.20.0",
-    "@vitest/coverage-v8": "^2.1.8",
+    "@vitest/coverage-v8": "^4.1.9",
     "node-pg-migrate": "^8.0.4",
     "tailwindcss": "^4.3.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "vue-tsc": "^2.2.12"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
+    "vue-tsc": "^3.3.5"
   }
 }
