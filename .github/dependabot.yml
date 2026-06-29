@@ -14,14 +14,22 @@ updates:
     versioning-strategy: increase
     groups:
       # Nuxt и его модули должны идти в ногу по версии — один PR.
+      # Только minor/patch в группе: МАЖОР (breaking) придёт отдельным PR — не утонет в пачке.
       nuxt:
         patterns:
           - "nuxt"
           - "@nuxt/*"
+        update-types:
+          - "minor"
+          - "patch"
       # Весь scope вендора Bitrix24 — одной пачкой (b24jssdk + b24ui-nuxt + b24icons).
+      # Только minor/patch: мажор b24jssdk был breaking (см. decisions.md) — отдельным PR на ревью.
       b24:
         patterns:
           - "@bitrix24/*"
+        update-types:
+          - "minor"
+          - "patch"
       # Все dev-зависимости — в один PR.
       dev-deps:
         dependency-type: development

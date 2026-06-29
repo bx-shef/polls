@@ -364,6 +364,16 @@ Stop-хук визуального гейта: `.claude/hooks/visual-gate.sh` (#
 остановку при расхождении с эталоном. Узкий триггер (чистое ядро не трогает), мягкая
 деградация без браузера. Детали — `docs/visual-gate.md`.
 
+## CI и зависимости
+
+GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typecheck:app` vue-tsc + тесты с
+покрытием + verify), `docker-build.yml` (сборка прод-образа на PR с изменениями в коде/Dockerfile/
+lockfile/миграциях — **без публикации**, гейт от поломки образа до мержа), `docker-publish.yml`
+(публикация в GHCR на push в `main`/теги). `.github/dependabot.yml` — авто-обновления npm/actions/
+docker с группировкой (мажор `nuxt`/`@bitrix24/*` — отдельным PR; major `node` заигнорен под corepack).
+Авто-мерж Dependabot НЕ включён (мержит владелец сам). Практики — из базы знаний (`bx-shef/ai-agent`,
+`docs/08_git-ci-di`); решение — в `docs/decisions.md`.
+
 ## Reporting Kit (вендорный бандл `reporting-kit/`)
 
 Переносимый набор отчётности и работы с агентом из базы знаний

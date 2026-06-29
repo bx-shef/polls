@@ -16,6 +16,7 @@ on:
       - 'app/**'
       - 'server/**'
       - 'src/**'
+      - 'migrations/**'
       - '.github/workflows/docker-build.yml'
 
 concurrency:
