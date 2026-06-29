@@ -34,7 +34,7 @@
     "@nuxtjs/color-mode": "^4.0.1",
     "nuxt": "^4.4.8",
     "pg": "^8.22.0",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.3",
