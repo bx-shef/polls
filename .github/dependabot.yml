@@ -1,0 +1,64 @@
+# Dependabot — авто-обновление зависимостей тремя поверхностями: npm/pnpm, GitHub Actions, Docker.
+# Практики сведены в базе знаний (bx-shef/ai-agent → docs/08_git-ci-di/03_repo_protection_ci.md):
+# группировка по семейству/вендору, ignore-с-обоснованием, гейт сборкой на PR.
+# Dependabot-PR проходят тот же CI-гейт, что и ручные (см. ci.yml + docker-build.yml).
+version: 2
+updates:
+  # --- Зависимости приложения (pnpm) ----------------------------------------
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      # Nuxt и его модули должны идти в ногу по версии — один PR.
+      # Только minor/patch в группе: МАЖОР (breaking) придёт отдельным PR — не утонет в пачке.
+      nuxt:
+        patterns:
+          - "nuxt"
+          - "@nuxt/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Весь scope вендора Bitrix24 — одной пачкой (b24jssdk + b24ui-nuxt + b24icons).
+      # Только minor/patch: мажор b24jssdk был breaking (см. decisions.md) — отдельным PR на ревью.
+      b24:
+        patterns:
+          - "@bitrix24/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Все dev-зависимости — в один PR.
+      dev-deps:
+        dependency-type: development
+
+  # --- Версии GitHub Actions в CI -------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Один групповой PR на все бампы экшенов вместо PR-на-каждый (forward-proof: новый экшен попадёт сюда же).
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # --- Базовый Docker-образ (Dockerfile: node:22-alpine) ---------------------
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns:
+          - "*"
+    # Major node заигнорен НАМЕРЕННО: Node 25+ выпилил corepack из официальных образов
+    # (`RUN corepack enable` → exit 127), а Dockerfile на нём держит pnpm. Сидим на ветке LTS;
+    # major-переход делаем вручную с фиксом corepack. Minor/patch node:22-alpine приходят сами.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
