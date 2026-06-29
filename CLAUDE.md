@@ -371,7 +371,9 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typeche
 lockfile/миграциях — **без публикации**, гейт от поломки образа до мержа), `docker-publish.yml`
 (публикация в GHCR на push в `main`/теги). `.github/dependabot.yml` — авто-обновления npm/actions/
 docker с группировкой (мажор `nuxt`/`@bitrix24/*` — отдельным PR; major `node` заигнорен под corepack).
-Авто-мерж Dependabot НЕ включён (мержит владелец сам). Практики — из базы знаний (`bx-shef/ai-agent`,
+Авто-мерж Dependabot НЕ включён (мержит владелец сам). Сторонние actions запиннены на полный
+commit-SHA с комментарием версии (supply-chain — мутабельный тег можно переписать; Dependabot
+`github-actions` обновляет эти SHA сам). Практики — из базы знаний (`bx-shef/ai-agent`,
 `docs/08_git-ci-di`); решение — в `docs/decisions.md`.
 
 ## Reporting Kit (вендорный бандл `reporting-kit/`)
