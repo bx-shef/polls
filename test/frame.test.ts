@@ -58,6 +58,8 @@ describe('isAllowedPortalDomain — SSRF-гард (#47)', () => {
       'foo.bitrix24.evil.com', // evil.com — атакующий; bitrix24.evil.com — его поддомен
       'foo.bitrix24.corp.io',
       'a.bitrix24.evil.co',
+      'x.bitrix24.evil.com.br', // явная ветка com.br НЕ должна работать как суффикс
+      'bitrix24.evil.com.br',
       'acme.bitrix24.ru/rest',
       'acme.bitrix24.ru:8080',
       'bitrix24.ru.attacker.com',
