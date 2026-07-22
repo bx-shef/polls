@@ -10,7 +10,7 @@
 import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitrix24/install'
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
-import { verifyInstallMember } from '~core/bitrix24/verify-install'
+import { verifyInstallMember, applyVerifiedTokens } from '~core/bitrix24/verify-install'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations } from '../../utils/portal'
@@ -85,6 +85,15 @@ export default defineEventHandler(async (event) => {
   const oauth = new Bitrix24OAuth({ clientId: cfg.secret.clientId, clientSecret: cfg.secret.clientSecret })
   const memberVerdict = await verifyInstallMember(auth.memberId, auth.refreshToken, oauth)
   if (!memberVerdict.ok) {
+    // Идемпотентность двойной доставки: Bitrix шлёт install-страницу И событие ONAPPINSTALL на ТОТ ЖЕ
+    // handler URL. Второй запрос рефрешит уже ротированный первым refresh_token → invalid_grant (403,
+    // reason `refresh_rejected_*`). Если портал уже установлен (первый успел) — это гонка, не подделка:
+    // отдаём FINISH_HTML (иначе браузерная install-страница не вызовет BX24.installFinish()). НЕ применяем
+    // к `member_mismatch` (там реальная подделка + не светим наружу факт установки портала).
+    if (memberVerdict.reason.startsWith('refresh_rejected') && (await tokenStore.load(auth.memberId).catch(() => undefined))) {
+      logger.info('b24_install_double_dispatch', { memberId: auth.memberId })
+      return html(event, 200, FINISH_HTML)
+    }
     logger.warn('b24_install_member_reject', { memberId: auth.memberId, reason: memberVerdict.reason })
     return html(
       event,
@@ -96,18 +105,15 @@ export default defineEventHandler(async (event) => {
       )
     )
   }
-  // refresh РОТИРОВАЛ токены — дальше используем ВОЗВРАЩЁННЫЙ грант везде (присланный refresh_token уже
-  // мёртв), сохранив application_token/domain/endpoints из install-auth (рефреш их не возвращает).
-  const remainingSec = Math.max(60, Math.round((new Date(memberVerdict.tokens.expiresAt).getTime() - Date.now()) / 1000))
-  const verifiedAuth = {
-    ...auth,
-    accessToken: memberVerdict.tokens.accessToken,
-    refreshToken: memberVerdict.tokens.refreshToken,
-    expiresIn: remainingSec
-  }
+  // refresh РОТИРОВАЛ токены — используем ВОЗВРАЩЁННЫЙ грант везде (присланный refresh_token мёртв).
+  // Сборка вынесена в чистую applyVerifiedTokens (пересчёт expiresIn, сброс stale expires, authoritative
+  // domain; application_token/endpoints сохранены из install-auth).
+  const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
 
   try {
     await handleInstall(verifiedAuth, {
+      // save → Promise<boolean> (durable-гард по member_id). Тумбстоун-гард против out-of-order install
+      // (eventTs) здесь НЕ передаётся — активируется на events-пути §2.1 (там есть top-level `ts`).
       saveTokens: async (tokens) => {
         await tokenStore.save(tokens)
       },
