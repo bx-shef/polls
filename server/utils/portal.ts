@@ -2,6 +2,7 @@ import { TokenCipher, loadTokenKey } from '~core/bitrix24/crypto'
 import { PortalTokenStore } from '~core/bitrix24/portal'
 import { createPortalClient, callMethod, type B24OAuthParams, type B24OAuthSecret } from '~core/bitrix24/client'
 import { surveyRobotParams, surveyPlacements } from '~core/bitrix24/install'
+import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalDb, logger } from './api'
 
 /**
@@ -9,6 +10,21 @@ import { usePortalDb, logger } from './api'
  * токены) сюда импортируется намеренно. Конфиг — из env (`NUXT_B24_CLIENT_ID/SECRET`,
  * `NUXT_BITRIX_TOKEN_KEY`, `DOMAIN`). Fail-closed: без полного конфига — `null` (эндпоинт → 503).
  */
+
+/**
+ * Rate-limit install-эндпоинта (§2.3 follow-up, CTO MAJOR-3). После §2.3 каждый well-formed install-POST
+ * порождает ИСХОДЯЩИЙ рефреш на `oauth.bitrix.info` (сверка authoritative member_id) → эндпоинт стал
+ * амплификатором: флуд → Bitrix лимитит НАС (429) → keep-alive/легитимные install получают 503. Лимитер
+ * гасит потолок ДО исходящего рефреша. Install — редкая операция, потому лимит невысокий. In-memory,
+ * на инстанс (общий стор для мульти-инстанса — #4). За доверенным reverse-proxy IP собирается в один
+ * bucket (nginx-IP) — для анти-амплификации это ОК (кап суммарных исходящих рефрешей), X-Forwarded-For — #4.
+ */
+const installLimiter = new SlidingWindowLimiter({ limit: 20, windowMs: 60_000 })
+
+/** true — install-запрос с этого IP допущен (и учтён); false — лимит исчерпан (→ 429). */
+export function allowB24Install(ip: string, now: Date = new Date()): boolean {
+  return installLimiter.allow(ip, now)
+}
 
 export interface B24AppConfig {
   secret: B24OAuthSecret

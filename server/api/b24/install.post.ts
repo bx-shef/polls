@@ -12,8 +12,9 @@ import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
 import { Bitrix24OAuth, type HttpFetch, type HttpResponse } from '~core/bitrix24/oauth'
+import { isAllowedPortalDomain } from '~core/bitrix24/frame'
 import { errInfo } from '~core/obs/logger'
-import { b24AppConfig, usePortalTokenStore, registerIntegrations } from '../../utils/portal'
+import { b24AppConfig, usePortalTokenStore, registerIntegrations, allowB24Install } from '../../utils/portal'
 import { logger } from '../../utils/api'
 
 /**
@@ -89,6 +90,14 @@ export default defineEventHandler(async (event) => {
     return html(event, 503, errorHtml('интеграция не сконфигурирована на сервере'))
   }
 
+  // Rate-limit ДО исходящего верификационного рефреша (§2.3 follow-up, CTO MAJOR-3): install-эндпоинт —
+  // амплификатор (well-formed POST → рефреш на oauth.bitrix.info). Применяем на install-пути (uninstall
+  // выше уже ответил и вышел — его НЕ лимитируем, B24 online-события не ретраит). IP за прокси — #4.
+  if (!allowB24Install(getRequestIP(event) ?? '?')) {
+    logger.warn('b24_install_ratelimited', { memberId: auth.memberId })
+    return html(event, 429, errorHtml('слишком много попыток установки — повторите позже'))
+  }
+
   // §2.3 member_id-binding (анти install-poisoning): member_id в POST — клиент-контролируемое поле.
   // Рефрешим присланный refresh_token и сверяем AUTHORITATIVE member_id из ответа OAuth-сервера с
   // заявленным. Без этого атакующий подсадил бы свои токены на чужой member_id → с §2.1 удалил бы данные.
@@ -122,8 +131,16 @@ export default defineEventHandler(async (event) => {
   }
   // refresh РОТИРОВАЛ токены — используем ВОЗВРАЩЁННЫЙ грант везде (присланный refresh_token мёртв).
   // Сборка вынесена в чистую applyVerifiedTokens (пересчёт expiresIn, сброс stale expires, authoritative
-  // domain; application_token/endpoints сохранены из install-auth).
+  // domain; clientEndpoint деривится из domain, application_token сохранён из install-auth).
   const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
+
+  // SSRF-гард (§2.3 follow-up): domain станет host'ом исходящих REST (registerIntegrations → clientEndpoint).
+  // Если грант не вернул authoritative domain — в verifiedAuth.domain присланное значение. Пускаем на REST
+  // ТОЛЬКО облачные хосты Bitrix (`*.bitrix24.<tld>`), иначе владелец портала увёл бы вызовы на внутренний URL.
+  if (!isAllowedPortalDomain(verifiedAuth.domain)) {
+    logger.warn('b24_install_bad_domain', { memberId: verifiedAuth.memberId, domain: verifiedAuth.domain })
+    return html(event, 400, errorHtml('недопустимый домен портала'))
+  }
 
   try {
     await handleInstall(verifiedAuth, {

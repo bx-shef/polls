@@ -124,18 +124,29 @@ describe('applyVerifiedTokens (сборка InstallAuth из ротирован�
     expect(out.expires).toBeUndefined()
   })
 
-  it('authoritative domain/clientEndpoint из гранта перекрывают присланные (частичное закрытие domain-poisoning)', () => {
-    const t = tokens({ domain: 'authoritative.b24', clientEndpoint: 'https://authoritative.b24/rest/' })
+  it('domain — authoritative из гранта (перекрывает присланный); clientEndpoint деривится из него', () => {
+    const t = tokens({ domain: 'authoritative.b24' })
     const out = applyVerifiedTokens(installAuth({ domain: 'posted.b24' }), t, NOW)
     expect(out.domain).toBe('authoritative.b24')
     expect(out.clientEndpoint).toBe('https://authoritative.b24/rest/')
   })
 
-  it('грант без domain/clientEndpoint → фолбэк на присланные install-auth', () => {
-    const t = tokens({ domain: undefined, clientEndpoint: undefined })
-    const out = applyVerifiedTokens(installAuth({ domain: 'posted.b24', clientEndpoint: 'https://posted.b24/rest/' }), t, NOW)
-    expect(out.domain).toBe('posted.b24')
-    expect(out.clientEndpoint).toBe('https://posted.b24/rest/')
+  it('clientEndpoint ВСЕГДА деривится из domain — даже грант-client_endpoint не пробрасывается verbatim', () => {
+    // Airtight-инвариант: REST-host = https://<domain>/rest/, где domain покрыт allowlist'ом вызывающего.
+    // Ни присланный, ни грант-endpoint не используются как host напрямую.
+    const t = tokens({ domain: 'authoritative.b24', clientEndpoint: 'https://cdn.elsewhere.example/rest/' })
+    const out = applyVerifiedTokens(installAuth({ clientEndpoint: 'https://evil.internal/rest/' }), t, NOW)
+    expect(out.clientEndpoint).toBe('https://authoritative.b24/rest/')
+  })
+
+  it('грант без domain (пустой/undefined): domain из присланного (||), clientEndpoint деривится из него', () => {
+    // OAuthTokens.domain допускает '' — `||` трактует пустой как отсутствие, фолбэк на присланный min(1).
+    for (const grantDomain of [undefined, '']) {
+      const t = tokens({ domain: grantDomain, clientEndpoint: undefined })
+      const out = applyVerifiedTokens(installAuth({ domain: 'posted.b24', clientEndpoint: 'https://evil.internal/rest/' }), t, NOW)
+      expect(out.domain).toBe('posted.b24')
+      expect(out.clientEndpoint).toBe('https://posted.b24/rest/') // не https:///rest/, не присланный evil
+    }
   })
 
   it('application_token и прочие install-поля сохраняются (рефреш их не возвращает)', () => {
@@ -149,14 +160,6 @@ describe('applyVerifiedTokens (сборка InstallAuth из ротирован�
     // Провенанс из доверенного источника; verifyInstallMember уже гарантировал равенство.
     const out = applyVerifiedTokens(installAuth({ memberId: 'm-1' }), tokens({ memberId: 'm-1' }), NOW)
     expect(out.memberId).toBe('m-1')
-  })
-
-  it('clientEndpoint при грант-domain без грант-endpoint ДЕРИВИТСЯ из authoritative domain (не из присланного)', () => {
-    // Грант вернул domain, но не client_endpoint → endpoint строим из authoritative domain, а НЕ доверяем
-    // присланному auth.clientEndpoint (иначе владелец портала подсунул бы внутренний URL → SSRF).
-    const t = tokens({ domain: 'authoritative.b24', clientEndpoint: undefined })
-    const out = applyVerifiedTokens(installAuth({ clientEndpoint: 'https://evil.internal/rest/' }), t, NOW)
-    expect(out.clientEndpoint).toBe('https://authoritative.b24/rest/')
   })
 
   it('60с-пол: истёкший грант (expiresAt в прошлом / рассинхрон часов) не даёт 0/отрицательный expiresIn', () => {

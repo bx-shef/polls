@@ -46,11 +46,18 @@ export function parseFrameAuth(raw: unknown): FrameAuth | null {
 }
 
 /**
- * Allowlist облачных доменов Bitrix24: `<portal>.bitrix24.<tld>` (вкл. двойные tld `.com.br`).
- * Дефолт намеренно узкий — self-hosted порталы передают свой RegExp. SSRF-гард: ровно ОДИН
- * лейбл портала, литеральное `.bitrix24.`, якоря — никаких `slash`/`:`/`@`/поддоменных трюков.
+ * Allowlist облачных доменов Bitrix24: `<portal>.bitrix24.<tld>` (единственный TLD-лейбл) плюс явно
+ * известный двухуровневый `.com.br` (Бразилия). Дефолт намеренно узкий — self-hosted/box-порталы
+ * передают свой RegExp. SSRF-гард: ровно ОДИН лейбл портала, литеральное `.bitrix24.`, якоря.
+ *
+ * ⚠ КРИТИЧНО (SSRF): TLD — ОДИН dot-free лейбл `[a-z]{2,}` (плюс whitelist `com.br`). Открытая
+ * «двойная TLD»-ветка (`\.[a-z]{2,3}`) была ДЫРОЙ: `foo.bitrix24.evil.com` (evil.com — регистрируемый
+ * атакующим домен, `bitrix24` — его поддомен) проходил как `<label>.bitrix24.<evil>.<com>` → SSRF на
+ * произвольный хост при исходящем REST (и в install, и в handshake фрейма #47, где DOMAIN клиент-присланный
+ * без грант-оверрайда). Остаточно (follow-up): `bitrix24.<регистрируемый-gTLD>` (напр. `bitrix24.app`) —
+ * закрывается только ЯВНЫМ списком реальных облачных TLD Bitrix; отложено (нужен авторитетный список).
  */
-const DEFAULT_PORTAL_DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.bitrix24\.[a-z]{2,4}(?:\.[a-z]{2,3})?$/
+const DEFAULT_PORTAL_DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.bitrix24\.(?:[a-z]{2,}|com\.br)$/
 
 /** Доверенный ли хост портала (для исходящего REST-вызова). `domain` — голый хост, без схемы/порта. */
 export function isAllowedPortalDomain(domain: string, allow: RegExp = DEFAULT_PORTAL_DOMAIN): boolean {
