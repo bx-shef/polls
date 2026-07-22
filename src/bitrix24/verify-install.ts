@@ -44,11 +44,13 @@ export async function verifyInstallMember(
   } catch (e) {
     const status = e instanceof OAuthError ? e.status : undefined
     // Только явные auth-отказы (400 invalid_grant / 401) → 403 (подделанный/отозванный грант).
-    // Остальное (429 rate-limit, 5xx, сеть) — транзиент → 503 (fail-closed, ретраибельно, не ложно-отвергаем).
+    // Остальное (429 rate-limit, 5xx, сеть/таймаут) — транзиент → 503 (fail-closed, ретраибельно,
+    // не ложно-отвергаем). Underlying HTTP-статус подмешан в `reason` для прод-диагностики: на логах
+    // отличить «Bitrix нас лимитит 429» от «OAuth-сервер лёг 5xx» от «таймаут/сеть» (без статуса).
     if (status === 400 || status === 401) {
       return { ok: false, status: 403, reason: `refresh_rejected_${status}` }
     }
-    return { ok: false, status: 503, reason: 'refresh_unavailable' }
+    return { ok: false, status: 503, reason: status ? `refresh_unavailable_${status}` : 'refresh_unavailable' }
   }
   if (!refreshed.memberId) return { ok: false, status: 503, reason: 'no_member_id' }
   if (refreshed.memberId !== claimedMemberId) {
@@ -70,12 +72,41 @@ export function applyVerifiedTokens(auth: InstallAuth, tokens: OAuthTokens, now:
   // 60с-пол: защита от 0/отрицательного `expiresIn` при рассинхроне часов («грант уже истёк»).
   const remainingSec = Math.max(60, Math.round((new Date(tokens.expiresAt).getTime() - now.getTime()) / 1000))
   const { expires: _staleExpires, ...rest } = auth
+  // clientEndpoint: грант-`client_endpoint` (authoritative) → derive из authoritative `domain` гранта →
+  // присланный (лишь если Bitrix не вернул НИ endpoint, НИ domain). Снижает доверие к клиент-присланному
+  // `clientEndpoint`: иначе владелец портала подставил бы внутренний/произвольный URL как endpoint «своего»
+  // портала → SSRF при последующих исходящих REST-вызовах (`registerIntegrations` этого же запроса).
+  // Полная защита (allowlist хоста `*.bitrix24.*`) — follow-up, см. improvement-plan §2.3.
+  const clientEndpoint = tokens.clientEndpoint ?? (tokens.domain ? `https://${tokens.domain}/rest/` : auth.clientEndpoint)
   return {
     ...rest,
+    // memberId — authoritative-by-construction: verifyInstallMember уже сверил `tokens.memberId === auth.memberId`
+    // (и что он непуст). Берём из гранта, чтобы провенанс был из доверенного источника, а не из POST.
+    memberId: tokens.memberId,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
     expiresIn: remainingSec,
     domain: tokens.domain ?? auth.domain,
-    clientEndpoint: tokens.clientEndpoint ?? auth.clientEndpoint
+    clientEndpoint
   }
+}
+
+/**
+ * Решение по «двойной доставке» установки: Bitrix может слать install-страницу И событие `ONAPPINSTALL`
+ * на ТОТ ЖЕ handler URL. `refresh_rejected_*` = присланный `refresh_token` отвергнут OAuth (400/401):
+ * ЛИБО легитимная повторная доставка (первый запрос уже консьюмнул+ротировал токен), ЛИБО зонд/подделка
+ * с мусорным токеном, ЛИБО мисконфиг `client_secret` (invalid_client → 400). Различить их по одному
+ * рефрешу нельзя. Правило: `finish` (→ FINISH_HTML, чтобы браузерная install-страница вызвала
+ * BX24.installFinish()) ТОЛЬКО если портал УЖЕ установлен — тогда это гонка, не сбой. Иначе `reject`
+ * (видимая ошибка): портала нет → это мисконфиг/битый токен/зонд, и маскировать реальный сбой ложным
+ * «успехом» нельзя. `member_mismatch` и транзиент (503) → всегда `reject`.
+ *
+ * ⚠ Остаточный след (осознанно принят, low-severity): `finish` только при существующем портале ⇒ ответ
+ * 200-vs-ошибка раскрывает факт установки тому, кто ЗНАЕТ `member_id` (128-бит хэш портала — не
+ * перебираемый; утечка — 1 бит «установлено да/нет», записи в этой ветке НЕ происходит). Полностью закрыть
+ * нельзя без регрессии: единый `finish` замаскировал бы мисконфиг `client_secret`, единый `reject` показывал
+ * бы ошибку на легитимной гонке. См. docs/improvement-plan.md §2.3 (follow-up).
+ */
+export function decideInstallDoubleDispatch(reason: string, portalExists: boolean): 'finish' | 'reject' {
+  return reason.startsWith('refresh_rejected') && portalExists ? 'finish' : 'reject'
 }

@@ -10,11 +10,21 @@
 import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitrix24/install'
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
-import { verifyInstallMember, applyVerifiedTokens } from '~core/bitrix24/verify-install'
-import { Bitrix24OAuth } from '~core/bitrix24/oauth'
+import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
+import { Bitrix24OAuth, type HttpFetch, type HttpResponse } from '~core/bitrix24/oauth'
 import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations } from '../../utils/portal'
 import { logger } from '../../utils/api'
+
+/**
+ * Верификационный рефреш — СИНХРОННЫЙ исходящий вызов на `oauth.bitrix.info` внутри install-запроса.
+ * Ядро (`Bitrix24OAuth`) делегирует таймауты «слою деплоя»; здесь этот слой — мы. Без явного лимита
+ * зависший OAuth-сервер держал бы install-соединение до дефолта undici (~300с) и (с флудом) подъедал бы
+ * сокеты/event-loop. `AbortSignal.timeout` → fetch reject → OAuthError без статуса → 503 (транзиент, ретрай).
+ */
+const OAUTH_REFRESH_TIMEOUT_MS = 10_000
+const timeoutRefreshFetch: HttpFetch = (url, init) =>
+  fetch(url, { ...init, signal: AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS) }) as Promise<HttpResponse>
 
 function html(event: any, status: number, body: string): string {
   setResponseStatus(event, status)
@@ -82,15 +92,20 @@ export default defineEventHandler(async (event) => {
   // §2.3 member_id-binding (анти install-poisoning): member_id в POST — клиент-контролируемое поле.
   // Рефрешим присланный refresh_token и сверяем AUTHORITATIVE member_id из ответа OAuth-сервера с
   // заявленным. Без этого атакующий подсадил бы свои токены на чужой member_id → с §2.1 удалил бы данные.
-  const oauth = new Bitrix24OAuth({ clientId: cfg.secret.clientId, clientSecret: cfg.secret.clientSecret })
+  const oauth = new Bitrix24OAuth({
+    clientId: cfg.secret.clientId,
+    clientSecret: cfg.secret.clientSecret,
+    fetch: timeoutRefreshFetch
+  })
   const memberVerdict = await verifyInstallMember(auth.memberId, auth.refreshToken, oauth)
   if (!memberVerdict.ok) {
-    // Идемпотентность двойной доставки: Bitrix шлёт install-страницу И событие ONAPPINSTALL на ТОТ ЖЕ
-    // handler URL. Второй запрос рефрешит уже ротированный первым refresh_token → invalid_grant (403,
-    // reason `refresh_rejected_*`). Если портал уже установлен (первый успел) — это гонка, не подделка:
-    // отдаём FINISH_HTML (иначе браузерная install-страница не вызовет BX24.installFinish()). НЕ применяем
-    // к `member_mismatch` (там реальная подделка + не светим наружу факт установки портала).
-    if (memberVerdict.reason.startsWith('refresh_rejected') && (await tokenStore.load(auth.memberId).catch(() => undefined))) {
+    // Идемпотентность двойной доставки (install-страница + событие ONAPPINSTALL на ТОТ ЖЕ URL). Решение —
+    // в чистой `decideInstallDoubleDispatch`: `refresh_rejected_*` + УЖЕ установленный портал → гонка →
+    // FINISH_HTML (браузерная install-страница вызовет BX24.installFinish()); иначе → видимая ошибка (не
+    // маскируем мисконфиг/подделку). Портал грузим ТОЛЬКО на refresh_rejected (503-транзиент БД не трогает).
+    const isRejected = memberVerdict.reason.startsWith('refresh_rejected')
+    const portalExists = isRejected && !!(await tokenStore.load(auth.memberId).catch(() => undefined))
+    if (decideInstallDoubleDispatch(memberVerdict.reason, portalExists) === 'finish') {
       logger.info('b24_install_double_dispatch', { memberId: auth.memberId })
       return html(event, 200, FINISH_HTML)
     }

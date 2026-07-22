@@ -110,9 +110,11 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   формы B24 `auth[x]` с гардом prototype-pollution), связка — ветка `ONAPPUNINSTALL` в `server/api/b24/install.post.ts`
   (fail-open 200) → `deletePortal`; member_id-binding (§2.3, анти install-poisoning) — `bitrix24/verify-install.ts`
   (`verifyInstallMember`: рефреш присланного refresh_token → сверка authoritative `member_id`; **403 только 400/401/mismatch,
-  всё прочее — 429/5xx/сеть — 503** транзиент; `applyVerifiedTokens`: сборка `InstallAuth` из ротированного гранта —
-  свежие токены, пересчёт `expiresIn`, сброс stale `expires`, authoritative `domain`), вызывается в install-хендлере
-  ДО `handleInstall`; идемпотентность двойной доставки (page+event) на `refresh_rejected_*` → `FINISH_HTML`;
+  всё прочее — 429/5xx/сеть/таймаут/пустой member_id — 503** транзиент, underlying-статус в `reason` для логов;
+  `applyVerifiedTokens`: сборка `InstallAuth` из ротированного гранта — свежие токены, пересчёт `expiresIn`, сброс stale
+  `expires`, authoritative `domain`/`clientEndpoint`/`memberId` из гранта), вызывается в install-хендлере ДО `handleInstall`
+  (синхронный рефреш обёрнут `AbortSignal.timeout` 10с); идемпотентность двойной доставки (page+event) — чистая
+  `decideInstallDoubleDispatch(reason, portalExists)`: `refresh_rejected_*`+существующий портал → `FINISH_HTML`, иначе ошибка;
   domain-poisoning закрыт частично (authoritative `domain` из гранта; полное — `UNIQUE(domain)`, follow-up);
   `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
   под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).

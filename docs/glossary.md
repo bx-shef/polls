@@ -33,6 +33,12 @@
 - **Handshake фрейма** — обмен параметров `BX24.getAuth` (`DOMAIN`/`member_id`/`AUTH_ID`),
   которые портал отдаёт iframe-приложению, на подписанную сессию дашборда (cookie `polls_portal`).
   Ядро — `src/bitrix24/frame.ts` (#47): SSRF-allowlist домена + сверка `member_id`.
+- **install-poisoning** — атака: владелец реального портала A подделывает установку с ЧУЖИМ
+  `member_id` + своими валидными токенами → отравил бы tenant-ключ жертвы (с §2.1 uninstall — вплоть
+  до удаления данных жертвы). `member_id` в install-POST — клиент-контролируемое поле.
+- **member_id-binding** — защита от install-poisoning (§2.3): при установке рефрешим присланный
+  `refresh_token`, OAuth-сервер Bitrix возвращает **authoritative** `member_id` гранта, который обязан
+  совпасть с заявленным (иначе 403). Ядро — `src/bitrix24/verify-install.ts` (`verifyInstallMember`).
 - **Keyset-пагинация** — курсорная пагинация по стабильному ключу (`listResponsesPage`),
   без OFFSET. Helpers — `store/cursor.ts`.
 - **`triggerStages`** — денормализованные стадии/статусы-триггеры опроса (под binding сущности
@@ -49,4 +55,4 @@
   `channelOrder`), вшитая в схему/версию на уровне version-frozen (решение #21). См. `decisions.md`.
 
 ---
-*Последнее ревью: 2026-06-20.*
+*Последнее ревью: 2026-07-22.*
