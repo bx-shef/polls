@@ -8,14 +8,26 @@ import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from '
  * Драйвер-агностично (`Queryable` — pg.Pool/pglite), без новой prod-зависимости.
  * tenant — `member_id` портала (Bitrix24-идентификатор).
  *
- * Координация refresh (одновременные вызовы используют один refresh-token; потеря
- * новых токенов при сбое `save()` после успешного refresh) требует общего лока
- * между инстансами — вынесено в #4 (мульти-инстанс) + алертинг в #5. Для single
- * instance до live-связки вреда нет.
+ * Устойчивость lifecycle (миграция 0004, docs/improvement-plan.md §2):
+ *  - `updated_at` штампуется на install/refresh — основа keep-alive (`listNearExpiry`),
+ *    иначе простаивающий портал теряет refresh_token на 180-й день;
+ *  - `save` при install-событии сверяется с тумбстоуном (out-of-order install после
+ *    uninstall не воскрешает удалённый портал), настоящая переустановка чистит тумбстоун;
+ *  - `updateOnRefresh` — UPDATE-only: исчезла строка под конкурентным uninstall → UPDATE
+ *    матчит 0 строк, портал остаётся удалён (второй, независимый гард против воскрешения).
+ *
+ * Координация одновременного refresh между инстансами (общий лок) — при scale-out (#4,
+ * improvement-plan §2.5). Для single-instance до этого вреда нет.
  */
 
-/** Запас до истечения: обновляемся заранее, чтобы не отдать почти-протухший токен (60 с). */
+/** Запас до истечения access-token: обновляемся заранее, чтобы не отдать почти-протухший (60 с). */
 const REFRESH_SKEW_MS = 60_000
+
+/** Срок жизни refresh_token Bitrix24 (дней). Порог keep-alive считается от него. */
+export const REFRESH_TTL_DAYS = 180
+/** Запас keep-alive: рефрешим за N дней до истечения refresh_token (полоса у истечения). */
+export const KEEPALIVE_SKEW_DAYS = 3
+const DAY_MS = 86_400_000
 
 /**
  * Авторитетный резолвер install-маппинга `domain → member_id` для handshake app-фрейма (#47/#49):
@@ -35,20 +47,111 @@ export async function resolveMemberIdByDomain(db: Queryable, domain: string): Pr
   return r.rows[0]?.member_id
 }
 
+/** Опции сохранения токенов при установке. */
+export interface SaveTokensOpts {
+  /** Часы для `updated_at` (тест фиксирует). Default: `new Date()`. */
+  now?: Date
+  /**
+   * unix-СЕКУНДЫ top-level `ts` install-события. Если задан — включается тумбстоун-гард:
+   * install не старше зафиксированного uninstall не воскрешает портал. Без него (ручной
+   * вызов/тест) гард не применяется — поведение как раньше (чистый upsert).
+   */
+  eventTs?: number
+}
+
+/** Опции подбора порталов у истечения refresh_token (keep-alive). */
+export interface NearExpiryOpts {
+  ttlDays?: number
+  skewDays?: number
+  /** Кап батча (bound на всплеск к OAuth-серверу). Default: 50. */
+  limit?: number
+}
+
 export class PortalTokenStore {
   constructor(
     private readonly db: Queryable,
     private readonly cipher: TokenCipher
   ) {}
 
-  /** Сохраняет токены портала (upsert по member_id), шифруя перед записью. */
-  async save(tokens: OAuthTokens): Promise<void> {
+  /**
+   * Сохраняет токены портала при УСТАНОВКЕ (upsert по member_id), шифруя перед записью и
+   * штампуя `updated_at`. При `opts.eventTs` — тумбстоун-гард: если зафиксирован uninstall
+   * не старше события, запись пропускается (портал не воскрешается устаревшими кредами) и
+   * возвращается `false`; настоящая переустановка (строго новее) чистит устаревший тумбстоун.
+   * Возвращает `true`, если запись выполнена. Refresh идёт отдельным путём (`updateOnRefresh`).
+   */
+  async save(tokens: OAuthTokens, opts: SaveTokensOpts = {}): Promise<boolean> {
+    const stampedAt = (opts.now ?? new Date()).toISOString()
+    if (opts.eventTs !== undefined) {
+      const blocked = await this.db.query(
+        'select 1 from portal_tombstone where member_id = $1 and deleted_ts >= $2 limit 1',
+        [tokens.memberId, opts.eventTs]
+      )
+      if (blocked.rows.length > 0) return false // out-of-order install после uninstall — не воскрешаем
+    }
     const blob = JSON.stringify(this.cipher.seal(JSON.stringify(tokens)))
     await this.db.query(
-      `insert into portal (member_id, domain, tokens) values ($1, $2, $3)
-       on conflict (member_id) do update set tokens = excluded.tokens, domain = excluded.domain`,
-      [tokens.memberId, tokens.domain ?? '', blob]
+      `insert into portal (member_id, domain, tokens, updated_at) values ($1, $2, $3, $4)
+       on conflict (member_id) do update
+         set tokens = excluded.tokens, domain = excluded.domain, updated_at = excluded.updated_at`,
+      [tokens.memberId, tokens.domain ?? '', blob, stampedAt]
     )
+    if (opts.eventTs !== undefined) {
+      // Настоящая переустановка (строго новее любого зафиксированного uninstall) — чистим тумбстоун.
+      await this.db.query(
+        'delete from portal_tombstone where member_id = $1 and deleted_ts < $2',
+        [tokens.memberId, opts.eventTs]
+      )
+    }
+    return true
+  }
+
+  /**
+   * Персист СВЕЖЕЙ пары токенов после refresh — **UPDATE-only** (никогда INSERT): если строка
+   * портала исчезла под конкурентным uninstall, UPDATE матчит 0 строк и портал остаётся удалён
+   * (второй, независимый от тумбстоуна гард против воскрешения). Штампует `updated_at`.
+   */
+  async updateOnRefresh(tokens: OAuthTokens, now: Date = new Date()): Promise<void> {
+    const blob = JSON.stringify(this.cipher.seal(JSON.stringify(tokens)))
+    await this.db.query(
+      'update portal set tokens = $1, domain = $2, updated_at = $3 where member_id = $4',
+      [blob, tokens.domain ?? '', now.toISOString(), tokens.memberId]
+    )
+  }
+
+  /**
+   * Удаление портала при ONAPPUNINSTALL: СНАЧАЛА пишет тумбстоун `(member_id, deleted_ts)`
+   * (`greatest` при повторной доставке — хранит новейший uninstall), ПОТОМ удаляет строку.
+   * Порядок важен: тумбстоун переживает удаление и блокирует запоздавший install.
+   * `deletedTs` — unix-СЕКУНДЫ (top-level `ts` вебхука).
+   */
+  async deletePortal(memberId: string, deletedTs: number): Promise<void> {
+    await this.db.query(
+      `insert into portal_tombstone (member_id, deleted_ts) values ($1, $2)
+       on conflict (member_id) do update set deleted_ts = greatest(portal_tombstone.deleted_ts, excluded.deleted_ts)`,
+      [memberId, deletedTs]
+    )
+    await this.db.query('delete from portal where member_id = $1', [memberId])
+  }
+
+  /**
+   * member_id порталов в «полосе у истечения» refresh_token — для keep-alive-рефреша:
+   * `updated_at` старше `now - (ttlDays - skewDays)` (пора освежать), но не старше
+   * `now - ttlDays` (нижняя граница отсекает уже мёртвые/отозванные гранты, иначе они бы
+   * монополизировали батч с фиксированным `updated_at`). Сортировка по возрасту, кап батча.
+   */
+  async listNearExpiry(now: Date = new Date(), opts: NearExpiryOpts = {}): Promise<string[]> {
+    const ttlDays = opts.ttlDays ?? REFRESH_TTL_DAYS
+    const skewDays = opts.skewDays ?? KEEPALIVE_SKEW_DAYS
+    const limit = opts.limit ?? 50
+    const cutoffOld = new Date(now.getTime() - (ttlDays - skewDays) * DAY_MS).toISOString()
+    const ttlFloor = new Date(now.getTime() - ttlDays * DAY_MS).toISOString()
+    const r = await this.db.query<{ member_id: string }>(
+      `select member_id from portal where updated_at < $1 and updated_at >= $2
+       order by updated_at asc limit $3`,
+      [cutoffOld, ttlFloor, limit]
+    )
+    return r.rows.map((row) => row.member_id)
   }
 
   /**
@@ -75,8 +178,8 @@ export class PortalTokenStore {
 
   /**
    * Действующий access-token портала: если протух (с запасом REFRESH_SKEW_MS) —
-   * рефрешит через OAuth, перешифровывает и сохраняет. undefined — портал не
-   * установлен. Бросает OAuthError, если refresh не удался.
+   * рефрешит через OAuth, перешифровывает и сохраняет (`updateOnRefresh`, UPDATE-only).
+   * undefined — портал не установлен. Бросает OAuthError, если refresh не удался.
    */
   async accessToken(memberId: string, oauth: Bitrix24OAuth, now: Date = new Date()): Promise<string | undefined> {
     const tokens = await this.load(memberId)
@@ -89,7 +192,7 @@ export class PortalTokenStore {
     if (refreshed.memberId !== memberId) {
       throw new OAuthError(`OAuth вернул токены чужого портала (ожидали ${memberId})`)
     }
-    await this.save(refreshed)
+    await this.updateOnRefresh(refreshed, now)
     return refreshed.accessToken
   }
 }

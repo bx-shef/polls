@@ -258,9 +258,11 @@ describe('PortalTokenStore (pglite)', () => {
   // Изоляция: каждый тест стартует с пустой таблицей portal (без порядковой связности).
   beforeEach(async () => {
     await db.query('delete from portal')
+    await db.query('delete from portal_tombstone')
   })
 
   const now = new Date('2026-06-13T10:00:00.000Z')
+  const DAY_MS = 86_400_000
   const noCall = new Bitrix24OAuth({
     clientId: 'c',
     clientSecret: 's',
@@ -362,6 +364,79 @@ describe('PortalTokenStore (pglite)', () => {
     const oauth = refreshTo({ member_id: 'OTHER', access_token: 'X', refresh_token: 'Y' })
     await expect(store.accessToken('m-mm', oauth, now)).rejects.toThrow(/чужого портала/)
     expect((await store.load('m-mm'))?.accessToken).toBe('OLD') // токен m-mm не затронут
+  })
+
+  // ── Lifecycle-hardening (миграция 0004, docs/improvement-plan.md §2) ──
+  const epochOf = async (memberId: string): Promise<number> => {
+    const r = await db.query<{ e: string }>(
+      'select extract(epoch from updated_at)::bigint as e from portal where member_id = $1',
+      [memberId]
+    )
+    return Number(r.rows[0]!.e)
+  }
+
+  it('save: штампует updated_at из opts.now', async () => {
+    await store.save(tokens({ memberId: 'm-ts' }), { now })
+    expect(await epochOf('m-ts')).toBe(Math.floor(now.getTime() / 1000))
+  })
+
+  it('accessToken refresh обновляет updated_at (updateOnRefresh, UPDATE-only)', async () => {
+    const stale = new Date(now.getTime() - 100 * DAY_MS)
+    await store.save(tokens({ memberId: 'm-ref', expiresAt: '2026-06-13T10:00:30.000Z' }), { now: stale })
+    const oauth = refreshTo({ member_id: 'm-ref', access_token: 'NEW', refresh_token: 'RT-NEW' })
+    await store.accessToken('m-ref', oauth, now)
+    expect(await epochOf('m-ref')).toBe(Math.floor(now.getTime() / 1000)) // штамп сдвинут на now
+  })
+
+  it('updateOnRefresh: UPDATE-only — НЕ воскрешает удалённый портал', async () => {
+    await store.save(tokens({ memberId: 'm-del' }))
+    await store.deletePortal('m-del', 100)
+    await store.updateOnRefresh(tokens({ memberId: 'm-del', accessToken: 'NEW', domain: undefined }))
+    expect(await store.load('m-del')).toBeUndefined() // строки нет — UPDATE 0 строк
+  })
+
+  it('deletePortal: пишет тумбстоун и удаляет строку портала', async () => {
+    await store.save(tokens({ memberId: 'm-u' }))
+    await store.deletePortal('m-u', 500)
+    expect(await store.load('m-u')).toBeUndefined()
+    const t = await db.query<{ deleted_ts: string }>(
+      'select deleted_ts from portal_tombstone where member_id = $1',
+      ['m-u']
+    )
+    expect(Number(t.rows[0]!.deleted_ts)).toBe(500)
+  })
+
+  it('deletePortal: повторная доставка хранит НОВЕЙШИЙ uninstall (greatest)', async () => {
+    await store.deletePortal('m-g', 100)
+    await store.deletePortal('m-g', 50) // устаревший ретрай
+    const t = await db.query<{ deleted_ts: string }>(
+      'select deleted_ts from portal_tombstone where member_id = $1',
+      ['m-g']
+    )
+    expect(Number(t.rows[0]!.deleted_ts)).toBe(100)
+  })
+
+  it('save с eventTs: устаревший install (ts ≤ тумбстоун) НЕ воскрешает портал', async () => {
+    await store.deletePortal('m-b', 1000)
+    const wrote = await store.save(tokens({ memberId: 'm-b' }), { eventTs: 1000 }) // 1000 >= 1000 → блок
+    expect(wrote).toBe(false)
+    expect(await store.load('m-b')).toBeUndefined()
+  })
+
+  it('save с eventTs: настоящая переустановка (ts > тумбстоун) проходит и чистит тумбстоун', async () => {
+    await store.deletePortal('m-r', 1000)
+    const wrote = await store.save(tokens({ memberId: 'm-r' }), { eventTs: 2000 })
+    expect(wrote).toBe(true)
+    expect(await store.load('m-r')).toMatchObject({ memberId: 'm-r' })
+    const t = await db.query('select 1 from portal_tombstone where member_id = $1', ['m-r'])
+    expect(t.rows.length).toBe(0) // тумбстоун (1000 < 2000) вычищен
+  })
+
+  it('listNearExpiry: только порталы в полосе у истечения refresh_token', async () => {
+    await store.save(tokens({ memberId: 'm-old' }), { now: new Date(now.getTime() - 178 * DAY_MS) }) // в полосе
+    await store.save(tokens({ memberId: 'm-recent' }), { now: new Date(now.getTime() - 10 * DAY_MS) }) // свежий
+    await store.save(tokens({ memberId: 'm-dead' }), { now: new Date(now.getTime() - 181 * DAY_MS) }) // за TTL
+    expect(await store.listNearExpiry(now)).toEqual(['m-old'])
   })
 })
 
