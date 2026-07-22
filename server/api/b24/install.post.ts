@@ -10,6 +10,8 @@
 import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitrix24/install'
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
+import { verifyInstallMember } from '~core/bitrix24/verify-install'
+import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations } from '../../utils/portal'
 import { logger } from '../../utils/api'
@@ -77,16 +79,41 @@ export default defineEventHandler(async (event) => {
     return html(event, 503, errorHtml('интеграция не сконфигурирована на сервере'))
   }
 
+  // §2.3 member_id-binding (анти install-poisoning): member_id в POST — клиент-контролируемое поле.
+  // Рефрешим присланный refresh_token и сверяем AUTHORITATIVE member_id из ответа OAuth-сервера с
+  // заявленным. Без этого атакующий подсадил бы свои токены на чужой member_id → с §2.1 удалил бы данные.
+  const oauth = new Bitrix24OAuth({ clientId: cfg.secret.clientId, clientSecret: cfg.secret.clientSecret })
+  const memberVerdict = await verifyInstallMember(auth.memberId, auth.refreshToken, oauth)
+  if (!memberVerdict.ok) {
+    logger.warn('b24_install_member_reject', { memberId: auth.memberId, reason: memberVerdict.reason })
+    return html(
+      event,
+      memberVerdict.status,
+      errorHtml(
+        memberVerdict.status === 403
+          ? 'проверка привязки портала не пройдена'
+          : 'сервер авторизации Bitrix24 недоступен — повторите установку'
+      )
+    )
+  }
+  // refresh РОТИРОВАЛ токены — дальше используем ВОЗВРАЩЁННЫЙ грант везде (присланный refresh_token уже
+  // мёртв), сохранив application_token/domain/endpoints из install-auth (рефреш их не возвращает).
+  const remainingSec = Math.max(60, Math.round((new Date(memberVerdict.tokens.expiresAt).getTime() - Date.now()) / 1000))
+  const verifiedAuth = {
+    ...auth,
+    accessToken: memberVerdict.tokens.accessToken,
+    refreshToken: memberVerdict.tokens.refreshToken,
+    expiresIn: remainingSec
+  }
+
   try {
-    await handleInstall(auth, {
-      // save → Promise<boolean> (тумбстоун-гард). Тумбстоун-гард здесь ещё не активен
-      // (install-страница не несёт top-level `ts`); включится с events-эндпоинтом (§2.1).
+    await handleInstall(verifiedAuth, {
       saveTokens: async (tokens) => {
         await tokenStore.save(tokens)
       },
-      registerIntegrations: () => registerIntegrations(installToB24Params(auth), cfg)
+      registerIntegrations: () => registerIntegrations(installToB24Params(verifiedAuth), cfg)
     })
-    logger.info('b24_install_ok', { msg: `Установка портала ${auth.memberId} завершена` })
+    logger.info('b24_install_ok', { msg: `Установка портала ${auth.memberId} завершена (member_id сверен)` })
     return html(event, 200, FINISH_HTML)
   } catch (e) {
     logger.warn('b24_install_fail', { msg: `Установка не завершена: ${(e as Error).message}` })
