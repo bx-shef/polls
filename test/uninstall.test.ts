@@ -49,12 +49,22 @@ describe('decideUninstall (вердикт, constant-time сверка токен
     expect(decideUninstall(event, 'другой-токен', 9999)).toEqual({ ok: false, reason: 'bad_token' })
   })
 
-  it('токен совпал → ok, deletedTs из события', () => {
-    expect(decideUninstall(event, 'app-tok-1', 9999)).toEqual({ ok: true, memberId: 'm-1', deletedTs: 1700 })
+  it('токен совпал, CLEAN отсутствует → ok, clean=false (данные сохраняем), deletedTs из события', () => {
+    expect(decideUninstall(event, 'app-tok-1', 9999)).toEqual({ ok: true, memberId: 'm-1', deletedTs: 1700, clean: false })
+  })
+
+  it('CLEAN=1 → clean=true (стереть данные)', () => {
+    const e = parseUninstallEvent(raw({ data: { CLEAN: '1' } })) as UninstallEvent // строка коэрсится
+    expect(decideUninstall(e, 'app-tok-1', 9999)).toMatchObject({ ok: true, clean: true })
+  })
+
+  it('CLEAN=0 → clean=false (сохранить данные, переустановка)', () => {
+    const e = parseUninstallEvent(raw({ data: { CLEAN: 0 } })) as UninstallEvent
+    expect(decideUninstall(e, 'app-tok-1', 9999)).toMatchObject({ ok: true, clean: false })
   })
 
   it('токен совпал, событие без ts → deletedTs = nowSec', () => {
     const noTs = parseUninstallEvent({ event: 'ONAPPUNINSTALL', auth: { member_id: 'm-2', application_token: 'app-tok-1' } }) as UninstallEvent
-    expect(decideUninstall(noTs, 'app-tok-1', 9999)).toEqual({ ok: true, memberId: 'm-2', deletedTs: 9999 })
+    expect(decideUninstall(noTs, 'app-tok-1', 9999)).toEqual({ ok: true, memberId: 'm-2', deletedTs: 9999, clean: false })
   })
 })

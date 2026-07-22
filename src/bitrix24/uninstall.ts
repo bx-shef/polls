@@ -18,11 +18,13 @@ import { verifyApplicationToken } from './deal-event'
 
 export const uninstallEventSchema = z.object({
   event: z.string().refine((s) => s.toUpperCase() === 'ONAPPUNINSTALL', 'не ONAPPUNINSTALL'),
+  /** `CLEAN` — выбор пользователя «Очистить данные приложения»: `1` стереть / `0` сохранить (переустановка). */
+  data: z.object({ CLEAN: z.coerce.number().int().optional() }).optional(),
   auth: z.object({
     member_id: z.string().min(1).max(200),
     application_token: z.string().min(1).max(200)
   }),
-  /** top-level `ts` вебхука (unix-СЕКУНДЫ) — для тумбстоуна `deletePortal`. Не все доставки несут → опционален. */
+  /** top-level `ts` вебхука (unix-СЕКУНДЫ, приходит строкой) — для тумбстоуна `deletePortal`. */
   ts: z.coerce.number().int().nonnegative().optional()
 })
 export type UninstallEvent = z.infer<typeof uninstallEventSchema>
@@ -37,11 +39,13 @@ export function parseUninstallEvent(raw: unknown): UninstallEvent | null {
  * Вердикт по uninstall-событию (чистый, DI на сохранённый `application_token` портала):
  *  - нет сохранённого токена (портал не установлен / токен не был захвачен) → `unknown_portal`;
  *  - `application_token` не совпал (constant-time) → `bad_token` (подделка);
- *  - совпал → `ok` с `memberId` и `deletedTs` (из события либо `nowSec`, если событие без `ts`).
- * Вызывающий на `ok` зовёт `deletePortal(memberId, deletedTs)`; на не-ok — ничего не удаляет.
+ *  - совпал → `ok` с `memberId`, `deletedTs` (из события либо `nowSec`) и `clean` (стирать ли данные).
+ * `clean` = `data.CLEAN === 1` (пользователь просил очистку); иначе (0/отсутствует) данные СОХРАНЯЕМ
+ * (переустановка). Вызывающий на `ok && clean` зовёт `deletePortal`; на `ok && !clean` — ничего не
+ * трогает (данные оставлены сознательно); на не-ok — ничего не удаляет.
  */
 export type UninstallVerdict =
-  | { ok: true; memberId: string; deletedTs: number }
+  | { ok: true; memberId: string; deletedTs: number; clean: boolean }
   | { ok: false; reason: 'unknown_portal' | 'bad_token' }
 
 export function decideUninstall(
@@ -53,5 +57,10 @@ export function decideUninstall(
   if (!verifyApplicationToken(event.auth.application_token, storedApplicationToken)) {
     return { ok: false, reason: 'bad_token' }
   }
-  return { ok: true, memberId: event.auth.member_id, deletedTs: event.ts ?? nowSec }
+  return {
+    ok: true,
+    memberId: event.auth.member_id,
+    deletedTs: event.ts ?? nowSec,
+    clean: event.data?.CLEAN === 1
+  }
 }
