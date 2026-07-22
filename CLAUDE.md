@@ -24,7 +24,7 @@
 | `server/` (Nitro) | обёртки ядра: `/api/` session · submit · survey/:key/current · health · dashboard/:key | ✅ привязка готова (dev-стор MemoryStore+seed, общий `useStore`) |
 | Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема + тоггл темы (#45) |
 | Дашборд (контур B) | аналитика (`/d/:key`): NPS/CSAT/распределение/тренд/срезы поверх `domain/aggregate`, нативная b24ui-тема | ✅ под гейтом + auth (`requirePortalSession`, fail-closed); tenant-изоляция мульти-портала → #49 |
-| Установка Bitrix24 | `/api/b24/install` (токены + робот + плейсменты; ветка `ONAPPUNINSTALL` → `deletePortal`) + handshake `/api/b24/session` | ✅ работает; **hardening lifecycle** — миграция 0004 + keep-alive-плагин + **обработка uninstall** (constant-time `application_token`, `CLEAN`-респект) сделаны; осталось: member_id-binding + живой smoke → `docs/improvement-plan.md` §2 |
+| Установка Bitrix24 | `/api/b24/install` (токены + робот + плейсменты; **member_id-binding** при install; ветка `ONAPPUNINSTALL` → `deletePortal`) + handshake `/api/b24/session` | ✅ работает; **hardening lifecycle Фазы A** — миграция 0004 + keep-alive + uninstall (`CLEAN`-респект) + **member_id-binding** (сверка authoritative `member_id`, анти install-poisoning) сделаны; осталось: **живой smoke** → `docs/improvement-plan.md` §2 |
 | Деплой-слой | Docker+GHCR+watchtower+nginx-proxy+TLS+PostgreSQL, авто-CD | ✅ **live** (`polls.bx-shef.by`); осталось: мульти-инстанс #4 · OTel-наблюдаемость #15 · edge-security/чёрная-дыра → `docs/improvement-plan.md` §3–5 |
 
 Карта фаз и зависимостей — `docs/roadmap.md`; карта issue — `docs/issues.md`.
@@ -108,7 +108,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   обработка **uninstall** (§2.1) — `bitrix24/uninstall.ts` (`parseUninstallEvent`/`decideUninstall`: constant-time
   сверка `application_token` из blob + респект `data.CLEAN` 1/0) + `bitrix24/bracket-form.ts` (`parseBracketForm`
   формы B24 `auth[x]` с гардом prototype-pollution), связка — ветка `ONAPPUNINSTALL` в `server/api/b24/install.post.ts`
-  (fail-open 200) → `deletePortal`;
+  (fail-open 200) → `deletePortal`; member_id-binding (§2.3, анти install-poisoning) — `bitrix24/verify-install.ts`
+  (`verifyInstallMember`: рефреш присланного refresh_token → сверка authoritative `member_id`; ротация → `verifiedAuth`),
+  вызывается в install-хендлере ДО `handleInstall`;
   `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
   под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).
   `bitrix24/frame.ts` (#47, handshake app-фрейма — ЯДРО-рантайм): `parseFrameAuth` (zod-парс недоверенного
