@@ -1,4 +1,4 @@
-import { nullLogger, type Logger } from '../obs/logger'
+import { nullLogger, errInfo, type Logger } from '../obs/logger'
 
 /**
  * Keep-alive рефреш OAuth-токенов портала (docs/improvement-plan.md §2.4). refresh_token
@@ -38,7 +38,9 @@ export interface KeepAliveDeps {
   /**
    * Форс-рефреш одного портала. Обычно `store.accessToken(memberId, oauth)`: у near-expiry
    * портала access-токен (жизнь ~1ч) давно протух → `accessToken` рефрешит, ротируя refresh_token
-   * и штампуя `updated_at`. Бросает при неудаче рефреша.
+   * и штампуя `updated_at`. Бросает при неудаче рефреша (тогда `failed++`). Резолв без throw
+   * (реальный рефреш ИЛИ портал удалён под гонкой во время refresh → `undefined`) — `refreshed++`;
+   * счётчик `refreshed` = «обработано без ошибки», не различает эти под-случаи (ревью-программист).
    */
   refreshOne: (memberId: string) => Promise<void>
   logger?: Logger
@@ -66,11 +68,12 @@ export async function runKeepAlive(deps: KeepAliveDeps): Promise<KeepAliveResult
       refreshed++
     } catch (e) {
       failed++
-      log.warn('keepalive_refresh_fail', { msg: `Портал ${memberId}: keep-alive рефреш не удался (${(e as Error).message})` })
+      // Детали — в НЕ-`msg` полях: зарезервированный `msg` (= имя события, 1-й арг emit) перетёр бы
+      // `fields.msg`; `errInfo` вычищает креды из строк подключения и терпит не-Error значения.
+      log.warn('keepalive_refresh_fail', { memberId, reason: errInfo(e).message })
     }
   }
-  if (members.length > 0) {
-    log.info('keepalive_run', { msg: `keep-alive: обновлено ${refreshed}/${members.length}, ошибок ${failed}` })
-  }
+  // Логируем КАЖДЫЙ проход (включая пустой) — иначе месяцами не видно, жив ли таймер (ревью CTO).
+  log.info('keepalive_run', { total: members.length, refreshed, failed })
   return { total: members.length, refreshed, failed }
 }

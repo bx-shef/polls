@@ -24,7 +24,7 @@
 | `server/` (Nitro) | обёртки ядра: `/api/` session · submit · survey/:key/current · health · dashboard/:key | ✅ привязка готова (dev-стор MemoryStore+seed, общий `useStore`) |
 | Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема + тоггл темы (#45) |
 | Дашборд (контур B) | аналитика (`/d/:key`): NPS/CSAT/распределение/тренд/срезы поверх `domain/aggregate`, нативная b24ui-тема | ✅ под гейтом + auth (`requirePortalSession`, fail-closed); tenant-изоляция мульти-портала → #49 |
-| Установка Bitrix24 | `/api/b24/install` (токены + робот + плейсменты) + handshake `/api/b24/session` | ✅ работает; **hardening lifecycle** — ядро+миграция 0004 сделаны (тумбстоун/UPDATE-only/keep-alive/deletePortal), обвязка (events-эндпоинт/keep-alive-плагин/member_id) → `docs/improvement-plan.md` §2 |
+| Установка Bitrix24 | `/api/b24/install` (токены + робот + плейсменты) + handshake `/api/b24/session` | ✅ работает; **hardening lifecycle** — миграция 0004 + **keep-alive-плагин** (`server/plugins/keepalive.ts`) сделаны; осталось: events-эндпоинт uninstall + member_id-binding → `docs/improvement-plan.md` §2 |
 | Деплой-слой | Docker+GHCR+watchtower+nginx-proxy+TLS+PostgreSQL, авто-CD | ✅ **live** (`polls.bx-shef.by`); осталось: мульти-инстанс #4 · OTel-наблюдаемость #15 · edge-security/чёрная-дыра → `docs/improvement-plan.md` §3–5 |
 
 Карта фаз и зависимостей — `docs/roadmap.md`; карта issue — `docs/issues.md`.
@@ -102,7 +102,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh;
   lifecycle-hardening (миграция 0004, `docs/improvement-plan.md` §2): тумбстоун-гард в `save`,
   `updateOnRefresh` UPDATE-only (не воскрешает удалённый портал), `deletePortal` (каскад в транзакции),
-  `listNearExpiry` (keep-alive: рефреш порталов у истечения refresh_token);
+  `listNearExpiry` (keep-alive: рефреш порталов у истечения refresh_token); крон-логика keep-alive —
+  `bitrix24/keep-alive.ts` (`runKeepAlive`/`keepAliveIntervalMs`), живой таймер — Nitro-плагин
+  `server/plugins/keepalive.ts` (гейт на OAuth-креды, немедленный первый прогон + каденция `TOKEN_KEEPALIVE_HOURS`);
   `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
   под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).
   `bitrix24/frame.ts` (#47, handshake app-фрейма — ЯДРО-рантайм): `parseFrameAuth` (zod-парс недоверенного

@@ -30,10 +30,20 @@ describe('keepAliveIntervalMs (клэмп + защита от overflow setInterv
   it('кастомный дефолт', () => {
     expect(keepAliveIntervalMs(undefined, 12)).toBe(12 * HOUR)
   })
+
+  it('точные границы проходят без клэмпа', () => {
+    expect(keepAliveIntervalMs('1')).toBe(1 * HOUR)
+    expect(keepAliveIntervalMs('168')).toBe(168 * HOUR)
+  })
+
+  it('Infinity → дефолт; невалид + кастомный дефолт', () => {
+    expect(keepAliveIntervalMs('Infinity')).toBe(24 * HOUR)
+    expect(keepAliveIntervalMs('nan', 12)).toBe(12 * HOUR)
+  })
 })
 
 describe('runKeepAlive (изоляция ошибок пер-портал)', () => {
-  it('пустой список — ноль работы, без лог-строки run', async () => {
+  it('пустой список — ноль работы, но сводка run всё равно пишется (видимость таймера)', async () => {
     const logger = { ...nullLogger, info: vi.fn(), warn: vi.fn() }
     const deps: KeepAliveDeps = {
       listNearExpiry: () => Promise.resolve([]),
@@ -41,7 +51,8 @@ describe('runKeepAlive (изоляция ошибок пер-портал)', () 
       logger
     }
     expect(await runKeepAlive(deps)).toEqual({ total: 0, refreshed: 0, failed: 0 })
-    expect(logger.info).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith('keepalive_run', { total: 0, refreshed: 0, failed: 0 })
+    expect(logger.warn).not.toHaveBeenCalled()
   })
 
   it('все успешно — refreshed == total', async () => {
@@ -54,7 +65,7 @@ describe('runKeepAlive (изоляция ошибок пер-портал)', () 
     expect(refreshOne).toHaveBeenCalledTimes(3)
   })
 
-  it('один портал падает — остальные всё равно рефрешатся (изоляция)', async () => {
+  it('один портал падает — остальные рефрешатся (изоляция); детали в лог-полях (не в msg)', async () => {
     const logger = { ...nullLogger, info: vi.fn(), warn: vi.fn() }
     const refreshOne = vi.fn((m: string) => (m === 'm-bad' ? Promise.reject(new Error('invalid_grant')) : Promise.resolve()))
     const res = await runKeepAlive({
@@ -64,7 +75,28 @@ describe('runKeepAlive (изоляция ошибок пер-портал)', () 
     })
     expect(res).toEqual({ total: 3, refreshed: 2, failed: 1 })
     expect(refreshOne).toHaveBeenCalledTimes(3) // упавший не прервал цикл
-    expect(logger.warn).toHaveBeenCalledOnce()
-    expect(logger.info).toHaveBeenCalledOnce() // сводка после прохода
+    // member_id/причина — в НЕ-`msg` полях (иначе зарезервированный msg их перетёр бы).
+    expect(logger.warn).toHaveBeenCalledWith('keepalive_refresh_fail', { memberId: 'm-bad', reason: 'invalid_grant' })
+    expect(logger.info).toHaveBeenCalledWith('keepalive_run', { total: 3, refreshed: 2, failed: 1 })
+  })
+
+  it('все падают — refreshed 0, сводка всё равно пишется', async () => {
+    const logger = { ...nullLogger, info: vi.fn(), warn: vi.fn() }
+    const res = await runKeepAlive({
+      listNearExpiry: () => Promise.resolve(['m-1', 'm-2']),
+      refreshOne: () => Promise.reject(new Error('dead')),
+      logger
+    })
+    expect(res).toEqual({ total: 2, refreshed: 0, failed: 2 })
+    expect(logger.warn).toHaveBeenCalledTimes(2)
+    expect(logger.info).toHaveBeenCalledWith('keepalive_run', { total: 2, refreshed: 0, failed: 2 })
+  })
+
+  it('refreshOne бросает не-Error значение — деградирует без throw (errInfo терпит)', async () => {
+    const res = await runKeepAlive({
+      listNearExpiry: () => Promise.resolve(['m-x']),
+      refreshOne: () => Promise.reject('boom') // не Error
+    })
+    expect(res).toEqual({ total: 1, refreshed: 0, failed: 1 })
   })
 })

@@ -1,5 +1,6 @@
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { runKeepAlive, keepAliveIntervalMs } from '~core/bitrix24/keep-alive'
+import { errInfo } from '~core/obs/logger'
 import { usePortalTokenStore } from '../utils/portal'
 import { logger } from '../utils/api'
 
@@ -11,15 +12,19 @@ import { logger } from '../utils/api'
  * Логика прохода — в ядре (`runKeepAlive`, под тестами); здесь только живая обвязка:
  *  - гейт на OAuth-креды (`NUXT_B24_CLIENT_ID/SECRET`) — без них рефреш невозможен;
  *  - `usePortalTokenStore` (PgStore + шифр) — источник near-expiry порталов и персиста рефреша;
- *  - каденция `TOKEN_KEEPALIVE_HOURS` (клэмп [1ч,168ч]); `unref` — таймер не держит процесс.
- * SERVER-ONLY: `~core/bitrix24` импортируется намеренно (Nitro-контур, в клиентский бандл не идёт).
+ *  - каденция `TOKEN_KEEPALIVE_HOURS` (клэмп [1ч,168ч]); `unref` — таймер не держит процесс;
+ *  - НЕМЕДЛЕННЫЙ первый прогон (с малой задержкой): прод на авто-CD (merge→GHCR→watchtower)
+ *    может рестартовать чаще каденции — тогда `setInterval` никогда не истёк бы (ревью CTO/программист).
+ * Замечание: keep-alive впервые создаёт (маловероятную) гонку рефреша с живым REST-путём даже на
+ * ОДНОМ инстансе — закрывается advisory-lock'ом (improvement-plan §2.5, вместе с мульти-инстансом #4).
+ * SERVER-ONLY: `~core/bitrix24`/`~core/obs` импортируются намеренно (Nitro-контур, не в клиентский бандл).
  */
 export default defineNitroPlugin((nitroApp) => {
   if (import.meta.prerender) return
   const clientId = process.env.NUXT_B24_CLIENT_ID
   const clientSecret = process.env.NUXT_B24_CLIENT_SECRET
   if (!clientId || !clientSecret) {
-    logger.info('keepalive_off', { msg: 'keep-alive выключен: нет NUXT_B24_CLIENT_ID/SECRET' })
+    logger.info('keepalive_off', { reason: 'нет NUXT_B24_CLIENT_ID/SECRET' })
     return
   }
 
@@ -28,7 +33,12 @@ export default defineNitroPlugin((nitroApp) => {
 
   const tick = async (): Promise<void> => {
     const store = await usePortalTokenStore()
-    if (!store) return // нет БД/ключа шифрования — рефрешить нечего (MemoryStore-dev)
+    if (!store) {
+      // Креды заданы, но нет БД/ключа шифрования — keep-alive работать не может. Видимый сигнал,
+      // иначе `keepalive_on` даёт ложное чувство защиты (ревью-программист).
+      logger.warn('keepalive_no_store', { reason: 'нет DATABASE_URL/NUXT_BITRIX_TOKEN_KEY' })
+      return
+    }
     await runKeepAlive({
       listNearExpiry: () => store.listNearExpiry(),
       // access-токен near-expiry портала давно протух → accessToken рефрешит, ротируя refresh_token.
@@ -39,10 +49,18 @@ export default defineNitroPlugin((nitroApp) => {
     })
   }
 
-  const timer = setInterval(() => {
-    tick().catch((e) => logger.warn('keepalive_tick_fail', { msg: (e as Error).message }))
-  }, intervalMs)
+  const run = (): void => {
+    tick().catch((e) => logger.warn('keepalive_tick_fail', { reason: errInfo(e).message }))
+  }
+
+  // Первый прогон с малой задержкой (дать БД подняться на старте), затем — по каденции.
+  const initial = setTimeout(run, 15_000)
+  initial.unref()
+  const timer = setInterval(run, intervalMs)
   timer.unref()
-  nitroApp.hooks.hook('close', () => clearInterval(timer))
-  logger.info('keepalive_on', { msg: `keep-alive включён: каждые ${intervalMs / 3_600_000} ч` })
+  nitroApp.hooks.hook('close', () => {
+    clearTimeout(initial)
+    clearInterval(timer)
+  })
+  logger.info('keepalive_on', { intervalHours: intervalMs / 3_600_000 })
 })
