@@ -44,7 +44,11 @@ export default defineEventHandler(async (event) => {
 
   try {
     await handleInstall(auth, {
-      saveTokens: (tokens) => tokenStore.save(tokens),
+      // save → Promise<boolean> (тумбстоун-гард). Тумбстоун-гард здесь ещё не активен
+      // (install-страница не несёт top-level `ts`); включится с events-эндпоинтом (§2.1).
+      saveTokens: async (tokens) => {
+        await tokenStore.save(tokens)
+      },
       registerIntegrations: () => registerIntegrations(installToB24Params(auth), cfg)
     })
     logger.info('b24_install_ok', { msg: `Установка портала ${auth.memberId} завершена` })

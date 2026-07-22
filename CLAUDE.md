@@ -1,11 +1,12 @@
 # CLAUDE.md
 
-Ядро сервиса опросов (движок + версионирование + аналитика) под будущую
-интеграцию с Bitrix24. В репозитории — **ядро + framework-agnostic HTTP-слой**
-(TypeScript): хендлеры `/api/session`+`/api/submit` с анти-абьюзом и node-адаптер
-(`pnpm serve`). Nuxt/b24ui-фронт и Nitro-привязка — фаза связки. Комментарии и
-документация — на русском. Канонический источник спецификации — `docs/brief.md`
-(§1 — что и зачем); рабочий процесс задача→PR→review→мерж — ниже.
+Сервис опросов для Bitrix24 (движок + версионирование + аналитика). В репозитории —
+**framework-agnostic ядро** (`src/`, TypeScript) + **Nuxt 4/b24ui-приложение** (контур A
+`/s/:key` + дашборд контура B `/d/:key`) + **Nitro-привязка** (`server/`). Развёрнут
+**вживую** (`polls.bx-shef.by`, TLS, PostgreSQL, авто-CD merge→GHCR→watchtower, установка
+на портал работает). Комментарии и документация — на русском. Канонический источник
+спецификации — `docs/brief.md` (§1 — что и зачем); план дальнейших улучшений (на базе
+анализа procure-ai) — `docs/improvement-plan.md`; рабочий процесс задача→PR→review→мерж — ниже.
 
 ## Текущее состояние (одним взглядом)
 
@@ -22,8 +23,9 @@
 | `app/` (Nuxt 4 + b24ui) | приложение: контур A (`/s/:key`) + дашборд контура B (`/d/:key`), тёмная тема | ✅ экраны готовы под гейтом |
 | `server/` (Nitro) | обёртки ядра: `/api/` session · submit · survey/:key/current · health · dashboard/:key | ✅ привязка готова (dev-стор MemoryStore+seed, общий `useStore`) |
 | Фронт-экраны (контур A) | Интро/Опрос/Спасибо (`/s/:key`, `useSurvey` поверх `SurveyFill` + `/api/*`) | ✅ happy-path + гейт intro/survey/thanks/error/submit-error ×(light+dark) + persist/deep-link/тёмная тема + тоггл темы (#45) |
-| Дашборд (контур B) | аналитика (`/d/:key`): NPS/CSAT/распределение поверх `domain/aggregate`, нативная b24ui-тема | 🔶 KPI-дашборд под гейтом (dev-стор); auth-гейтинг → #47 |
-| Деплой-слой | Docker/TLS/мульти-инстанс | ⏳ не начат (#4/#5/#6/#17) |
+| Дашборд (контур B) | аналитика (`/d/:key`): NPS/CSAT/распределение/тренд/срезы поверх `domain/aggregate`, нативная b24ui-тема | ✅ под гейтом + auth (`requirePortalSession`, fail-closed); tenant-изоляция мульти-портала → #49 |
+| Установка Bitrix24 | `/api/b24/install` (токены + робот + плейсменты) + handshake `/api/b24/session` | ✅ работает; **hardening lifecycle** — ядро+миграция 0004 сделаны (тумбстоун/UPDATE-only/keep-alive/deletePortal), обвязка (events-эндпоинт/keep-alive-плагин/member_id) → `docs/improvement-plan.md` §2 |
+| Деплой-слой | Docker+GHCR+watchtower+nginx-proxy+TLS+PostgreSQL, авто-CD | ✅ **live** (`polls.bx-shef.by`); осталось: мульти-инстанс #4 · OTel-наблюдаемость #15 · edge-security/чёрная-дыра → `docs/improvement-plan.md` §3–5 |
 
 Карта фаз и зависимостей — `docs/roadmap.md`; карта issue — `docs/issues.md`.
 
@@ -98,6 +100,9 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   ротации ключа + `loadTokenKey` startup-guard),
   `bitrix24/oauth.ts` (`Bitrix24OAuth` — обмен кода/refresh POST-телом через инжектируемый fetch),
   `bitrix24/portal.ts` (`PortalTokenStore` — зашифрованное хранение `portal.tokens` + авто-refresh;
+  lifecycle-hardening (миграция 0004, `docs/improvement-plan.md` §2): тумбстоун-гард в `save`,
+  `updateOnRefresh` UPDATE-only (не воскрешает удалённый портал), `deletePortal` (каскад в транзакции),
+  `listNearExpiry` (keep-alive: рефреш порталов у истечения refresh_token);
   `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
   под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).
   `bitrix24/frame.ts` (#47, handshake app-фрейма — ЯДРО-рантайм): `parseFrameAuth` (zod-парс недоверенного
@@ -344,6 +349,7 @@ UI/CSS не готова, пока не увидена глазами — рен
 `observability.md` (логи/health/error-tracking — #5),
 `bitrix24-integration.md` (маппинг CRM→`CrmContext` + smoke-тест связки `scripts/b24-smoke.ts`),
 `roadmap.md` (карта фаз: где мы → фронт → дашборд → деплой),
+`improvement-plan.md` (план улучшений на базе анализа procure-ai: lifecycle-hardening/деплой/чёрная-дыра/телеметрия/очереди/рейтинги/обратная связь — с приоритетами и фазами),
 `visual-gate.md` (детерминированный визуальный гейт #13: Playwright + Stop-хук),
 `issues.md` (карта открытых issue: статус/зависимости),
 `glossary.md` (термины: контур A/B, версия-снимок, `question_key`, invitation/CrmContext, exclusive, малые N, `portalId`),
@@ -401,4 +407,4 @@ commit-SHA с комментарием версии (supply-chain — мутаб
 с deprecated `callMethod` выполнена в #95 — см. `docs/decisions.md`). Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
-*Последнее ревью: 2026-06-28.*
+*Последнее ревью: 2026-07-22.*
