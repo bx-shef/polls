@@ -10,9 +10,21 @@
 import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitrix24/install'
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
+import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
+import { Bitrix24OAuth, type HttpFetch, type HttpResponse } from '~core/bitrix24/oauth'
 import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations } from '../../utils/portal'
 import { logger } from '../../utils/api'
+
+/**
+ * Верификационный рефреш — СИНХРОННЫЙ исходящий вызов на `oauth.bitrix.info` внутри install-запроса.
+ * Ядро (`Bitrix24OAuth`) делегирует таймауты «слою деплоя»; здесь этот слой — мы. Без явного лимита
+ * зависший OAuth-сервер держал бы install-соединение до дефолта undici (~300с) и (с флудом) подъедал бы
+ * сокеты/event-loop. `AbortSignal.timeout` → fetch reject → OAuthError без статуса → 503 (транзиент, ретрай).
+ */
+const OAUTH_REFRESH_TIMEOUT_MS = 10_000
+const timeoutRefreshFetch: HttpFetch = (url, init) =>
+  fetch(url, { ...init, signal: AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS) }) as Promise<HttpResponse>
 
 function html(event: any, status: number, body: string): string {
   setResponseStatus(event, status)
@@ -77,16 +89,52 @@ export default defineEventHandler(async (event) => {
     return html(event, 503, errorHtml('интеграция не сконфигурирована на сервере'))
   }
 
+  // §2.3 member_id-binding (анти install-poisoning): member_id в POST — клиент-контролируемое поле.
+  // Рефрешим присланный refresh_token и сверяем AUTHORITATIVE member_id из ответа OAuth-сервера с
+  // заявленным. Без этого атакующий подсадил бы свои токены на чужой member_id → с §2.1 удалил бы данные.
+  const oauth = new Bitrix24OAuth({
+    clientId: cfg.secret.clientId,
+    clientSecret: cfg.secret.clientSecret,
+    fetch: timeoutRefreshFetch
+  })
+  const memberVerdict = await verifyInstallMember(auth.memberId, auth.refreshToken, oauth)
+  if (!memberVerdict.ok) {
+    // Идемпотентность двойной доставки (install-страница + событие ONAPPINSTALL на ТОТ ЖЕ URL). Решение —
+    // в чистой `decideInstallDoubleDispatch`: `refresh_rejected_*` + УЖЕ установленный портал → гонка →
+    // FINISH_HTML (браузерная install-страница вызовет BX24.installFinish()); иначе → видимая ошибка (не
+    // маскируем мисконфиг/подделку). Портал грузим ТОЛЬКО на refresh_rejected (503-транзиент БД не трогает).
+    const isRejected = memberVerdict.reason.startsWith('refresh_rejected')
+    const portalExists = isRejected && !!(await tokenStore.load(auth.memberId).catch(() => undefined))
+    if (decideInstallDoubleDispatch(memberVerdict.reason, portalExists) === 'finish') {
+      logger.info('b24_install_double_dispatch', { memberId: auth.memberId })
+      return html(event, 200, FINISH_HTML)
+    }
+    logger.warn('b24_install_member_reject', { memberId: auth.memberId, reason: memberVerdict.reason })
+    return html(
+      event,
+      memberVerdict.status,
+      errorHtml(
+        memberVerdict.status === 403
+          ? 'проверка привязки портала не пройдена'
+          : 'сервер авторизации Bitrix24 недоступен — повторите установку'
+      )
+    )
+  }
+  // refresh РОТИРОВАЛ токены — используем ВОЗВРАЩЁННЫЙ грант везде (присланный refresh_token мёртв).
+  // Сборка вынесена в чистую applyVerifiedTokens (пересчёт expiresIn, сброс stale expires, authoritative
+  // domain; application_token/endpoints сохранены из install-auth).
+  const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
+
   try {
-    await handleInstall(auth, {
-      // save → Promise<boolean> (тумбстоун-гард). Тумбстоун-гард здесь ещё не активен
-      // (install-страница не несёт top-level `ts`); включится с events-эндпоинтом (§2.1).
+    await handleInstall(verifiedAuth, {
+      // save → Promise<boolean> (durable-гард по member_id). Тумбстоун-гард против out-of-order install
+      // (eventTs) здесь НЕ передаётся — активируется на events-пути §2.1 (там есть top-level `ts`).
       saveTokens: async (tokens) => {
         await tokenStore.save(tokens)
       },
-      registerIntegrations: () => registerIntegrations(installToB24Params(auth), cfg)
+      registerIntegrations: () => registerIntegrations(installToB24Params(verifiedAuth), cfg)
     })
-    logger.info('b24_install_ok', { msg: `Установка портала ${auth.memberId} завершена` })
+    logger.info('b24_install_ok', { msg: `Установка портала ${auth.memberId} завершена (member_id сверен)` })
     return html(event, 200, FINISH_HTML)
   } catch (e) {
     logger.warn('b24_install_fail', { msg: `Установка не завершена: ${(e as Error).message}` })
