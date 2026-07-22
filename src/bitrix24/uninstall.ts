@@ -16,16 +16,27 @@ import { verifyApplicationToken } from './deal-event'
  * → `deletePortal`) — фаза связки (живой портал).
  */
 
+/**
+ * Верхняя граница `ts` (unix-СЕКУНДЫ, ~год 2100). Больше — вероятно мусор/атака: огромный `ts`
+ * навсегда поднял бы `portal_tombstone.deleted_ts` через `greatest()`, заблокировав будущую
+ * переустановку тумбстоун-гардом. За границей → деградируем в `undefined` (используется `nowSec`).
+ */
+const MAX_TS = 4_102_444_800
+
 export const uninstallEventSchema = z.object({
   event: z.string().refine((s) => s.toUpperCase() === 'ONAPPUNINSTALL', 'не ONAPPUNINSTALL'),
-  /** `CLEAN` — выбор пользователя «Очистить данные приложения»: `1` стереть / `0` сохранить (переустановка). */
-  data: z.object({ CLEAN: z.coerce.number().int().optional() }).optional(),
+  /**
+   * `CLEAN` — выбор пользователя «Очистить данные приложения»: `1` стереть / `0` сохранить (переустановка).
+   * `.catch(undefined)`: мусорное значение НЕ роняет весь парс события (иначе легитимный uninstall ушёл бы
+   * в install-ветку → 400 вместо ack), а безопасно деградирует в `undefined` → `clean:false` (не стираем).
+   */
+  data: z.object({ CLEAN: z.coerce.number().int().optional().catch(undefined) }).optional().catch(undefined),
   auth: z.object({
     member_id: z.string().min(1).max(200),
     application_token: z.string().min(1).max(200)
   }),
-  /** top-level `ts` вебхука (unix-СЕКУНДЫ, приходит строкой) — для тумбстоуна `deletePortal`. */
-  ts: z.coerce.number().int().nonnegative().optional()
+  /** top-level `ts` вебхука (unix-СЕКУНДЫ, строкой). Кап `MAX_TS` + `.catch` → мусор/огромное → `undefined`. */
+  ts: z.coerce.number().int().nonnegative().max(MAX_TS).optional().catch(undefined)
 })
 export type UninstallEvent = z.infer<typeof uninstallEventSchema>
 

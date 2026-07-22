@@ -41,9 +41,21 @@ describe('parseBracketForm (bracket-нотация B24 → вложенный о
     expect((out as Record<string, unknown>).polluted).toBeUndefined()
   })
 
+  it('флэт-ключ __proto__/constructor/prototype из JSON-тела не отравляет объект (реальный вектор)', () => {
+    // JSON.parse создаёт НАСТОЯЩЕЕ собственное свойство "__proto__" (в отличие от литерала) — его
+    // отдаёт Object.entries; install.post.ts мёржит readBody() (JSON) в parseBracketForm. Гард (плоская ветка).
+    const flat = JSON.parse('{"__proto__":{"polluted":"yes"},"constructor":{"x":1},"prototype":{"y":2},"good":"ok"}')
+    expect(parseBracketForm(flat)).toEqual({ good: 'ok' })
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
   it('конфликт flat+bracket одного имени: bracket перезаписывает не-объект', () => {
     // 'a'='str' (не-объект), затем 'a[x]' — bucket создаётся заново, строка вытесняется.
     expect(parseBracketForm({ a: 'str', 'a[x]': '1' })).toEqual({ a: { x: '1' } })
+  })
+
+  it('обратный порядок конфликта: плоский ключ после bracket затирает вложенность', () => {
+    expect(parseBracketForm({ 'a[x]': '1', a: 'str' })).toEqual({ a: 'str' })
   })
 
   it('пустой вход → пустой объект', () => {

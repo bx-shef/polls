@@ -35,6 +35,20 @@ describe('parseUninstallEvent (мягкий парс недоверенного 
     expect(parseUninstallEvent('строка')).toBeNull()
     expect(parseUninstallEvent({})).toBeNull()
   })
+
+  it('устойчивость: мусорный CLEAN / огромный / отрицательный ts НЕ роняют парс (деградируют в undefined)', () => {
+    const badClean = parseUninstallEvent(raw({ data: { CLEAN: 'abc' } }))
+    expect(badClean).not.toBeNull() // событие распознано, не ушло в install-ветку
+    expect(badClean?.data?.CLEAN).toBeUndefined()
+    expect(parseUninstallEvent(raw({ ts: 99999999999999 }))?.ts).toBeUndefined() // за MAX_TS → undefined
+    expect(parseUninstallEvent(raw({ ts: -5 }))?.ts).toBeUndefined()
+  })
+
+  it('member_id/application_token длиннее 200 → null; ровно 200 — ок (граница)', () => {
+    expect(parseUninstallEvent(raw({ auth: { member_id: 'm'.repeat(201), application_token: 't' } }))).toBeNull()
+    expect(parseUninstallEvent(raw({ auth: { member_id: 'm', application_token: 't'.repeat(201) } }))).toBeNull()
+    expect(parseUninstallEvent(raw({ auth: { member_id: 'm'.repeat(200), application_token: 't' } }))).not.toBeNull()
+  })
 })
 
 describe('decideUninstall (вердикт, constant-time сверка токена)', () => {
@@ -61,6 +75,16 @@ describe('decideUninstall (вердикт, constant-time сверка токен
   it('CLEAN=0 → clean=false (сохранить данные, переустановка)', () => {
     const e = parseUninstallEvent(raw({ data: { CLEAN: 0 } })) as UninstallEvent
     expect(decideUninstall(e, 'app-tok-1', 9999)).toMatchObject({ ok: true, clean: false })
+  })
+
+  it('CLEAN вне {0,1} (напр. 2) → clean=false (безопасный дефолт, не удаляем)', () => {
+    const e = parseUninstallEvent(raw({ data: { CLEAN: 2 } })) as UninstallEvent
+    expect(decideUninstall(e, 'app-tok-1', 9999)).toMatchObject({ ok: true, clean: false })
+  })
+
+  it('мусорный CLEAN → clean=false; за-MAX ts → deletedTs=nowSec', () => {
+    const e = parseUninstallEvent(raw({ data: { CLEAN: 'abc' }, ts: 99999999999999 })) as UninstallEvent
+    expect(decideUninstall(e, 'app-tok-1', 9999)).toEqual({ ok: true, memberId: 'm-1', deletedTs: 9999, clean: false })
   })
 
   it('токен совпал, событие без ts → deletedTs = nowSec', () => {

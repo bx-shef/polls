@@ -105,6 +105,10 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `listNearExpiry` (keep-alive: рефреш порталов у истечения refresh_token); крон-логика keep-alive —
   `bitrix24/keep-alive.ts` (`runKeepAlive`/`keepAliveIntervalMs`), живой таймер — Nitro-плагин
   `server/plugins/keepalive.ts` (гейт на OAuth-креды, немедленный первый прогон + каденция `TOKEN_KEEPALIVE_HOURS`);
+  обработка **uninstall** (§2.1) — `bitrix24/uninstall.ts` (`parseUninstallEvent`/`decideUninstall`: constant-time
+  сверка `application_token` из blob + респект `data.CLEAN` 1/0) + `bitrix24/bracket-form.ts` (`parseBracketForm`
+  формы B24 `auth[x]` с гардом prototype-pollution), связка — ветка `ONAPPUNINSTALL` в `server/api/b24/install.post.ts`
+  (fail-open 200) → `deletePortal`;
   `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
   под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).
   `bitrix24/frame.ts` (#47, handshake app-фрейма — ЯДРО-рантайм): `parseFrameAuth` (zod-парс недоверенного
