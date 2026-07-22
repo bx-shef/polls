@@ -112,9 +112,11 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   (`verifyInstallMember`: рефреш присланного refresh_token → сверка authoritative `member_id`; **403 только 400/401/mismatch,
   всё прочее — 429/5xx/сеть/таймаут/пустой member_id — 503** транзиент, underlying-статус в `reason` для логов;
   `applyVerifiedTokens`: сборка `InstallAuth` из ротированного гранта — свежие токены, пересчёт `expiresIn`, сброс stale
-  `expires`, authoritative `domain`/`clientEndpoint`/`memberId` из гранта), вызывается в install-хендлере ДО `handleInstall`
-  (синхронный рефреш обёрнут `AbortSignal.timeout` 10с); идемпотентность двойной доставки (page+event) — чистая
-  `decideInstallDoubleDispatch(reason, portalExists)`: `refresh_rejected_*`+существующий портал → `FINISH_HTML`, иначе ошибка;
+  `expires`, authoritative `domain`/`memberId` из гранта, `clientEndpoint` ДЕРИВИТСЯ из `domain` (не доверяем присланному
+  host'у → SSRF)), вызывается в install-хендлере ДО `handleInstall` (синхронный рефреш обёрнут `AbortSignal.timeout` 10с;
+  `domain` валидируется `isAllowedPortalDomain` ДО REST → 400; rate-limit `allowB24Install` 20/60с ДО рефреша — анти-амплификация);
+  идемпотентность двойной доставки (page+event) — чистая `decideInstallDoubleDispatch(reason, portalExists)`:
+  `refresh_rejected_*`+существующий портал → `FINISH_HTML`, иначе ошибка;
   domain-poisoning закрыт частично (authoritative `domain` из гранта; полное — `UNIQUE(domain)`, follow-up);
   `resolveMemberIdByDomain` — боевой резолвер `domain → member_id` из таблицы `portal` для handshake,
   под pglite-тестами; подставляется в `setPortalResolver` при появлении pg-Pool, #6/#49).

@@ -131,11 +131,12 @@ describe('applyVerifiedTokens (сборка InstallAuth из ротирован�
     expect(out.clientEndpoint).toBe('https://authoritative.b24/rest/')
   })
 
-  it('грант без domain/clientEndpoint → фолбэк на присланные install-auth', () => {
+  it('грант без domain/clientEndpoint: domain из присланного, но clientEndpoint ДЕРИВИТСЯ (не присланный host → SSRF)', () => {
     const t = tokens({ domain: undefined, clientEndpoint: undefined })
-    const out = applyVerifiedTokens(installAuth({ domain: 'posted.b24', clientEndpoint: 'https://posted.b24/rest/' }), t, NOW)
+    // Присланный clientEndpoint указывает на внутренний хост — он НЕ должен утечь в грант.
+    const out = applyVerifiedTokens(installAuth({ domain: 'posted.b24', clientEndpoint: 'https://evil.internal/rest/' }), t, NOW)
     expect(out.domain).toBe('posted.b24')
-    expect(out.clientEndpoint).toBe('https://posted.b24/rest/')
+    expect(out.clientEndpoint).toBe('https://posted.b24/rest/') // деривится из domain, не из присланного endpoint
   })
 
   it('application_token и прочие install-поля сохраняются (рефреш их не возвращает)', () => {

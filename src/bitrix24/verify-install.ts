@@ -72,12 +72,13 @@ export function applyVerifiedTokens(auth: InstallAuth, tokens: OAuthTokens, now:
   // 60с-пол: защита от 0/отрицательного `expiresIn` при рассинхроне часов («грант уже истёк»).
   const remainingSec = Math.max(60, Math.round((new Date(tokens.expiresAt).getTime() - now.getTime()) / 1000))
   const { expires: _staleExpires, ...rest } = auth
-  // clientEndpoint: грант-`client_endpoint` (authoritative) → derive из authoritative `domain` гранта →
-  // присланный (лишь если Bitrix не вернул НИ endpoint, НИ domain). Снижает доверие к клиент-присланному
-  // `clientEndpoint`: иначе владелец портала подставил бы внутренний/произвольный URL как endpoint «своего»
-  // портала → SSRF при последующих исходящих REST-вызовах (`registerIntegrations` этого же запроса).
-  // Полная защита (allowlist хоста `*.bitrix24.*`) — follow-up, см. improvement-plan §2.3.
-  const clientEndpoint = tokens.clientEndpoint ?? (tokens.domain ? `https://${tokens.domain}/rest/` : auth.clientEndpoint)
+  const domain = tokens.domain ?? auth.domain
+  // clientEndpoint: грант-`client_endpoint` (authoritative от Bitrix) → иначе ДЕРИВИМ из `domain`
+  // (`https://<domain>/rest/`). Клиент-присланный `clientEndpoint` НЕ используем как host НИКОГДА:
+  // иначе владелец портала подставил бы внутренний/произвольный URL как endpoint «своего» портала →
+  // SSRF при исходящих REST (`registerIntegrations` этого же запроса). Сам `domain` (когда грант его не
+  // вернул — берётся присланный) валидируется вызывающим по allowlist `*.bitrix24.*` ДО REST-вызовов.
+  const clientEndpoint = tokens.clientEndpoint ?? `https://${domain}/rest/`
   return {
     ...rest,
     // memberId — authoritative-by-construction: verifyInstallMember уже сверил `tokens.memberId === auth.memberId`
@@ -86,7 +87,7 @@ export function applyVerifiedTokens(auth: InstallAuth, tokens: OAuthTokens, now:
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
     expiresIn: remainingSec,
-    domain: tokens.domain ?? auth.domain,
+    domain,
     clientEndpoint
   }
 }
