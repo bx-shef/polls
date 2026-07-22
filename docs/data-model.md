@@ -138,7 +138,7 @@ create table portal (
   member_id         text unique not null,        -- идентификатор Bitrix24
   domain            text not null,
   tokens            jsonb not null,              -- OAuth (шифровать на уровне приложения)
-  application_token text,                        -- из 1-го ONAPPINSTALL (write-once); auth ONAPPUNINSTALL (0004)
+  application_token text,                        -- 0004; ИЗБЫТОЧНА: токен уже в зашифрованном blob `tokens`, верификация uninstall (§2.1) читает оттуда
   updated_at        timestamptz not null default now(), -- свежесть токенов; основа keep-alive (0004)
   installed_at      timestamptz default now()
 );
