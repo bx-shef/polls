@@ -388,11 +388,57 @@ describe('PortalTokenStore (pglite)', () => {
     expect(await epochOf('m-ref')).toBe(Math.floor(now.getTime() / 1000)) // штамп сдвинут на now
   })
 
-  it('updateOnRefresh: UPDATE-only — НЕ воскрешает удалённый портал', async () => {
+  it('updateOnRefresh: UPDATE-only — НЕ воскрешает удалённый портал (возвращает false)', async () => {
     await store.save(tokens({ memberId: 'm-del' }))
     await store.deletePortal('m-del', 100)
-    await store.updateOnRefresh(tokens({ memberId: 'm-del', accessToken: 'NEW', domain: undefined }))
-    expect(await store.load('m-del')).toBeUndefined() // строки нет — UPDATE 0 строк
+    const persisted = await store.updateOnRefresh(tokens({ memberId: 'm-del', accessToken: 'NEW', domain: undefined }))
+    expect(persisted).toBe(false) // строки нет — UPDATE 0 строк
+    expect(await store.load('m-del')).toBeUndefined()
+  })
+
+  it('updateOnRefresh: существующий портал — обновляет и возвращает true', async () => {
+    await store.save(tokens({ memberId: 'm-upd', accessToken: 'OLD' }))
+    const persisted = await store.updateOnRefresh(tokens({ memberId: 'm-upd', accessToken: 'NEW' }))
+    expect(persisted).toBe(true)
+    expect((await store.load('m-upd'))?.accessToken).toBe('NEW')
+  })
+
+  it('deletePortal: каскадно чистит зависимые данные портала (survey_group/app_user)', async () => {
+    await store.save(tokens({ memberId: 'm-casc' }))
+    const pid = (await db.query<{ id: string }>('select id from portal where member_id = $1', ['m-casc'])).rows[0]!.id
+    // Прямые дети portal(id) — именно они без on-delete-cascade и блокировали бы `delete portal`.
+    await db.query('insert into app_user (portal_id, b24_user_id) values ($1, 7)', [pid])
+    await db.query(`insert into survey_group (portal_id, title) values ($1, 'g')`, [pid])
+    await store.deletePortal('m-casc', 999)
+    expect(await store.load('m-casc')).toBeUndefined()
+    const g = await db.query('select 1 from survey_group where portal_id = $1', [pid])
+    const u = await db.query('select 1 from app_user where portal_id = $1', [pid])
+    expect(g.rows.length).toBe(0)
+    expect(u.rows.length).toBe(0)
+  })
+
+  it('deletePortal: работает на драйвере без transaction (последовательные запросы)', async () => {
+    const noTx: Queryable = { query: (sql, params) => db.query(sql, params) } // без transaction
+    const s2 = new PortalTokenStore(noTx, cipher)
+    await s2.save(tokens({ memberId: 'm-notx' }))
+    await s2.deletePortal('m-notx', 100)
+    expect(await s2.load('m-notx')).toBeUndefined()
+  })
+
+  it('accessToken: портал удалён во время refresh → undefined (не отдаёт токен «мёртвого»)', async () => {
+    await store.save(tokens({ memberId: 'm-race', accessToken: 'OLD', expiresAt: '2026-06-13T10:00:30.000Z' }))
+    // refresh как сайд-эффект удаляет портал → updateOnRefresh увидит 0 строк → accessToken → undefined.
+    const racingOauth = new Bitrix24OAuth({
+      clientId: 'c',
+      clientSecret: 's',
+      now: () => now,
+      fetch: async () => {
+        await db.query(`delete from portal where member_id = 'm-race'`)
+        return jsonRes(true, 200, tokenBody({ member_id: 'm-race', access_token: 'NEW', refresh_token: 'RT-NEW' }))
+      }
+    })
+    expect(await store.accessToken('m-race', racingOauth, now)).toBeUndefined()
+    expect(await store.load('m-race')).toBeUndefined() // остался удалён (не воскрешён)
   })
 
   it('deletePortal: пишет тумбстоун и удаляет строку портала', async () => {
@@ -423,6 +469,20 @@ describe('PortalTokenStore (pglite)', () => {
     expect(await store.load('m-b')).toBeUndefined()
   })
 
+  it('save с eventTs: глубоко устаревший install (ts < тумбстоун) — тоже блок', async () => {
+    await store.deletePortal('m-b2', 1000)
+    const wrote = await store.save(tokens({ memberId: 'm-b2' }), { eventTs: 500 }) // 1000 >= 500 → блок
+    expect(wrote).toBe(false)
+    expect(await store.load('m-b2')).toBeUndefined()
+  })
+
+  it('save БЕЗ eventTs: гард opt-in — игнорирует существующий тумбстоун (текущий install.post.ts)', async () => {
+    await store.deletePortal('m-noguard', 1000)
+    const wrote = await store.save(tokens({ memberId: 'm-noguard' })) // без eventTs → гард выключен
+    expect(wrote).toBe(true)
+    expect(await store.load('m-noguard')).toMatchObject({ memberId: 'm-noguard' })
+  })
+
   it('save с eventTs: настоящая переустановка (ts > тумбстоун) проходит и чистит тумбстоун', async () => {
     await store.deletePortal('m-r', 1000)
     const wrote = await store.save(tokens({ memberId: 'm-r' }), { eventTs: 2000 })
@@ -437,6 +497,28 @@ describe('PortalTokenStore (pglite)', () => {
     await store.save(tokens({ memberId: 'm-recent' }), { now: new Date(now.getTime() - 10 * DAY_MS) }) // свежий
     await store.save(tokens({ memberId: 'm-dead' }), { now: new Date(now.getTime() - 181 * DAY_MS) }) // за TTL
     expect(await store.listNearExpiry(now)).toEqual(['m-old'])
+  })
+
+  it('listNearExpiry: границы полосы — верхняя (177д) исключена, нижняя (180д) включена', async () => {
+    await store.save(tokens({ memberId: 'm-edge-hi' }), { now: new Date(now.getTime() - 177 * DAY_MS) }) // == cutoffOld → искл.
+    await store.save(tokens({ memberId: 'm-edge-lo' }), { now: new Date(now.getTime() - 180 * DAY_MS) }) // == ttlFloor → вкл.
+    expect(await store.listNearExpiry(now)).toEqual(['m-edge-lo'])
+  })
+
+  it('listNearExpiry: сортировка по возрасту (старейший первым) + кап батча (limit)', async () => {
+    await store.save(tokens({ memberId: 'm-a' }), { now: new Date(now.getTime() - 178 * DAY_MS) })
+    await store.save(tokens({ memberId: 'm-b' }), { now: new Date(now.getTime() - 179 * DAY_MS) }) // старейший
+    await store.save(tokens({ memberId: 'm-c' }), { now: new Date(now.getTime() - 177.5 * DAY_MS) })
+    // limit=2 → два СТАРЕЙШИХ по возрастанию updated_at: m-b (179д), затем m-a (178д)
+    expect(await store.listNearExpiry(now, { limit: 2 })).toEqual(['m-b', 'm-a'])
+  })
+
+  it('listNearExpiry: кастомные ttlDays/skewDays переопределяют дефолты', async () => {
+    // ttl=30, skew=5 → полоса [now-30д, now-25д). 27д — внутри, 10д — свежий, 40д — за TTL.
+    await store.save(tokens({ memberId: 'm-c27' }), { now: new Date(now.getTime() - 27 * DAY_MS) })
+    await store.save(tokens({ memberId: 'm-c10' }), { now: new Date(now.getTime() - 10 * DAY_MS) })
+    await store.save(tokens({ memberId: 'm-c40' }), { now: new Date(now.getTime() - 40 * DAY_MS) })
+    expect(await store.listNearExpiry(now, { ttlDays: 30, skewDays: 5 })).toEqual(['m-c27'])
   })
 })
 

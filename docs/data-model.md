@@ -134,11 +134,19 @@ DDL-эскиз (иллюстративный; имена/индексы — по
 ```sql
 -- ── Портал (локальное приложение: обычно одна строка) ──
 create table portal (
-  id           bigserial primary key,
-  member_id    text unique not null,        -- идентификатор Bitrix24
-  domain       text not null,
-  tokens       jsonb not null,              -- OAuth (шифровать на уровне приложения)
-  installed_at timestamptz default now()
+  id                bigserial primary key,
+  member_id         text unique not null,        -- идентификатор Bitrix24
+  domain            text not null,
+  tokens            jsonb not null,              -- OAuth (шифровать на уровне приложения)
+  application_token text,                        -- из 1-го ONAPPINSTALL (write-once); auth ONAPPUNINSTALL (0004)
+  updated_at        timestamptz not null default now(), -- свежесть токенов; основа keep-alive (0004)
+  installed_at      timestamptz default now()
+);
+
+-- Тумбстоун портала (0004): out-of-order install после uninstall не воскрешает удалённый портал.
+create table portal_tombstone (
+  member_id  text primary key,
+  deleted_ts bigint not null              -- unix-СЕКУНДЫ top-level `ts` вебхука
 );
 
 -- ── Авторы (зеркало пользователей Bitrix24) ──
