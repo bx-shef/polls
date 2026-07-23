@@ -81,4 +81,18 @@ describe('dealToCrmContext — crm.deal.get → снимок CrmContext (#17)', 
     expect(ctx.companyName).toBeUndefined()
     expect(ctx.responsibleName).toBeUndefined()
   })
+
+  it('товарные позиции обогащают products (срез «услуга/товар» дашборда); пустой вход → без products', () => {
+    // Формат PRODUCT_ID/PRODUCT_NAME сверен вебхуком (crm.deal.productrows.get).
+    const rows = [
+      { PRODUCT_ID: '13', PRODUCT_NAME: '[TEST] Внедрение' },
+      { PRODUCT_ID: '0', PRODUCT_NAME: 'мусор' }, // 0 = не товар → отбрасывается
+      { PRODUCT_ID: '20', PRODUCT_NAME: '' } // пустое имя → productName undefined
+    ]
+    const ctx = dealToCrmContext({ ID: '21', STAGE_ID: 'C1:NEW' }, rows)
+    expect(ctx.products).toEqual([{ productId: 13, productName: '[TEST] Внедрение' }, { productId: 20 }])
+    // Без строк — поле опущено (снимок чистый).
+    expect(dealToCrmContext({ ID: '21' }).products).toBeUndefined()
+    expect(dealToCrmContext({ ID: '21' }, []).products).toBeUndefined()
+  })
 })

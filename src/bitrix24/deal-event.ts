@@ -66,11 +66,34 @@ export function posId(v: unknown): number | undefined {
 }
 
 /**
- * Маппинг ответа `crm.deal.get` → снимок `CrmContext` (#17). Берёт IDs + стадию; денормализованные
- * имена (company/category/responsible) — отдельным обогащением (crm.company/category/user.get),
- * до него срезы дашборда падают на ID. Результат валидируется схемой (устойчивость к мусору CRM).
+ * Товарные позиции сделки (`crm.deal.productrows.get`) → `products` снимка `CrmContext`. Каждая строка —
+ * `PRODUCT_ID` (положительный; 0/пусто = не товар → отбрасываем) + `PRODUCT_NAME` (денормализованное имя,
+ * опционально). Питает срез дашборда «услуга/товар» (`byProduct`). Пустой вход → пустой массив.
+ * Живой формат сверен вебхуком (`PRODUCT_ID`/`PRODUCT_NAME`, crm.deal.productrows.get).
  */
-export function dealToCrmContext(deal: Record<string, unknown>): CrmContext {
+export function mapProductRows(rows: Array<Record<string, unknown>>): Array<{ productId: number; productName?: string }> {
+  const out: Array<{ productId: number; productName?: string }> = []
+  for (const r of rows) {
+    const productId = posId(r.PRODUCT_ID)
+    if (productId === undefined) continue // 0/пусто/мусор → не товар
+    const productName = typeof r.PRODUCT_NAME === 'string' && r.PRODUCT_NAME !== '' ? r.PRODUCT_NAME : undefined
+    out.push(productName !== undefined ? { productId, productName } : { productId })
+  }
+  return out
+}
+
+/**
+ * Маппинг ответа `crm.deal.get` (+ опц. товарных позиций `crm.deal.productrows.get`) → снимок `CrmContext`
+ * (#17). Берёт IDs + стадию + `products`; денормализованные ИМЕНА company/category/responsible — отдельным
+ * обогащением (crm.company/category/user.get), до него срезы дашборда падают на ID. `productRows` (по
+ * умолчанию пусто) обогащает срез «услуга/товар»: без них `byProduct` пуст на реальных данных (сверено
+ * вебхуком — прод-путь их не тянул). Результат валидируется схемой (устойчивость к мусору CRM).
+ */
+export function dealToCrmContext(
+  deal: Record<string, unknown>,
+  productRows: Array<Record<string, unknown>> = []
+): CrmContext {
+  const products = mapProductRows(productRows)
   return crmContextSchema.parse({
     dealId: posId(deal.ID),
     dealCategoryId: num(deal.CATEGORY_ID),
@@ -78,6 +101,8 @@ export function dealToCrmContext(deal: Record<string, unknown>): CrmContext {
     companyId: posId(deal.COMPANY_ID),
     contactId: posId(deal.CONTACT_ID),
     responsibleId: posId(deal.ASSIGNED_BY_ID),
-    dealAmount: num(deal.OPPORTUNITY)
+    dealAmount: num(deal.OPPORTUNITY),
+    // Пустой products не кладём — снимок чище, схема поле опускает (`.optional()`).
+    ...(products.length ? { products } : {})
   })
 }
