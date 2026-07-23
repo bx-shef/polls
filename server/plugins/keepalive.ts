@@ -5,7 +5,7 @@ import { usePortalTokenStore } from '../utils/portal'
 import { logger } from '../utils/api'
 
 /**
- * Nitro-плагин keep-alive (docs/improvement-plan.md §2.4): периодический таймер рефрешит
+ * Nitro-плагин keep-alive (docs/project-map.md, §Установка и lifecycle портала): периодический таймер рефрешит
  * OAuth-токены порталов у истечения `refresh_token` (~180 дней), иначе простаивающий портал
  * (никто не проходит опрос → нет REST-вызовов → ленивый рефреш не срабатывает) теряет токен.
  *
@@ -16,7 +16,7 @@ import { logger } from '../utils/api'
  *  - НЕМЕДЛЕННЫЙ первый прогон (с малой задержкой): прод на авто-CD (merge→GHCR→watchtower)
  *    может рестартовать чаще каденции — тогда `setInterval` никогда не истёк бы (ревью CTO/программист).
  * Замечание: keep-alive впервые создаёт (маловероятную) гонку рефреша с живым REST-путём даже на
- * ОДНОМ инстансе — закрывается advisory-lock'ом (improvement-plan §2.5, вместе с мульти-инстансом #4).
+ * ОДНОМ инстансе — закрывается advisory-lock'ом (вместе с мульти-инстансом #4).
  * SERVER-ONLY: `~core/bitrix24`/`~core/obs` импортируются намеренно (Nitro-контур, не в клиентский бандл).
  */
 export default defineNitroPlugin((nitroApp) => {

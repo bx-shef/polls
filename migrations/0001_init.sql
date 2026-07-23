@@ -1,5 +1,5 @@
 -- Схема хранения сервиса опросов (PostgreSQL).
--- Соответствует docs/data-model.md. Применяется раннером миграций node-pg-migrate
+-- Соответствует docs/project-map.md. Применяется раннером миграций node-pg-migrate
 -- (`pnpm migrate up`); тот же SQL применяют pglite-тесты (test/helpers/schema.ts).
 
 -- ── Портал (локальное приложение: обычно одна строка) ──

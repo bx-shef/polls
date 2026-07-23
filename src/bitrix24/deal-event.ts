@@ -5,7 +5,7 @@ import { crmContextSchema, type CrmContext } from '../domain/schema'
 /**
  * Триггер-биндинг ONCRMDEALUPDATE (ISSUE #17) — ЯДРО-рантайм, без HTTP/портала.
  *
- * Поток (полностью — см. docs/bitrix24-integration.md): портал POST'ит событие на наш
+ * Поток (полностью — см. docs/project-map.md): портал POST'ит событие на наш
  * публичный эндпоинт → НЕДОВЕРЕННО (его может подделать кто угодно). Безопасность:
  *  1. Событие несёт только `data.FIELDS.ID` сделки + `auth` (member_id/domain/токены) —
  *     `parseDealUpdateEvent` мягко парсит недоверенный POST.
@@ -82,7 +82,7 @@ export function mapProductRows(rows: Array<Record<string, unknown>>): Array<{ pr
     if (out.length >= 50) break
     const productId = posId(r.PRODUCT_ID)
     // `PRODUCT_ID=0`/пусто — free-form-строка товарной таблицы (услуга без привязки к каталогу): группировать
-    // нечем → пропускаем (известное ограничение среза «услуга/товар», docs/bitrix24-integration.md).
+    // нечем → пропускаем (известное ограничение среза «услуга/товар», docs/project-map.md).
     if (productId === undefined || seen.has(productId)) continue // + дедуп: одна услуга/товар = один срез
     seen.add(productId) // productrows отдаёт товар несколькими строками (цена/скидка) — иначе byProduct задвоит ответ
     const raw = typeof r.PRODUCT_NAME === 'string' && r.PRODUCT_NAME !== '' ? r.PRODUCT_NAME : undefined

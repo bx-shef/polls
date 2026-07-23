@@ -3,7 +3,7 @@ import type { CompiledVersion, Question, RawAnswer, Submission } from '../domain
 
 /**
  * Framework-agnostic state-machine прохождения опроса клиентом (контур A).
- * Поведение — `docs/brief.md` §3–5,8, раскладка — `docs/design.md` §5. Чистая
+ * Поведение и раскладка контура A — `docs/project-map.md` (§Дизайн (b24ui)). Чистая
  * логика без DOM/Vue: навигация, выбор варианта, правило `exclusive`, поле
  * «Другое», пошаговая валидация, persist-снимок и маппинг в {@link Submission}.
  * Vue-композабл (фаза визуала, b24ui) оборачивает этот класс реактивностью

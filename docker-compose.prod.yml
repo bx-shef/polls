@@ -4,7 +4,7 @@
 # приложение к ней — отдельный nginx-proxy поднимать НЕ нужно.
 #
 # Образ собирает CI в GHCR на мерже в main; watchtower подтягивает новый latest сам.
-# Запуск: make prod-up  (см. Makefile + docs/admin-setup.md).
+# Запуск: make prod-up  (см. Makefile + docs/project-map.md).
 #
 # Постоянное хранение (PostgreSQL) включается в #6 — до этого app на встроенном демо-сторе.
 services:

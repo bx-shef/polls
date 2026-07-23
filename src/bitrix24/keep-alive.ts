@@ -1,7 +1,7 @@
 import { nullLogger, errInfo, type Logger } from '../obs/logger'
 
 /**
- * Keep-alive рефреш OAuth-токенов портала (docs/improvement-plan.md §2.4). refresh_token
+ * Keep-alive рефреш OAuth-токенов портала (docs/project-map.md, §Установка и lifecycle портала). refresh_token
  * Bitrix24 живёт ~180 дней; ленивый рефреш срабатывает ТОЛЬКО на REST-вызове, поэтому
  * установленный, но простаивающий портал (никто не проходит опрос → нет вызовов) теряет
  * refresh_token на 180-й день. Крон периодически рефрешит порталы у истечения

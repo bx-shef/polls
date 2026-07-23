@@ -8,7 +8,7 @@ import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from '
  * Драйвер-агностично (`Queryable` — pg.Pool/pglite), без новой prod-зависимости.
  * tenant — `member_id` портала (Bitrix24-идентификатор).
  *
- * Устойчивость lifecycle (миграция 0004, docs/improvement-plan.md §2):
+ * Устойчивость lifecycle (миграция 0004, docs/project-map.md, §Установка и lifecycle портала):
  *  - `updated_at` штампуется на install/refresh — основа keep-alive (`listNearExpiry`),
  *    иначе простаивающий портал теряет refresh_token на 180-й день;
  *  - `save` при install-событии сверяется с тумбстоуном (out-of-order install после
@@ -98,7 +98,7 @@ export class PortalTokenStore {
   /**
    * Сохраняет токены портала при УСТАНОВКЕ (upsert по member_id), шифруя перед записью и
    * штампуя `updated_at`. Единый `save(tokens, opts)` вместо раздельного `saveOnInstall`
-   * (отход от improvement-plan §2.2 — обратно-совместимо, не трогает существующие вызовы).
+   * (обратно-совместимо, не трогает существующие вызовы).
    *
    * При `opts.eventTs` — тумбстоун-гард: если зафиксирован uninstall не старше события, запись
    * пропускается (портал не воскрешается устаревшими кредами) и возвращается `false`; настоящая
