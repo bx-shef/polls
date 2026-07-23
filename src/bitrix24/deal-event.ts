@@ -73,10 +73,20 @@ export function posId(v: unknown): number | undefined {
  */
 export function mapProductRows(rows: Array<Record<string, unknown>>): Array<{ productId: number; productName?: string }> {
   const out: Array<{ productId: number; productName?: string }> = []
+  const seen = new Set<number>()
+  if (!Array.isArray(rows)) return out // недоверенный REST мог отдать не-массив → best-effort пусто, не throw
   for (const r of rows) {
+    // Капы схемы `crmContextSchema.products` (`.max(50)`) и `productName` (`.max(500)`) — это ВАЛИДАЦИЯ
+    // (throw), не усечение. Обогащение best-effort: усекаем ЗДЕСЬ, иначе крупная сделка (>50 позиций /
+    // длинное имя товара из CRM) уронила бы `crmContextSchema.parse` → 502 на создании приглашения.
+    if (out.length >= 50) break
     const productId = posId(r.PRODUCT_ID)
-    if (productId === undefined) continue // 0/пусто/мусор → не товар
-    const productName = typeof r.PRODUCT_NAME === 'string' && r.PRODUCT_NAME !== '' ? r.PRODUCT_NAME : undefined
+    // `PRODUCT_ID=0`/пусто — free-form-строка товарной таблицы (услуга без привязки к каталогу): группировать
+    // нечем → пропускаем (известное ограничение среза «услуга/товар», docs/bitrix24-integration.md).
+    if (productId === undefined || seen.has(productId)) continue // + дедуп: одна услуга/товар = один срез
+    seen.add(productId) // productrows отдаёт товар несколькими строками (цена/скидка) — иначе byProduct задвоит ответ
+    const raw = typeof r.PRODUCT_NAME === 'string' && r.PRODUCT_NAME !== '' ? r.PRODUCT_NAME : undefined
+    const productName = raw !== undefined ? raw.slice(0, 500) : undefined
     out.push(productName !== undefined ? { productId, productName } : { productId })
   }
   return out

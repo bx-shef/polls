@@ -136,7 +136,7 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   `mapProductRows`; имена — обогащением позже). Клиент-хелпер `dealProductRows` (`client.ts`) + проброс в
   `deal-invite.post.ts` (best-effort) — БЕЗ них срез дашборда «услуга/товар» пуст на реальных данных
   (сверено живым вебхуком; формат `STAGE_ID` тоже: дефолт `NEW`/…, кастом воронка `C<N>:NEW`/…).
-  Эндпоинт/`event.bind`/имена-обогащение — #17. Товары для lead/СП — follow-up (те же `crm.<entity>.productrows`).
+  Эндпоинт/`event.bind`/имена-обогащение — #17. Товары для lead/СП — follow-up (те же `crm.<entity>.productrows.get`).
   `bitrix24/entity-event.ts` (фаза мульти-сущность — ЯДРО): обобщает триггер на лид/смарт-процесс/
   контакт/компанию — `parseEntityUpdateEvent` (недоверенный POST `ONCRM<ENTITY>UPDATE`/
   `ONCRMDYNAMICITEMUPDATE_<typeId>` → `{entityType,id,spaEntityTypeId?,auth}`) + мапперы

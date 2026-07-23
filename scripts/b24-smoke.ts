@@ -79,9 +79,11 @@ function mapDeal(deal: Record<string, unknown>, rows: Array<Record<string, unkno
     contactId: num(deal['CONTACT_ID']),
     responsibleId: num(deal['ASSIGNED_BY_ID']),
     dealAmount: num(deal['OPPORTUNITY']),
+    // Семантика как в боевом `mapProductRows` (deal-event.ts): PRODUCT_ID>0 (0 = free-form-строка услуги,
+    // группировать нечем → отброс). Это ЭТАЛОН — держим согласованным с ядром (полный де-дуп маппинга — follow-up).
     products: rows
       .map((r) => ({ productId: num(r['PRODUCT_ID']), productName: str(r['PRODUCT_NAME']) }))
-      .filter((p): p is { productId: number; productName: string | undefined } => p.productId !== undefined)
+      .filter((p): p is { productId: number; productName: string | undefined } => p.productId !== undefined && p.productId > 0)
   }
 }
 

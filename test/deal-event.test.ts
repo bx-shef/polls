@@ -95,4 +95,31 @@ describe('dealToCrmContext — crm.deal.get → снимок CrmContext (#17)', 
     expect(dealToCrmContext({ ID: '21' }).products).toBeUndefined()
     expect(dealToCrmContext({ ID: '21' }, []).products).toBeUndefined()
   })
+
+  it('капы схемы усекаются в маппере (не роняют parse): >50 позиций → 50; длинное имя → 500', () => {
+    // crmContextSchema.products .max(50) и productName .max(500) — валидация (throw), поэтому усекаем
+    // в mapProductRows, иначе крупная B2B-сделка уронила бы parse → 502 на создании приглашения.
+    const many = Array.from({ length: 60 }, (_, i) => ({ PRODUCT_ID: String(i + 1) }))
+    const ctx = dealToCrmContext({ ID: '1' }, many)
+    expect(ctx.products).toHaveLength(50)
+    const longName = dealToCrmContext({ ID: '1' }, [{ PRODUCT_ID: '5', PRODUCT_NAME: 'x'.repeat(700) }])
+    expect(longName.products?.[0]?.productName).toHaveLength(500)
+  })
+
+  it('мусорный/отрицательный/free-form PRODUCT_ID отброшен; дубли productId схлопнуты', () => {
+    const rows = [
+      { PRODUCT_ID: 'abc' }, // NaN → отброс
+      { PRODUCT_ID: '-5' }, // отрицательный → отброс
+      {}, // нет PRODUCT_ID → отброс
+      { PRODUCT_ID: '0', PRODUCT_NAME: 'услуга без каталога' }, // free-form (0) → отброс
+      { PRODUCT_ID: '13', PRODUCT_NAME: 'A' },
+      { PRODUCT_ID: '13', PRODUCT_NAME: 'A (2-я строка, др. цена)' } // дубль → схлоп (byProduct не задвоит)
+    ]
+    expect(dealToCrmContext({ ID: '1' }, rows).products).toEqual([{ productId: 13, productName: 'A' }])
+  })
+
+  it('не-массив productRows → best-effort пусто (не throw)', () => {
+    // @ts-expect-error — намеренно передаём не-массив (недоверенный REST мог вернуть не то)
+    expect(dealToCrmContext({ ID: '1' }, { garbage: true }).products).toBeUndefined()
+  })
 })
