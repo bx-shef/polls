@@ -4,7 +4,7 @@
 // crm.deal.get токеном виджета → dealToCrmContext → createSurveyInvitation (общий стор приглашений)
 // → ссылка /s/:key?token=… для адресата. Fail-closed: невалидный фрейм → 401, нет сделки/версии → 422.
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
-import { createPortalClient, dealGet, frameToB24Params } from '~core/bitrix24/client'
+import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
 import { dealToCrmContext } from '~core/bitrix24/deal-event'
 import { createSurveyInvitation } from '~core/bitrix24/trigger'
 import { surveyKeyForEntity } from '~core/bitrix24/survey-routing'
@@ -44,7 +44,14 @@ export default defineEventHandler(async (event) => {
       { clientId: process.env.NUXT_B24_CLIENT_ID ?? '', clientSecret: process.env.NUXT_B24_CLIENT_SECRET ?? '' }
     )
     const deal = await dealGet(client, dealId)
-    const context = dealToCrmContext(deal)
+    // Товарные позиции — best-effort (у сделки товаров может не быть / нет доступа/скоупа): без них
+    // срез дашборда «услуга/товар» пуст на реальных данных (сверено вебхуком). Ошибку глушим, но ЛОГИРУЕМ —
+    // иначе систематический провал productrows (нет прав/скоупа) → тихо пустой срез без диагностики.
+    const productRows = await dealProductRows(client, dealId).catch((e: unknown) => {
+      logger.warn('b24_deal_productrows_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
+      return []
+    })
+    const context = dealToCrmContext(deal, productRows)
 
     // ⚠️ TENANT (#49): `useStore()` сейчас SINGLE-TENANT (один PgStore на инстанс приложения) —
     // приложение обслуживает ОДИН портал. Подтверждённый `portal.portalId` тут НЕ выбирает стор.

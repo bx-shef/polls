@@ -66,11 +66,44 @@ export function posId(v: unknown): number | undefined {
 }
 
 /**
- * Маппинг ответа `crm.deal.get` → снимок `CrmContext` (#17). Берёт IDs + стадию; денормализованные
- * имена (company/category/responsible) — отдельным обогащением (crm.company/category/user.get),
- * до него срезы дашборда падают на ID. Результат валидируется схемой (устойчивость к мусору CRM).
+ * Товарные позиции сделки (`crm.deal.productrows.get`) → `products` снимка `CrmContext`. Каждая строка —
+ * `PRODUCT_ID` (положительный; 0/пусто = не товар → отбрасываем) + `PRODUCT_NAME` (денормализованное имя,
+ * опционально). Питает срез дашборда «услуга/товар» (`byProduct`). Пустой вход → пустой массив.
+ * Живой формат сверен вебхуком (`PRODUCT_ID`/`PRODUCT_NAME`, crm.deal.productrows.get).
  */
-export function dealToCrmContext(deal: Record<string, unknown>): CrmContext {
+export function mapProductRows(rows: Array<Record<string, unknown>>): Array<{ productId: number; productName?: string }> {
+  const out: Array<{ productId: number; productName?: string }> = []
+  const seen = new Set<number>()
+  if (!Array.isArray(rows)) return out // недоверенный REST мог отдать не-массив → best-effort пусто, не throw
+  for (const r of rows) {
+    // Капы схемы `crmContextSchema.products` (`.max(50)`) и `productName` (`.max(500)`) — это ВАЛИДАЦИЯ
+    // (throw), не усечение. Обогащение best-effort: усекаем ЗДЕСЬ, иначе крупная сделка (>50 позиций /
+    // длинное имя товара из CRM) уронила бы `crmContextSchema.parse` → 502 на создании приглашения.
+    if (out.length >= 50) break
+    const productId = posId(r.PRODUCT_ID)
+    // `PRODUCT_ID=0`/пусто — free-form-строка товарной таблицы (услуга без привязки к каталогу): группировать
+    // нечем → пропускаем (известное ограничение среза «услуга/товар», docs/bitrix24-integration.md).
+    if (productId === undefined || seen.has(productId)) continue // + дедуп: одна услуга/товар = один срез
+    seen.add(productId) // productrows отдаёт товар несколькими строками (цена/скидка) — иначе byProduct задвоит ответ
+    const raw = typeof r.PRODUCT_NAME === 'string' && r.PRODUCT_NAME !== '' ? r.PRODUCT_NAME : undefined
+    const productName = raw !== undefined ? raw.slice(0, 500) : undefined
+    out.push(productName !== undefined ? { productId, productName } : { productId })
+  }
+  return out
+}
+
+/**
+ * Маппинг ответа `crm.deal.get` (+ опц. товарных позиций `crm.deal.productrows.get`) → снимок `CrmContext`
+ * (#17). Берёт IDs + стадию + `products`; денормализованные ИМЕНА company/category/responsible — отдельным
+ * обогащением (crm.company/category/user.get), до него срезы дашборда падают на ID. `productRows` (по
+ * умолчанию пусто) обогащает срез «услуга/товар»: без них `byProduct` пуст на реальных данных (сверено
+ * вебхуком — прод-путь их не тянул). Результат валидируется схемой (устойчивость к мусору CRM).
+ */
+export function dealToCrmContext(
+  deal: Record<string, unknown>,
+  productRows: Array<Record<string, unknown>> = []
+): CrmContext {
+  const products = mapProductRows(productRows)
   return crmContextSchema.parse({
     dealId: posId(deal.ID),
     dealCategoryId: num(deal.CATEGORY_ID),
@@ -78,6 +111,8 @@ export function dealToCrmContext(deal: Record<string, unknown>): CrmContext {
     companyId: posId(deal.COMPANY_ID),
     contactId: posId(deal.CONTACT_ID),
     responsibleId: posId(deal.ASSIGNED_BY_ID),
-    dealAmount: num(deal.OPPORTUNITY)
+    dealAmount: num(deal.OPPORTUNITY),
+    // Пустой products не кладём — снимок чище, схема поле опускает (`.optional()`).
+    ...(products.length ? { products } : {})
   })
 }

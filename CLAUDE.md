@@ -131,8 +131,12 @@ pnpm test:visual  # визуальный гейт #13: скриншот-регр
   Привязка эндпоинта `/api/b24/session` + cookie (общий стор) — #49.
   `bitrix24/deal-event.ts` (#17, триггер-биндинг `ONCRMDEALUPDATE` — ЯДРО): `parseDealUpdateEvent`
   (zod-парс недоверенного POST: событие несёт лишь `data.FIELDS.ID` + `auth`), `verifyApplicationToken`
-  (constant-time сверка `application_token` — анти-форджери), `dealToCrmContext` (маппинг `crm.deal.get`
-  → снимок `CrmContext`: IDs+стадия, имена — обогащением позже). Эндпоинт/`event.bind`/обогащение — #17.
+  (constant-time сверка `application_token` — анти-форджери), `dealToCrmContext(deal, productRows?)` (маппинг
+  `crm.deal.get` + опц. `crm.deal.productrows.get` → снимок `CrmContext`: IDs+стадия+`products` через
+  `mapProductRows`; имена — обогащением позже). Клиент-хелпер `dealProductRows` (`client.ts`) + проброс в
+  `deal-invite.post.ts` (best-effort) — БЕЗ них срез дашборда «услуга/товар» пуст на реальных данных
+  (сверено живым вебхуком; формат `STAGE_ID` тоже: дефолт `NEW`/…, кастом воронка `C<N>:NEW`/…).
+  Эндпоинт/`event.bind`/имена-обогащение — #17. Товары для lead/СП — follow-up (те же `crm.<entity>.productrows.get`).
   `bitrix24/entity-event.ts` (фаза мульти-сущность — ЯДРО): обобщает триггер на лид/смарт-процесс/
   контакт/компанию — `parseEntityUpdateEvent` (недоверенный POST `ONCRM<ENTITY>UPDATE`/
   `ONCRMDYNAMICITEMUPDATE_<typeId>` → `{entityType,id,spaEntityTypeId?,auth}`) + мапперы

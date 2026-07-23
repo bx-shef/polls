@@ -70,6 +70,14 @@ export function dealGet(client: PortalClient, dealId: number): Promise<Record<st
 }
 
 /**
+ * `crm.deal.productrows.get` → товарные позиции сделки (`PRODUCT_ID`/`PRODUCT_NAME`, для `products`
+ * снимка `CrmContext` → срез дашборда «услуга/товар», #17). Best-effort: у сделки товаров может не быть.
+ */
+export function dealProductRows(client: PortalClient, dealId: number): Promise<Array<Record<string, unknown>>> {
+  return callMethod<Array<Record<string, unknown>>>(client, 'crm.deal.productrows.get', { id: dealId })
+}
+
+/**
  * `tasks.task.get` → поля задачи (для `taskToCrmContext`, ручной запуск из карточки задачи).
  * Результат вложен (`{ task }` в REST v2 / `{ item }` в v3) — разворачиваем во внутренний объект.
  * `select` запрашивает явно нужные поля + `UF_CRM_TASK`/`crmItemIds` (по умолчанию не отдаются).
