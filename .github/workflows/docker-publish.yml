@@ -2,7 +2,7 @@ name: docker-publish
 
 # Сборка и публикация образа приложения в GitHub Container Registry (GHCR).
 # Триггер — push в main (каждый зелёный мерж едет в прод) и теги v* (для отката).
-# На сервере watchtower опрашивает GHCR и подтягивает новый `latest` сам (см. docs/admin-setup.md).
+# На сервере watchtower опрашивает GHCR и подтягивает новый `latest` сам (см. docs/project-map.md).
 on:
   push:
     branches: [main]

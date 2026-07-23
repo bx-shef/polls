@@ -7,7 +7,7 @@ export interface RefreshCapable {
 }
 
 /**
- * Привязка `member_id` к OAuth-гранту при установке (docs/improvement-plan.md §2.3, анти
+ * Привязка `member_id` к OAuth-гранту при установке (docs/project-map.md §2.3, анти
  * install-poisoning). Проблема: `member_id` в install-POST — КЛИЕНТ-КОНТРОЛИРУЕМОЕ поле, а
  * `/api/b24/install` апсертит присланные токены без сверки. Владелец любого реального портала A
  * может подделать install с чужим `member_id` + своими валидными токенами портала A → отравит
@@ -107,7 +107,7 @@ export function applyVerifiedTokens(auth: InstallAuth, tokens: OAuthTokens, now:
  * 200-vs-ошибка раскрывает факт установки тому, кто ЗНАЕТ `member_id` (128-бит хэш портала — не
  * перебираемый; утечка — 1 бит «установлено да/нет», записи в этой ветке НЕ происходит). Полностью закрыть
  * нельзя без регрессии: единый `finish` замаскировал бы мисконфиг `client_secret`, единый `reject` показывал
- * бы ошибку на легитимной гонке. См. docs/improvement-plan.md §2.3 (follow-up).
+ * бы ошибку на легитимной гонке. См. docs/project-map.md §2.3 (follow-up).
  */
 export function decideInstallDoubleDispatch(reason: string, portalExists: boolean): 'finish' | 'reject' {
   return reason.startsWith('refresh_rejected') && portalExists ? 'finish' : 'reject'

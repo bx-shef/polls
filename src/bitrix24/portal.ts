@@ -8,7 +8,7 @@ import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from '
  * Драйвер-агностично (`Queryable` — pg.Pool/pglite), без новой prod-зависимости.
  * tenant — `member_id` портала (Bitrix24-идентификатор).
  *
- * Устойчивость lifecycle (миграция 0004, docs/improvement-plan.md §2):
+ * Устойчивость lifecycle (миграция 0004, docs/project-map.md §2):
  *  - `updated_at` штампуется на install/refresh — основа keep-alive (`listNearExpiry`),
  *    иначе простаивающий портал теряет refresh_token на 180-й день;
  *  - `save` при install-событии сверяется с тумбстоуном (out-of-order install после

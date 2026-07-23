@@ -1,4 +1,4 @@
--- Миграция 0004: устойчивость OAuth-lifecycle портала (docs/improvement-plan.md §2).
+-- Миграция 0004: устойчивость OAuth-lifecycle портала (docs/project-map.md §2).
 -- Аддитивна и идемпотентна (add column if not exists / create table if not exists) —
 -- безопасна на живой БД (portal — обычно одна строка).
 

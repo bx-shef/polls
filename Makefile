@@ -1,4 +1,4 @@
-# Деплой-команды для /home/bitrix/polls/ (см. docs/admin-setup.md).
+# Деплой-команды для /home/bitrix/polls/ (см. docs/project-map.md).
 # Образ собирает CI в GHCR на мерже в main; watchtower подтягивает новый latest сам.
 # Переменные берутся из .env.prod (конвенция сервера; иначе docker compose читал бы .env).
 #

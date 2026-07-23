@@ -40,7 +40,7 @@ const COMMENT_LINE_RE = /^\s*(\/\/|\*|\/\*)/
  *   блочного комментария на одной строке с кодом теоретически возможен — практически нет;
  * - НЕ ловит транзитивные ре-экспорты: если `~core/domain`/`~core/client` сами начнут тянуть
  *   server-only, гард это не увидит. Инвариант «`src/domain` и `src/client` не зависят от
- *   server-only слоёв» держим отдельно (см. `docs/decisions.md`).
+ *   server-only слоёв» держим отдельно (см. `docs/project-map.md`).
  */
 export function findBoundaryViolations(files: Array<{ path: string; content: string }>): BoundaryViolation[] {
   const violations: BoundaryViolation[] = []

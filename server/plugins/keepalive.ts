@@ -5,7 +5,7 @@ import { usePortalTokenStore } from '../utils/portal'
 import { logger } from '../utils/api'
 
 /**
- * Nitro-плагин keep-alive (docs/improvement-plan.md §2.4): периодический таймер рефрешит
+ * Nitro-плагин keep-alive (docs/project-map.md §2.4): периодический таймер рефрешит
  * OAuth-токены порталов у истечения `refresh_token` (~180 дней), иначе простаивающий портал
  * (никто не проходит опрос → нет REST-вызовов → ленивый рефреш не срабатывает) теряет токен.
  *
