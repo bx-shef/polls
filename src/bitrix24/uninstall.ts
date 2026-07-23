@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { verifyApplicationToken } from './deal-event'
 
 /**
- * Обработка удаления приложения с портала (ONAPPUNINSTALL, docs/project-map.md §2.1).
+ * Обработка удаления приложения с портала (ONAPPUNINSTALL, docs/project-map.md, §Установка и lifecycle портала).
  * Требование Маркета: при удалении стереть данные/PII портала (делает `PortalTokenStore.deletePortal`).
  *
  * Модель доверия Bitrix24: у `ONAPPUNINSTALL` нет иных данных для аутентификации, кроме

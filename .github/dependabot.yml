@@ -23,7 +23,7 @@ updates:
           - "minor"
           - "patch"
       # Весь scope вендора Bitrix24 — одной пачкой (b24jssdk + b24ui-nuxt + b24icons).
-      # Только minor/patch: мажор b24jssdk был breaking (см. decisions.md) — отдельным PR на ревью.
+      # Только minor/patch: мажор b24jssdk был breaking (см. docs/project-map.md, §Ключевые решения) — отдельным PR на ревью.
       b24:
         patterns:
           - "@bitrix24/*"

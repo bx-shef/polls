@@ -366,7 +366,7 @@ describe('PortalTokenStore (pglite)', () => {
     expect((await store.load('m-mm'))?.accessToken).toBe('OLD') // токен m-mm не затронут
   })
 
-  // ── Lifecycle-hardening (миграция 0004, docs/project-map.md §2) ──
+  // ── Lifecycle-hardening (миграция 0004, docs/project-map.md, §Установка и lifecycle портала) ──
   const epochOf = async (memberId: string): Promise<number> => {
     const r = await db.query<{ e: string }>(
       'select extract(epoch from updated_at)::bigint as e from portal where member_id = $1',
