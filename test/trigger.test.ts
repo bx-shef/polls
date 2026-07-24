@@ -154,6 +154,22 @@ describe('срок доступности ссылки → ttl приглаше�
     })
     expect(windowMs(invitations.peek(res!.token, now)!)).toBe(7_000)
   })
+
+  it('linkTtlSeconds=300 → после 301с ссылка недоступна (peek undefined, consume unknown = 403 на submit)', async () => {
+    // Дефолт стора большой (30д) — истекает именно per-invite ttl из linkTtlSeconds, а не дефолт.
+    // Замыкает продуктовый инвариант «после истечения ссылка не принимает ответ» end-to-end (consume→unknown→403).
+    const invitations = new MemoryInvitationStore()
+    const res = await createSurveyInvitation({
+      store: storeV({}, { s: verWithPolicy(1, { linkTtlSeconds: 300 }) }),
+      invitations,
+      surveyKey: 's',
+      context: ctx(),
+      now
+    })
+    const after = new Date(now.getTime() + 301_000)
+    expect(invitations.peek(res!.token, after)).toBeUndefined()
+    expect(invitations.consume(res!.token, { surveyKey: 's', versionNo: 1 }, after)).toEqual({ status: 'unknown' })
+  })
 })
 
 describe('dealIdFromDocumentId — document_id робота (#17)', () => {
