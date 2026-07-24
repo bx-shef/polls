@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { parseDealUpdateEvent, verifyApplicationToken, dealToCrmContext } from '../src/bitrix24/deal-event'
 
+// Синтетическая фикстура формата события ONCRMDEALUPDATE (форма — как у Bitrix24; значения
+// ЗАВЕДОМО ФЕЙКОВЫЕ, не реальный портал: домен `acme.*` — плейсхолдер, токены — маркеры `*-fake`).
+// `event_handler_id`/`ts` парсер не читает — держим для верности реальной форме события.
 const validRaw = {
   event: 'ONCRMDEALUPDATE',
   event_handler_id: '201',
   data: { FIELDS: { ID: '759' } },
   ts: '1736405807',
   auth: {
-    member_id: 'a223c6b3710f85df22e9377d6c4f7553',
+    member_id: 'member-id-fake-0000000000000000',
     domain: 'acme.bitrix24.ru',
-    application_token: '51856fefc120afa4b628cc82d3935cce',
-    access_token: 's6p6eclrvim6da22ft9ch94ekreb52lv'
+    application_token: 'application-token-fake-0000000000',
+    access_token: 'access-token-fake-00000000000000'
   }
 }
 
@@ -18,8 +21,8 @@ describe('parseDealUpdateEvent — недоверенный POST события 
   it('валидное событие → ID коэрсится в число, auth разобран', () => {
     const e = parseDealUpdateEvent(validRaw)
     expect(e?.data.FIELDS.ID).toBe(759)
-    expect(e?.auth.member_id).toBe('a223c6b3710f85df22e9377d6c4f7553')
-    expect(e?.auth.application_token).toBe('51856fefc120afa4b628cc82d3935cce')
+    expect(e?.auth.member_id).toBe('member-id-fake-0000000000000000')
+    expect(e?.auth.application_token).toBe('application-token-fake-0000000000')
   })
 
   it('регистронезависимый event-код', () => {

@@ -26,10 +26,10 @@ export function resolveB24Secret(secret: string | undefined = process.env.DASHBO
 /**
  * Резолвер install-маппинга `domain → member_id` (таблица `portal`). Боевая реализация —
  * ядровая `resolveMemberIdByDomain(db, domain)` (`~core/bitrix24/portal`, под pglite-тестами):
- * её подставляет через `setPortalResolver` слой инициализации стора, когда появится pg-Pool
- * (по `DATABASE_URL`, #6/#49). Пока стора нет (Nitro на MemoryStore+seed) — дефолт всегда
+ * её подставляет через `setPortalResolver` слой инициализации стора (`server/utils/api.ts`) при
+ * заданном `DATABASE_URL` (pg-Pool). Без `DATABASE_URL` (dev/MemoryStore) — дефолт всегда
  * `undefined` ⇒ handshake fail-closed (401: «портал не установлен»). Инжектируем, чтобы #49
- * подменил резолвер без правки роута.
+ * навесил tenant-scope без правки роута.
  */
 let resolveMemberId: (domain: string) => Promise<string | undefined> = async () => undefined
 

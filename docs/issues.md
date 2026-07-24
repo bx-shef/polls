@@ -23,8 +23,8 @@
 | #39 | Визуальный гейт: `/s/:key` в Playwright (DoD экранов контура A) | UI | **✅ по сути** (`webServer` + живой SSR-рендер `/s/csat_postdeal`, фикстура удалена) | **кандидат на закрытие** (перекрыт текущим гейтом; сверить с #34) |
 | #41 | Wire `pnpm test:visual` в CI (закреплённый рендер-контейнер) | UI/CI | открыт — гейт пока **agent-side** (Stop-хук) | нужен pinned chromium-контейнер (эталоны env-чувствительны); отдельный CI-job, не в `pnpm check` |
 | #45 | Контур A: ручной тоггл темы (light/dark/system) + согласование color-mode storage | UI | открыт — авто по `prefers-color-scheme` работает | UI-тоггл (`B24ColorModeButton`) + свести `storageKey` (b24ui vs `@nuxtjs/color-mode`); тоггл под гейт |
-| #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | гейт `requirePortalSession` + ядро handshake фрейма ✅ | tenant-фильтр стора по `portalId` — слой #49/#6 (нужен Nitro-pg-Pool по `DATABASE_URL`) |
-| #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность + **tenant-изоляция по `portalId`** | store/api | rate-limit ✅ (`allowB24Session`); агрегат in-memory над сидом | **БЛОКЕР: pg-Pool по `DATABASE_URL`** (#6) — store-factory `member_id → portal.id → scoped PgStore`; SQL-агрегат; ужесточение подавления малых bin |
+| #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | гейт `requirePortalSession` + handshake фрейма + боевой резолвер `setPortalResolver` ✅ (в коде) | per-portal tenant-фильтр стора — #49 (сейчас single-tenant); живой прогон |
+| #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность + **tenant-изоляция по `portalId`** | store/api | rate-limit ✅; pg-Pool + `setPortalResolver` **сделаны в коде** (`server/utils/api.ts`) | открыто: per-portal tenant-фильтр (store-factory `member_id → scoped PgStore`, сейчас single-tenant), SQL-агрегат дашборда (сейчас in-memory над сидом), ужесточение подавления малых bin |
 
 ## Предложения (бэклог, не заведены как GitHub-issue)
 

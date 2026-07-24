@@ -6,7 +6,8 @@
 # Образ собирает CI в GHCR на мерже в main; watchtower подтягивает новый latest сам.
 # Запуск: make prod-up  (см. Makefile + docs/project-map.md).
 #
-# Постоянное хранение (PostgreSQL) включается в #6 — до этого app на встроенном демо-сторе.
+# Постоянное хранение — сервис `db` (PostgreSQL) + volume ниже; app идёт на PgStore при заданном
+# DATABASE_URL (иначе — эфемерный демо-стор). Данные переживают рестарт/редеплой (том db-data).
 services:
   app:
     image: ghcr.io/bx-shef/polls:latest
@@ -28,7 +29,7 @@ services:
       # OAuth-приложение портала (client_id/secret из настроек приложения Bitrix24) — для установки.
       NUXT_B24_CLIENT_ID: ${NUXT_B24_CLIENT_ID:-}
       NUXT_B24_CLIENT_SECRET: ${NUXT_B24_CLIENT_SECRET:-}
-      # PostgreSQL (#6): постоянное хранение. Миграции применяются приложением на старте.
+      # PostgreSQL: постоянное хранение. Миграции применяются приложением на старте.
       # Без DATABASE_URL приложение падает обратно на эфемерный MemoryStore.
       DATABASE_URL: postgres://polls:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/polls
     restart: unless-stopped

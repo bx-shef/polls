@@ -5,7 +5,8 @@
 #    встроенном MemoryStore+seed (реалистичные данные, эфемерны, БД не нужна).
 #    Запуск: `docker compose up --build app`.
 #  • ПРОД (постоянные данные): профиль `prod` поднимает `db` (PostgreSQL) + миграции;
-#    привязка приложения к PgStore по DATABASE_URL — выносится в #6/#49 (см. docs/project-map.md).
+#    app читает `DATABASE_URL` → PgStore (миграции + `setPortalResolver` на старте,
+#    `server/utils/api.ts`); без него — эфемерный демо-стор (см. docs/project-map.md).
 #
 # Схему БД применяет раннер миграций (`pnpm migrate up`), а НЕ docker initdb —
 # чтобы правки схемы катились и после первого старта (#6).
