@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildSurveyInviteActivity,
+  buildSurveyResultActivity,
   activityConfigurableAdd,
   dealDetailPath,
   DEAL_OWNER_TYPE_ID,
   SURVEY_ACTIVITY_LOGO,
   type SurveyInviteActivityInput
 } from '../src/bitrix24/activity'
+import type { ResultLine } from '../src/domain/result-summary'
 import type { PortalClient, CallResult } from '../src/bitrix24/client'
 
 const input = (over: Partial<SurveyInviteActivityInput> = {}): SurveyInviteActivityInput => ({
@@ -108,6 +110,65 @@ describe('buildSurveyInviteActivity — параметры настраивае�
     expect(blocks).toBeGreaterThanOrEqual(1)
     expect(blocks).toBeLessThanOrEqual(20)
     expect(Object.keys(a.layout.footer.buttons).length).toBeLessThanOrEqual(2)
+  })
+})
+
+describe('buildSurveyResultActivity — результат опроса в таймлайн (#18)', () => {
+  const lines: ResultLine[] = [
+    { label: 'Оцените', value: '9' },
+    { label: 'Комментарий', value: 'отличный сервис' }
+  ]
+  const rInput = { dealId: 759, surveyTitle: 'CSAT', lines, responseId: 'r42' }
+
+  it('запись о завершённом опросе: completed=Y (в отличие от pending-приглашения N)', () => {
+    expect(buildSurveyResultActivity(rInput).fields).toEqual({ typeId: 'CONFIGURABLE', completed: 'Y' })
+  })
+
+  it('responsibleId включается при наличии (симметрично приглашению)', () => {
+    expect(buildSurveyResultActivity({ ...rInput, responsibleId: 17 }).fields.responsibleId).toBe(17)
+  })
+
+  it('привязка/шапка/обязательный logo — как у приглашения', () => {
+    const a = buildSurveyResultActivity({ ...rInput, dealId: 7 })
+    expect(a.ownerTypeId).toBe(DEAL_OWNER_TYPE_ID)
+    expect(a.ownerId).toBe(7)
+    expect(a.layout.header).toEqual({ title: 'Результат опроса: CSAT' })
+    expect(a.layout.body.logo).toEqual({ code: SURVEY_ACTIVITY_LOGO, action: { type: 'redirect', uri: '/crm/deal/details/7/' } })
+  })
+
+  it('тело: по блоку на строку сводки «метка: значение»', () => {
+    const a = buildSurveyResultActivity(rInput)
+    expect(a.layout.body.blocks.line0).toEqual({ type: 'text', properties: { value: 'Оцените: 9' } })
+    expect(a.layout.body.blocks.line1).toEqual({ type: 'text', properties: { value: 'Комментарий: отличный сервис' } })
+    expect(Object.keys(a.layout.body.blocks)).toHaveLength(2)
+  })
+
+  it('пустая сводка → один блок-заглушка (Bitrix требует ≥1 блок)', () => {
+    const a = buildSurveyResultActivity({ ...rInput, lines: [] })
+    expect(Object.keys(a.layout.body.blocks)).toHaveLength(1)
+    expect(a.layout.body.blocks.line0).toEqual({ type: 'text', properties: { value: 'Опрос заполнен: без ответов' } })
+  })
+
+  it('кнопка «Открыть результат» → openRestApp с responseId+dealId', () => {
+    const a = buildSurveyResultActivity({ ...rInput, dealId: 7, responseId: 'r42' })
+    expect(a.layout.footer.buttons.openResult).toEqual({
+      title: 'Открыть результат',
+      type: 'primary',
+      action: { type: 'openRestApp', actionParams: { responseId: 'r42', dealId: 7 } }
+    })
+  })
+
+  it('BB-нейтрализация метки/значения сводки (анти-инъекция таймлайна)', () => {
+    const a = buildSurveyResultActivity({ ...rInput, lines: [{ label: 'A [x]', value: '[url=e]v[/url]' }] })
+    const v = (a.layout.body.blocks.line0 as { properties: { value: string } }).properties.value
+    expect(v).not.toMatch(/[[\]]/)
+  })
+
+  it('число блоков не превышает 20 (инвариант Bitrix) даже при длинной сводке', () => {
+    const many: ResultLine[] = Array.from({ length: 40 }, (_, i) => ({ label: `Q${i}`, value: String(i) }))
+    const a = buildSurveyResultActivity({ ...rInput, lines: many })
+    expect(Object.keys(a.layout.body.blocks).length).toBe(20) // ровно кап, не тесней
+
   })
 })
 
