@@ -1,5 +1,6 @@
 import type { PortalClient } from './client'
 import { callMethod } from './client'
+import type { ResultLine } from '../domain/result-summary'
 
 /**
  * Доставка приглашения на опрос через НАСТРАИВАЕМОЕ ДЕЛО таймлайна сделки
@@ -126,6 +127,64 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
               type: 'openRestApp',
               actionParams: { surveyKey: input.surveyKey, token: input.token, dealId: input.dealId }
             }
+          }
+        }
+      }
+    }
+  }
+}
+
+export interface SurveyResultActivityInput {
+  /** id сделки, в таймлайн которой кладём результат. */
+  dealId: number
+  /** Заголовок опроса — в шапку активности. */
+  surveyTitle: string
+  /** Сводка ответов клиента (`summarizeResponse`) — строки «вопрос → значение». */
+  lines: ResultLine[]
+  /** id записи ответа — в `actionParams` кнопки «Открыть результат» (виджет знает, что открыть). */
+  responseId: string
+  /** Ответственный за активность (опц.). */
+  responsibleId?: number
+}
+
+/**
+ * Собрать параметры активности «Результат опроса» для таймлайна сделки (триггер «клиент заполнил
+ * опрос», #18) — симметрично `buildSurveyInviteActivity`. Отличия: `completed:'Y'` (это ЗАПИСЬ о
+ * завершённом опросе, не pending-действие); тело — сводка ответов клиента (по блоку на строку); кнопка
+ * «Открыть результат» → `openRestApp` (виджет откроет полный результат/PDF, #18). Пустая сводка → один
+ * блок-заглушка (Bitrix требует ≥1 блок). Чистая функция — тестируется без портала.
+ */
+export function buildSurveyResultActivity(input: SurveyResultActivityInput): ConfigurableActivityParams {
+  const dealPath = dealDetailPath(input.dealId)
+  // ≥1 блок (инвариант Bitrix) и ≤20: сводка уже ограничена summarizeResponse (≤15), заглушка на пустую.
+  const lineEntries = input.lines.length > 0 ? input.lines.slice(0, 20) : [{ label: 'Опрос заполнен', value: 'без ответов' }]
+  const blocks: Record<string, unknown> = {}
+  lineEntries.forEach((line, i) => {
+    blocks[`line${i}`] = { type: 'text', properties: { value: neutralizeBb(`${line.label}: ${line.value}`).slice(0, 500) } }
+  })
+  return {
+    ownerTypeId: DEAL_OWNER_TYPE_ID,
+    ownerId: input.dealId,
+    fields: {
+      // completed=Y — активность-ЗАПИСЬ о завершённом опросе (в отличие от pending-приглашения completed=N).
+      typeId: 'CONFIGURABLE',
+      completed: 'Y',
+      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {})
+    },
+    layout: {
+      icon: { code: SURVEY_ACTIVITY_LOGO },
+      header: { title: neutralizeBb(`Результат опроса: ${input.surveyTitle}`).slice(0, 255) },
+      body: {
+        logo: { code: SURVEY_ACTIVITY_LOGO, action: { type: 'redirect', uri: dealPath } },
+        blocks
+      },
+      footer: {
+        buttons: {
+          openResult: {
+            title: 'Открыть результат',
+            type: 'primary',
+            // ⚠️ `openRestApp` вживую не сверен (сосед live-verified только `redirect`) — smoke #126.
+            action: { type: 'openRestApp', actionParams: { responseId: input.responseId, dealId: input.dealId } }
           }
         }
       }
