@@ -86,6 +86,29 @@ describe('buildSurveyInviteActivity — параметры настраивае�
     const a = buildSurveyInviteActivity(input({ surveyTitle: 'Ы'.repeat(400) }))
     expect((a.layout.header.title as string).length).toBe(255)
   })
+
+  it('длинный surveyUrl обрезается до 500 (backstop payload — симметрично капу заголовка)', () => {
+    const a = buildSurveyInviteActivity(input({ surveyUrl: 'https://x/s/k?token=' + 't'.repeat(600) }))
+    const link = a.layout.body.blocks.surveyLink as { properties: { value: string } }
+    expect(link.properties.value.length).toBe(500)
+  })
+
+  it('BB-нейтрализация: скобки [] в заголовке и ссылке → полноширинные (анти-инъекция таймлайна)', () => {
+    const a = buildSurveyInviteActivity(input({ surveyTitle: 'A [url=http://evil]x[/url]', surveyUrl: 'https://x/s/k?a=[b]' }))
+    const title = a.layout.header.title as string
+    expect(title).not.toMatch(/[[\]]/) // нет сырых ASCII-скобок BB
+    expect(title).toContain('［url=http://evil］')
+    const link = (a.layout.body.blocks.surveyLink as { properties: { value: string } }).properties.value
+    expect(link).not.toMatch(/[[\]]/)
+  })
+
+  it('инварианты Bitrix: блоков тела 1..20, кнопок футера ≤2', () => {
+    const a = buildSurveyInviteActivity(input())
+    const blocks = Object.keys(a.layout.body.blocks).length
+    expect(blocks).toBeGreaterThanOrEqual(1)
+    expect(blocks).toBeLessThanOrEqual(20)
+    expect(Object.keys(a.layout.footer.buttons).length).toBeLessThanOrEqual(2)
+  })
 })
 
 describe('activityConfigurableAdd — REST-обёртка', () => {
@@ -95,5 +118,12 @@ describe('activityConfigurableAdd — REST-обёртка', () => {
     const id = await activityConfigurableAdd(c, params)
     expect(id).toBe(9012)
     expect(c.calls[0]).toEqual(['crm.activity.configurable.add', params])
+  })
+
+  it('id-строка от B24 коэрсится в number (тип не лжёт)', async () => {
+    const c = client(ok('9012')) // B24 REST местами сериализует id строкой
+    const id = await activityConfigurableAdd(c, buildSurveyInviteActivity(input()))
+    expect(id).toBe(9012)
+    expect(typeof id).toBe('number')
   })
 })

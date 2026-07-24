@@ -32,6 +32,16 @@ export function dealDetailPath(dealId: number): string {
   return `/crm/deal/details/${dealId}/`
 }
 
+/**
+ * Нейтрализация BB-кода в тексте, попадающем в таймлайн Bitrix (защита от инъекции `[url=…]`/меток/
+ * кнопок): скобки `[`/`]` → полноширинные `［`/`]`. Порт live-verified паттерна соседа `ai-price-import`
+ * (`chatNotify.neutralizeBb`). Наш `surveyTitle` авторит админ портала (тот же домен доверия), но это
+ * ПЕРВЫЙ пишущий-в-таймлайн путь polls — нейтрализуем defense-in-depth и для паритета. Длину строки не
+ * меняет (замена 1:1), поэтому применяется ДО `.slice`. */
+export function neutralizeBb(text: string): string {
+  return String(text ?? '').replace(/\[/g, '［').replace(/\]/g, '］')
+}
+
 export interface SurveyInviteActivityInput {
   /** id сделки, в таймлайн которой кладём активность. */
   dealId: number
@@ -90,16 +100,17 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
     },
     layout: {
       icon: { code: SURVEY_ACTIVITY_LOGO },
-      header: { title: `Опрос: ${input.surveyTitle}`.slice(0, 255) },
+      // BB-нейтрализация + кап длины (защита от инъекции в таймлайн и раздувания payload).
+      header: { title: neutralizeBb(`Опрос: ${input.surveyTitle}`).slice(0, 255) },
       body: {
         // logo (LogoDto) ОБЯЗАТЕЛЕН — иначе Bitrix отвергает (live-verified). Клик по логотипу
         // открывает сделку (same-portal относительный путь из числового id — SSRF-safe).
         logo: { code: SURVEY_ACTIVITY_LOGO, action: { type: 'redirect', uri: dealPath } },
         // 1..20 блоков. Ссылка на анкету — ТЕКСТОМ (URL внешний, наш домен; redirect навигирует внутри
         // портала и на внешний хост его класть нельзя). Оператор видит/копирует ссылку; отправляет клиенту
-        // кнопкой ниже. Кап длины — защита от раздувания payload (URL всегда короче).
+        // кнопкой ниже. BB-нейтрализация + кап длины (URL всегда короче — кап лишь backstop).
         blocks: {
-          surveyLink: { type: 'text', properties: { value: input.surveyUrl.slice(0, 500) } }
+          surveyLink: { type: 'text', properties: { value: neutralizeBb(input.surveyUrl).slice(0, 500) } }
         }
       },
       footer: {
@@ -110,6 +121,8 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
             action: {
               // openRestApp открывает наш плейсмент-виджет с actionParams — он и выполняет отправку
               // ссылки клиенту (email/sms по channelOrder). Токен/ключ/сделка — минимально нужный контекст.
+              // ⚠️ Тип действия `openRestApp` у футер-кнопки вживую НЕ сверен (сосед live-verified только
+              // `redirect`) — валидность `openRestApp`/`actionParams` в чек-листе живого smoke #126.
               type: 'openRestApp',
               actionParams: { surveyKey: input.surveyKey, token: input.token, dealId: input.dealId }
             }
@@ -123,8 +136,9 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
 /**
  * `crm.activity.configurable.add` → id созданной активности. Вызывать токеном портала ТОЛЬКО
  * после верификации события/фрейма (анти-форджери, как `dealGet`/`entityGet`). Метод `*.add`
- * возвращает числовой id новой активности (`callMethod` уже разворачивает конверт `result`).
+ * возвращает id новой активности; B24 REST местами сериализует id СТРОКОЙ — коэрсим в `number`,
+ * чтобы тип не лгал (`callMethod` только кастит `result`, без runtime-проверки).
  */
-export function activityConfigurableAdd(client: PortalClient, params: ConfigurableActivityParams): Promise<number> {
-  return callMethod<number>(client, 'crm.activity.configurable.add', params)
+export async function activityConfigurableAdd(client: PortalClient, params: ConfigurableActivityParams): Promise<number> {
+  return Number(await callMethod<number | string>(client, 'crm.activity.configurable.add', params))
 }
