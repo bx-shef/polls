@@ -64,6 +64,19 @@ describe('domain/schema: invitationPolicySchema', () => {
     // дефолтный deal без id — ок
     expect(invitationPolicySchema.safeParse({}).success).toBe(true)
   })
+  it('linkTtlSeconds — окно [5 мин, 5 дней]; вне диапазона/дробь — отказ; не задан — undefined', () => {
+    // границы включительно: 300 сек (5 мин) и 432000 сек (5 дней)
+    expect(invitationPolicySchema.parse({ linkTtlSeconds: 300 }).linkTtlSeconds).toBe(300)
+    expect(invitationPolicySchema.parse({ linkTtlSeconds: 432000 }).linkTtlSeconds).toBe(432000)
+    // вне диапазона — parse-ошибка на границе (не тихий кламп)
+    expect(invitationPolicySchema.safeParse({ linkTtlSeconds: 299 }).success).toBe(false)
+    expect(invitationPolicySchema.safeParse({ linkTtlSeconds: 432001 }).success).toBe(false)
+    expect(invitationPolicySchema.safeParse({ linkTtlSeconds: 0 }).success).toBe(false)
+    // только целое число секунд
+    expect(invitationPolicySchema.safeParse({ linkTtlSeconds: 300.5 }).success).toBe(false)
+    // необязательное поле — по умолчанию отсутствует (дефолт стора приглашений на выписке)
+    expect(invitationPolicySchema.parse({}).linkTtlSeconds).toBeUndefined()
+  })
 })
 
 describe('api/invitation: MemoryInvitationStore', () => {

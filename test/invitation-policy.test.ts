@@ -79,6 +79,16 @@ describe('политика переживает запись/чтение и з�
     expect((await store.currentVersion('pol_survey'))?.invitationPolicy).toBeUndefined() // текущая = v2
   })
 
+  it('MemoryStore: linkTtlSeconds (срок доступности) переживает запись/чтение и заморожен по версиям', async () => {
+    const store = new MemoryStore()
+    // v1 — срок 5 минут; v2 — поле снято (иммутабельность: v1 не должна «подхватить» отсутствие поля из v2)
+    await store.publish(draft({ surveyKey: 'ttl_survey', invitationPolicy: { ...POLICY, linkTtlSeconds: 300 } }), 1)
+    await store.publish(draft({ surveyKey: 'ttl_survey', invitationPolicy: { ...POLICY } }), 2)
+    expect((await store.getVersion('ttl_survey', 1))?.invitationPolicy?.linkTtlSeconds).toBe(300)
+    expect((await store.getVersion('ttl_survey', 2))?.invitationPolicy?.linkTtlSeconds).toBeUndefined()
+    expect((await store.currentVersion('ttl_survey'))?.invitationPolicy?.linkTtlSeconds).toBeUndefined() // текущая = v2
+  })
+
   it('PgStore (pglite): round-trip через compiled_schema JSONB + иммутабельность', async () => {
     const pg = new PGlite()
     try {
@@ -97,6 +107,12 @@ describe('политика переживает запись/чтение и з�
       const spaPolicy: InvitationPolicy = { entityType: 'spa', spaEntityTypeId: 1056, triggerStages: ['DT1056:WON'], channelOrder: ['email'] }
       await store.publish(draft({ surveyKey: 'spa_survey', invitationPolicy: spaPolicy }), 1)
       expect((await store.getVersion('spa_survey', 1))?.invitationPolicy).toEqual(spaPolicy)
+      // Срок доступности: linkTtlSeconds переживает compiled_schema JSONB и заморожен по версиям
+      const ttlPolicy: InvitationPolicy = { entityType: 'deal', triggerStages: ['C1:WON'], channelOrder: ['email'], linkTtlSeconds: 300 }
+      await store.publish(draft({ surveyKey: 'ttl_survey', invitationPolicy: ttlPolicy }), 1)
+      await store.publish(draft({ surveyKey: 'ttl_survey', invitationPolicy: undefined }), 2)
+      expect((await store.getVersion('ttl_survey', 1))?.invitationPolicy?.linkTtlSeconds).toBe(300)
+      expect((await store.getVersion('ttl_survey', 2))?.invitationPolicy).toBeUndefined()
     } finally {
       await pg.close()
     }
