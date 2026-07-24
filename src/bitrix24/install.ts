@@ -259,10 +259,11 @@ export function parsePlacementTaskId(placementOptions: unknown): number | undefi
 }
 
 /**
- * Оркестрация установки: нормализовать токены → сохранить → зарегистрировать встройки (робот +
+ * Оркестрация установки: нормализовать токены → сохранить → зарегистрировать встройки (event.bind +
  * плейсменты). Порядок важен: регистрация ПОСЛЕ сохранения токенов (идёт токеном этого же портала).
  * `saveTokens`/`registerIntegrations` инжектируются (Nitro: `PortalTokenStore.save` + серия
- * `callMethod(client, 'bizproc.robot.add' | 'placement.bind', …)` поверх `actions.v2`). Частичный отказ безопасен:
+ * `callMethod(client, 'event.bind' | 'placement.bind', …)` поверх `actions.v2`; робот `bizproc.robot.add`
+ * пока не регистрируется — эндпоинт `/api/b24/robot` не реализован). Частичный отказ безопасен:
  * повторная установка идемпотентна по стабильным CODE/PLACEMENT; вызывающий может ретраить.
  */
 export async function handleInstall(
