@@ -24,15 +24,20 @@ export interface SummarizeOptions {
 
 /**
  * Человекочитаемое значение ОДНОГО ответа независимо от метрики: число (шкальные nps/csat/ces/scale) →
- * как есть; выбор (`valueChoice`) → метки вариантов через `question.options` (fallback на ключ, если
- * вариант удалён в новой версии); свободный текст → `valueText`. Пустой/пропущенный ответ → `undefined`
- * (строка не выводится — «вопрос пропущен» не шумит в таймлайне).
+ * как есть (`!= null` — балл `0` валиден, не опускается); выбор (`valueChoice`) → метки вариантов через
+ * `question.options` (fallback на ключ, если вариант удалён в новой версии), плюс свободный текст «Другое»
+ * (`normalizeAnswer` кладёт его в `valueText` рядом с ключом опции); свободный текст → `valueText`.
+ * Пустой/пропущенный ответ → `undefined` (строка не выводится — «вопрос пропущен» не шумит в таймлайне).
  */
 function formatAnswerValue(question: Question, answer: StoredAnswer): string | undefined {
   if (answer.valueNumber != null) return String(answer.valueNumber)
   if (answer.valueChoice.length > 0) {
     const labels = new Map(question.options.map((o) => [o.key, o.label]))
-    return answer.valueChoice.map((k) => labels.get(k) ?? k).join(', ')
+    const chosen = answer.valueChoice.map((k) => labels.get(k) ?? k).join(', ')
+    // «Другое»: normalizeAnswer кладёт свободный текст в valueText РЯДОМ с ключом опции в valueChoice —
+    // дописываем его (самая ценная часть ответа-«Другое»), иначе в таймлайн уйдёт лишь метка «Другое».
+    const other = answer.valueText?.trim()
+    return other ? `${chosen}: ${other}` : chosen
   }
   const text = answer.valueText?.trim()
   return text ? text : undefined

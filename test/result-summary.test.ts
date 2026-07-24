@@ -62,6 +62,30 @@ describe('summarizeResponse — сводка одного ответа (#18)', (
     expect(summarizeResponse(v, r)).toEqual([{ label: 'Что понравилось', value: 'Сервис, Цена, gone' }])
   })
 
+  it('«Другое»: метка варианта + свободный текст клиента (текст не теряем)', () => {
+    const v = version([
+      q({ key: 'ch', text: 'Что улучшить', type: 'multi', metric: 'choice', options: [
+        { key: 'price', label: 'Цена' },
+        { key: 'other', label: 'Другое', isOther: true }
+      ] })
+    ])
+    // normalizeAnswer кладёт текст «Другого» в valueText РЯДОМ с ключом опции в valueChoice
+    const r = response([ans({ questionKey: 'ch', metric: 'choice', valueChoice: ['other'], valueText: 'быстрее доставка' })])
+    expect(summarizeResponse(v, r)).toEqual([{ label: 'Что улучшить', value: 'Другое: быстрее доставка' }])
+  })
+
+  it('valueNumber=0 выводится (валиден для nps/ces), не опускается как falsy', () => {
+    const v = version([q({ key: 'nps', text: 'Оцените', metric: 'nps' })])
+    const r = response([ans({ questionKey: 'nps', metric: 'nps', valueNumber: 0 })])
+    expect(summarizeResponse(v, r)).toEqual([{ label: 'Оцените', value: '0' }])
+  })
+
+  it('число побеждает при заполненных valueNumber и valueText (precedence)', () => {
+    const v = version([q({ key: 'x', text: 'X', metric: 'scale' })])
+    const r = response([ans({ questionKey: 'x', metric: 'scale', valueNumber: 7, valueText: 'игнор' })])
+    expect(summarizeResponse(v, r)).toEqual([{ label: 'X', value: '7' }])
+  })
+
   it('свободный текст → как есть; кап значения (maxValueLen)', () => {
     const v = version([q({ key: 't', text: 'Комментарий', type: 'text', metric: 'text' })])
     const r = response([ans({ questionKey: 't', metric: 'text', valueText: 'Ы'.repeat(400) })])

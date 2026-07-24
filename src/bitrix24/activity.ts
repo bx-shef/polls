@@ -156,7 +156,8 @@ export interface SurveyResultActivityInput {
  */
 export function buildSurveyResultActivity(input: SurveyResultActivityInput): ConfigurableActivityParams {
   const dealPath = dealDetailPath(input.dealId)
-  // ≥1 блок (инвариант Bitrix) и ≤20: сводка уже ограничена summarizeResponse (≤15), заглушка на пустую.
+  // ≥1 блок (инвариант Bitrix) и ≤20: `slice(0,20)` — жёсткий гейт независимо от `maxLines` summarizeResponse;
+  // заглушка на пустую сводку (пустой `blocks` Bitrix отверг бы).
   const lineEntries = input.lines.length > 0 ? input.lines.slice(0, 20) : [{ label: 'Опрос заполнен', value: 'без ответов' }]
   const blocks: Record<string, unknown> = {}
   lineEntries.forEach((line, i) => {

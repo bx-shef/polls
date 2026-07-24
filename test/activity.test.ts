@@ -124,6 +124,10 @@ describe('buildSurveyResultActivity — результат опроса в та�
     expect(buildSurveyResultActivity(rInput).fields).toEqual({ typeId: 'CONFIGURABLE', completed: 'Y' })
   })
 
+  it('responsibleId включается при наличии (симметрично приглашению)', () => {
+    expect(buildSurveyResultActivity({ ...rInput, responsibleId: 17 }).fields.responsibleId).toBe(17)
+  })
+
   it('привязка/шапка/обязательный logo — как у приглашения', () => {
     const a = buildSurveyResultActivity({ ...rInput, dealId: 7 })
     expect(a.ownerTypeId).toBe(DEAL_OWNER_TYPE_ID)
@@ -163,7 +167,8 @@ describe('buildSurveyResultActivity — результат опроса в та�
   it('число блоков не превышает 20 (инвариант Bitrix) даже при длинной сводке', () => {
     const many: ResultLine[] = Array.from({ length: 40 }, (_, i) => ({ label: `Q${i}`, value: String(i) }))
     const a = buildSurveyResultActivity({ ...rInput, lines: many })
-    expect(Object.keys(a.layout.body.blocks).length).toBeLessThanOrEqual(20)
+    expect(Object.keys(a.layout.body.blocks).length).toBe(20) // ровно кап, не тесней
+
   })
 })
 
