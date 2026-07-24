@@ -6,13 +6,11 @@ import {
   surveyRobotParams,
   surveyPlacements,
   parsePlacementDealId,
-  parsePlacementTaskId,
   parsePlacementEntityId,
   handleInstall,
   SURVEY_ROBOT_CODE,
   PLACEMENT_DEAL_ACTIVITY,
-  PLACEMENT_ANALYTICS_MENU,
-  PLACEMENT_TASK_VIEW
+  PLACEMENT_ANALYTICS_MENU
 } from '../src/bitrix24/install'
 import type { OAuthTokens } from '../src/bitrix24/oauth'
 
@@ -115,53 +113,30 @@ describe('surveyRobotParams (#17)', () => {
 })
 
 describe('surveyPlacements (#17)', () => {
-  it('виджеты сделки + задачи + дашборд в аналитике, HANDLER на нашем домене', () => {
+  it('виджет сделки + дашборд в аналитике, HANDLER на нашем домене', () => {
     const ps = surveyPlacements('https://polls.bx-shef.by/')
-    expect(ps.map((p) => p.PLACEMENT)).toEqual([PLACEMENT_DEAL_ACTIVITY, PLACEMENT_ANALYTICS_MENU, PLACEMENT_TASK_VIEW])
+    expect(ps.map((p) => p.PLACEMENT)).toEqual([PLACEMENT_DEAL_ACTIVITY, PLACEMENT_ANALYTICS_MENU])
     // хвостовой слеш baseUrl убран, HANDLER абсолютный https
     expect(ps[0]!.HANDLER).toBe('https://polls.bx-shef.by/b24/deal-widget')
     expect(ps[1]!.HANDLER).toBe('https://polls.bx-shef.by/b24/dashboard')
-    expect(ps[2]!.HANDLER).toBe('https://polls.bx-shef.by/b24/task-widget')
     expect(ps[0]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по сделке')
-    expect(ps[2]!.LANG_ALL?.ru?.TITLE).toBe('Опрос по задаче')
   })
 })
 
 describe('parsePlacementEntityId (общий)', () => {
   it('перебирает ключи-кандидаты по порядку, берёт первый валидный', () => {
-    expect(parsePlacementEntityId('{"TASK_ID":"5"}', ['taskId', 'TASK_ID', 'ID'])).toBe(5)
+    expect(parsePlacementEntityId('{"LEAD_ID":"5"}', ['leadId', 'LEAD_ID', 'ID'])).toBe(5)
     expect(parsePlacementEntityId({ ID: 9 }, ['ID'])).toBe(9)
   })
   it('первый ключ невалиден (0) или undefined → fall-through к следующему валидному', () => {
-    expect(parsePlacementEntityId({ taskId: 0, ID: 7 }, ['taskId', 'ID'])).toBe(7)
-    expect(parsePlacementEntityId({ taskId: undefined, ID: 7 }, ['taskId', 'ID'])).toBe(7)
-    expect(parsePlacementEntityId({ taskId: null, ID: 7 }, ['taskId', 'ID'])).toBe(7) // паритет с ??
+    expect(parsePlacementEntityId({ leadId: 0, ID: 7 }, ['leadId', 'ID'])).toBe(7)
+    expect(parsePlacementEntityId({ leadId: undefined, ID: 7 }, ['leadId', 'ID'])).toBe(7)
+    expect(parsePlacementEntityId({ leadId: null, ID: 7 }, ['leadId', 'ID'])).toBe(7) // паритет с ??
   })
   it('битый JSON / не объект / нет валидных ключей → undefined', () => {
     expect(parsePlacementEntityId('{nope', ['ID'])).toBeUndefined()
     expect(parsePlacementEntityId(42, ['ID'])).toBeUndefined()
     expect(parsePlacementEntityId({ X: 1 }, ['ID'])).toBeUndefined()
-  })
-})
-
-describe('parsePlacementTaskId (задача)', () => {
-  it('JSON-строка {"taskId":"812"} → 812', () => {
-    expect(parsePlacementTaskId('{"taskId":"812"}')).toBe(812)
-  })
-  it('объект с TASK_ID / ID → число', () => {
-    expect(parsePlacementTaskId({ TASK_ID: 5 })).toBe(5)
-    expect(parsePlacementTaskId({ ID: '9' })).toBe(9)
-  })
-  it('числовое значение в JSON (не строкой)', () => {
-    expect(parsePlacementTaskId('{"taskId":812}')).toBe(812)
-  })
-  it('битый JSON / нет id / 0 / отрицательное / мусор → undefined', () => {
-    expect(parsePlacementTaskId('{not json')).toBeUndefined()
-    expect(parsePlacementTaskId('{"X":1}')).toBeUndefined()
-    expect(parsePlacementTaskId('{"taskId":"0"}')).toBeUndefined()
-    expect(parsePlacementTaskId('{"taskId":"-5"}')).toBeUndefined()
-    expect(parsePlacementTaskId(null)).toBeUndefined()
-    expect(parsePlacementTaskId(undefined)).toBeUndefined()
   })
 })
 

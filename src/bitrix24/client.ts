@@ -77,24 +77,8 @@ export function dealProductRows(client: PortalClient, dealId: number): Promise<A
   return callMethod<Array<Record<string, unknown>>>(client, 'crm.deal.productrows.get', { id: dealId })
 }
 
-/**
- * `tasks.task.get` → поля задачи (для `taskToCrmContext`, ручной запуск из карточки задачи).
- * Результат вложен (`{ task }` в REST v2 / `{ item }` в v3) — разворачиваем во внутренний объект.
- * `select` запрашивает явно нужные поля + `UF_CRM_TASK`/`crmItemIds` (по умолчанию не отдаются).
- */
-export async function taskGet(client: PortalClient, taskId: number): Promise<Record<string, unknown>> {
-  // `*` тянет стандартные поля (вкл. v3 `crmItemIds`/`responsible`); `UF_CRM_TASK` (легаси-привязка)
-  // по умолчанию НЕ возвращается — запрашиваем явно. Точный набор сверить на портале (#issue live-smoke).
-  const result = await callMethod<Record<string, unknown>>(client, 'tasks.task.get', {
-    taskId,
-    select: ['*', 'UF_CRM_TASK']
-  })
-  const inner = (result.task ?? result.item ?? result) as Record<string, unknown>
-  return inner
-}
-
-/** CRM-сущности, догружаемые через `crm.*.get` (всё, кроме `task` — у задачи свой путь `taskGet`). */
-export type CrmEntityType = Exclude<EntityType, 'task'>
+/** CRM-сущности, догружаемые через `crm.*.get`. Совпадает с `EntityType` (все сущности — CRM-типы). */
+export type CrmEntityType = EntityType
 
 /**
  * REST-метод догрузки полей по типу CRM-сущности (binding-слой #34). `deal` включён для удобства
@@ -111,8 +95,8 @@ const ENTITY_GET_METHOD: Record<Exclude<CrmEntityType, 'spa'>, string> = {
 /**
  * Догрузка полей CRM-сущности по типу (для `entityToCrmContext`, #34). Сделка/лид/контакт/компания —
  * `crm.<entity>.get({id})`; смарт-процесс (`spa`) — `crm.item.get({entityTypeId, id})` (нужен
- * `spaEntityTypeId`) с разворотом `{ item }`. Задача (`task`) идёт отдельным путём (`taskGet`) — здесь
- * не поддержана. Вызывать токеном портала ТОЛЬКО после верификации события (анти-форджери/IDOR).
+ * `spaEntityTypeId`) с разворотом `{ item }`. Вызывать токеном портала ТОЛЬКО после верификации
+ * события (анти-форджери/IDOR).
  */
 export async function entityGet(
   client: PortalClient,

@@ -72,7 +72,7 @@ CRM (закрытие сделки), клиент проходит его в п�
 | Визуальный гейт | Playwright скриншот-регрессия + Stop-хук: 48 эталонов (8×3×2) | ✅ | в CI — #41 |
 | **OAuth-lifecycle портала (Фаза A)** | тумбстоун + UPDATE-only refresh + keep-alive + uninstall (CLEAN-респект) + member_id-binding + SSRF-allowlist + rate-limit install | ✅ **закрыто по коду** | **живой install-smoke на портале** |
 | Установка Bitrix24 | `/api/b24/install` (токены + робот + плейсменты) + handshake `/api/b24/session` | 🟡 код готов | живой install-smoke (ещё не прогонялся) |
-| Связка CRM→`CrmContext` (чтение) | маппинг deal/lead/spa/contact/company/task + `products` + формат стадий | ✅ **live-verified вебхуком** (2026-07-23) | binding-эндпоинты (#17) |
+| Связка CRM→`CrmContext` (чтение) | маппинг deal/lead/spa/contact/company + `products` + формат стадий | ✅ **live-verified вебхуком** (2026-07-23) | binding-эндпоинты (#17) |
 | Деплой-слой | Docker+GHCR+watchtower+nginx-proxy+TLS+PostgreSQL, авто-CD | 🟡 **live** (`polls.bx-shef.by`) | мульти-инстанс (#4) · OTel (#15) · edge-security |
 
 **Что сделано за последний цикл (PR #109–#115, все смержены):** устойчивость OAuth-lifecycle
@@ -145,9 +145,9 @@ rate-limit install, HTTP-кэш ETag/условный-GET (#30), обогаще�
     (`parseBracketForm`, произвольная глубина `data[FIELDS][ID]`).
   - `deal-update.ts` — оркестрация авто-триггера `ONCRMDEALUPDATE` (`runDealUpdate`: парс → сверка
     `application_token` → догрузка сделки → `handleDealTrigger`; чистое ядро, DI, #17).
-  - `task.ts` — ручной запуск из карточки задачи; `survey-routing.ts` — какой опрос по сущности
-    (env `SURVEY_KEY_*`); `trigger.ts` — `handleDealTrigger`/`createSurveyInvitation`;
-    `client.ts` — REST-клиент на `@bitrix24/b24jssdk` (`dealGet`/`dealProductRows`/`taskGet`/`entityGet`).
+  - `survey-routing.ts` — какой опрос по сущности (env `SURVEY_KEY_*`); `trigger.ts` —
+    `handleDealTrigger`/`createSurveyInvitation`; `client.ts` — REST-клиент на `@bitrix24/b24jssdk`
+    (`dealGet`/`dealProductRows`/`entityGet`).
   - `install.ts` — оркестрация установки (`event.bind ONCRMDEALUPDATE` (`surveyEventBindParams`) +
     плейсменты; `surveyRobotParams` готов, но робот НЕ регистрируется — эндпоинт `/api/b24/robot` не реализован).
 - **`client/`** — `survey-fill.ts` (`SurveyFill` — «мозг» прохождения, без DOM) + `survey-editor.ts`
@@ -175,7 +175,7 @@ rate-limit install, HTTP-кэш ETag/условный-GET (#30), обогаще�
 `GET /api/session`, `POST /api/submit`, `GET /api/survey/:key/current` (+ ETag/304, #30),
 `GET /api/health`, `GET /api/dashboard/:key`, `GET/POST /api/admin/surveys*`,
 `POST /api/b24/session` (handshake фрейма), `POST /api/b24/install` (+ ветка `ONAPPUNINSTALL`),
-`POST /api/b24/deal-invite` · `task-invite` (ручной запуск из виджетов).
+`POST /api/b24/deal-invite` (ручной запуск из виджета).
 Плагин `server/plugins/keepalive.ts` — таймер keep-alive-рефреша.
 
 ---
@@ -308,8 +308,8 @@ rate-limit install, HTTP-кэш ETag/условный-GET (#30), обогаще�
   (SSRF-allowlist домена + сверка `member_id` из авторитетного источника, не из POST) → подписанная
   сессия в cookie `polls_portal` (`SameSite=None; Secure; Partitioned`). Резолвер `domain → member_id`
   инжектируем — PgStore-привязка в #49, до неё handshake fail-closed (401).
-- **Плейсменты/встройки:** `CRM_DEAL_DETAIL_ACTIVITY` (виджет сделки), `CRM_ANALYTICS_MENU` (дашборд),
-  `TASK_VIEW_SIDEBAR` (виджет задачи). Ручной запуск — `deal-invite`/`task-invite`.
+- **Плейсменты/встройки:** `CRM_DEAL_DETAIL_ACTIVITY` (виджет сделки), `CRM_ANALYTICS_MENU` (дашборд).
+  Ручной запуск — `deal-invite`.
 
 ### Сценарии применения
 
@@ -373,7 +373,7 @@ rate-limit install, HTTP-кэш ETag/условный-GET (#30), обогаще�
 | `NUXT_B24_CLIENT_ID` / `NUXT_B24_CLIENT_SECRET` | OAuth-креды приложения Bitrix24 | да при связке |
 | `DATABASE_URL` | строка подключения PostgreSQL (прод; та же для CLI миграций) | да в проде |
 | `POSTGRES_PASSWORD` | пароль БД для docker-compose | да при `db` |
-| `SURVEY_KEY_<ENTITY>` | опрос по сущности из виджета (`_DEAL`/`_LEAD`/`_SPA`/`_CONTACT`/`_COMPANY`/`_TASK`) | нет (дефолт `csat_postdeal`) |
+| `SURVEY_KEY_<ENTITY>` | опрос по сущности из виджета (`_DEAL`/`_LEAD`/`_SPA`/`_CONTACT`/`_COMPANY`) | нет (дефолт `csat_postdeal`) |
 | `SURVEY_KEY_DEFAULT` | опрос по умолчанию, если для сущности не задан | нет |
 | `TOKEN_KEEPALIVE_HOURS` | каденция keep-alive-рефреша (не потерять refresh_token на 180-й день) | нет (дефолт 24, диапазон 1–168) |
 | `NUXT_LOG_LEVEL` | уровень логов (`info`/`warning`/`error`) | нет |
@@ -420,10 +420,10 @@ curl -fsSL $BASE/.env.prod.example               -o .env.prod   # DOMAIN + се�
 > подключается **автоматически** (`server/utils/api.ts`), а таблицу `portal` наполняет установка.
 > Остаётся **живой прогон** на портале.
 
-**Сегодня (dev, без `DATABASE_URL`):** демо целиком; рендер виджетов `/b24/deal-widget`·`task-widget`·`dashboard`;
+**Сегодня (dev, без `DATABASE_URL`):** демо целиком; рендер виджетов `/b24/deal-widget`·`dashboard`;
 `/api/health` за TLS → 200. **Полный прогон (прод-стек с Postgres):** установка (робот + плейсменты, сверить
-`placement.list`) → виджет сделки (`deal-invite`) → прохождение (`/s/:key`, повтор → 409) → виджет задачи
-(`task-invite`) → дашборд (только свой `portalId`) → авто-триггер (#17).
+`placement.list`) → виджет сделки (`deal-invite`) → прохождение (`/s/:key`, повтор → 409) → дашборд
+(только свой `portalId`) → авто-триггер (#17).
 
 ### Частые проблемы
 
@@ -591,11 +591,11 @@ loopback, готовность по `/api/health`), снимает реальн�
   таймлайн (#18); **срок доступности ссылки** на каждый опрос (5 мин–5 дней, `invitationPolicy`);
   автотриггер **лида/смарт-процесса** (ядро `entity-event.ts` готово — нужен эндпоинт события); UI-маппинг
   **(направление, стадия) → опрос** в конструкторе; **лендинг**; **страница оператора** + попап рейтинга в
-  Маркете; деплой в **Bitrix24 Vibecode «Чёрную дыру»**; **удаление кода задач** (сущность убрана из скоупа).
+  Маркете; деплой в **Bitrix24 Vibecode «Чёрную дыру»**.
   Референс паттернов — соседний проект `ai-price-import`.
 - **Follow-up'ы (мелкие):** явный whitelist облачных TLD Bitrix + валидация `serverEndpoint`
   (остаточный SSRF); `UNIQUE(portal.domain)` (полное domain-poisoning); store-side TTL-кэш `currentVersion`
-  (остаток #30); товары для `task-invite`/lead/смарт-процесса + группировка free-form по `productName`;
+  (остаток #30); товары для lead/смарт-процесса + группировка free-form по `productName`;
   визуальный гейт `/admin/*`; PII-редакция/erasure на HTTP-слое (#31); кнопка «очистить период».
 
 ---
@@ -637,8 +637,8 @@ loopback, готовность по `/api/health`), снимает реальн�
   + сверка `member_id`.
 - **install-poisoning** — подделка установки с чужим `member_id`; **member_id-binding** — защита (§Безопасность и инварианты).
 - **`triggerStages`** — денормализованные стадии-триггеры (GIN, `surveysTriggeredBy`, #22).
-- **`entityType`** — тип сущности-датчика (deal/lead/spa/contact/company/task; для `spa` обязателен
-  `spaEntityTypeId`; `task` — только ручной запуск).
+- **`entityType`** — тип сущности-датчика (deal/lead/spa/contact/company; для `spa` обязателен
+  `spaEntityTypeId`).
 - **`invitationPolicy`** — политика приглашений (`entityType`/`spaEntityTypeId`/`triggerStages`/
   `channelOrder`), version-frozen (#21).
 

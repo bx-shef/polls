@@ -94,9 +94,8 @@ describe('мапперы сущность→CrmContext', () => {
     expect(companyToCrmContext({ ID: '202', ASSIGNED_BY_ID: '12' })).toMatchObject({ companyId: 202, responsibleId: 12 })
   })
 
-  it('ENTITY_MAPPERS покрывает все типы; deal маппится, task без авто-маппинга', () => {
+  it('ENTITY_MAPPERS покрывает все типы функциями-мапперами', () => {
     expect(typeof ENTITY_MAPPERS.deal).toBe('function')
-    expect(ENTITY_MAPPERS.task).toBeNull()
     expect(typeof ENTITY_MAPPERS.lead).toBe('function')
     expect(typeof ENTITY_MAPPERS.spa).toBe('function')
     expect(typeof ENTITY_MAPPERS.contact).toBe('function')
@@ -119,7 +118,7 @@ describe('entityToCrmContext (диспетчер #34)', () => {
     expect(entityToCrmContext('contact', { ID: '7' })).toEqual({ contactId: 7 })
     expect(entityToCrmContext('company', { ID: '9' })).toEqual({ companyId: 9 })
   })
-  it('task → бросает (вне CRM-пути)', () => {
-    expect(() => entityToCrmContext('task', {})).toThrow()
+  it('неизвестный тип (cast) → бросает (fail-closed, noUncheckedIndexedAccess)', () => {
+    expect(() => entityToCrmContext('totally_unknown' as never, {})).toThrow()
   })
 })

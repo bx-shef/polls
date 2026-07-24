@@ -38,12 +38,11 @@
 | Доп. точки встройки Bitrix24 (вкладка сделки `CRM_DEAL_DETAIL_TAB`, лиды/контакты, `LEFT_MENU`, imbot-доставка) | bitrix24 | предложен (поверх готового `client.ts`/`placement.bind`) |
 | Прогрессивное раскрытие дашборда (первый экран = NPS/CSAT + топ-срезы; глубокие срезы по клику) | app | предложен (ядро всё считает — вопрос подачи) |
 | Мульти-сущность: датчик для lead/spa/contact/company (`<entity>ToCrmContext` + плейсменты) | bitrix24 | предложен (модель готова: `entityType`/`spaEntityTypeId` в схеме; боевой триггер пока `deal`) |
-| Триггер по задаче (`task`): автотриггер `ONTASKUPDATE` по статусу | bitrix24 | частично (ручной запуск ✅; автотриггер — нет: у задачи нет `stageId` воронки → нужен механизм по STATUS) |
 | `surveysTriggeredBy` мульти-сущность: составная фильтрация `(entityType, stageId)` + денормализация в колонки | store | предложен (сейчас GIN по `trigger_stages` для deal; namespace стадий spa другой) |
 | `/admin/*` в визуальный гейт #13 (список + конструктор; light/dark × брейкпоинты) | UI | предложен (экраны сверены глазами, эталоны не сняты) |
 | Рефактор `CrmContext.dealStageId` → `entityStageId` (обобщённый триггер-ключ) | domain/store | специфицирован, БЛОКЕР: живая БД (поле в JSONB `response.context` → нужна data-миграция + read-совместимость) |
 | Выбор опроса по типу сущности: UI-маппинг `entityType → surveyKey` (без хардкода env) | app/store | env-слой ✅ (`survey-routing.ts`); UI-маппинг — предложен |
-| Проверка прав пользователя на задачу/сделку в `*-invite` (виджет) | bitrix24 | предложен (сверять `responsible`/участника с `frame.member_id`→userId) |
+| Проверка прав пользователя на сделку в `deal-invite` (виджет) | bitrix24 | предложен (сверять `responsible`/участника с `frame.member_id`→userId) |
 | Binding-слой мульти-сущности: `event.bind` на `ONCRM<ENTITY>UPDATE` → диспетчер `entityToCrmContext` | bitrix24 | ЯДРО ГОТОВО (диспетчер + `entityGet` под тестами); остался эндпоинт + `event.bind` (живой портал) |
 
 ## Закрытые (контекст)

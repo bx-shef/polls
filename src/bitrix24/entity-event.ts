@@ -135,14 +135,13 @@ export function companyToCrmContext(company: Record<string, unknown>): CrmContex
   })
 }
 
-/** Защита от рассинхрона: каждый EntityType имеет маппер ИЛИ помечен «без авто-маппинга» (вне CRM-пути). */
-export const ENTITY_MAPPERS: Record<EntityType, ((f: Record<string, unknown>) => CrmContext) | null> = {
+/** Защита от рассинхрона: каждый EntityType имеет маппер REST-поля→CrmContext (рассинхрон → ошибка типов). */
+export const ENTITY_MAPPERS: Record<EntityType, (f: Record<string, unknown>) => CrmContext> = {
   deal: dealToCrmContext, // исторически живёт в deal-event.ts; здесь — единый роутинг
   lead: leadToCrmContext,
   spa: spaItemToCrmContext,
   contact: contactToCrmContext,
-  company: companyToCrmContext,
-  task: null // задача — вне CRM, отдельный binding (ручной виджет task.ts), не crm.*.get
+  company: companyToCrmContext
 }
 
 // Страховка компиляции: ENTITY_MAPPERS покрывает ровно ENTITY_TYPES (рассинхрон → ошибка типов).
@@ -152,7 +151,6 @@ void _entityCoverage
 /**
  * Диспетчер «REST-поля сущности → `CrmContext`» по `entityType` (binding-слой мульти-сущности, #34).
  * Роутит на `ENTITY_MAPPERS` (deal → `dealToCrmContext`, исторически в deal-event.ts).
- * `task` НЕ поддержан этим путём (задача — вне CRM, ручной запуск из виджета `task.ts`) → бросает.
  * Вызывать ТОЛЬКО после верификации события (`verifyApplicationToken`) и догрузки `item` авторитетным
  * `entityGet` — `item` недоверен до этого (анти-форджери/IDOR, см. шапку). Для `spa` `item` — результат
  * `crm.item.get` (через `entityGet(…, spaEntityTypeId)`), НЕ `crm.deal.get`.
@@ -162,6 +160,7 @@ export function entityToCrmContext(
   item: Record<string, unknown>
 ): CrmContext {
   const mapper = ENTITY_MAPPERS[entityType]
-  if (!mapper) throw new Error(`entityToCrmContext: нет маппера для '${entityType}' (вне CRM-пути)`)
+  // noUncheckedIndexedAccess: индекс по EntityType даёт `| undefined`; fail-closed на неизвестный тип.
+  if (!mapper) throw new Error(`entityToCrmContext: неизвестный тип '${entityType}'`)
   return mapper(item)
 }

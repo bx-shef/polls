@@ -181,12 +181,6 @@ export function surveyEventBindParams(handlerUrl: string): Record<string, unknow
  */
 export const PLACEMENT_DEAL_ACTIVITY = 'CRM_DEAL_DETAIL_ACTIVITY'
 export const PLACEMENT_ANALYTICS_MENU = 'CRM_ANALYTICS_MENU'
-/**
- * Виджет в карточке задачи: ручной запуск опроса по задаче (у задачи нет стадии воронки — только
- * ручной запуск, аналог `CRM_DEAL_DETAIL_ACTIVITY`). `TASK_VIEW_SIDEBAR` — боковая панель карточки;
- * handler получает `PLACEMENT_OPTIONS={taskId}` + `AUTH_ID`. Код сверить на портале `placement.list`.
- */
-export const PLACEMENT_TASK_VIEW = 'TASK_VIEW_SIDEBAR'
 
 /** Параметры одной встройки для `placement.bind`. */
 export interface PlacementSpec {
@@ -214,12 +208,6 @@ export function surveyPlacements(baseUrl: string): PlacementSpec[] {
       HANDLER: `${base}/b24/dashboard`,
       TITLE: 'Опросы — аналитика',
       LANG_ALL: { en: { TITLE: 'Surveys — analytics' }, ru: { TITLE: 'Опросы — аналитика' } }
-    },
-    {
-      PLACEMENT: PLACEMENT_TASK_VIEW,
-      HANDLER: `${base}/b24/task-widget`,
-      TITLE: 'Опрос по задаче',
-      LANG_ALL: { en: { TITLE: 'Task survey' }, ru: { TITLE: 'Опрос по задаче' } }
     }
   ]
 }
@@ -227,7 +215,7 @@ export function surveyPlacements(baseUrl: string): PlacementSpec[] {
 /**
  * Парс `PLACEMENT_OPTIONS` виджета карточки (JSON-СТРОКА или объект) → положительный числовой id
  * сущности. `keys` — порядок ключей-кандидатов (зависит от плейсмента). undefined — мусор/битый JSON/
- * нет id/непозитивный (виджет открыт вне сущности). Общая основа для сделки/задачи и будущих сущностей.
+ * нет id/непозитивный (виджет открыт вне сущности). Общая основа для сделки и будущих сущностей.
  */
 export function parsePlacementEntityId(placementOptions: unknown, keys: readonly string[]): number | undefined {
   let opts: unknown = placementOptions
@@ -251,11 +239,6 @@ export function parsePlacementEntityId(placementOptions: unknown, keys: readonly
 /** Id сделки из `PLACEMENT_OPTIONS` виджета `CRM_DEAL_DETAIL_ACTIVITY` (`{"ID":"3473"}`). */
 export function parsePlacementDealId(placementOptions: unknown): number | undefined {
   return parsePlacementEntityId(placementOptions, ['ID'])
-}
-
-/** Id задачи из `PLACEMENT_OPTIONS` виджета `TASK_VIEW_SIDEBAR` (ключ зависит от версии плейсмента). */
-export function parsePlacementTaskId(placementOptions: unknown): number | undefined {
-  return parsePlacementEntityId(placementOptions, ['taskId', 'TASK_ID', 'ID'])
 }
 
 /**

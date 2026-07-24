@@ -45,9 +45,10 @@ describe('domain/schema: invitationPolicySchema', () => {
   it('дефолты: entityType=deal + пустые triggerStages + [email, sms]', () => {
     expect(invitationPolicySchema.parse({})).toEqual({ entityType: 'deal', triggerStages: [], channelOrder: ['email', 'sms'] })
   })
-  it('entityType из перечисления: lead/spa/task ок, мусор отвергается', () => {
+  it('entityType из перечисления: lead/contact ок; task (убран) и мусор отвергаются', () => {
     expect(invitationPolicySchema.parse({ entityType: 'lead' }).entityType).toBe('lead')
-    expect(invitationPolicySchema.parse({ entityType: 'task' }).entityType).toBe('task')
+    expect(invitationPolicySchema.parse({ entityType: 'contact' }).entityType).toBe('contact')
+    expect(invitationPolicySchema.safeParse({ entityType: 'task' }).success).toBe(false)
     expect(invitationPolicySchema.safeParse({ entityType: 'invoice' }).success).toBe(false)
   })
   it('spaEntityTypeId — положительное целое для смарт-процесса', () => {

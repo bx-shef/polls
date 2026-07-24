@@ -107,8 +107,8 @@ export function useInvitations(): MemoryInvitationStore {
 
 /**
  * Маршрутизация опросов по сущности (`SURVEY_KEY_<ENTITY>`/`SURVEY_KEY_DEFAULT`) — собирается ОДИН РАЗ
- * на процесс (конфиг статичен на время жизни инстанса), как `useStore`/`useInvitations`. Виджеты
- * (deal-/task-invite) зовут `surveyKeyForEntity(entity, useSurveyRouting().routing, .fallback)`.
+ * на процесс (конфиг статичен на время жизни инстанса), как `useStore`/`useInvitations`. Виджет
+ * deal-invite зовёт `surveyKeyForEntity(entity, useSurveyRouting().routing, .fallback)`.
  */
 let surveyRouting: ReturnType<typeof surveyRoutingFromEnv> | undefined
 export function useSurveyRouting(): ReturnType<typeof surveyRoutingFromEnv> {
