@@ -1,6 +1,15 @@
-import type { CrmContext } from '../domain/schema'
+import type { CrmContext, InvitationPolicy } from '../domain/schema'
 import type { InvitationStore } from '../api/invitation'
 import type { IStore } from '../store/types'
+
+/**
+ * Срок доступности ссылки (`ttlMs` приглашения) из политики версии: `linkTtlSeconds` (сек, [5 мин,
+ * 5 дней]) → мс. `undefined` — поле не задано → `create()` падает на дефолт стора (30 дней, back-compat).
+ * Диапазон уже провалидирован схемой (`invitationPolicySchema`) на границе compile/PgStore-read.
+ */
+function linkTtlMs(policy: InvitationPolicy | undefined): number | undefined {
+  return policy?.linkTtlSeconds != null ? policy.linkTtlSeconds * 1000 : undefined
+}
 
 /**
  * Оркестрация триггера: «сделка дошла до стадии → создать приглашения на опрос» (ISSUE #17).
@@ -55,7 +64,7 @@ export async function handleDealTrigger(deps: {
     const version = await deps.store.currentVersion(surveyKey)
     if (!version) continue // опрос без опубликованной версии — пропускаем
     const inv = deps.invitations.create(
-      { surveyKey, versionNo: version.versionNo, context: deps.context },
+      { surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
       now
     )
     results.push({ surveyKey, versionNo: version.versionNo, token: inv.token })
@@ -93,7 +102,7 @@ export async function createSurveyInvitation(deps: {
   const version = await deps.store.currentVersion(deps.surveyKey)
   if (!version) return null
   const inv = deps.invitations.create(
-    { surveyKey: deps.surveyKey, versionNo: version.versionNo, context: deps.context },
+    { surveyKey: deps.surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
     deps.now ?? new Date()
   )
   return { surveyKey: deps.surveyKey, versionNo: version.versionNo, token: inv.token }

@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import { handleDealTrigger, createSurveyInvitation, dealIdFromDocumentId, type TriggerStore } from '../src/bitrix24/trigger'
 import { MemoryInvitationStore } from '../src/api/invitation'
-import type { CompiledVersion, CrmContext } from '../src/domain/schema'
+import type { CompiledVersion, CrmContext, InvitationPolicy } from '../src/domain/schema'
 
 const ctx = (over: Partial<CrmContext> = {}): CrmContext => ({ dealId: 759, dealStageId: 'C1:WON', ...over })
 const ver = (n: number): CompiledVersion => ({ versionNo: n }) as CompiledVersion
+/** Версия с политикой приглашения (для проверки проводки срока доступности ссылки). */
+const verWithPolicy = (n: number, policy: Partial<InvitationPolicy>): CompiledVersion =>
+  ({ versionNo: n, invitationPolicy: { entityType: 'deal', triggerStages: [], channelOrder: ['email', 'sms'], ...policy } }) as CompiledVersion
+/** Стор, отдающий готовые CompiledVersion (с политикой) — в отличие от `store()` выше, что строит `ver()`. */
+function storeV(triggered: Record<string, string[]>, versions: Record<string, CompiledVersion>): TriggerStore {
+  return {
+    surveysTriggeredBy: async (stageId: string) => triggered[stageId] ?? [],
+    currentVersion: async (key: string) => versions[key]
+  }
+}
+/** Живой срок приглашения (мс) = expiresAt − createdAt из снимка приглашения. */
+const windowMs = (inv: { createdAt: string; expiresAt?: string }): number =>
+  new Date(inv.expiresAt!).getTime() - new Date(inv.createdAt).getTime()
 
 /** Мок стора: какие опросы триггерит стадия + текущая версия по ключу. */
 function store(triggered: Record<string, string[]>, versions: Record<string, number>): TriggerStore {
@@ -89,6 +102,57 @@ describe('createSurveyInvitation — ручной запуск по сделке
       context: ctx()
     })
     expect(res).toBeNull()
+  })
+})
+
+describe('срок доступности ссылки → ttl приглашения (linkTtlSeconds, Цикл 2)', () => {
+  const now = new Date('2026-07-24T10:00:00.000Z')
+
+  it('handleDealTrigger: linkTtlSeconds=300 → окно ссылки ровно 5 минут', async () => {
+    const invitations = new MemoryInvitationStore()
+    const res = await handleDealTrigger({
+      store: storeV({ 'C1:WON': ['s'] }, { s: verWithPolicy(1, { linkTtlSeconds: 300 }) }),
+      invitations,
+      context: ctx(),
+      now
+    })
+    expect(windowMs(invitations.peek(res[0]!.token, now)!)).toBe(300_000)
+  })
+
+  it('createSurveyInvitation: linkTtlSeconds=432000 → окно ссылки ровно 5 дней', async () => {
+    const invitations = new MemoryInvitationStore()
+    const res = await createSurveyInvitation({
+      store: storeV({}, { s: verWithPolicy(1, { linkTtlSeconds: 432000 }) }),
+      invitations,
+      surveyKey: 's',
+      context: ctx(),
+      now
+    })
+    expect(windowMs(invitations.peek(res!.token, now)!)).toBe(432_000_000)
+  })
+
+  it('политика без linkTtlSeconds → дефолт стора приглашений (back-compat)', async () => {
+    const invitations = new MemoryInvitationStore({ ttlMs: 7_000 })
+    const res = await createSurveyInvitation({
+      store: storeV({}, { s: verWithPolicy(1, {}) }),
+      invitations,
+      surveyKey: 's',
+      context: ctx(),
+      now
+    })
+    expect(windowMs(invitations.peek(res!.token, now)!)).toBe(7_000)
+  })
+
+  it('версия вообще без invitationPolicy → тоже дефолт стора', async () => {
+    const invitations = new MemoryInvitationStore({ ttlMs: 7_000 })
+    const res = await createSurveyInvitation({
+      store: store({}, { s: 1 }), // ver() без политики
+      invitations,
+      surveyKey: 's',
+      context: ctx(),
+      now
+    })
+    expect(windowMs(invitations.peek(res!.token, now)!)).toBe(7_000)
   })
 })
 
