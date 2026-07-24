@@ -76,6 +76,7 @@ export function mapProductRows(rows: Array<Record<string, unknown>>): Array<{ pr
   const seen = new Set<number>()
   if (!Array.isArray(rows)) return out // недоверенный REST мог отдать не-массив → best-effort пусто, не throw
   for (const r of rows) {
+    if (r == null || typeof r !== 'object') continue // не-объектный элемент (null/строка) → пропуск, не TypeError
     // Капы схемы `crmContextSchema.products` (`.max(50)`) и `productName` (`.max(500)`) — это ВАЛИДАЦИЯ
     // (throw), не усечение. Обогащение best-effort: усекаем ЗДЕСЬ, иначе крупная сделка (>50 позиций /
     // длинное имя товара из CRM) уронила бы `crmContextSchema.parse` → 502 на создании приглашения.

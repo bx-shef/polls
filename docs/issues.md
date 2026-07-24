@@ -3,42 +3,49 @@
 > Свод открытых issue со статусом и зависимостями — для быстрого онбординга сессии.
 > Roadmap-issue (крупные фазы) остаются открытыми, пока не закрыт весь скоуп фазы.
 >
-> ✅ **Сверено с живым GitHub 2026-06-28** (`mcp__github__list_issues`, repo
-> `bx-shef/polls`). Освежать в начале сессии — issue двигаются. Ниже — отслеживаемые
-> открытые issue; `#47`/`#49` заведены под дашборд контура B (полный ре-синк с API
-> отложен — лимит в этой сессии).
+> ✅ **Сверено с живым GitHub 2026-07-24** (`mcp__github__list_issues`, repo `bx-shef/polls`,
+> 14 открытых). Освежать в начале сессии — issue двигаются. При расхождении источник истины —
+> **живой GitHub**: правим этот файл под него, а не наоборот.
 
-## Открытые
+## Открытые (live GitHub, 14)
 
-| # | Тема | Слой | Статус | Зависит / блокирует |
+| # | Тема | Слой | Статус | Осталось / зависит |
 |---|---|---|---|---|
-| #36 | CI-typecheck `app/` + энфорс границы `~core` (клиент ≠ server-only ядро) | UI/CI | ✅ закрыт | Граница — `pnpm check:boundary` (`scripts/check-core-boundary.ts`) + CI-шаг, под юнит-тестами; vue-tsc-typecheck `app/`+`server/` — `pnpm typecheck:app` (отд. CI-шаг, 0 ошибок) |
-| #95 | Миграция с deprecated `callMethod` → `actions.v2.call.make` (после bump b24jssdk 2.0) | bitrix24 | ✅ закрыт (PR #97) | `src/bitrix24/client.ts` на `actions.v2.call.make` (REST v2); мок теста обновлён; решение в `docs/project-map.md` (§Ключевые решения) |
-| #25 | Презентационные поля опроса (`intro`/`thanks`/`blockLabels`) в схеме — до Nuxt-слоя | domain | открыт | **блокер экранов** intro/thanks; version-frozen (как #21) |
-| #18 | Результат анкеты → таймлайн сделки (`crm.activity.*`) + result-viewer (HTML, печать/PDF) | bitrix24 | открыт | симметрия к #17; зависит от OAuth (#3 ✅), PII (#10) |
-| #17 | Invitation binding `ONCRMDEALUPDATE` + вшивание `invitationPolicy` в схему/PgStore | bitrix24 | открыт (ядро парс/верификации/маппинга сделано) | `invitationPolicy` version-frozen (#21), `triggerStages`+`surveysTriggeredBy` (#22), invitation-flow (#16). Ядро триггера: `src/bitrix24/deal-event.ts` (`parseDealUpdateEvent` + `verifyApplicationToken` анти-форджери + `dealToCrmContext` из `crm.deal.get`) под тестами. Осталось (живой портал): эндпоинт `POST /api/b24/deal-update` → верификация → `crm.deal.get` токеном портала → `surveysTriggeredBy` → создание приглашений (идемпотентно по deal+survey); регистрация `event.bind` + хранение `application_token` при OAuth-установке; обогащение имён (company/category/user.get); живой smoke. **Триггеры:** робот `bizproc.robot.add` (зависит от тарифа) + для охвата на ВСЕХ тарифах — плейсменты `placement.bind`: `CRM_DEAL_DETAIL_ACTIVITY` (виджет запуска опроса в карточке сделки, `PLACEMENT_OPTIONS={ID}`) и `CRM_ANALYTICS_MENU` (дашборд в меню CRM-аналитики). Ядро: `install.ts` (`surveyRobotParams`/`surveyPlacements`/`parsePlacementDealId`/`handleInstall`), `trigger.ts` (`handleDealTrigger`/`dealIdFromDocumentId`) — под тестами. Симметрия результат→CRM — `crm.automation.trigger.add` (#18). REST — `client.ts` (b24jssdk). Осталось: Nitro-эндпоинты `/api/b24/install`+`/api/b24/robot` + Vue-виджеты (`/b24/deal-widget`,`/b24/dashboard`) с handshake #47 + боевой B24OAuth. Связан с #4 |
-| #15 | Наблюдаемость на деплое: `Logger`→Pino / `onFatal`→Sentry, метрики/OTel, ip-политика | деплой | открыт | ядро #5 ✅; чистый деплой-слой |
-| #13 | Визуальная верификация UI: Playwright + `Stop`-хук + регресс-тесты | UI | инфра ✅ (фикстура-заглушка) | машинерия доказана end-to-end; фикстуры → маршруты с приходом экранов; CI-интеграция позже (`docs/project-map.md`) |
-| #31 | PII-редакция на HTTP-границе (ляжет с read-эндпоинтом ответов контура B) | store/api | открыт | нет публичного read-ответов → нет калл-сайта; не плодим dead code |
-| #10 | Read-API хвост: `GET /api/survey/:key/current` ✅ (#29), SQL-`npsTrend` ✅, PII-редакция → #31 | store/api | открыт (хвост → #31) | основное сделано; остался только PII-хвост (#31) |
-| #4 | Серверный анти-абьюз: общий стор nonce/лимитов/приглашений (мульти-инстанс), `X-Forwarded-For` | деплой | ядро для 1 инстанса ✅ (#11); durable-идемпотентность ответа ✅ (0003) | общий стор → мульти-инстанс; связь `invitation_id` с #17 |
-| #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | открыт (гейт + ядро handshake сделаны) | `requirePortalSession` + подписанная сессия (`src/api/session.ts`) — fail-closed в проде. Ядро handshake фрейма (`src/bitrix24/frame.ts`: SSRF-allowlist + анти-cross-tenant + минт сессии) + боевой `authenticate` (`src/bitrix24/authenticate.ts`: `app.info` + резолв `member_id` из install-маппинга, под тестами) + эндпоинт `POST /api/b24/session` (cookie `polls_portal` `SameSite=None; Secure; Partitioned`, fail-closed; smoke `pnpm build`+curl). Резолвер `domain → member_id` сделан ядром (`resolveMemberIdByDomain`, pglite-тесты) — осталось подставить его в `setPortalResolver` через pg-Pool + tenant-фильтр стора (нужен Nitro-pg-Pool по `DATABASE_URL`) — слой #49/#6 |
-| #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность + **tenant-изоляция стора по `portalId`** | store/api | открыт (заведён в сессии) | rate-limit `/api/b24/session` сделан (`allowB24Session`, 10/60с/IP); сейчас агрегат in-memory над сидом. **TENANT-ГЕЙТ мульти-портала:** `useStore()` single-tenant (один PgStore) — handshake/deal-invite/триггер подтверждают `portal.portalId`, но стор НЕ scoped по нему (для одного портала безопасно, для нескольких — cross-tenant). Нужен store-factory `member_id → portal.id → scoped PgStore` (помечено в `server/api/b24/deal-invite.post.ts`/`trigger.ts`). Также: SQL-агрегат + ужесточение подавления. **СПЕЦ shovel-ready (БЛОКЕР: pg-Pool по `DATABASE_URL`):** (1) `useStore(portalId?)` → Map-кэш scoped-сторов вместо одного процессного (для MemoryStore-dev — per-portal изоляция из коробки; для PgStore — проброс `portalId` в `PgStoreOpts`, который УЖЕ tenant-scoped); (2) все вызовы `useStore()` в `server/api/*` (dashboard/admin/submit/session/deal-invite/task-invite) принимают `portalId` из `requirePortalSession`/`verifyFrameAuth` (контур A публичный — дефолтный портал по env); (3) per-portal seed в dev. Без pg-Pool tenant-гейт не проверить содержательно (один портал — текущее поведение безопасно). |
-| NEW | Админ-UI создания/редактирования опросов (визуальный конструктор поверх `SurveyDraft`/`publish`) | app/api | ✅ реализовано (список #83/#86 + конструктор #86+фаза5: add/remove/reorder вопросов и опций, тип/метрика/баллы) | остаток: drag-and-drop мышью + юнит-тесты логики (composable). См. `docs/process.md` (§Управление опросами) |
-| NEW | Действие «очистить данные за период» в дашборде/админке | app/store | предложен | сейчас вручную SQL по `response` (tenant-scoped); нужен UI-action поверх. См. `docs/process.md` (§Управление опросами) |
-| NEW | Доп. точки встройки Bitrix24 (вкладка сделки `CRM_DEAL_DETAIL_TAB`, лиды/контакты, `LEFT_MENU`, imbot-доставка) | bitrix24 | предложен | поверх готового `client.ts`/`placement.bind`, без переделки ядра. См. `docs/process.md` (§Управление опросами) |
-| NEW | Прогрессивное раскрытие дашборда (первый экран = NPS/CSAT + топ-срезы; глубокие срезы — по клику) | app | предложен | ядро всё считает — вопрос подачи; см. рефлексию в `docs/process.md` (§Управление опросами) |
-| NEW | Мульти-сущность: датчик опроса для lead/spa/contact/company (`<entity>ToCrmContext` + плейсменты их карточек + обобщить `deal-event`/виджет) | bitrix24 | предложен (модель готова: `entityType`/`spaEntityTypeId` в схеме) | боевой триггер пока только `deal`; `spa` требует `crm.item.get` + tenant-scope (IDOR-риск, security-ревью). См. фазы в `docs/process.md` (§Управление опросами) |
-| NEW | Триггер по задаче (`task`): автотриггер `ONTASKUPDATE` по статусу (у задачи нет `stageId` воронки) | bitrix24 | частично (ручной запуск ✅, автотриггер — нет) | **Ручной запуск СДЕЛАН** (плейсмент `TASK_VIEW_SIDEBAR` + виджет `app/pages/b24/task-widget.vue` + эндпоинт `server/api/b24/task-invite.post.ts` + `taskToCrmContext`/`parseTaskCrmBindings` из `crmItemIds`/`ufCrmTask` + `taskGet`, под тестами). Осталось: автотриггер по статусу (`surveysTriggeredBy(stageId)` для задачи не сработает — нужен иной механизм по STATUS) + живой smoke на портале |
-| NEW | `surveysTriggeredBy` мульти-сущность: составная фильтрация `(entityType, stageId)` + денормализация `entityType`/`spaEntityTypeId` из JSONB в колонки PgStore | store | предложен | сейчас GIN по `trigger_stages` работает для deal; namespace стадий spa другой |
-| NEW | Админ-UI: список опросов с фильтром (по сущности/направлению) + редактор с привязкой к сущности — макеты на основе шаблонов печатных форм Bitrix24 | app | ✅ реализовано (#83 список+фильтр, #86+фаза5 конструктор) | референс выдержан; остаток — полировка (drag-and-drop, `/admin/*` в визуальный гейт) |
-| NEW | `/admin/*` в визуальный гейт #13 (список + конструктор; light/dark × брейкпоинты) | UI | предложен | экраны сверены глазами, эталоны не сняты; добавить `*.visual.ts` + `DASHBOARD_DEV_OPEN=1`. См. `docs/project-map.md` (§Визуальный гейт) |
-| NEW (D) | Рефактор `CrmContext.dealStageId` → `entityStageId` (обобщённый триггер-ключ) | domain/store | специфицирован, БЛОКЕР: живая БД | **Чистое переименование кода тривиально (25 употреблений: `crmContextSchema`, мапперы `deal-event`/`entity-event`, `trigger.ts`, тесты). НО поле персистится в JSONB-контексте ответа (`response.context`) — переименование ключа делает старые записи нечитаемыми новой схемой (`dealStageId` уйдёт в unknown-strip).** Нужна: (а) data-миграция JSONB-ключа в `response` (`UPDATE … jsonb_set/-`), (б) read-совместимость (zod-алиас `dealStageId`→`entityStageId` на чтение старых) ИЛИ принятие потери (поле в аналитике НЕ используется — только триггер-время). Делать на живой БД с проверкой миграции. Шаги готовы — нужен `DATABASE_URL`. |
-| NEW | Выбор опроса по типу сущности: маппинг `entityType → surveyKey` | app/store | env-слой ✅, UI-маппинг — предложен | `src/bitrix24/survey-routing.ts` (`surveyKeyForEntity`/`surveyRoutingFromEnv`): env `SURVEY_KEY_DEAL`/`SURVEY_KEY_TASK`/…/`SURVEY_KEY_DEFAULT` (под тестами; подключён в deal-/task-invite). Остаётся: UI-маппинг в админке/БД (без хардкода env) |
-| NEW | Проверка прав пользователя на задачу/сделку в `*-invite` (виджет): авторизованный юзер может запросить чужой `taskId`/`dealId` той же компании | bitrix24 | предложен | REST ограничивает токеном юзера, но стоит сверять `responsible`/участника с `frame.member_id`→userId |
-| NEW | Унификация `parsePlacementDealId`/`parsePlacementTaskId` → `parsePlacementEntityId(options, keys)` | bitrix24 | ✅ сделано | общий парсер с перебором ключей-кандидатов; именованные обёртки делегируют |
-| NEW | Унификация `dealToCrmContext` → `ENTITY_MAPPERS['deal']` (убрать спец-ветку в `entityToCrmContext`) | bitrix24 | ✅ сделано | `ENTITY_MAPPERS.deal = dealToCrmContext`, диспетчер — один путь через Map |
-| NEW | Binding-слой мульти-сущности: `event.bind` на ONCRM<ENTITY>UPDATE + эндпоинт → `parseEntityUpdateEvent` → `entityGet` → `entityToCrmContext` → `handleDealTrigger` (по стадии) | bitrix24 | ЯДРО ГОТОВО (диспетчер `entityToCrmContext` + `entityGet` REST-по-типу под тестами); остался эндпоинт+`event.bind` | требует живой портал; `verifyApplicationToken` ПЕРЕД `entityGet` (IDOR/cross-tenant по `spaEntityTypeId`). Стадия лида/СП кладётся в `dealStageId` → `surveysTriggeredBy` срабатывает тем же `handleDealTrigger` |
+| #4 | Серверный анти-абьюз: общий стор nonce/лимитов/приглашений (мульти-инстанс), `X-Forwarded-For` | деплой | ядро для 1 инстанса ✅ (#11); durable-идемпотентность ответа ✅ (0003) | общий стор (Redis/PG) → мульти-инстанс; доверие XFF — на адаптере деплоя; связь `invitation_id` с #17 |
+| #10 | Read-API хвост: PII-редакция/erasure на HTTP-слое + SQL-`npsTrend` | store/api | основное ✅ (#8/#9); `GET /api/survey/:key/current` ✅ (#29); ETag/условный GET ✅ (#114); SQL-`npsTrend` ✅ | остался только PII-хвост → #31 |
+| #13 | Визуальная верификация UI: Playwright + `Stop`-хук + регресс-тесты | UI | инфра ✅ — гейт на **живых** маршрутах (`webServer` → `.output`, 48 эталонов light/dark × брейкпоинты) | CI-интеграция → #41; доп-состояния → #34 |
+| #15 | Наблюдаемость на деплое: `Logger`→Pino / `onFatal`→Sentry, метрики/OTel, ip-политика | деплой | ядро ✅ (#5, PR #14) | чистый деплой-слой: адаптеры Pino/Sentry + метрики/OTel + политика `ip` (PII) |
+| #17 | Invitation binding `ONCRMDEALUPDATE` + вшивание `invitationPolicy` в схему/PgStore | bitrix24 | ядро парс/верификации/маппинга + обогащение `products` ✅ (#115) | Nitro-эндпоинт `/api/b24/deal-update` → верификация → `crm.deal.get` токеном → `surveysTriggeredBy` → приглашения (идемпотентно); `event.bind` + хранение `application_token` при install; обогащение имён (company/category/user.get); **живой smoke** |
+| #18 | Результат анкеты → таймлайн сделки (`crm.activity.*`) + result-viewer (HTML, печать/PDF) | bitrix24 | открыт | симметрия к #17; зависит от OAuth (#3 ✅), binding-слоя (#17), PII (#10/#31) |
+| #30 | Кэш + `ETag`/`Cache-Control` для публичного read `/api/survey/:key/current` | store/api | **`ETag` + условный GET (304) ✅ (#114)** | остался TTL-кэш `currentVersion` — **кандидат на закрытие** (версия иммутабельна, ETag уже покрывает распределённый флуд) |
+| #31 | PII-редакция на HTTP-границе (ляжет с read-эндпоинтом ответов контура B) | store/api | открыт | нет публичного read-ответов → нет калл-сайта; не плодим dead code (ждёт read-surface #18/#49) |
+| #34 | Визуальный гейт: fixture → реальные маршруты + состояния/тёмная тема | UI | **fixture убран, гейт на живых маршрутах ✅** (48 эталонов, light+dark) | остаток — доп-состояния (empty/error/hover/focus/disabled); можно **сузить/закрыть** |
+| #39 | Визуальный гейт: `/s/:key` в Playwright (DoD экранов контура A) | UI | **✅ по сути** (`webServer` + живой SSR-рендер `/s/csat_postdeal`, фикстура удалена) | **кандидат на закрытие** (перекрыт текущим гейтом; сверить с #34) |
+| #41 | Wire `pnpm test:visual` в CI (закреплённый рендер-контейнер) | UI/CI | открыт — гейт пока **agent-side** (Stop-хук) | нужен pinned chromium-контейнер (эталоны env-чувствительны); отдельный CI-job, не в `pnpm check` |
+| #45 | Контур A: ручной тоггл темы (light/dark/system) + согласование color-mode storage | UI | открыт — авто по `prefers-color-scheme` работает | UI-тоггл (`B24ColorModeButton`) + свести `storageKey` (b24ui vs `@nuxtjs/color-mode`); тоггл под гейт |
+| #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | гейт `requirePortalSession` + handshake фрейма + боевой резолвер `setPortalResolver` ✅ (в коде) | per-portal tenant-фильтр стора — #49 (сейчас single-tenant); живой прогон |
+| #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность + **tenant-изоляция по `portalId`** | store/api | rate-limit ✅; pg-Pool + `setPortalResolver` **сделаны в коде** (`server/utils/api.ts`) | открыто: per-portal tenant-фильтр (store-factory `member_id → scoped PgStore`, сейчас single-tenant), SQL-агрегат дашборда (сейчас in-memory над сидом), ужесточение подавления малых bin |
+
+## Предложения (бэклог, не заведены как GitHub-issue)
+
+> Идеи из сессий, не оформленные отдельными issue. Держим как список кандидатов;
+> заводить в GitHub при взятии в работу. Детали процесса — [`docs/process.md`](process.md)
+> §Управление опросами; решения — [`docs/project-map.md`](project-map.md) §Ключевые решения.
+
+| Тема | Слой | Статус |
+|---|---|---|
+| Админ-UI создания/редактирования опросов (конструктор поверх `SurveyDraft`/`publish`) | app/api | ✅ реализовано (список + конструктор: add/remove/reorder вопросов/опций, тип/метрика/баллы); остаток — drag-and-drop мышью + юнит-тесты composable |
+| Действие «очистить данные за период» в дашборде/админке | app/store | предложен (сейчас вручную SQL по `response`, tenant-scoped; нужен UI-action) |
+| Доп. точки встройки Bitrix24 (вкладка сделки `CRM_DEAL_DETAIL_TAB`, лиды/контакты, `LEFT_MENU`, imbot-доставка) | bitrix24 | предложен (поверх готового `client.ts`/`placement.bind`) |
+| Прогрессивное раскрытие дашборда (первый экран = NPS/CSAT + топ-срезы; глубокие срезы по клику) | app | предложен (ядро всё считает — вопрос подачи) |
+| Мульти-сущность: датчик для lead/spa/contact/company (`<entity>ToCrmContext` + плейсменты) | bitrix24 | предложен (модель готова: `entityType`/`spaEntityTypeId` в схеме; боевой триггер пока `deal`) |
+| Триггер по задаче (`task`): автотриггер `ONTASKUPDATE` по статусу | bitrix24 | частично (ручной запуск ✅; автотриггер — нет: у задачи нет `stageId` воронки → нужен механизм по STATUS) |
+| `surveysTriggeredBy` мульти-сущность: составная фильтрация `(entityType, stageId)` + денормализация в колонки | store | предложен (сейчас GIN по `trigger_stages` для deal; namespace стадий spa другой) |
+| `/admin/*` в визуальный гейт #13 (список + конструктор; light/dark × брейкпоинты) | UI | предложен (экраны сверены глазами, эталоны не сняты) |
+| Рефактор `CrmContext.dealStageId` → `entityStageId` (обобщённый триггер-ключ) | domain/store | специфицирован, БЛОКЕР: живая БД (поле в JSONB `response.context` → нужна data-миграция + read-совместимость) |
+| Выбор опроса по типу сущности: UI-маппинг `entityType → surveyKey` (без хардкода env) | app/store | env-слой ✅ (`survey-routing.ts`); UI-маппинг — предложен |
+| Проверка прав пользователя на задачу/сделку в `*-invite` (виджет) | bitrix24 | предложен (сверять `responsible`/участника с `frame.member_id`→userId) |
+| Binding-слой мульти-сущности: `event.bind` на `ONCRM<ENTITY>UPDATE` → диспетчер `entityToCrmContext` | bitrix24 | ЯДРО ГОТОВО (диспетчер + `entityGet` под тестами); остался эндпоинт + `event.bind` (живой портал) |
 
 ## Закрытые (контекст)
 
@@ -48,12 +55,15 @@
 - **#7** — read-API / PgStore (CRUD, tenant-изоляция, keyset-пагинация, SQL-агрегация).
 - **#11** — HTTP-слой `/api/session`+`/api/submit` с анти-абьюзом (ядро #4).
 - **#16** — invitation-flow ядро-рантайм (`Invitation` + проброс в submit).
-- **#21** — `invitationPolicy` version-frozen (решение зафиксировано, см. `docs/project-map.md` (§Ключевые решения)).
+- **#21** — `invitationPolicy` version-frozen (решение — project-map.md §Ключевые решения).
 - **#22** — денормализация `triggerStages` + `IStore.surveysTriggeredBy` (GIN).
 - **#24** — `SurveyFill` («мозг» прохождения опроса, контур A) — в `src/client`, под тестами.
-
-> При расхождении источник истины — **живой GitHub**: правим этот файл под него,
-> а не наоборот.
+- **#25** — презентационные поля (`intro`/`thanks`/`blockLabels`) в схеме, version-frozen (PR #28).
+- **#29** — публичный `GET /api/survey/:key/current` (проекция версии без CRM-конфигурации).
+- **#36** — CI-typecheck `app/` + энфорс границы `~core` (`pnpm check:boundary` + `typecheck:app`).
+- **#95** — миграция deprecated `callMethod` → `actions.v2.call.make` (PR #97).
+- **Фаза A OAuth-lifecycle** — устойчивость + тумбстоун + keep-alive + uninstall + member_id-binding +
+  SSRF-allowlist + rate-limit install (PR #109–#113), закрыта **по коду**; остаётся живой install-smoke.
 
 ---
-*Последнее ревью: 2026-07-23.*
+*Последнее ревью: 2026-07-24.*
