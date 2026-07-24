@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, dealProductRows, taskGet, entityGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -58,24 +58,6 @@ describe('dealProductRows (#17 — товарные позиции)', () => {
     const rows = await dealProductRows(c, 21)
     expect(rows).toEqual([{ PRODUCT_ID: '13', PRODUCT_NAME: 'X' }])
     expect(c.calls[0]).toEqual(['crm.deal.productrows.get', { id: 21 }])
-  })
-})
-
-describe('taskGet (задача)', () => {
-  it('зовёт tasks.task.get с taskId+select и разворачивает { task }', async () => {
-    const c = client(ok({ task: { id: 812, title: 'T', responsibleId: 5, ufCrmTask: ['D_6529'] } }))
-    const task = await taskGet(c, 812)
-    expect(task).toMatchObject({ id: 812, responsibleId: 5, ufCrmTask: ['D_6529'] })
-    expect((c.calls[0] as [string, { taskId: number }])[0]).toBe('tasks.task.get')
-    expect((c.calls[0] as [string, { taskId: number }])[1].taskId).toBe(812)
-  })
-  it('разворачивает { item } (REST v3)', async () => {
-    const c = client(ok({ item: { id: 9, crmItemIds: ['C_45'] } }))
-    expect(await taskGet(c, 9)).toMatchObject({ id: 9, crmItemIds: ['C_45'] })
-  })
-  it('fallback: без обёртки task/item возвращает сам result', async () => {
-    const c = client(ok({ id: 3, responsibleId: 1 }))
-    expect(await taskGet(c, 3)).toMatchObject({ id: 3, responsibleId: 1 })
   })
 })
 

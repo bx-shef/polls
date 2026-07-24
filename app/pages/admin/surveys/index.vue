@@ -9,7 +9,7 @@ interface SurveySummary {
   title: string
   lang: string
   currentVersionNo: number
-  entityType?: 'deal' | 'lead' | 'spa' | 'contact' | 'company' | 'task'
+  entityType?: 'deal' | 'lead' | 'spa' | 'contact' | 'company'
   spaEntityTypeId?: number
   triggerStages: string[]
 }
@@ -20,8 +20,7 @@ const ENTITY_LABELS: Record<NonNullable<SurveySummary['entityType']>, string> = 
   lead: 'Лид',
   spa: 'Смарт-процесс',
   contact: 'Контакт',
-  company: 'Компания',
-  task: 'Задача'
+  company: 'Компания'
 }
 
 const { data, error } = await useAsyncData<{ ok: boolean; surveys: SurveySummary[] }>(

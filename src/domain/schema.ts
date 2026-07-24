@@ -28,16 +28,15 @@ export type InviteChannel = (typeof INVITE_CHANNELS)[number]
 /**
  * Тип сущности Bitrix24, к которой привязан опрос (датчик запуска). На каждое направление
  * и тип сущности можно завести 1+ опрос. `deal` — дефолт (обратная совместимость: ранние
- * опросы без поля считаются «по сделке»). `spa` — смарт-процесс (crm.item, динамический тип),
- * `task` — задача (модуль задач, вне CRM-воронок). Стадии/статусы триггера портал-специфичны
- * и лежат в `invitationPolicy.triggerStages`.
+ * опросы без поля считаются «по сделке»). `spa` — смарт-процесс (crm.item, динамический тип).
+ * Стадии/статусы триггера портал-специфичны и лежат в `invitationPolicy.triggerStages`.
  *
  * ВНИМАНИЕ (фаза мульти-сущность): сейчас боевой триггер — ТОЛЬКО `deal` (`deal-event.ts` +
  * `surveysTriggeredBy` по `stageId`). Прочие типы — задекларированы в модели, но датчик ещё не
- * подключён: у `task` нет `stageId` в смысле воронки (нужен отдельный binding `ONTASKUPDATE`),
- * у `spa` — свой namespace стадий. До реализации фазы выбор не-deal сущности приглашений не создаёт.
+ * подключён: у `spa` — свой namespace стадий. До реализации фазы выбор не-deal сущности
+ * приглашений не создаёт.
  */
-export const ENTITY_TYPES = ['deal', 'lead', 'spa', 'contact', 'company', 'task'] as const
+export const ENTITY_TYPES = ['deal', 'lead', 'spa', 'contact', 'company'] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
 
 /** ISO-8601 с таймзоной (напр. `2026-04-03T10:00:00.000Z`). */
@@ -74,7 +73,7 @@ export type Question = z.infer<typeof questionSchema>
  */
 export const invitationPolicySchema = z.object({
   /**
-   * Тип сущности-датчика (deal/lead/spa/contact/company/task). Дефолт `deal` —
+   * Тип сущности-датчика (deal/lead/spa/contact/company). Дефолт `deal` —
    * обратная совместимость с опросами без явной привязки. `triggerStages` трактуются
    * в терминах этой сущности (стадии сделки / статусы лида / стадии смарт-процесса и т.п.).
    */
