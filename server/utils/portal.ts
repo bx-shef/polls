@@ -1,7 +1,7 @@
 import { TokenCipher, loadTokenKey } from '~core/bitrix24/crypto'
 import { PortalTokenStore } from '~core/bitrix24/portal'
 import { createPortalClient, callMethod, type B24OAuthParams, type B24OAuthSecret } from '~core/bitrix24/client'
-import { surveyRobotParams, surveyPlacements } from '~core/bitrix24/install'
+import { surveyRobotParams, surveyPlacements, surveyEventBindParams } from '~core/bitrix24/install'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalDb, logger } from './api'
 
@@ -63,6 +63,8 @@ export async function registerIntegrations(authParams: B24OAuthParams, cfg: B24A
   const client = createPortalClient(authParams, cfg.secret)
   const calls: Array<[string, Record<string, unknown>]> = [
     ['bizproc.robot.add', surveyRobotParams(`${cfg.baseUrl}/api/b24/robot`)],
+    // Авто-триггер на всех тарифах (#17): ONCRMDEALUPDATE → наш handler → фильтр по триггер-стадии.
+    ['event.bind', surveyEventBindParams(`${cfg.baseUrl}/api/b24/deal-update`)],
     ...surveyPlacements(cfg.baseUrl).map((p): [string, Record<string, unknown>] => ['placement.bind', { ...p }])
   ]
   for (const [method, params] of calls) {
