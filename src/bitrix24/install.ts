@@ -159,6 +159,19 @@ export function surveyRobotParams(handlerUrl: string): Record<string, unknown> {
   }
 }
 
+/** Код события авто-триггера сделки. `event.bind` шлёт POST `ONCRMDEALUPDATE` на наш handler. */
+export const SURVEY_DEAL_EVENT = 'ONCRMDEALUPDATE'
+
+/**
+ * Параметры `event.bind` для авто-триггера `ONCRMDEALUPDATE` (#17). Дополняет робота (`surveyRobotParams`):
+ * робот зависит от тарифа (bizproc), а `event.bind` работает на ВСЕХ тарифах — при любом обновлении сделки
+ * Bitrix POST'ит на `handler`, где мы фильтруем по триггер-стадии (`surveysTriggeredBy`). Повторный `event.bind`
+ * того же `event`+`handler` идемпотентен. `auth_connector` не задаём — токен приходит в теле события.
+ */
+export function surveyEventBindParams(handlerUrl: string): Record<string, unknown> {
+  return { event: SURVEY_DEAL_EVENT, handler: handlerUrl }
+}
+
 /**
  * Коды встроек (placement). Робот зависит от тарифа → плейсменты дают охват на ВСЕХ тарифах:
  *  - `CRM_DEAL_DETAIL_ACTIVITY` — виджет в карточке сделки: ручной запуск опроса по сделке
