@@ -4,10 +4,10 @@
 > Roadmap-issue (крупные фазы) остаются открытыми, пока не закрыт весь скоуп фазы.
 >
 > ✅ **Сверено с живым GitHub 2026-07-24** (`mcp__github__list_issues`, repo `bx-shef/polls`,
-> 13 открытых: закрыты #30/#34/#39, заведены #118 и #122). Освежать в начале сессии — issue
+> 14 открытых: закрыты #30/#34/#39, заведены #118, #122 и #126). Освежать в начале сессии — issue
 > двигаются. При расхождении источник истины — **живой GitHub**: правим этот файл под него, а не наоборот.
 
-## Открытые (live GitHub, 13)
+## Открытые (live GitHub, 14)
 
 | # | Тема | Слой | Статус | Осталось / зависит |
 |---|---|---|---|---|
@@ -24,6 +24,7 @@
 | #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность + **tenant-изоляция по `portalId`** | store/api | rate-limit ✅; pg-Pool + `setPortalResolver` **сделаны в коде** (`server/utils/api.ts`) | открыто: per-portal tenant-фильтр (store-factory `member_id → scoped PgStore`, сейчас single-tenant), SQL-агрегат дашборда (сейчас in-memory над сидом), ужесточение подавления малых bin |
 | #118 | Визуальный гейт: интеракционные состояния (hover/focus/disabled) + `/admin/*` | UI | открыт — узкий follow-up от закрытого #34 | эталоны интеракционных состояний контура A + admin-экраны под гейт (light/dark × брейкпоинты) |
 | #122 | Реализовать эндпоинт `/api/b24/robot` (bizproc-робот) — сейчас не регистрируется | bitrix24 | открыт — follow-up от #17 (робот развязан, чтобы не 404) | роут `robot.post.ts` (parseBracketForm → `dealIdFromDocumentId` → `runDealUpdate`) + вернуть `bizproc.robot.add` в install + живой smoke формата |
+| #126 | Доставка через настраиваемое дело: постинг активности + виджет `CRM_DEAL_DETAIL_ACTIVITY` + живой smoke | bitrix24 | открыт — follow-up от ядра билдера (`activity.ts` ✅, Фаза F) | постинг `activityConfigurableAdd` на триггере/из виджета; виджет `setLayout`/`bindLayoutEventCallback`; отправка по `channelOrder`; живой smoke (код логотипа, открытая активность) |
 
 ## Предложения (бэклог, не заведены как GitHub-issue)
 
