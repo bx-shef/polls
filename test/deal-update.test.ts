@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { runDealUpdate, type DealUpdateDeps } from '../src/bitrix24/deal-update'
+import { parseBracketForm } from '../src/bitrix24/bracket-form'
 import { surveyEventBindParams, SURVEY_DEAL_EVENT } from '../src/bitrix24/install'
 import { MemoryInvitationStore } from '../src/api/invitation'
 import type { TriggerStore } from '../src/bitrix24/trigger'
@@ -57,15 +58,35 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
   it('портал не установлен (нет сохранённого app_token) → forged/unknown_portal, без догрузки', async () => {
     const fetchDeal = vi.fn(deps().fetchDeal)
     const res = await runDealUpdate(rawEvent(), deps({ storedApplicationToken: async () => undefined, fetchDeal }))
-    expect(res).toEqual({ kind: 'forged', reason: 'unknown_portal' })
+    expect(res).toEqual({ kind: 'forged', reason: 'unknown_portal', memberId: 'member-id-fake-0000000000000000' })
     expect(fetchDeal).not.toHaveBeenCalled() // анти-амплификация: подделка не порождает исходящий REST
   })
 
   it('application_token не сошёлся → forged/token_mismatch, без догрузки', async () => {
     const fetchDeal = vi.fn(deps().fetchDeal)
     const res = await runDealUpdate(rawEvent(), deps({ storedApplicationToken: async () => 'ДРУГОЙ-токен', fetchDeal }))
-    expect(res).toEqual({ kind: 'forged', reason: 'token_mismatch' })
+    expect(res).toEqual({ kind: 'forged', reason: 'token_mismatch', memberId: 'member-id-fake-0000000000000000' })
     expect(fetchDeal).not.toHaveBeenCalled()
+  })
+
+  it('боевой wire-формат (form-urlencoded bracket) декодится parseBracketForm и триггерит', async () => {
+    // Как шлёт Bitrix online-событие: ПЛОСКИЙ объект с литеральными скобками (h3 readBody). Эндпоинт
+    // прогоняет его через parseBracketForm ПЕРЕД runDealUpdate — воспроизводим тот же шов.
+    const flat = {
+      event: 'ONCRMDEALUPDATE',
+      'data[FIELDS][ID]': '759',
+      'auth[member_id]': 'member-id-fake-0000000000000000',
+      'auth[domain]': 'acme.bitrix24.ru',
+      'auth[application_token]': 'app-token-fake-0000000000000000',
+      ts: '1736405807'
+    }
+    const raw = parseBracketForm(flat)
+    // Санити: 2-уровневая вложенность собралась (регресс на односкобочный парсер — data был бы undefined).
+    expect(raw).toMatchObject({ data: { FIELDS: { ID: '759' } }, auth: { member_id: 'member-id-fake-0000000000000000' } })
+    const res = await runDealUpdate(raw, deps())
+    expect(res.kind).toBe('ok')
+    if (res.kind !== 'ok') throw new Error('unreachable')
+    expect(res.results).toHaveLength(1)
   })
 
   it('токен сошёлся + стадия триггерит опрос → ok, приглашение создано со снимком контекста', async () => {

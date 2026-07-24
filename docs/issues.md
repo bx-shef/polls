@@ -4,10 +4,10 @@
 > Roadmap-issue (крупные фазы) остаются открытыми, пока не закрыт весь скоуп фазы.
 >
 > ✅ **Сверено с живым GitHub 2026-07-24** (`mcp__github__list_issues`, repo `bx-shef/polls`,
-> 14 открытых). Освежать в начале сессии — issue двигаются. При расхождении источник истины —
-> **живой GitHub**: правим этот файл под него, а не наоборот.
+> 12 открытых после закрытия #30/#34/#39 и заведения #118). Освежать в начале сессии — issue
+> двигаются. При расхождении источник истины — **живой GitHub**: правим этот файл под него, а не наоборот.
 
-## Открытые (live GitHub, 14)
+## Открытые (live GitHub, 12)
 
 | # | Тема | Слой | Статус | Осталось / зависит |
 |---|---|---|---|---|
@@ -15,16 +15,14 @@
 | #10 | Read-API хвост: PII-редакция/erasure на HTTP-слое + SQL-`npsTrend` | store/api | основное ✅ (#8/#9); `GET /api/survey/:key/current` ✅ (#29); ETag/условный GET ✅ (#114); SQL-`npsTrend` ✅ | остался только PII-хвост → #31 |
 | #13 | Визуальная верификация UI: Playwright + `Stop`-хук + регресс-тесты | UI | инфра ✅ — гейт на **живых** маршрутах (`webServer` → `.output`, 48 эталонов light/dark × брейкпоинты) | CI-интеграция → #41; доп-состояния → #34 |
 | #15 | Наблюдаемость на деплое: `Logger`→Pino / `onFatal`→Sentry, метрики/OTel, ip-политика | деплой | ядро ✅ (#5, PR #14) | чистый деплой-слой: адаптеры Pino/Sentry + метрики/OTel + политика `ip` (PII) |
-| #17 | Invitation binding `ONCRMDEALUPDATE` + вшивание `invitationPolicy` в схему/PgStore | bitrix24 | ядро + `products` ✅ (#115); **Nitro-эндпоинт `/api/b24/deal-update` + `event.bind` при install ✅ в коде** (`runDealUpdate`: парс → сверка `application_token` → `crm.deal.get` токеном портала → `surveysTriggeredBy` → приглашения; под тестами) | остаётся: **живой smoke** на портале; доставка ссылки адресату (email/SMS); робот-эндпоинт `/api/b24/robot` (сейчас dangling handler); обогащение имён (company/category/user.get) |
+| #17 | Invitation binding `ONCRMDEALUPDATE` + вшивание `invitationPolicy` в схему/PgStore | bitrix24 | ядро + `products` ✅ (#115); **Nitro-эндпоинт `/api/b24/deal-update` + `event.bind` при install ✅ в коде** (`runDealUpdate`: bracket-форма → парс → сверка `application_token` → `crm.deal.get` токеном портала → `surveysTriggeredBy` → приглашения; под тестами) | остаётся: **живой smoke** на портале; **дедуп/детекция перехода** — `ONCRMDEALUPDATE` бьёт на ЛЮБОЙ апдейт сделки, не на смену стадии → **БЛОКЕР перед доставкой** (дедуп по `dealId+surveyKey+stage`); доставка ссылки (email/SMS); робот-эндпоинт `/api/b24/robot` (dangling); обогащение имён |
 | #18 | Результат анкеты → таймлайн сделки (`crm.activity.*`) + result-viewer (HTML, печать/PDF) | bitrix24 | открыт | симметрия к #17; зависит от OAuth (#3 ✅), binding-слоя (#17), PII (#10/#31) |
-| #30 | Кэш + `ETag`/`Cache-Control` для публичного read `/api/survey/:key/current` | store/api | **`ETag` + условный GET (304) ✅ (#114)** | остался TTL-кэш `currentVersion` — **кандидат на закрытие** (версия иммутабельна, ETag уже покрывает распределённый флуд) |
 | #31 | PII-редакция на HTTP-границе (ляжет с read-эндпоинтом ответов контура B) | store/api | открыт | нет публичного read-ответов → нет калл-сайта; не плодим dead code (ждёт read-surface #18/#49) |
-| #34 | Визуальный гейт: fixture → реальные маршруты + состояния/тёмная тема | UI | **fixture убран, гейт на живых маршрутах ✅** (48 эталонов, light+dark) | остаток — доп-состояния (empty/error/hover/focus/disabled); можно **сузить/закрыть** |
-| #39 | Визуальный гейт: `/s/:key` в Playwright (DoD экранов контура A) | UI | **✅ по сути** (`webServer` + живой SSR-рендер `/s/csat_postdeal`, фикстура удалена) | **кандидат на закрытие** (перекрыт текущим гейтом; сверить с #34) |
 | #41 | Wire `pnpm test:visual` в CI (закреплённый рендер-контейнер) | UI/CI | открыт — гейт пока **agent-side** (Stop-хук) | нужен pinned chromium-контейнер (эталоны env-чувствительны); отдельный CI-job, не в `pnpm check` |
 | #45 | Контур A: ручной тоггл темы (light/dark/system) + согласование color-mode storage | UI | открыт — авто по `prefers-color-scheme` работает | UI-тоггл (`B24ColorModeButton`) + свести `storageKey` (b24ui vs `@nuxtjs/color-mode`); тоггл под гейт |
 | #47 | Дашборд контура B: auth-гейтинг + tenant-изоляция (`portalId`) под OAuth Bitrix24 | bitrix24/деплой | гейт `requirePortalSession` + handshake фрейма + боевой резолвер `setPortalResolver` ✅ (в коде) | per-portal tenant-фильтр стора — #49 (сейчас single-tenant); живой прогон |
 | #49 | Дашборд контура B: SQL-агрегация (PgStore) + rate-limit + per-bin k-анонимность + **tenant-изоляция по `portalId`** | store/api | rate-limit ✅; pg-Pool + `setPortalResolver` **сделаны в коде** (`server/utils/api.ts`) | открыто: per-portal tenant-фильтр (store-factory `member_id → scoped PgStore`, сейчас single-tenant), SQL-агрегат дашборда (сейчас in-memory над сидом), ужесточение подавления малых bin |
+| #118 | Визуальный гейт: интеракционные состояния (hover/focus/disabled) + `/admin/*` | UI | открыт — узкий follow-up от закрытого #34 | эталоны интеракционных состояний контура A + admin-экраны под гейт (light/dark × брейкпоинты) |
 
 ## Предложения (бэклог, не заведены как GitHub-issue)
 
@@ -60,7 +58,10 @@
 - **#24** — `SurveyFill` («мозг» прохождения опроса, контур A) — в `src/client`, под тестами.
 - **#25** — презентационные поля (`intro`/`thanks`/`blockLabels`) в схеме, version-frozen (PR #28).
 - **#29** — публичный `GET /api/survey/:key/current` (проекция версии без CRM-конфигурации).
+- **#30** — `ETag` + условный GET (304) для `/api/survey/:key/current` (PR #114); TTL-кэш признан избыточным.
+- **#34** — визуальный гейт fixture → живые маршруты (фикстуры удалены, 48 эталонов); остаток → **#118**.
 - **#36** — CI-typecheck `app/` + энфорс границы `~core` (`pnpm check:boundary` + `typecheck:app`).
+- **#39** — визуальный гейт `/s/:key` на живом SSR-рендере (перекрыт текущим гейтом).
 - **#95** — миграция deprecated `callMethod` → `actions.v2.call.make` (PR #97).
 - **Фаза A OAuth-lifecycle** — устойчивость + тумбстоун + keep-alive + uninstall + member_id-binding +
   SSRF-allowlist + rate-limit install (PR #109–#113), закрыта **по коду**; остаётся живой install-smoke.

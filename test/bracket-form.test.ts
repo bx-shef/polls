@@ -23,6 +23,39 @@ describe('parseBracketForm (bracket-нотация B24 → вложенный о
     expect(parseBracketForm({ 'a[x]': '1', 'a[y]': '2' })).toEqual({ a: { x: '1', y: '2' } })
   })
 
+  it('произвольная глубина: 2-уровневый ONCRMDEALUPDATE (data[FIELDS][ID]) собирается (#17)', () => {
+    expect(
+      parseBracketForm({
+        event: 'ONCRMDEALUPDATE',
+        'data[FIELDS][ID]': '759',
+        'auth[member_id]': 'm-1',
+        'auth[application_token]': 'tok',
+        ts: '1700'
+      })
+    ).toEqual({
+      event: 'ONCRMDEALUPDATE',
+      data: { FIELDS: { ID: '759' } },
+      auth: { member_id: 'm-1', application_token: 'tok' },
+      ts: '1700'
+    })
+  })
+
+  it('3 уровня + смешение веток одного родителя', () => {
+    expect(parseBracketForm({ 'a[b][c][d]': '1', 'a[b][e]': '2', 'a[x]': '3' })).toEqual({
+      a: { b: { c: { d: '1' }, e: '2' }, x: '3' }
+    })
+  })
+
+  it('несбалансированные/пустые скобки → плоский литерал (не раскладываем)', () => {
+    expect(parseBracketForm({ 'a[]': '1', 'a[b': '2', ok: '3' })).toEqual({ 'a[]': '1', 'a[b': '2', ok: '3' })
+  })
+
+  it('гард prototype-pollution на ГЛУБИНЕ: __proto__ в середине пути отбрасывает ключ', () => {
+    const out = parseBracketForm({ 'a[__proto__][polluted]': 'yes', 'a[b][c]': 'ok' })
+    expect(out).toEqual({ a: { b: { c: 'ok' } } })
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
   it('идемпотентно на уже вложенном входе (JSON-тело)', () => {
     const nested = { event: 'X', auth: { member_id: 'm' } }
     expect(parseBracketForm(nested)).toEqual(nested)

@@ -12,13 +12,20 @@ import type { InvitationStore } from '../api/invitation'
  * Ключевой инвариант (как в trigger.ts): `context` строится из АВТОРИТЕТНОГО `crm.deal.get` ТОЛЬКО ПОСЛЕ
  * успешной `verifyApplicationToken` — иначе open-trigger. Здесь порядок гарантирован: `fetchDeal` зовётся
  * ниже сверки токена, а на форджери — не зовётся вовсе (нет амплификации исходящих REST от подделки).
+ *
+ * ⚠️ **Триггер на ЛЮБОЙ апдейт, не на переход стадии** (`ONCRMDEALUPDATE` так устроен) + событие несёт
+ * лишь `data.FIELDS.ID` (без стадии) ⇒ `fetchDeal` (2 REST к порталу) идёт на КАЖДЫЙ апдейт сделки ДО
+ * фильтра по стадии. Дедуп/детекция перехода — БЛОКЕР перед подключением доставки (см. `handleDealTrigger`).
  */
 
 export type DealUpdateOutcome =
   /** Не наш/битый POST — портал online-события не ретраит, наружу отвечаем 200. */
   | { kind: 'ignored'; reason: 'parse' }
-  /** `application_token` не сошёлся (подделка) либо портал не установлен — ничего не триггерим. */
-  | { kind: 'forged'; reason: 'unknown_portal' | 'token_mismatch' }
+  /**
+   * `application_token` не сошёлся (подделка) либо портал не установлен / у него нет сохранённого
+   * `application_token` — ничего не триггерим. `memberId` (заявленный, недоверенный) — для диагностики лога.
+   */
+  | { kind: 'forged'; reason: 'unknown_portal' | 'token_mismatch'; memberId: string }
   /** Верифицировано: создано 0..N приглашений (0 — стадия сделки не триггерит ни один опрос). */
   | { kind: 'ok'; results: TriggerResult[] }
 
@@ -46,7 +53,9 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   // заявленного member_id (constant-time). Портал не установлен (`undefined`) → сверка с '' → false.
   const expected = await deps.storedApplicationToken(ev.auth.member_id)
   if (!verifyApplicationToken(ev.auth.application_token, expected ?? '')) {
-    return { kind: 'forged', reason: expected === undefined ? 'unknown_portal' : 'token_mismatch' }
+    // `unknown_portal` покрывает и «портал не установлен», и «установлен, но в blob нет application_token»
+    // (оба → `expected === undefined`): для решения (ничего не триггерить) разница несущественна.
+    return { kind: 'forged', reason: expected === undefined ? 'unknown_portal' : 'token_mismatch', memberId: ev.auth.member_id }
   }
 
   // Токен сошёлся → догружаем АВТОРИТЕТНЫЕ поля сделки токеном портала и строим снимок контекста.
