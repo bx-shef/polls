@@ -16,13 +16,13 @@ export default defineEventHandler(async (event) => {
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {
     setResponseStatus(event, 400)
-    return { ok: false, error: 'Некорректный ключ опроса' }
+    return { ok: false, error: 'Неверный адрес опроса. Проверьте ссылку.' }
   }
   const store = await useStore()
   const version = await store.currentVersion(surveyKey)
   if (!version) {
     setResponseStatus(event, 404)
-    return { ok: false, error: 'Опрос не найден' }
+    return { ok: false, error: 'Опрос не найден. Обновите список опросов.' }
   }
   return { ok: true as const, draft: versionToDraft(version), currentVersionNo: version.versionNo }
 })

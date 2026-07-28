@@ -17,7 +17,7 @@ import { useStore, useInvitations, useSurveyRouting, logger } from '../../utils/
 export default defineEventHandler(async (event) => {
   if (!allowB24Session(getRequestIP(event) ?? '?')) {
     setResponseStatus(event, 429)
-    return { ok: false, error: 'Слишком много запросов' }
+    return { ok: false, error: 'Слишком много запросов. Подождите немного и попробуйте снова.' }
   }
 
   const body = await readBody(event).catch(() => ({}))
@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
   const frame = parseFrameAuth(body)
   if (!frame || !Number.isInteger(dealId) || dealId <= 0) {
     setResponseStatus(event, 400)
-    return { ok: false, error: 'Некорректные параметры виджета' }
+    return { ok: false, error: 'Не удалось определить сделку. Откройте виджет из карточки сделки.' }
   }
 
   // Анти-абьюз: подтверждаем портал (домен + живой токен + сверка member_id), как /api/b24/session.
@@ -34,7 +34,7 @@ export default defineEventHandler(async (event) => {
     portal = await verifyFrameAuth(frame, { authenticate: useB24Authenticator() })
   } catch {
     setResponseStatus(event, 401)
-    return { ok: false, error: 'Портал не подтверждён' }
+    return { ok: false, error: 'Портал не подтверждён. Откройте виджет заново из карточки сделки.' }
   }
 
   try {
@@ -63,7 +63,7 @@ export default defineEventHandler(async (event) => {
     const res = await createSurveyInvitation({ store, invitations: useInvitations(), surveyKey, context })
     if (!res) {
       setResponseStatus(event, 422)
-      return { ok: false, error: 'Опрос не опубликован' }
+      return { ok: false, error: 'Опрос ещё не опубликован. Опубликуйте его в разделе «Опросы» и повторите.' }
     }
     const base = process.env.DOMAIN ? `https://${process.env.DOMAIN}` : ''
     logger.info('b24_deal_invite', { msg: `Приглашение по сделке ${dealId} (портал ${portal.portalId})` })
@@ -71,6 +71,6 @@ export default defineEventHandler(async (event) => {
   } catch (e) {
     logger.warn('b24_deal_invite_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
     setResponseStatus(event, 502)
-    return { ok: false, error: 'Не удалось создать приглашение' }
+    return { ok: false, error: 'Не удалось создать приглашение. Проверьте доступ к сделке и попробуйте снова.' }
   }
 })

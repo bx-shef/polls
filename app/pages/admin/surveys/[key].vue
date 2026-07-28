@@ -107,7 +107,7 @@ async function publish() {
     await refresh()
   } catch (e) {
     const err = e as { statusMessage?: string; data?: { error?: string } }
-    saveMsg.value = { ok: false, text: err.data?.error ?? err.statusMessage ?? 'Не удалось опубликовать' }
+    saveMsg.value = { ok: false, text: err.data?.error ?? err.statusMessage ?? 'Не удалось опубликовать. Попробуйте ещё раз.' }
   } finally {
     saving.value = false
   }
@@ -124,8 +124,8 @@ async function publish() {
       </p>
     </header>
 
-    <B24Alert v-if="error" color="air-primary-alert" title="Не удалось загрузить опрос" />
-    <B24Alert v-else-if="!data?.ok && !pending" color="air-primary-alert" title="Опрос не найден" />
+    <B24Alert v-if="error" color="air-primary-alert" title="Не удалось загрузить опрос. Обновите страницу." />
+    <B24Alert v-else-if="!data?.ok && !pending" color="air-primary-alert" title="Опрос не найден. Вернитесь к списку опросов." />
     <p v-else-if="pending" class="text-sm text-gray-500 dark:text-gray-400">Загрузка…</p>
 
     <div v-else-if="draft" class="flex flex-col gap-5">

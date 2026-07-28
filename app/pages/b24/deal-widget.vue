@@ -24,29 +24,31 @@ onMounted(async () => {
     const id = Number(opts?.ID)
     dealId.value = Number.isInteger(id) && id > 0 ? id : undefined
     phase.value = 'ready'
-    message.value = dealId.value ? 'Готово к запуску опроса по этой сделке.' : 'Откройте виджет из карточки сделки.'
+    message.value = dealId.value
+      ? 'Нажмите «Создать ссылку на опрос» — получите ссылку, которую отправите клиенту.'
+      : 'Не удалось определить сделку. Откройте виджет из карточки сделки.'
   } catch (e) {
     phase.value = 'error'
-    message.value = `Ошибка инициализации: ${(e as Error).message}`
+    message.value = `Не удалось открыть виджет: ${(e as Error).message}. Обновите страницу.`
   }
 })
 
 async function launch() {
   if (!auth || !dealId.value) return
   phase.value = 'init'
-  message.value = 'Создаём приглашение…'
+  message.value = 'Создаём ссылку…'
   try {
     const r = await $fetch<{ ok: boolean; url?: string; error?: string }>('/api/b24/deal-invite', {
       method: 'POST',
       body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token, dealId: dealId.value }
     })
-    if (!r.ok || !r.url) throw new Error(r.error ?? 'не удалось')
+    if (!r.ok || !r.url) throw new Error(r.error ?? 'сервер не вернул ссылку')
     link.value = r.url
     phase.value = 'done'
-    message.value = 'Ссылка на опрос создана — отправьте её клиенту:'
+    message.value = 'Ссылка готова. Скопируйте её и отправьте клиенту:'
   } catch (e) {
     phase.value = 'error'
-    message.value = `Не удалось создать опрос: ${(e as Error).message}`
+    message.value = `Не удалось создать ссылку: ${(e as Error).message}. Проверьте доступ к сделке и попробуйте снова.`
   }
 }
 </script>
@@ -59,7 +61,7 @@ async function launch() {
       <B24Button
         v-if="phase === 'ready'"
         color="air-primary"
-        label="Создать опрос по сделке"
+        label="Создать ссылку на опрос"
         :disabled="!dealId"
         @click="launch"
       />

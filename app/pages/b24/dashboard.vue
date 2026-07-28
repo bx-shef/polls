@@ -26,7 +26,7 @@ onMounted(async () => {
     await navigateTo(`/d/${DEFAULT_SURVEY}`)
   } catch (e) {
     phase.value = 'error'
-    message.value = `Не удалось авторизоваться в портале: ${(e as Error).message}`
+    message.value = `Не удалось войти в портал: ${(e as Error).message}. Откройте приложение заново из Bitrix24.`
   }
 })
 </script>

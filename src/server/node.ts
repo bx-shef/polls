@@ -140,7 +140,7 @@ export function failSafe(res: Pick<ServerResponse, 'headersSent' | 'writeHead' |
     return
   }
   res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-  res.end(JSON.stringify({ ok: false, error: 'Внутренняя ошибка' }))
+  res.end(JSON.stringify({ ok: false, error: 'Что-то пошло не так на сервере. Попробуйте позже.' }))
 }
 
 export function startServer(opts: NodeServerOptions): Promise<NodeServer> {

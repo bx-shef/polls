@@ -29,13 +29,13 @@ export default defineEventHandler(async (event) => {
   const len = Number(getRequestHeader(event, 'content-length') ?? 0)
   if (len > MAX_BODY_BYTES) {
     setResponseStatus(event, 413)
-    return { ok: false, error: 'Слишком большой запрос' }
+    return { ok: false, error: 'Слишком большой объём данных.' }
   }
 
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {
     setResponseStatus(event, 400)
-    return { ok: false, error: 'Некорректный ключ опроса' }
+    return { ok: false, error: 'Неверный адрес опроса. Проверьте ссылку.' }
   }
 
   const rawBody = await readBody(event)
@@ -46,11 +46,11 @@ export default defineEventHandler(async (event) => {
   const parsed = surveyDraftSchema.safeParse(rawBody)
   if (!parsed.success) {
     setResponseStatus(event, 422)
-    return { ok: false, error: 'Невалидный черновик опроса' }
+    return { ok: false, error: 'В опросе есть ошибки. Исправьте их и опубликуйте снова.' }
   }
   if (parsed.data.surveyKey !== surveyKey) {
     setResponseStatus(event, 409)
-    return { ok: false, error: 'Ключ опроса в URL не совпадает с телом' }
+    return { ok: false, error: 'Адрес опроса не совпадает. Обновите страницу и повторите.' }
   }
 
   // TENANT (#49): publish идёт в стор ПРОЦЕССА (single-tenant MVP — один процесс = один портал).
@@ -62,7 +62,7 @@ export default defineEventHandler(async (event) => {
   // Оптимистичная блокировка: клиент загружал currentNo'; если реальная текущая ушла вперёд — конфликт.
   if (expectedVersionNo !== undefined && expectedVersionNo !== currentNo) {
     setResponseStatus(event, 409)
-    return { ok: false, error: 'Опрос изменён другим пользователем — обновите страницу и повторите' }
+    return { ok: false, error: 'Опрос изменил кто-то ещё. Обновите страницу и опубликуйте заново.' }
   }
   const nextVersion = currentNo + 1
   try {
@@ -72,12 +72,12 @@ export default defineEventHandler(async (event) => {
     // Конфликт версии (гонка/иммутабельность: номер уже занят) — 409, клиент перечитает и повторит.
     if (/уже опубликована/.test(msg) || /version_no/i.test(msg) || /unique/i.test(msg)) {
       setResponseStatus(event, 409)
-      return { ok: false, error: 'Версия уже опубликована — обновите и повторите' }
+      return { ok: false, error: 'Эта версия уже опубликована. Обновите страницу и повторите.' }
     }
     // Невалидный черновик, который не ловит схема (дубль question_key/option_key, versionNo) — 422.
     if (/Дублирующ/.test(msg) || /versionNo/.test(msg)) {
       setResponseStatus(event, 422)
-      return { ok: false, error: 'Невалидный черновик опроса' }
+      return { ok: false, error: 'В опросе есть ошибки. Исправьте их и опубликуйте снова.' }
     }
     // Прочее (инфра: БД недоступна и т.п.) — НЕ маскируем под 422: логируем и пробрасываем (→500 h3).
     logger.error('admin_publish_fail', { surveyKey, versionNo: nextVersion, err: msg })
