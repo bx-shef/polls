@@ -71,6 +71,6 @@ export default defineEventHandler(async (event) => {
   } catch (e) {
     logger.warn('b24_deal_invite_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
     setResponseStatus(event, 502)
-    return { ok: false, error: 'Не удалось создать приглашение. Проверьте доступ к сделке и попробуйте снова.' }
+    return { ok: false, error: 'Не удалось создать ссылку на опрос. Проверьте доступ к сделке и попробуйте снова.' }
   }
 })

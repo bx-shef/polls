@@ -119,7 +119,7 @@ async function route(api: Api, req: IncomingMessage, res: ServerResponse, maxBod
     const raw = await readBody(req, maxBodyBytes)
     if (raw === null) {
       // connection: close — соединение завершится после ответа, остаток тела не читаем
-      return send(res, { status: 413, body: { ok: false, error: 'Слишком большой запрос' } }, { closeConn: true })
+      return send(res, { status: 413, body: { ok: false, error: 'Слишком большой объём данных.' } }, { closeConn: true })
     }
     let body: unknown
     try {

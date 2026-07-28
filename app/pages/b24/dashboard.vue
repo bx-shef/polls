@@ -12,6 +12,13 @@ const DEFAULT_SURVEY = 'csat_postdeal'
 const phase = ref<'auth' | 'error'>('auth')
 const message = ref('Авторизация в портале…')
 
+// Дружелюбный текст из ошибки $fetch: сервер кладёт его в тело `{ error }` → `e.data.error`
+// (иначе показали бы сырой FetchError-техношум). Фолбэк — заданная подсказка.
+function serverError(e: unknown, fallback: string): string {
+  const fe = e as { data?: { error?: string }; statusMessage?: string }
+  return fe.data?.error ?? fe.statusMessage ?? fallback
+}
+
 onMounted(async () => {
   try {
     const b24 = await initializeB24Frame()
@@ -26,7 +33,7 @@ onMounted(async () => {
     await navigateTo(`/d/${DEFAULT_SURVEY}`)
   } catch (e) {
     phase.value = 'error'
-    message.value = `Не удалось войти в портал: ${(e as Error).message}. Откройте приложение заново из Bitrix24.`
+    message.value = serverError(e, 'Не удалось войти в портал. Откройте приложение заново из Bitrix24.')
   }
 })
 </script>

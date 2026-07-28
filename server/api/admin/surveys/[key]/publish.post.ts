@@ -72,7 +72,7 @@ export default defineEventHandler(async (event) => {
     // Конфликт версии (гонка/иммутабельность: номер уже занят) — 409, клиент перечитает и повторит.
     if (/уже опубликована/.test(msg) || /version_no/i.test(msg) || /unique/i.test(msg)) {
       setResponseStatus(event, 409)
-      return { ok: false, error: 'Эта версия уже опубликована. Обновите страницу и повторите.' }
+      return { ok: false, error: 'Эта версия уже опубликована. Обновите страницу и опубликуйте заново.' }
     }
     // Невалидный черновик, который не ловит схема (дубль question_key/option_key, versionNo) — 422.
     if (/Дублирующ/.test(msg) || /versionNo/.test(msg)) {

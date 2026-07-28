@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
   const version = await store.currentVersion(surveyKey)
   if (!version) {
     setResponseStatus(event, 404)
-    return { ok: false, error: 'Опрос не найден. Обновите список опросов.' }
+    return { ok: false, error: 'Опрос не найден. Вернитесь к списку опросов.' }
   }
   return { ok: true as const, draft: versionToDraft(version), currentVersionNo: version.versionNo }
 })

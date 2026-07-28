@@ -30,7 +30,7 @@ export default defineEventHandler(async (event) => {
   const secret = resolveB24Secret()
   if (!secret.ok) {
     setResponseStatus(event, 503)
-    return { ok: false, error: 'Дашборд не настроен на сервере (не задан секрет сессии). Обратитесь к администратору.' }
+    return { ok: false, error: 'Дашборд временно недоступен. Обратитесь к администратору.' }
   }
 
   // h3 парсит form-urlencoded (так POST'ит фрейм) и JSON одинаково.

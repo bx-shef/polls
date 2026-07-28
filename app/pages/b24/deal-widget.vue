@@ -7,6 +7,13 @@ import { initializeB24Frame } from '@bitrix24/b24jssdk'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
 
+// Достаём ДРУЖЕЛЮБНЫЙ текст из ошибки $fetch: сервер кладёт его в тело `{ error }` → `e.data.error`
+// (иначе показали бы сырой FetchError вида `[POST] "/api/…": 502` — техношум). Фолбэк — заданная подсказка.
+function serverError(e: unknown, fallback: string): string {
+  const fe = e as { data?: { error?: string }; statusMessage?: string }
+  return fe.data?.error ?? fe.statusMessage ?? fallback
+}
+
 const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
 const message = ref('Загрузка…')
 const link = ref('')
@@ -27,9 +34,9 @@ onMounted(async () => {
     message.value = dealId.value
       ? 'Нажмите «Создать ссылку на опрос» — получите ссылку, которую отправите клиенту.'
       : 'Не удалось определить сделку. Откройте виджет из карточки сделки.'
-  } catch (e) {
+  } catch {
     phase.value = 'error'
-    message.value = `Не удалось открыть виджет: ${(e as Error).message}. Обновите страницу.`
+    message.value = 'Не удалось открыть виджет. Обновите страницу и откройте его заново из карточки сделки.'
   }
 })
 
@@ -48,7 +55,8 @@ async function launch() {
     message.value = 'Ссылка готова. Скопируйте её и отправьте клиенту:'
   } catch (e) {
     phase.value = 'error'
-    message.value = `Не удалось создать ссылку: ${(e as Error).message}. Проверьте доступ к сделке и попробуйте снова.`
+    // Сервер уже кладёт понятный текст с подсказкой (напр. «Опрос ещё не опубликован…») — показываем его.
+    message.value = serverError(e, 'Не удалось создать ссылку. Проверьте доступ к сделке и попробуйте снова.')
   }
 }
 </script>
