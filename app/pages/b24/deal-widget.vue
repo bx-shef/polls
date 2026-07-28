@@ -7,6 +7,13 @@ import { initializeB24Frame } from '@bitrix24/b24jssdk'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
 
+// Достаём ДРУЖЕЛЮБНЫЙ текст из ошибки $fetch: сервер кладёт его в тело `{ error }` → `e.data.error`
+// (иначе показали бы сырой FetchError вида `[POST] "/api/…": 502` — техношум). Фолбэк — заданная подсказка.
+function serverError(e: unknown, fallback: string): string {
+  const fe = e as { data?: { error?: string }; statusMessage?: string }
+  return fe.data?.error ?? fe.statusMessage ?? fallback
+}
+
 const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
 const message = ref('Загрузка…')
 const link = ref('')
@@ -24,29 +31,32 @@ onMounted(async () => {
     const id = Number(opts?.ID)
     dealId.value = Number.isInteger(id) && id > 0 ? id : undefined
     phase.value = 'ready'
-    message.value = dealId.value ? 'Готово к запуску опроса по этой сделке.' : 'Откройте виджет из карточки сделки.'
-  } catch (e) {
+    message.value = dealId.value
+      ? 'Нажмите «Создать ссылку на опрос» — получите ссылку, которую отправите клиенту.'
+      : 'Не удалось определить сделку. Откройте виджет из карточки сделки.'
+  } catch {
     phase.value = 'error'
-    message.value = `Ошибка инициализации: ${(e as Error).message}`
+    message.value = 'Не удалось открыть виджет. Обновите страницу и откройте его заново из карточки сделки.'
   }
 })
 
 async function launch() {
   if (!auth || !dealId.value) return
   phase.value = 'init'
-  message.value = 'Создаём приглашение…'
+  message.value = 'Создаём ссылку…'
   try {
     const r = await $fetch<{ ok: boolean; url?: string; error?: string }>('/api/b24/deal-invite', {
       method: 'POST',
       body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token, dealId: dealId.value }
     })
-    if (!r.ok || !r.url) throw new Error(r.error ?? 'не удалось')
+    if (!r.ok || !r.url) throw new Error(r.error ?? 'сервер не вернул ссылку')
     link.value = r.url
     phase.value = 'done'
-    message.value = 'Ссылка на опрос создана — отправьте её клиенту:'
+    message.value = 'Ссылка готова. Скопируйте её и отправьте клиенту:'
   } catch (e) {
     phase.value = 'error'
-    message.value = `Не удалось создать опрос: ${(e as Error).message}`
+    // Сервер уже кладёт понятный текст с подсказкой (напр. «Опрос ещё не опубликован…») — показываем его.
+    message.value = serverError(e, 'Не удалось создать ссылку. Проверьте доступ к сделке и попробуйте снова.')
   }
 }
 </script>
@@ -59,7 +69,7 @@ async function launch() {
       <B24Button
         v-if="phase === 'ready'"
         color="air-primary"
-        label="Создать опрос по сделке"
+        label="Создать ссылку на опрос"
         :disabled="!dealId"
         @click="launch"
       />

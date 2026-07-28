@@ -142,46 +142,46 @@ export function createApi(deps: ApiDeps): Api {
 
   return {
     async session({ ip }: SessionInput): Promise<ApiResult> {
-      if (!limiter.allow(`s:${ip}`, now())) return err(429, 'Слишком много запросов')
+      if (!limiter.allow(`s:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
       const nonce = nonces.issue(now())
-      if (nonce == null) return err(503, 'Сервис перегружен, попробуйте позже')
+      if (nonce == null) return err(503, 'Сервис сейчас перегружен. Попробуйте через минуту.')
       // schema_version — клиенту для bootstrap (контракт brief §8)
       return { status: 200, body: { nonce, schema_version: SUPPORTED_SCHEMA_VERSION } }
     },
 
     async survey({ ip, surveyKey }: SurveyInput): Promise<ApiResult> {
       // GET-чтение: отдельный бюджет rate-limit (анти-перебор surveyKey).
-      if (!limiter.allow(`sv:${ip}`, now())) return err(429, 'Слишком много запросов')
+      if (!limiter.allow(`sv:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
       const key = surveyKeySchema.safeParse(surveyKey)
-      if (!key.success) return err(400, 'Некорректный ключ опроса')
+      if (!key.success) return err(400, 'Неверный адрес опроса. Проверьте ссылку.')
       try {
         const version = await store.currentVersion(key.data)
-        if (!version) return err(404, 'Опрос не найден')
+        if (!version) return err(404, 'Опрос не найден. Возможно, ссылка устарела — попросите новую.')
         return { status: 200, body: { ok: true, version: toPublicVersion(version), schema_version: SUPPORTED_SCHEMA_VERSION } }
       } catch (e) {
         onError(e)
-        return err(500, 'Внутренняя ошибка, попробуйте позже')
+        return err(500, 'Не удалось загрузить опрос. Обновите страницу или попробуйте позже.')
       }
     },
 
     async submit({ ip, body }: SubmitInput): Promise<ApiResult> {
-      if (honeypotTripped(body)) return err(400, 'Отклонено')
-      if (!limiter.allow(`p:${ip}`, now())) return err(429, 'Слишком много запросов')
+      if (honeypotTripped(body)) return err(400, 'Не удалось отправить ответ.')
+      if (!limiter.allow(`p:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
 
       const parsed = httpSubmitSchema.safeParse(body)
-      if (!parsed.success) return err(400, 'Некорректный запрос')
+      if (!parsed.success) return err(400, 'Ответ не отправлен: проверьте заполнение и попробуйте снова.')
       const p = parsed.data
       if (p.schema_version !== SUPPORTED_SCHEMA_VERSION) {
-        return err(400, `Неподдерживаемая версия схемы: ${p.schema_version}`)
+        return err(400, 'Страница опроса устарела. Обновите её и заполните заново.')
       }
 
       const nonceState = nonces.consume(p.nonce, now())
-      if (nonceState === 'replay') return err(409, 'Ответ уже был отправлен')
-      if (nonceState === 'unknown') return err(403, 'Сессия устарела, обновите страницу')
+      if (nonceState === 'replay') return err(409, 'Этот ответ уже отправлен — повторять не нужно.')
+      if (nonceState === 'unknown') return err(403, 'Страница устарела. Обновите её и заполните опрос заново.')
 
       try {
         const version = await store.getVersion(p.surveyKey, p.versionNo)
-        if (!version) return err(404, 'Опрос или версия не найдены')
+        if (!version) return err(404, 'Опрос не найден или обновился. Обновите страницу и заполните заново.')
 
         const { answers, errors } = buildResponseAnswers(version.questions, p.answers)
         if (Object.keys(errors).length > 0) return { status: 422, body: { ok: false, errors } }
@@ -194,9 +194,9 @@ export function createApi(deps: ApiDeps): Api {
           // pin-aware consume: чужой опрос/версия → 409 БЕЗ расхода токена (не сжигаем
           // приглашение при несовпадении пина — анти-DoS на утёкший токен).
           const inv = invitations.consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
-          if (inv.status === 'replay') return err(409, 'Приглашение уже использовано')
-          if (inv.status === 'mismatch') return err(409, 'Приглашение не соответствует опросу или версии')
-          if (inv.status === 'unknown') return err(403, 'Приглашение недействительно или истекло')
+          if (inv.status === 'replay') return err(409, 'Эта ссылка уже использована — опрос пройден. Спасибо!')
+          if (inv.status === 'mismatch') return err(409, 'Ссылка не подходит к этому опросу. Откройте опрос по правильной ссылке.')
+          if (inv.status === 'unknown') return err(403, 'Срок ссылки истёк или она недействительна. Попросите новую ссылку у менеджера.')
           context = inv.invitation.context
         }
 
@@ -214,7 +214,7 @@ export function createApi(deps: ApiDeps): Api {
       } catch (e) {
         // store может отказать (гонка версий, недоступность БД) — без деталей наружу
         onError(e)
-        return err(500, 'Внутренняя ошибка, попробуйте позже')
+        return err(500, 'Не удалось сохранить ответ. Попробуйте ещё раз позже.')
       }
     },
 

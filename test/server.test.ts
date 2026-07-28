@@ -86,7 +86,7 @@ describe('node-адаптер: живой HTTP', () => {
   it('honeypot через HTTP → 400 generic', async () => {
     const r = await post('/api/submit', JSON.stringify({ hp: 'бот', что_угодно: 1 }))
     expect(r.status).toBe(400)
-    expect(await r.json()).toEqual({ ok: false, error: 'Отклонено' })
+    expect(await r.json()).toEqual({ ok: false, error: 'Не удалось отправить ответ.' })
   })
 
   it('кривой JSON → 400; тело больше лимита → 413', async () => {
@@ -194,7 +194,7 @@ describe('node-адаптер: живой HTTP', () => {
     const srv = await startServer({ api: broken })
     const r = await fetch(`http://127.0.0.1:${srv.port}/api/session`)
     expect(r.status).toBe(500)
-    expect(await r.json()).toEqual({ ok: false, error: 'Внутренняя ошибка' })
+    expect(await r.json()).toEqual({ ok: false, error: 'Что-то пошло не так на сервере. Попробуйте позже.' })
     await srv.close()
     await expect(srv.close()).rejects.toThrow() // сервер уже остановлен
   })

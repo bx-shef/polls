@@ -161,7 +161,7 @@ describe('POST /api/submit — конвейер проверок', () => {
     // лимит 0 дал бы 429 — но honeypot срабатывает раньше
     const r = await api.submit({ ip: 'bot', body: { hp: 'gotcha' } })
     expect(r.status).toBe(400)
-    expect(r.body['error']).toBe('Отклонено')
+    expect(r.body['error']).toBe('Не удалось отправить ответ.')
   })
 
   it('rate-limit по IP → 429; не делит бюджет с /session', async () => {
@@ -178,7 +178,8 @@ describe('POST /api/submit — конвейер проверок', () => {
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), schema_version: 2 } })
     expect(r.status).toBe(400)
-    expect(String(r.body['error'])).toMatch(/версия схемы: 2/)
+    // Пользователю — понятная подсказка «обновите страницу» (номер версии — техношум, не показываем).
+    expect(String(r.body['error'])).toMatch(/устарела.*Обновите/)
   })
 
   it('nonce: повтор → 409, неизвестный → 403, протухший (TTL) → 403', async () => {
@@ -243,10 +244,10 @@ describe('POST /api/submit — конвейер проверок', () => {
 
   it('hp из одних пробелов НЕ срабатывает как honeypot (trim)', async () => {
     const { api } = await freshApi()
-    // кривое тело: если бы honeypot сработал — был бы generic «Отклонено»
+    // кривое тело: если бы honeypot сработал — был бы generic «Не удалось отправить ответ.»
     const r = await api.submit({ ip: 'a', body: { hp: '   ' } })
     expect(r.status).toBe(400)
-    expect(r.body['error']).toBe('Некорректный запрос')
+    expect(r.body['error']).toBe('Ответ не отправлен: проверьте заполнение и попробуйте снова.')
   })
 
   it('schema_version строкой ("1") → 400 (строгая форма)', async () => {

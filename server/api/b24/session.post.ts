@@ -16,21 +16,21 @@ export default defineEventHandler(async (event) => {
   const len = Number(getRequestHeader(event, 'content-length') ?? 0)
   if (len > MAX_BODY_BYTES) {
     setResponseStatus(event, 413)
-    return { ok: false, error: 'Слишком большой запрос' }
+    return { ok: false, error: 'Слишком большой объём данных.' }
   }
 
   // Rate-limit РАНО — до исходящего app.info (амплификация/DoS, release-gate #49).
   // IP за доверенным reverse-proxy (X-Forwarded-For) — слой деплоя #4; здесь socket-IP.
   if (!allowB24Session(getRequestIP(event) ?? '?')) {
     setResponseStatus(event, 429)
-    return { ok: false, error: 'Слишком много запросов' }
+    return { ok: false, error: 'Слишком много запросов. Подождите немного и попробуйте снова.' }
   }
 
   // Секрет минта = секрет верификации дашборда (fail-closed без него).
   const secret = resolveB24Secret()
   if (!secret.ok) {
     setResponseStatus(event, 503)
-    return { ok: false, error: 'Сессии портала не сконфигурированы' }
+    return { ok: false, error: 'Дашборд временно недоступен. Обратитесь к администратору.' }
   }
 
   // h3 парсит form-urlencoded (так POST'ит фрейм) и JSON одинаково.
@@ -38,7 +38,7 @@ export default defineEventHandler(async (event) => {
   const frame = parseFrameAuth(body)
   if (!frame) {
     setResponseStatus(event, 400)
-    return { ok: false, error: 'Некорректные параметры авторизации фрейма' }
+    return { ok: false, error: 'Не удалось проверить портал: неверные данные входа. Откройте приложение заново из Bitrix24.' }
   }
 
   try {
@@ -58,6 +58,6 @@ export default defineEventHandler(async (event) => {
   } catch {
     // Причину не раскрываем (домен/токен/cross-tenant) — единый 401.
     setResponseStatus(event, 401)
-    return { ok: false, error: 'Портал не подтверждён' }
+    return { ok: false, error: 'Портал не подтверждён. Откройте приложение заново из Bitrix24.' }
   }
 })

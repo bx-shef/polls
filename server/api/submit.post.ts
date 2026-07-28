@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
   const len = Number(getRequestHeader(event, 'content-length') ?? 0)
   if (len > MAX_BODY_BYTES) {
     setResponseStatus(event, 413)
-    return { ok: false, error: 'Слишком большой запрос' }
+    return { ok: false, error: 'Слишком большой объём ответа. Сократите текст и попробуйте снова.' }
   }
   const api = await useApi()
   const body = await readBody(event)
