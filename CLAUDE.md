@@ -3,9 +3,9 @@
 Сервис опросов для Bitrix24 (движок + версионирование + аналитика): **framework-agnostic ядро**
 (`src/`, TypeScript) + **Nuxt 4/b24ui-приложение** (контур A `/s/:key` + дашборд контура B `/d/:key`
 + admin `/admin/*`) + **Nitro-привязка** (`server/`). Развёрнут вживую (`polls.bx-shef.by`, TLS,
-авто-CD merge→GHCR→watchtower; прод-`docker-compose.prod.yml` разводит PostgreSQL — app идёт на PgStore
-при заданном `DATABASE_URL`). **Live-verified — read-путь** (вебхук); **install/handshake ждут живого
-smoke** (код готов). Комментарии и документация — на русском.
+авто-CD merge→GHCR→watchtower; PostgreSQL при заданном `DATABASE_URL`, иначе — память + демо-данные).
+Комментарии и документация — на русском.
+**Актуальный статус частей — только в карте проекта** (здесь не дублируем).
 
 > **Документация — ровно три файла** (больше не заводим, статус не дублируем):
 > **[`docs/process.md`](docs/process.md)** — как работает сервис по шагам (установка → публикация
@@ -138,4 +138,4 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typeche
 `@bitrix24/b24ui-nuxt ^2.9`. Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
-*Последнее ревью: 2026-07-24. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
+*Обновлено: 2026-07-29. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
