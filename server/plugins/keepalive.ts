@@ -2,6 +2,7 @@ import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { runKeepAlive, keepAliveIntervalMs } from '~core/bitrix24/keep-alive'
 import { errInfo } from '~core/obs/logger'
 import { usePortalTokenStore } from '../utils/portal'
+import { timeoutFetch } from '../utils/b24-fetch'
 import { logger } from '../utils/api'
 
 /**
@@ -29,7 +30,9 @@ export default defineNitroPlugin((nitroApp) => {
   }
 
   const intervalMs = keepAliveIntervalMs(process.env.TOKEN_KEEPALIVE_HOURS)
-  const oauth = new Bitrix24OAuth({ clientId, clientSecret })
+  // fetch с таймаутом: зависший oauth.bitrix.info иначе запинил бы весь проход по порталам (без него
+  // у keep-alive не было своего таймаута — в отличие от install/deal-update).
+  const oauth = new Bitrix24OAuth({ clientId, clientSecret, fetch: timeoutFetch })
 
   const tick = async (): Promise<void> => {
     const store = await usePortalTokenStore()

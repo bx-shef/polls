@@ -69,6 +69,10 @@ async function buildStore(): Promise<IStore> {
   // Прод: PostgreSQL. Динамический import — pg тянется только на сервере с заданным DATABASE_URL.
   const { Pool } = await import('pg')
   const pool = new Pool({ connectionString: url })
+  // pg эмитит 'error' на idle-клиенте (рестарт БД / обрыв сети). БЕЗ слушателя это событие на
+  // EventEmitter роняет процесс (унося приглашения/nonce из памяти). Логируем — пул сам переподнимет
+  // соединение к следующему запросу.
+  pool.on('error', (e: Error) => logger.warn('pg_pool_error', { msg: e.message }))
   const db: Queryable = queryableFromPool(pool)
   pgDb = db // доступен для PortalTokenStore (установка #17)
   await applyMigrations(db, readMigrationSqls())

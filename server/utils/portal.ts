@@ -48,8 +48,11 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
   let cipher: TokenCipher
   try {
     cipher = new TokenCipher(loadTokenKey(process.env))
-  } catch {
-    return null // ключ не задан/невалиден — установка fail-closed
+  } catch (e) {
+    // Ключ не задан/невалиден (неверная длина/не-hex) — установка fail-closed (503). ЛОГИРУЕМ причину:
+    // иначе «опечатка в ключе» неотличима от «ключ не задан», и оператор гадает, почему установка 503.
+    logger.warn('b24_token_key_invalid', { msg: (e as Error).message })
+    return null
   }
   return new PortalTokenStore(db, cipher)
 }

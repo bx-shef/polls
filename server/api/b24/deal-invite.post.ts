@@ -9,6 +9,7 @@ import { dealToCrmContext } from '~core/bitrix24/deal-event'
 import { createSurveyInvitation } from '~core/bitrix24/trigger'
 import { surveyKeyForEntity } from '~core/bitrix24/survey-routing'
 import { allowB24Session, useB24Authenticator } from '../../utils/b24-session'
+import { b24AppConfig } from '../../utils/portal'
 import { useStore, useInvitations, useSurveyRouting, logger } from '../../utils/api'
 
 // Какой опрос запускать по сделке — из конфигурации портала (env `SURVEY_KEY_DEAL`/`SURVEY_KEY_DEFAULT`),
@@ -65,7 +66,10 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 422)
       return { ok: false, error: 'Опрос ещё не опубликован. Опубликуйте его в разделе «Опросы» и повторите.' }
     }
-    const base = process.env.DOMAIN ? `https://${process.env.DOMAIN}` : ''
+    // База ссылки — из ЕДИНОЙ точки (b24AppConfig: APP_DOMAIN ?? DOMAIN), как HANDLER-URL встроек.
+    // Раньше бралось только из DOMAIN → деплой на APP_DOMAIN давал относительный URL, который внутри
+    // iframe-виджета разрешался бы на домен портала Bitrix (битая ссылка клиенту).
+    const base = b24AppConfig()?.baseUrl ?? ''
     logger.info('b24_deal_invite', { msg: `Приглашение по сделке ${dealId} (портал ${portal.portalId})` })
     return { ok: true, surveyKey: res.surveyKey, token: res.token, url: `${base}/s/${res.surveyKey}?token=${res.token}` }
   } catch (e) {

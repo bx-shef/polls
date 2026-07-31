@@ -11,21 +11,16 @@ import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitr
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
-import { Bitrix24OAuth, type HttpFetch, type HttpResponse } from '~core/bitrix24/oauth'
+import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { isAllowedPortalDomain } from '~core/bitrix24/frame'
 import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations, allowB24Install } from '../../utils/portal'
+import { timeoutFetch } from '../../utils/b24-fetch'
 import { logger } from '../../utils/api'
 
-/**
- * Верификационный рефреш — СИНХРОННЫЙ исходящий вызов на `oauth.bitrix.info` внутри install-запроса.
- * Ядро (`Bitrix24OAuth`) делегирует таймауты «слою деплоя»; здесь этот слой — мы. Без явного лимита
- * зависший OAuth-сервер держал бы install-соединение до дефолта undici (~300с) и (с флудом) подъедал бы
- * сокеты/event-loop. `AbortSignal.timeout` → fetch reject → OAuthError без статуса → 503 (транзиент, ретрай).
- */
-const OAUTH_REFRESH_TIMEOUT_MS = 10_000
-const timeoutRefreshFetch: HttpFetch = (url, init) =>
-  fetch(url, { ...init, signal: AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS) }) as Promise<HttpResponse>
+// Верификационный рефреш — синхронный исходящий вызов на oauth.bitrix.info внутри install-запроса;
+// `timeoutFetch` (общий, server/utils/b24-fetch) ограничивает его: зависший OAuth-сервер иначе держал бы
+// install-соединение до дефолта undici. Reject → OAuthError без статуса → 503 (транзиент, ретрай).
 
 function html(event: any, status: number, body: string): string {
   setResponseStatus(event, status)
@@ -104,7 +99,7 @@ export default defineEventHandler(async (event) => {
   const oauth = new Bitrix24OAuth({
     clientId: cfg.secret.clientId,
     clientSecret: cfg.secret.clientSecret,
-    fetch: timeoutRefreshFetch
+    fetch: timeoutFetch
   })
   const memberVerdict = await verifyInstallMember(auth.memberId, auth.refreshToken, oauth)
   if (!memberVerdict.ok) {
