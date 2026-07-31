@@ -21,7 +21,7 @@
 ## Команды
 
 ```bash
-pnpm check        # всё разом: typecheck + test (с покрытием) + verify
+pnpm check        # всё разом: typecheck(ядро) + граница ~core + typecheck:app + typecheck:server + test (покрытие) + verify
 bash scripts/check.sh                                   # то же, Linux/macOS, с pnpm install
 powershell -ExecutionPolicy Bypass -File scripts\check.ps1   # то же, Windows
 pnpm typecheck    # tsc --noEmit (ядро)
@@ -77,8 +77,8 @@ pnpm test:visual  # визуальный гейт: скриншот-регрес
 - **Ревью-ритуал:** 5 агентов в фоне (документалист / программист / тестировщик / security / CTO;
   каждый держится **диффа** — проект большой, иначе таймаут) + сводный отчёт с severity
   **blocker / major / minor / nit**. Правки — в тот же PR, после них снова `pnpm check`.
-- **Гейт мержа:** `pnpm check` зелёный (typecheck + тесты с покрытием ≥85%, по факту ~100% + `verify`),
-  CI success, clean working tree, 0 отставания от `main` (иначе sync).
+- **Гейт мержа:** `pnpm check` зелёный (typecheck ядра + граница `~core` + `typecheck:app`/`:server` +
+  тесты с покрытием ≥85%, по факту ~100% + `verify`), CI success, clean working tree, 0 отставания от `main` (иначе sync).
 - **Мерж:** squash + курированное тело + штампы → удалить ветку. Roadmap-issue остаётся открытым
   (закрывается, когда закрыт весь скоуп фазы).
 
@@ -138,4 +138,4 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typeche
 `@bitrix24/b24ui-nuxt ^2.9`. Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
-*Обновлено: 2026-07-29. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
+*Обновлено: 2026-07-31. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*

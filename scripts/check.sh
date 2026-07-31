@@ -15,9 +15,10 @@ pnpm -s typecheck
 echo "▶ check:boundary (граница ~core)"
 pnpm -s check:boundary
 
-echo "▶ typecheck:app (vue-tsc)"
+echo "▶ typecheck:app + typecheck:server (vue-tsc app/ + server/)"
 pnpm -s nuxt:prepare
 pnpm -s typecheck:app
+pnpm -s typecheck:server
 
 echo "▶ test (+покрытие, пороги в vitest.config.ts)"
 pnpm -s test:cov

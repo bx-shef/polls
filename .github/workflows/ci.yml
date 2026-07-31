@@ -39,10 +39,12 @@ jobs:
       - name: Граница ~core (клиент не тянет server-only ядро, #36)
         run: pnpm check:boundary
 
-      # vue-tsc-typecheck клиента/сервера (app/+server/). Отдельно от ядрового `pnpm typecheck`
+      # vue-tsc-typecheck клиента И сервера (app/+server/). Отдельно от ядрового `pnpm typecheck`
       # (ядро framework-agnostic). `nuxt prepare` явно — .npmrc ignore-scripts отключает postinstall.
-      - name: Typecheck app/ (vue-tsc, #36)
-        run: pnpm nuxt:prepare && pnpm typecheck:app
+      # typecheck:app берёт tsconfig.json (app/shared), typecheck:server — tsconfig.server.json:
+      # без второго серверные файлы (server/**) типами не гейтились бы.
+      - name: Typecheck app/ + server/ (vue-tsc, #36)
+        run: pnpm nuxt:prepare && pnpm typecheck:app && pnpm typecheck:server
 
       - name: Test (+ покрытие, пороги в vitest.config.ts)
         run: pnpm test:cov

@@ -361,15 +361,17 @@ describe('PgStore — транзакции и идемпотентный ensure'
     expect(released).toBeGreaterThanOrEqual(3) // publish + addResponse + откат: клиент всегда возвращён
   })
 
-  it('queryableFromPool: сбой rollback НЕ маскирует исходную ошибку fn', async () => {
+  it('queryableFromPool: сбой rollback НЕ маскирует исходную ошибку fn + УНИЧТОЖАЕТ клиента', async () => {
     let released = 0
+    const destroyFlags: (boolean | undefined)[] = []
     const pool: PoolLike = {
       query: (sql, params) => db.query(sql, params),
       connect: async () => ({
         query: (sql, params) =>
           /^rollback$/.test(sql) ? Promise.reject(new Error('rollback failed')) : db.query(sql, params),
-        release: () => {
+        release: (destroy) => {
           released++
+          destroyFlags.push(destroy)
         }
       })
     }
@@ -380,7 +382,24 @@ describe('PgStore — транзакции и идемпотентный ensure'
       })
     ).rejects.toThrow(/исходная ошибка fn/) // не «rollback failed»
     expect(released).toBe(1)
+    // мёртвое соединение (rollback упал) уничтожается, а не возвращается в пул отравленным
+    expect(destroyFlags).toEqual([true])
     await db.query('rollback') // зачистка: begin прошёл, rollback мы сымитировали упавшим
+  })
+
+  it('queryableFromPool: успешная транзакция возвращает клиента в пул (release без destroy)', async () => {
+    const { db, portalA } = await fresh()
+    const destroyFlags: (boolean | undefined)[] = []
+    const pool: PoolLike = {
+      query: (sql, params) => db.query(sql, params),
+      connect: async () => ({
+        query: (sql, params) => db.query(sql, params),
+        release: (destroy) => destroyFlags.push(destroy)
+      })
+    }
+    await new PgStore(queryableFromPool(pool), { portalId: portalA, requireTransaction: true }).publish(draftV1(), 1)
+    // commit прошёл → клиент здоров → destroy=false (обычный возврат в пул), не true
+    expect(destroyFlags).toEqual([false])
   })
 
   it('ensure идемпотентен (ON CONFLICT): повторные publish не плодят группы/опросы', async () => {
