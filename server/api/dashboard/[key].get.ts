@@ -31,8 +31,8 @@ import {
  *
  * AUTH (#47): `requirePortalSession` — прод (`DASHBOARD_AUTH_SECRET`) требует валидную
  * подписанную сессию портала, иначе 401 (срезы раскрывают ИМЕНА клиентов/`responsibleName`-PII —
- * fail-closed). Dev/гейт — открыто (portalId='dev'). Осталось по #47: handshake Bitrix24
- * app-фрейма (минт сессии) + tenant-фильтрация стора по portalId (PgStore-путь, #49); ещё без
+ * fail-closed). Dev/гейт — открыто (portalId='dev'). Handshake app-фрейма (минт сессии) уже сделан
+ * (`/api/b24/session`). Осталось: tenant-фильтрация стора по portalId (PgStore-путь, #49); ещё без
  * rate-limit (#49). PII-редакция контекста — #31. Данные пока синтетические (seed).
  */
 export default defineEventHandler(async (event) => {
