@@ -8,19 +8,29 @@
 // форджери/ошибку/отсутствие конфига наружу не раскрываем (только лог). Доставка ссылки адресату — отдельный слой.
 import { runDealUpdate } from '~core/bitrix24/deal-update'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
-import { Bitrix24OAuth, type HttpFetch, type HttpResponse } from '~core/bitrix24/oauth'
+import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
+import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
+import { timeoutFetch } from '../../utils/b24-fetch'
 import { useStore, useInvitations, logger } from '../../utils/api'
 
-// Таймаут исходящего OAuth-рефреша (accessToken портала мог протухнуть) — как в install.post.ts:
-// без лимита зависший oauth.bitrix.info держал бы соединение до дефолта undici. Рефреш редок
-// (keep-alive держит токен свежим), но защищаемся.
-const OAUTH_REFRESH_TIMEOUT_MS = 10_000
-const timeoutRefreshFetch: HttpFetch = (url, init) =>
-  fetch(url, { ...init, signal: AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS) }) as Promise<HttpResponse>
+// Таймаут исходящего OAuth-рефреша (accessToken портала мог протухнуть) — общий `timeoutFetch`
+// (server/utils/b24-fetch), как в install. Рефреш редок (keep-alive держит токен свежим), но защищаемся.
+
+// Rate-limit публичного event-роута: до сверки токена каждый запрос делает SELECT (+ расшифровку blob).
+// Без лимита — вектор DoS-амплификации неаутентифицированным флудом. Потолок высокий: ONCRMDEALUPDATE
+// бьёт на ЛЮБОЙ апдейт сделки, у активного портала событий много — режем только флуд, не легитимный поток.
+// In-memory, на инстанс (общий стор для мульти-инстанса + X-Forwarded-For — #4).
+const dealUpdateLimiter = new SlidingWindowLimiter({ limit: 600, windowMs: 60_000 })
 
 export default defineEventHandler(async (event) => {
+  if (!dealUpdateLimiter.allow(getRequestIP(event) ?? '?', new Date())) {
+    // B24 online-события не ретраит; наружу — «ok» (не раскрываем лимит), но в лог для диагностики.
+    logger.warn('b24_deal_update_ratelimited', { msg: 'превышен лимит event-роута' })
+    setResponseStatus(event, 200)
+    return 'ok'
+  }
   const body = await readBody(event).catch(() => ({}))
   // Разбор bracket-формы Bitrix (form-urlencoded) во вложенный объект; идемпотентно на JSON-теле.
   const raw = parseBracketForm((body && typeof body === 'object' ? body : {}) as Record<string, unknown>)
@@ -40,7 +50,7 @@ export default defineEventHandler(async (event) => {
     const oauth = new Bitrix24OAuth({
       clientId: cfg.secret.clientId,
       clientSecret: cfg.secret.clientSecret,
-      fetch: timeoutRefreshFetch
+      fetch: timeoutFetch
     })
 
     // ⚠️ TENANT (#49): useStore()/useInvitations() — SINGLE-TENANT (один портал на инстанс приложения).

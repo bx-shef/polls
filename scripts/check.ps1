@@ -10,8 +10,18 @@ try { corepack enable | Out-Null } catch {}
 pnpm install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host '> typecheck'
+Write-Host '> typecheck (ядро)'
 pnpm -s typecheck
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
+Write-Host '> check:boundary (граница ~core)'
+pnpm -s check:boundary
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
+Write-Host '> typecheck:app (vue-tsc)'
+pnpm -s nuxt:prepare
+if ($LASTEXITCODE -ne 0) { exit 1 }
+pnpm -s typecheck:app
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host '> test (+покрытие, пороги в vitest.config.ts)'

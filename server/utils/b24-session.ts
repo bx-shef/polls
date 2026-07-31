@@ -2,6 +2,7 @@ import { createPortalAuthenticator } from '~core/bitrix24/authenticate'
 import { type PortalAuthenticator } from '~core/bitrix24/frame'
 import { isStrongSecret } from '~core/api/session'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
+import { timeoutFetch } from './b24-fetch'
 
 /**
  * Привязка handshake app-фрейма Bitrix24 к Nitro (ISSUE #47/#49). SERVER-ONLY: `~core/bitrix24`
@@ -41,9 +42,10 @@ export function setPortalResolver(fn: (domain: string) => Promise<string | undef
   resolveMemberId = fn
 }
 
-/** Боевой `PortalAuthenticator` для роута: `app.info` к `{domain}` + резолв member_id (см. authenticate.ts). */
+/** Боевой `PortalAuthenticator` для роута: `app.info` к `{domain}` + резолв member_id (см. authenticate.ts).
+ *  `fetch` с таймаутом — зависший `app.info` иначе держал бы соединение Nitro handshake до дефолта undici. */
 export function useB24Authenticator(): PortalAuthenticator {
-  return createPortalAuthenticator({ resolveMemberId: (domain) => resolveMemberId(domain) })
+  return createPortalAuthenticator({ resolveMemberId: (domain) => resolveMemberId(domain), fetch: timeoutFetch })
 }
 
 /**

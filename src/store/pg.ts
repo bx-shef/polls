@@ -58,7 +58,9 @@ export interface PoolLike {
   query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
   connect(): Promise<{
     query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>
-    release(): void
+    // `destroy=true` (совместимо с pg `PoolClient.release(err?: boolean)`) уничтожает клиента вместо
+    // возврата в пул — нужно, когда соединение мертво (провалился rollback).
+    release(destroy?: boolean): void
   }>
 }
 
@@ -73,6 +75,7 @@ export function queryableFromPool(pool: PoolLike): Queryable {
     transaction: async (fn) => {
       const c = await pool.connect()
       let committed = false
+      let rollbackFailed = false
       try {
         await c.query('begin')
         const result = await fn({ query: (sql, params) => c.query(sql, params) })
@@ -80,10 +83,11 @@ export function queryableFromPool(pool: PoolLike): Queryable {
         committed = true
         return result
       } finally {
-        // rollback «тихий»: его сбой (умершее соединение) не маскирует исходную
-        // ошибку fn; release возвращает клиента пулу в любом случае.
-        if (!committed) await c.query('rollback').catch(() => undefined)
-        c.release()
+        // rollback «тихий»: его сбой (умершее соединение) не маскирует исходную ошибку fn.
+        if (!committed) await c.query('rollback').catch(() => { rollbackFailed = true })
+        // Провал rollback ⇒ соединение вероятно мертво: УНИЧТОЖАЕМ клиента (release(true)), иначе
+        // следующий взявший его из пула запрос упадёт на мёртвом сокете. Иначе — обычный возврат в пул.
+        c.release(rollbackFailed)
       }
     }
   }
