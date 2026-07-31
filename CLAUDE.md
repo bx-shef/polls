@@ -123,7 +123,7 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typeche
 ## Reporting Kit (вендорный бандл `reporting-kit/`)
 
 Переносимый набор отчётности из базы знаний (`bx-shef/ai-agent`): навыки `/report-status`,
-`/report-digest`, `/report-questions` (готовят текст отчёта; отправляет `scripts/tg-send.sh` только по
+`/report-digest`, `/report-questions` (готовят текст отчёта; отправляет `reporting-kit/scripts/tg-send.sh` только по
 явной команде). Лежит **как есть** самодостаточным каталогом (упрощает синхронизацию с источником).
 
 - **Не линтуется** нашими проверками; `.github/workflows/` бандла GitHub не запускает (активны только

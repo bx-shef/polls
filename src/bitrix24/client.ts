@@ -5,8 +5,9 @@ import type { EntityType } from '../domain/schema'
  * Серверный REST-клиент портала Bitrix24 на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`) —
  * общая основа исходящих вызовов к порталу (`crm.deal.get` #17, обогащение имён, `event.bind`,
  * `app.info`). `B24OAuth` — серверный класс для OAuth-приложений с сохранённым токеном: сам
- * рулит лимитами/повторами/refresh (через `setCallbackRefreshAuth` → персист в `PortalTokenStore`,
- * wiring — слой установки #17). Полный набор токенов (`B24OAuthParams`) берётся из install-обмена.
+ * рулит лимитами/повторами/refresh. Персист рефреша сейчас идёт через `PortalTokenStore.accessToken`
+ * (рефреш ДО построения клиента), а не через SDK-колбэк `setCallbackRefreshAuth` — он не подключён;
+ * `frameToB24Params` даёт пустой refreshToken. Полный набор токенов (`B24OAuthParams`) — из install-обмена.
  *
  * Тонкие хелперы вокруг SDK: единый разбор `AjaxResult` (`isSuccess`/`getData`/`getErrorMessages`)
  * в `result | throw`. Тестируются через структурный `PortalClient` (мок без сети); реальный

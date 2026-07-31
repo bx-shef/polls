@@ -31,7 +31,7 @@ src/server/    адаптер node:http (pnpm serve); Nitro-привязка п�
 src/demo/      детерминированный сид (общий для verify и тестов)
 scripts/       verify.ts, serve.ts, check.sh / check.ps1 (кросс-платформенная проверка)
 test/          vitest; покрытие ядра ~100% (99.83%; строки/ветви/функции), CI гейтит на 85% (vitest.config.ts)
-migrations/    PostgreSQL-схема (0001_init.sql)
+migrations/    PostgreSQL-схема (0001–0004: init, trigger_stages, идемпотентность, lifecycle)
 docker-compose.yml   локальная БД (миграции применяются автоматически)
 ```
 

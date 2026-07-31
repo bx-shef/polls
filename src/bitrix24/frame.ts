@@ -17,8 +17,8 @@ import { signSession, type PortalSession } from '../api/session'
  *
  * HTTP инжектируется (`authenticate`) — логика проверяется юнит-тестами без живого портала.
  * Боевой `authenticate` — `createPortalAuthenticator` (`authenticate.ts`): `app.info` к `{domain}` +
- * резолв `member_id` из install-маппинга. Осталось: привязка эндпоинта (`/api/b24/session` + cookie)
- * с общим стором (#49).
+ * резолв `member_id` из install-маппинга. Эндпоинт `/api/b24/session` (+ cookie) уже привязан; осталось —
+ * per-portal tenant-фильтр стора (#49).
  */
 
 /** Верхняя граница `AUTH_EXPIRES`: с запасом под ms-timestamp (защита от переполнения Date). */

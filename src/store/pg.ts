@@ -48,7 +48,7 @@ export type { Queryable } from './types'
  * SQL-вариант npsTrend — aggregateNpsTrend (#10). Тех-долг: сейчас якорь идемпотентности —
  * сам токен в колонке `invitation_token`; когда invitation-flow получит общий стор (#4) и
  * приглашения будут жить в таблице `invitation`, ключ дедупа переключится на FK
- * `response.invitation_id` (отдельная миграция 0004) — токен как credential в response
+ * `response.invitation_id` (отдельная будущая миграция; 0004 уже занята portal-lifecycle) — токен как credential в response
  * больше храниться не будет. PII-редакция на HTTP-слое — нет публичного read-ответов,
  * вынесено в ISSUE #31 (там же требование strip'ать invitationToken из проекции).
  */
