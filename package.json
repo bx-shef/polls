@@ -14,6 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
+    "icons": "tsx scripts/make-icons.mjs",
+    "og": "tsx scripts/make-og.mjs",
     "verify": "tsx scripts/verify.ts",
     "serve": "tsx scripts/serve.ts",
     "migrate": "node-pg-migrate",
