@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Хендлер плейсмента CRM_ANALYTICS_MENU (#17/#47): дашборд в меню CRM-аналитики портала.
 // Страница ВСЕГДА открывается в iframe Bitrix24 → выполняет handshake фрейма:
-//   initializeB24Frame() → getAuthData() → POST /api/b24/session (ядро сверит токен через app.info
+//   initializeB24Frame() → getAuthData() → POST /api/b24/session (ядро сверит токен через profile
 //   + резолвит member_id из таблицы portal) → cookie polls_portal → переход на дашборд /d/:key,
 //   который теперь проходит requirePortalSession. Только клиент (iframe нет на SSR).
 import { initializeB24Frame } from '@bitrix24/b24jssdk'
@@ -24,7 +24,7 @@ onMounted(async () => {
     const b24 = await initializeB24Frame()
     const auth = b24.auth.getAuthData()
     if (!auth) throw new Error('нет данных авторизации фрейма')
-    // Минт сессии портала (ядро: SSRF-allowlist домена → app.info → сверка member_id → cookie).
+    // Минт сессии портала (ядро: SSRF-allowlist домена → profile → сверка member_id → cookie).
     await $fetch('/api/b24/session', {
       method: 'POST',
       body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token }

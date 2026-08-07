@@ -4,7 +4,9 @@
  * привязка-датчик (entityType/spaEntityTypeId/triggerStages) — основа списка с фильтром по
  * сущности/направлению (макет на основе шаблонов печатных форм Bitrix24).
  *
- * Ответ: `{ ok: true, surveys: SurveySummary[] }`.
+ * Ответ: `{ ok: true, surveys: SurveySummary[], admin: boolean }`. Флаг `admin` — чтобы интерфейс не
+ * показывал кнопки публикации тому, кому сервер всё равно ответит 403 (правду решает сервер,
+ * `requireAdminSession`; здесь — только чтобы не обещать пользователю невозможное).
  *
  * AUTH (#47): `requirePortalSession` (синхронный throw `createError`, поэтому без `await`) — прод
  * (`DASHBOARD_AUTH_SECRET`) требует валидную подписанную сессию портала, иначе 401/503 (конфигурация
@@ -15,8 +17,8 @@
 export default defineEventHandler(async (event) => {
   // session.portalId здесь пока не используется (single-tenant стор); при мульти-тенанте (#49)
   // именно он выберет scoped-стор — поэтому гейт обязателен и сейчас (fail-closed).
-  requirePortalSession(event)
+  const session = requirePortalSession(event)
   const store = await useStore()
   const surveys = await store.listSurveys()
-  return { ok: true as const, surveys }
+  return { ok: true as const, surveys, admin: session.admin === true }
 })

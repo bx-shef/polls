@@ -1,6 +1,6 @@
 // POST /api/b24/deal-invite — создать приглашение на опрос по сделке из виджета карточки сделки
 // (#17, плейсмент CRM_DEAL_DETAIL_ACTIVITY — ручной запуск, охват на всех тарифах). Конвейер:
-// rate-limit → parseFrameAuth → verifyFrameAuth (SSRF-allowlist → app.info → сверка member_id) →
+// rate-limit → parseFrameAuth → verifyFrameAuth (SSRF-allowlist → profile → сверка member_id) →
 // crm.deal.get токеном виджета → dealToCrmContext → createSurveyInvitation (общий стор приглашений)
 // → ссылка /s/:key?token=… для адресата. Fail-closed: невалидный фрейм → 401, нет сделки/версии → 422.
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'

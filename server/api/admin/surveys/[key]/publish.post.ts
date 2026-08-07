@@ -1,4 +1,5 @@
 import { surveyDraftSchema } from '~core/domain/schema'
+import { isSameOriginWrite, CROSS_ORIGIN_MESSAGE } from '~core/api/csrf'
 import { logger } from '../../../../utils/api'
 
 /**
@@ -18,13 +19,37 @@ import { logger } from '../../../../utils/api'
  * стора — пробрасывается, не маскируется под 422). Body-limit по content-length — паритет с
  * /api/submit (отсекает обычный случай; потоковый cap для chunked-тел без заголовка — слой прокси #4).
  *
- * AUTH (#47): `requirePortalSession` (fail-closed) — публикация опроса доступна лишь авторизованному
- * порталу. Tenant-scoped внутри PgStore по portalId (single-tenant MVP; мульти-тенант — #49).
+ * AUTH: `resolveAdminAccess` (fail-closed) — мало быть авторизованным порталом, нужна роль
+ * АДМИНИСТРАТОРА портала (`profile.ADMIN`, снят при handshake и лежит в подписанной сессии).
+ * Публикация меняет текст, который увидит клиент заказчика, поэтому право на неё уже не то же,
+ * что право посмотреть дашборд. Не админ → 403. Tenant-scoped внутри PgStore по portalId
+ * (single-tenant MVP; мульти-тенант — #49).
  */
 const MAX_BODY_BYTES = 64 * 1024
 
 export default defineEventHandler(async (event) => {
-  requirePortalSession(event)
+  // 1) Происхождение. Cookie сессии живёт с `SameSite=None` (иначе фрейм Bitrix24 её не пошлёт),
+  // поэтому чужая страница может инициировать запрос с валидной cookie. Отказываем по доказательству
+  // чужого источника — до чтения тела и до любой работы со стором.
+  if (
+    !isSameOriginWrite({
+      secFetchSite: getRequestHeader(event, 'sec-fetch-site'),
+      origin: getRequestHeader(event, 'origin'),
+      host: getRequestHeader(event, 'host'),
+      proto: getRequestHeader(event, 'x-forwarded-proto')
+    })
+  ) {
+    setResponseStatus(event, 403)
+    return { ok: false, error: CROSS_ORIGIN_MESSAGE }
+  }
+
+  // 2) Гейт роли — по конвенции этого роута (setResponseStatus + тело), а не throw: только так наш
+  // русский текст доедет до виджета (`err.data.error`), как и остальные ошибки ниже.
+  const access = resolveAdminAccess(event)
+  if (!access.ok) {
+    setResponseStatus(event, access.status)
+    return { ok: false, error: ADMIN_REQUIRED_MESSAGE }
+  }
 
   const len = Number(getRequestHeader(event, 'content-length') ?? 0)
   if (len > MAX_BODY_BYTES) {

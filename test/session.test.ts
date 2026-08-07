@@ -5,6 +5,7 @@ import {
   MIN_SECRET_LEN,
   isStrongSecret,
   resolveDashboardAuth,
+  resolveWriteAccess,
   signSession,
   verifySession,
   type PortalSession
@@ -105,7 +106,27 @@ describe('resolveDashboardAuth — гейт дашборда (#47)', () => {
 
   it('без секрета + devOpen → dev-сессия', () => {
     const d = resolveDashboardAuth({ devOpen: true, isProduction: true }, undefined, 1000)
-    expect(d).toEqual({ ok: true, session: { portalId: DEV_PORTAL_ID, exp: 1000 + 3600 } })
+    expect(d).toEqual({ ok: true, session: { portalId: DEV_PORTAL_ID, exp: 1000 + 3600, admin: false } })
+  })
+
+  it('вне production dev-сессия получает роль админа (иначе конструктор не погонять локально)', () => {
+    const d = resolveDashboardAuth({ devOpen: false, isProduction: false }, undefined, 1000)
+    expect(d).toEqual({ ok: true, session: { portalId: DEV_PORTAL_ID, exp: 1000 + 3600, admin: true } })
+  })
+
+  it('в PRODUCTION dev-open НЕ выдаёт роль администратора (прод, забытый с флагом, не даст публиковать)', () => {
+    // Иначе прод без секрета, но с DASHBOARD_DEV_OPEN=1 отдавал бы анониму не только чтение PII,
+    // но и публикацию — возможность подменить текст, который увидит клиент заказчика.
+    const d = resolveDashboardAuth({ devOpen: true, isProduction: true }, undefined, 1000)
+    expect(d.ok && d.session.admin).toBe(false)
+  })
+
+  it('старая сессия БЕЗ поля admin верифицируется, но администратором НЕ считается (fail-closed)', () => {
+    // Сессии, выписанные до появления гейта роли, не должны давать прав записи.
+    const legacy = signSession({ portalId: 'p-1', exp: 5000 } as PortalSession, SECRET)
+    const session = verifySession(legacy, SECRET, 1000)
+    expect(session?.portalId).toBe('p-1')
+    expect(session?.admin).toBeUndefined() // `admin !== true` → requireAdminSession ответит 403
   })
 
   it('без секрета + не production → dev-сессия', () => {
@@ -114,5 +135,28 @@ describe('resolveDashboardAuth — гейт дашборда (#47)', () => {
 
   it('без секрета + production без devOpen → 503 (fail-closed)', () => {
     expect(resolveDashboardAuth({ devOpen: false, isProduction: true }, undefined)).toEqual({ ok: false, status: 503 })
+  })
+})
+
+describe('resolveWriteAccess — гейт записи конфигурации опросов (#139)', () => {
+  // Единственная строка, ради которой существует весь гейт: в h3-слое она была бы вне тестов.
+  const s = (admin?: unknown): PortalSession => ({ portalId: 'p', exp: future, admin } as PortalSession)
+
+  it('администратор → пускаем', () => {
+    expect(resolveWriteAccess(s(true))).toEqual({ ok: true })
+  })
+
+  it('не администратор → 403', () => {
+    expect(resolveWriteAccess(s(false))).toEqual({ ok: false, status: 403 })
+  })
+
+  it('поля нет (сессия выписана до появления гейта) → 403, а не «раз не сказано — значит можно»', () => {
+    expect(resolveWriteAccess({ portalId: 'p', exp: future })).toEqual({ ok: false, status: 403 })
+  })
+
+  it('значение в чужой форме → 403 (сессия подписана нами, но ТИП поля в ней не валидируется)', () => {
+    for (const v of ['true', 'Y', 1, {}, [], 'admin']) {
+      expect(resolveWriteAccess(s(v))).toEqual({ ok: false, status: 403 })
+    }
   })
 })
