@@ -103,9 +103,20 @@ describe('resolveDashboardAuth — гейт дашборда (#47)', () => {
     expect(resolveDashboardAuth({ secret: 'short', devOpen: false, isProduction: false }, valid)).toEqual({ ok: false, status: 503 })
   })
 
-  it('без секрета + devOpen → dev-сессия', () => {
+  it('без секрета + devOpen → dev-сессия (с ролью админа: авторизации в этом режиме нет вовсе)', () => {
+    // dev-open документирован как «только демо, в проде утечёт PII». Раз авторизации нет, роль тоже
+    // открыта — иначе конструктор опросов нельзя было бы гонять локально. В проде ветка недостижима
+    // при заданном секрете (секрет имеет приоритет над dev-открытостью — проверяется тестом выше).
     const d = resolveDashboardAuth({ devOpen: true, isProduction: true }, undefined, 1000)
-    expect(d).toEqual({ ok: true, session: { portalId: DEV_PORTAL_ID, exp: 1000 + 3600 } })
+    expect(d).toEqual({ ok: true, session: { portalId: DEV_PORTAL_ID, exp: 1000 + 3600, admin: true } })
+  })
+
+  it('старая сессия БЕЗ поля admin верифицируется, но администратором НЕ считается (fail-closed)', () => {
+    // Сессии, выписанные до появления гейта роли, не должны давать прав записи.
+    const legacy = signSession({ portalId: 'p-1', exp: 5000 } as PortalSession, SECRET)
+    const session = verifySession(legacy, SECRET, 1000)
+    expect(session?.portalId).toBe('p-1')
+    expect(session?.admin).toBeUndefined() // `admin !== true` → requireAdminSession ответит 403
   })
 
   it('без секрета + не production → dev-сессия', () => {

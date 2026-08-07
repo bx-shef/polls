@@ -20,15 +20,34 @@ describe('createPortalAuthenticator — боевой PortalAuthenticator (#47/#4
     const resolveMemberId = vi.fn(async () => 'abc123member')
     const authenticate = createPortalAuthenticator({ resolveMemberId, fetch })
 
-    await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).resolves.toEqual({ memberId: 'abc123member' })
+    await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).resolves.toEqual({
+      memberId: 'abc123member',
+      admin: false
+    })
 
     // authId — в теле POST, не в URL/query (анти-утечка в access-логи)
-    expect(fetch).toHaveBeenCalledWith(`https://${DOMAIN}/rest/app.info`, {
+    expect(fetch).toHaveBeenCalledWith(`https://${DOMAIN}/rest/profile`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ auth: AUTH_ID })
     })
     expect(resolveMemberId).toHaveBeenCalledWith(DOMAIN)
+  })
+
+  it('profile.ADMIN=true → роль администратора попадает в результат (на ней гейт записи)', async () => {
+    const fetch = vi.fn<HttpFetch>(async () => resp(200, { result: { ID: 5, ADMIN: true } }))
+    const authenticate = createPortalAuthenticator({ resolveMemberId: async () => 'abc123member', fetch })
+    await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).resolves.toMatchObject({ admin: true })
+  })
+
+  it('ADMIN в неожиданной форме → НЕ администратор (fail-closed, права не выдаём по догадке)', async () => {
+    // Bitrix отдаёт булево; строка «Y»/1/«true» — чужой или изменившийся формат. Права записи по
+    // такому значению выдавать нельзя: тихая смена формата на стороне портала стала бы эскалацией.
+    for (const ADMIN of ['Y', 1, 'true', {}, null, undefined]) {
+      const fetch = vi.fn<HttpFetch>(async () => resp(200, { result: { ID: 5, ADMIN } }))
+      const authenticate = createPortalAuthenticator({ resolveMemberId: async () => 'm', fetch })
+      await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).resolves.toMatchObject({ admin: false })
+    }
   })
 
   it('Bitrix вернул error → OAuthError, резолвер member_id не дёргается', async () => {

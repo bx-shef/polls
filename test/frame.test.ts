@@ -86,26 +86,27 @@ describe('verifyFrameAuth — авторитетная проверка + ант
   const frame = parseFrameAuth(validRaw) as FrameAuth
 
   it('токен валиден и member_id совпал → portalId из авторитетного источника', async () => {
-    const authenticate: PortalAuthenticator = vi.fn(async () => ({ memberId: 'abc123member' }))
+    const authenticate: PortalAuthenticator = vi.fn(async () => ({ memberId: 'abc123member', admin: false }))
     await expect(verifyFrameAuth(frame, { authenticate })).resolves.toEqual({
       portalId: 'abc123member',
-      domain: 'acme.bitrix24.ru'
+      domain: 'acme.bitrix24.ru',
+      admin: false
     })
     expect(authenticate).toHaveBeenCalledWith({ domain: 'acme.bitrix24.ru', authId: 'access-token-xyz' })
   })
 
   it('member_id токена ≠ заявленному в POST → отказ (cross-tenant)', async () => {
-    const authenticate: PortalAuthenticator = async () => ({ memberId: 'OTHER-portal' })
+    const authenticate: PortalAuthenticator = async () => ({ memberId: 'OTHER-portal', admin: true })
     await expect(verifyFrameAuth(frame, { authenticate })).rejects.toBeInstanceOf(OAuthError)
   })
 
   it('authenticate вернул пустой member_id → отказ', async () => {
-    const authenticate: PortalAuthenticator = async () => ({ memberId: '' })
+    const authenticate: PortalAuthenticator = async () => ({ memberId: '', admin: true })
     await expect(verifyFrameAuth(frame, { authenticate })).rejects.toBeInstanceOf(OAuthError)
   })
 
   it('недоверенный домен → отказ ДО вызова authenticate (нет SSRF)', async () => {
-    const authenticate = vi.fn<PortalAuthenticator>(async () => ({ memberId: 'abc123member' }))
+    const authenticate = vi.fn<PortalAuthenticator>(async () => ({ memberId: 'abc123member', admin: false }))
     const evil = parseFrameAuth({ ...validRaw, DOMAIN: 'evil.com' }) as FrameAuth
     await expect(verifyFrameAuth(evil, { authenticate })).rejects.toBeInstanceOf(OAuthError)
     expect(authenticate).not.toHaveBeenCalled()
@@ -121,14 +122,40 @@ describe('verifyFrameAuth — авторитетная проверка + ант
 
 describe('mintPortalSession — выписать сессию из подтверждённого фрейма (#47)', () => {
   it('подписанный токен верифицируется обратно с тем же portalId и сроком', () => {
-    const { token, session } = mintPortalSession({ portalId: 'abc123member', domain: 'acme.bitrix24.ru' }, SECRET, 3600, 1000)
-    expect(session).toEqual({ portalId: 'abc123member', exp: 1000 + 3600 })
+    const { token, session } = mintPortalSession(
+      { portalId: 'abc123member', domain: 'acme.bitrix24.ru', admin: false },
+      SECRET,
+      3600,
+      1000
+    )
+    expect(session).toEqual({ portalId: 'abc123member', exp: 1000 + 3600, admin: false })
     expect(verifySession(token, SECRET, 1000)).toEqual(session)
     expect(verifySession(token, SECRET, 1000 + 3601)).toBeNull() // просрочка
   })
 
+  it('роль администратора переносится в сессию и переживает подпись', () => {
+    // Гейт записи (`requireAdminSession`) читает роль ИМЕННО отсюда — из подписанного payload.
+    const { token, session } = mintPortalSession(
+      { portalId: 'p', domain: 'a.bitrix24.ru', admin: true },
+      SECRET,
+      3600,
+      1000
+    )
+    expect(session.admin).toBe(true)
+    expect(verifySession(token, SECRET, 1000)?.admin).toBe(true)
+  })
+
+  it('подделать роль в токене нельзя — подпись перестаёт сходиться', () => {
+    const { token } = mintPortalSession({ portalId: 'p', domain: 'a.bitrix24.ru', admin: false }, SECRET, 3600, 1000)
+    const [payload, sig] = token.split('.')
+    // подменяем payload на admin:true, подпись оставляем прежнюю
+    const forgedPayload = Buffer.from(JSON.stringify({ portalId: 'p', exp: 1000 + 3600, admin: true })).toString('base64url')
+    expect(verifySession(`${forgedPayload}.${sig}`, SECRET, 1000)).toBeNull()
+    expect(payload).not.toBe(forgedPayload)
+  })
+
   it('TTL=0 → сессия немедленно просрочена (exp == now)', () => {
-    const { session, token } = mintPortalSession({ portalId: 'p', domain: 'a.bitrix24.ru' }, SECRET, 0, 1000)
+    const { session, token } = mintPortalSession({ portalId: 'p', domain: 'a.bitrix24.ru', admin: false }, SECRET, 0, 1000)
     expect(session.exp).toBe(1000)
     expect(verifySession(token, SECRET, 1000)).toBeNull() // exp <= now
   })

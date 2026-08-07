@@ -14,6 +14,12 @@ export interface PortalSession {
   portalId: string
   /** срок годности, unix-секунды. */
   exp: number
+  /**
+   * Администратор ли пользователь, открывший фрейм (`profile.ADMIN` на момент handshake).
+   * **Необязательное и fail-closed:** отсутствие поля = НЕ администратор. Так старые сессии,
+   * выписанные до появления гейта, не дают прав записи, а не наоборот.
+   */
+  admin?: boolean
 }
 
 /** Минимальная длина серверного секрета (слабый/пустой → отказ, а не слабый HMAC). */
@@ -106,7 +112,10 @@ export function resolveDashboardAuth(
     return session ? { ok: true, session } : { ok: false, status: 401 }
   }
   if (env.devOpen || !env.isProduction) {
-    return { ok: true, session: { portalId: DEV_PORTAL_ID, exp: now + 3600 } }
+    // Dev-открытый режим = авторизации нет вообще (документирован как «только демо, в проде утечёт
+    // PII»). Раз так, роль тоже открыта — иначе конструктор опросов нельзя было бы гонять локально.
+    // В проде эта ветка недостижима при заданном секрете (секрет имеет приоритет).
+    return { ok: true, session: { portalId: DEV_PORTAL_ID, exp: now + 3600, admin: true } }
   }
   return { ok: false, status: 503 }
 }

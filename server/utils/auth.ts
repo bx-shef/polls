@@ -38,3 +38,28 @@ export function requirePortalSession(event: H3Event): PortalSession {
   if (decision.session.portalId === DEV_PORTAL_ID) warnDevOpenOnce()
   return decision.session
 }
+
+/**
+ * Гейт ЗАПИСИ конфигурации опросов (#182-аналог): сессия портала + роль администратора портала.
+ *
+ * Зачем отдельно от `requirePortalSession`: та отвечает лишь на вопрос «какой это портал». Пока
+ * гейта роли не было, любой сотрудник портала, открывший приложение во фрейме, мог опубликовать
+ * версию опроса — то есть изменить текст, который увидит клиент заказчика. Читать дашборд может
+ * любой сотрудник (для этого хватает `requirePortalSession`), менять конфигурацию — только админ.
+ *
+ * Роль берётся из ПОДПИСАННОЙ сессии (`profile.ADMIN` на момент handshake): подделать её нельзя,
+ * и каждый запрос не тратит REST к порталу. Цена — роль «залипает» на срок сессии (8 ч): снятие
+ * прав вступит в силу после её истечения. Отсутствие поля = НЕ админ (fail-closed для сессий,
+ * выписанных до появления гейта).
+ */
+export function requireAdminSession(event: H3Event): PortalSession {
+  const session = requirePortalSession(event)
+  if (session.admin !== true) {
+    throw createError({
+      statusCode: 403,
+      statusMessage: 'Forbidden',
+      data: { ok: false, error: 'Менять опросы может только администратор портала Bitrix24. Обратитесь к нему.' }
+    })
+  }
+  return session
+}

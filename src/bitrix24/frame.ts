@@ -68,13 +68,21 @@ export function isAllowedPortalDomain(domain: string, allow: RegExp = DEFAULT_PO
 }
 
 /**
- * Авторитетная проверка токена фрейма → РЕАЛЬНЫЙ member_id владельца токена. Боевая реализация —
- * `createPortalAuthenticator` (`authenticate.ts`): ЛЁГКИЙ REST-вызов `app.info` к
- * `https://{domain}/rest/app.info` с переданным `AUTH_ID` (доказывает, что токен жив и принадлежит
+ * Авторитетная проверка токена фрейма → РЕАЛЬНЫЙ member_id владельца токена + роль вызывающего.
+ * Боевая реализация — `createPortalAuthenticator` (`authenticate.ts`): ЛЁГКИЙ REST-вызов `profile`
+ * к `https://{domain}/rest/profile` с переданным `AUTH_ID` (доказывает, что токен жив и принадлежит
  * порталу) + резолв member_id из install-маппинга `domain → member_id`. НЕ через OAuth-refresh
  * (ротирует токен → race). `AUTH_ID` — в теле POST, НЕ в query (иначе токен утечёт в access-логи).
+ *
+ * Почему `profile`, а не `app.info`: тот же один вызов и та же цена, но он дополнительно отдаёт
+ * `ADMIN` — роль ИМЕННО ТОГО пользователя, чьим токеном открыт фрейм. Без неё сессия несла только
+ * «какой это портал», и любой сотрудник портала мог опубликовать опрос (см. `requireAdminSession`).
+ * Скоуп методу не нужен — `profile` доступен приложению всегда.
  */
-export type PortalAuthenticator = (input: { domain: string; authId: string }) => Promise<{ memberId: string }>
+export type PortalAuthenticator = (input: {
+  domain: string
+  authId: string
+}) => Promise<{ memberId: string; admin: boolean }>
 
 export interface VerifyFrameOptions {
   authenticate: PortalAuthenticator
@@ -82,10 +90,12 @@ export interface VerifyFrameOptions {
   allowedDomain?: RegExp
 }
 
-/** Подтверждённый портал: tenant-ключ из авторитетного источника + проверенный домен. */
+/** Подтверждённый портал: tenant-ключ из авторитетного источника + проверенный домен + роль. */
 export interface VerifiedPortal {
   portalId: string
   domain: string
+  /** Администратор ли пользователь, открывший фрейм (`profile.ADMIN`). */
+  admin: boolean
 }
 
 /**
@@ -98,12 +108,12 @@ export async function verifyFrameAuth(frame: FrameAuth, opts: VerifyFrameOptions
   if (!isAllowedPortalDomain(frame.DOMAIN, opts.allowedDomain)) {
     throw new OAuthError('Недоверенный домен портала фрейма')
   }
-  const { memberId } = await opts.authenticate({ domain: frame.DOMAIN, authId: frame.AUTH_ID })
+  const { memberId, admin } = await opts.authenticate({ domain: frame.DOMAIN, authId: frame.AUTH_ID })
   if (!memberId || memberId !== frame.member_id) {
     // Токен валиден, но принадлежит другому порталу, чем заявлено в POST → не выписываем сессию.
     throw new OAuthError('member_id фрейма не совпал с владельцем токена (cross-tenant)')
   }
-  return { portalId: memberId, domain: frame.DOMAIN }
+  return { portalId: memberId, domain: frame.DOMAIN, admin }
 }
 
 /** Срок сессии дашборда по умолчанию: 8 часов (наша сессия независима от TTL b24-токена). */
@@ -116,6 +126,9 @@ export function mintPortalSession(
   ttlSec: number = DEFAULT_SESSION_TTL_SEC,
   now: number = Math.floor(Date.now() / 1000)
 ): { token: string; session: PortalSession } {
-  const session: PortalSession = { portalId: portal.portalId, exp: now + ttlSec }
+  // `admin` кладём в подписанный payload: подделать нельзя (HMAC), а гейт записи не тратит REST на
+  // каждый запрос. Цена решения — роль «залипает» на срок сессии: снятие прав у пользователя вступит
+  // в силу лишь после её истечения (8 ч). Записано в карту проекта, §Ключевые решения.
+  const session: PortalSession = { portalId: portal.portalId, exp: now + ttlSec, admin: portal.admin }
   return { token: signSession(session, secret), session }
 }

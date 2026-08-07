@@ -18,13 +18,16 @@ import { logger } from '../../../../utils/api'
  * стора — пробрасывается, не маскируется под 422). Body-limit по content-length — паритет с
  * /api/submit (отсекает обычный случай; потоковый cap для chunked-тел без заголовка — слой прокси #4).
  *
- * AUTH (#47): `requirePortalSession` (fail-closed) — публикация опроса доступна лишь авторизованному
- * порталу. Tenant-scoped внутри PgStore по portalId (single-tenant MVP; мульти-тенант — #49).
+ * AUTH: `requireAdminSession` (fail-closed) — мало быть авторизованным порталом, нужна роль
+ * АДМИНИСТРАТОРА портала (`profile.ADMIN`, снят при handshake и лежит в подписанной сессии).
+ * Публикация меняет текст, который увидит клиент заказчика, поэтому право на неё уже не то же,
+ * что право посмотреть дашборд. Не админ → 403. Tenant-scoped внутри PgStore по portalId
+ * (single-tenant MVP; мульти-тенант — #49).
  */
 const MAX_BODY_BYTES = 64 * 1024
 
 export default defineEventHandler(async (event) => {
-  requirePortalSession(event)
+  requireAdminSession(event)
 
   const len = Number(getRequestHeader(event, 'content-length') ?? 0)
   if (len > MAX_BODY_BYTES) {
