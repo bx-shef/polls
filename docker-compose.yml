@@ -31,6 +31,8 @@ services:
       TRIGGER_MODE: "${TRIGGER_MODE:-}"
       # Окно «переход был только что» для пути event, секунды (дефолт 60, диапазон 5–3600).
       STAGE_ENTRY_WINDOW_SECONDS: "${STAGE_ENTRY_WINDOW_SECONDS:-}"
+      # Кому ещё можно встраивать приложение в iframe (self-hosted/box-порталы).
+      CSP_FRAME_ANCESTORS: "${CSP_FRAME_ANCESTORS:-}"
     restart: unless-stopped
 
   db:
