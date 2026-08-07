@@ -7,6 +7,8 @@
  * Секции:
  *   A) целевая сделка (`B24_DEAL_ID`) → CrmContext + zod-валидация;
  *   B) резолвинг связанных компании/контакта + наличие каналов (email/phone) под #3;
+ *   B2) история стадий (`crm.stagehistory.list`) — сверка формата `STAGE_ID`/`CREATED_TIME`,
+ *       от которого зависит авто-триггер по событию (#17);
  *   C) батч последних N сделок (`B24_DEAL_LIMIT`, по умолч. 10) — робастность маппинга;
  *   D) агрегация ядра (byCompany/byCategory/byProduct/kpiByResponsible) на РЕАЛЬНОМ
  *      контексте — NPS-ответы синтетические и детерминированные (живых ответов пока нет).
@@ -29,6 +31,12 @@ import {
   type StoredAnswer
 } from '../src/domain/schema'
 import { byCategory, byCompany, byProduct, kpiByResponsible, npsFor } from '../src/domain/aggregate'
+import {
+  inspectStageEntry,
+  STAGE_ENTRY_WINDOW_DEFAULT_SEC,
+  STAGE_HISTORY_ENTITY_TYPE_ID,
+  type StageHistoryRecord
+} from '../src/bitrix24/stage-transition'
 
 const base = process.env['B24_WEBHOOK_URL']?.replace(/\/?$/, '/') // гарантируем хвостовой '/'
 if (!base) {
@@ -126,6 +134,61 @@ async function checkResolve(ctx: CrmContext): Promise<void> {
   }
 }
 
+/**
+ * История стадий целевой сделки — сверка ФОРМАТА, от которого зависит авто-триггер по событию (#17).
+ * Проверяем ровно две вещи, на которых механизм может молча не работать:
+ *   • `STAGE_ID` истории совпадает по формату с `STAGE_ID` из `crm.deal.get` (префикс воронки `C<N>:`);
+ *   • `CREATED_TIME` парсится и даёт вменяемый возраст (смещение таймзоны портала не уводит за окно).
+ * Значений ПДн тут нет — только стадии и отметки времени, печатать безопасно.
+ */
+async function checkStageHistory(ctx: CrmContext): Promise<void> {
+  if (ctx.dealId == null) return
+  console.log('─ B2) История стадий (формат для авто-триггера) ─')
+  let items: Array<Record<string, unknown>>
+  try {
+    const res = await call<{ items?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>>(
+      'crm.stagehistory.list',
+      { entityTypeId: STAGE_HISTORY_ENTITY_TYPE_ID.deal, filter: { OWNER_ID: ctx.dealId }, order: { ID: 'DESC' } }
+    )
+    items = Array.isArray(res) ? res : (res.items ?? [])
+  } catch (e) {
+    console.log(`  crm.stagehistory.list(${ctx.dealId}): ошибка — ${msg(e)}`)
+    process.exitCode = 1
+    return
+  }
+  if (items.length === 0) {
+    console.log('  история пуста — авто-триггер по событию на такой сделке промолчит (fail-closed, это норма)')
+    return
+  }
+  console.log(`  записей: ${items.length}`)
+  for (const r of items.slice(0, 3)) {
+    console.log(`    ID=${str(r['ID']) ?? num(r['ID'])} TYPE_ID=${r['TYPE_ID']} STAGE_ID=${r['STAGE_ID']} CREATED_TIME=${r['CREATED_TIME']}`)
+  }
+  // Ядро принимает решение по этим же записям — прогоняем его и печатаем наблюдённые факты.
+  const now = new Date()
+  const seen = inspectStageEntry(items as StageHistoryRecord[], {
+    stageId: ctx.dealStageId ?? '',
+    now,
+    windowSec: STAGE_ENTRY_WINDOW_DEFAULT_SEC
+  })
+  console.log(`  ядро видит: стадия «${seen.observedStageId ?? '—'}», возраст ${seen.ageSec ?? '—'} с, свежий переход: ${seen.fresh ? 'да' : 'нет'}`)
+  if (seen.observedStageId === undefined) {
+    console.log('  ✗ в истории нет STAGE_ID — авто-триггер по событию не сможет сработать никогда')
+    process.exitCode = 1
+  } else if (seen.observedStageId !== ctx.dealStageId) {
+    console.log(`  ⚠ формат/значение расходится с crm.deal.get («${ctx.dealStageId ?? '—'}»). Если сделку давно не двигали — это норма;`)
+    console.log('    если только что перевели, а стадии не совпали — расхождение ФОРМАТА, авто-триггер молчал бы всегда.')
+  } else {
+    console.log('  ✓ STAGE_ID истории совпал с текущей стадией сделки — формат сходится.')
+  }
+  if (seen.ageSec === undefined) {
+    console.log('  ✗ CREATED_TIME не разобрался — проверка свежести всегда даст «нет»')
+    process.exitCode = 1
+  } else if (seen.ageSec < -STAGE_ENTRY_WINDOW_DEFAULT_SEC) {
+    console.log(`  ⚠ запись «из будущего» на ${-seen.ageSec} с — часы портала и сервера разъехались за окно (${STAGE_ENTRY_WINDOW_DEFAULT_SEC} с)`)
+  }
+}
+
 const QKEY = 'nps_demo'
 /** Синтетический, но детерминированный ResponseRecord поверх РЕАЛЬНОГО контекста. */
 function syntheticRecord(ctx: CrmContext, i: number): ResponseRecord {
@@ -173,6 +236,8 @@ async function main(): Promise<void> {
     // ── B) резолвинг компании/контакта + каналы под invitation-flow #3 ──
     console.log('─ B) Резолвинг связанных сущностей ─')
     await checkResolve(target)
+    // ── B2) история стадий: формат, от которого зависит авто-триггер по событию (#17) ──
+    await checkStageHistory(target)
   }
 
   // ── C) батч последних N сделок → маппинг + валидация (робастность) ──

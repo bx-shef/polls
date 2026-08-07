@@ -34,6 +34,14 @@ describe('resolveStageEntryWindowSec — окно из настроек', () => 
     expect(resolveStageEntryWindowSec('abc')).toBe(STAGE_ENTRY_WINDOW_DEFAULT_SEC)
     expect(resolveStageEntryWindowSec(NaN)).toBe(STAGE_ENTRY_WINDOW_DEFAULT_SEC)
   })
+
+  it('ПУСТАЯ переменная окружения → дефолт, а не минимум', () => {
+    // `STAGE_ENTRY_WINDOW_SECONDS=` — штатный случай; Number('') даёт 0 и окно молча схлопнулось бы
+    // до 5 с (в 12 раз уже документированного), то есть переходы начали бы теряться
+    expect(resolveStageEntryWindowSec('')).toBe(STAGE_ENTRY_WINDOW_DEFAULT_SEC)
+    expect(resolveStageEntryWindowSec('   ')).toBe(STAGE_ENTRY_WINDOW_DEFAULT_SEC)
+    expect(resolveStageEntryWindowSec(null)).toBe(STAGE_ENTRY_WINDOW_DEFAULT_SEC)
+  })
   it('вне диапазона — кламп к границам (защита от бессмысленных настроек)', () => {
     expect(resolveStageEntryWindowSec(0)).toBe(STAGE_ENTRY_WINDOW_MIN_SEC)
     expect(resolveStageEntryWindowSec(-100)).toBe(STAGE_ENTRY_WINDOW_MIN_SEC)
@@ -92,6 +100,34 @@ describe('isFreshStageEntry — был ли вход в стадию ТОЛЬК�
     expect(isFreshStageEntry([], check('WON'))).toBe(false)
     expect(isFreshStageEntry([{ STAGE_ID: 'WON', CREATED_TIME: 'не-дата' }], check('WON'))).toBe(false)
     expect(isFreshStageEntry([{ STAGE_ID: 'WON' }], check('WON'))).toBe(false)
+  })
+
+  it('битая дата у САМОЙ СВЕЖЕЙ записи → нет (а не «победила» бы предыдущая — это был бы fail-OPEN)', () => {
+    // сделка уже ушла в LOSE, но дата этой записи нечитаема; раньше выигрывала более старая WON
+    // и приглашение уходило по покинутой стадии
+    const records = [
+      { ID: 102, STAGE_ID: 'C1:LOSE', CREATED_TIME: '' },
+      rec({ ID: 101, STAGE_ID: 'C1:WON', agoSec: 30 })
+    ]
+    expect(isFreshStageEntry(records, check('C1:WON'))).toBe(false)
+  })
+
+  it('боевой формат портала — ISO со смещением таймзоны — разбирается верно', () => {
+    // портал отдаёт CREATED_TIME со смещением (+03:00), а не в UTC-нотации; ошибка разбора
+    // молча сдвинула бы окно на часы
+    const r = { ID: 1, STAGE_ID: 'C1:WON', CREATED_TIME: '2026-07-31T15:00:30+03:00' } // = 12:00:30Z
+    expect(isFreshStageEntry([r], check('C1:WON'))).toBe(true)
+    const old = { ID: 1, STAGE_ID: 'C1:WON', CREATED_TIME: '2026-07-31T15:00:30+01:00' } // = 14:00:30Z
+    expect(isFreshStageEntry([old], check('C1:WON'))).toBe(false)
+  })
+
+  it('строковые ID сравниваются численно, а не лексикографически ("9" против "10")', () => {
+    const records = [
+      { ID: '9', STAGE_ID: 'C1:WON', CREATED_TIME: new Date(NOW.getTime() - 5000).toISOString() },
+      { ID: '10', STAGE_ID: 'C1:LOSE', CREATED_TIME: new Date(NOW.getTime() - 2000).toISOString() }
+    ]
+    expect(isFreshStageEntry(records, check('C1:LOSE'))).toBe(true) // 10 новее 9
+    expect(isFreshStageEntry(records, check('C1:WON'))).toBe(false)
   })
 
   it('создание сделки СРАЗУ в триггерной стадии тоже считается входом', () => {

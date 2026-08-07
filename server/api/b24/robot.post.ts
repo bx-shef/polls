@@ -11,6 +11,7 @@ import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
+import { resolveTriggerMode, robotTriggerEnabled } from '~core/bitrix24/trigger-mode'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { useStore, useInvitations, logger } from '../../utils/api'
@@ -20,20 +21,28 @@ import { useStore, useInvitations, logger } from '../../utils/api'
 const robotLimiter = new SlidingWindowLimiter({ limit: 120, windowMs: 60_000 })
 
 export default defineEventHandler(async (event) => {
+  // Режим триггера выключен для робота → не обслуживаем, даже если регистрация осталась с прошлой
+  // установки. Иначе при включённом событии один переход дал бы ДВА приглашения.
+  if (!robotTriggerEnabled(resolveTriggerMode(process.env.TRIGGER_MODE))) {
+    setResponseStatus(event, 200)
+    return 'ok'
+  }
   if (!robotLimiter.allow(getRequestIP(event) ?? '?', new Date())) {
-    logger.warn('b24_robot_ratelimited', { msg: 'превышен лимит роут-робота' })
+    logger.warn('b24_robot_ratelimited', { detail: 'превышен лимит роут-робота' })
     setResponseStatus(event, 200)
     return 'ok'
   }
 
-  const body = await readBody(event).catch(() => ({}))
-  const raw = parseBracketForm((body && typeof body === 'object' ? body : {}) as Record<string, unknown>)
-
   try {
+    // Разбор тела — ВНУТРИ try: иначе неожиданный throw дал бы 500 вместо инварианта «всегда 200»
+    // (и отличимый от нормы ответ анонимному вызывающему).
+    const body = await readBody(event).catch(() => ({}))
+    const raw = parseBracketForm((body && typeof body === 'object' ? body : {}) as Record<string, unknown>)
+
     const cfg = b24AppConfig()
     const tokenStore = await usePortalTokenStore()
     if (!cfg || !tokenStore) {
-      logger.warn('b24_robot_no_config', { msg: 'интеграция не сконфигурирована (cfg/tokenStore)' })
+      logger.warn('b24_robot_no_config', { detail: 'интеграция не сконфигурирована (cfg/tokenStore)' })
       setResponseStatus(event, 200)
       return 'ok'
     }
@@ -69,14 +78,14 @@ export default defineEventHandler(async (event) => {
 
     if (outcome.kind === 'ignored') {
       // Логируем КЛЮЧИ (не значения) — так дрейф wire-формата робота виден в проде.
-      logger.warn('b24_robot_ignored', { msg: `не распознано (${outcome.reason}); ключи: ${Object.keys(raw).join(',')}` })
+      logger.warn('b24_robot_ignored', { reason: outcome.reason, keys: Object.keys(raw).join(',') })
     } else if (outcome.kind === 'forged') {
       logger.warn('b24_robot_reject', { reason: outcome.reason, memberId: outcome.memberId })
     } else {
-      logger.info('b24_robot', { msg: `сделка ${outcome.dealId}: создано приглашений ${outcome.results.length}` })
+      logger.info('b24_robot', { dealId: outcome.dealId, invitations: outcome.results.length })
     }
   } catch (e) {
-    logger.warn('b24_robot_fail', { msg: (e as Error).message })
+    logger.warn('b24_robot_fail', { detail: (e as Error).message })
   }
 
   setResponseStatus(event, 200)

@@ -11,11 +11,12 @@ import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params, stageHistoryList } from '~core/bitrix24/client'
 import {
-  isFreshStageEntry,
+  inspectStageEntry,
   resolveStageEntryWindowSec,
   STAGE_HISTORY_ENTITY_TYPE_ID
 } from '~core/bitrix24/stage-transition'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
+import { resolveTriggerMode, eventTriggerEnabled } from '~core/bitrix24/trigger-mode'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { useStore, useInvitations, logger } from '../../utils/api'
@@ -31,6 +32,11 @@ import { useStore, useInvitations, logger } from '../../utils/api'
 const dealUpdateLimiter = new SlidingWindowLimiter({ limit: 600, windowMs: 60_000 })
 
 export default defineEventHandler(async (event) => {
+  // Режим триггера выключен для события → не обслуживаем (регистрация могла остаться с прошлой установки).
+  if (!eventTriggerEnabled(resolveTriggerMode(process.env.TRIGGER_MODE))) {
+    setResponseStatus(event, 200)
+    return 'ok'
+  }
   if (!dealUpdateLimiter.allow(getRequestIP(event) ?? '?', new Date())) {
     // B24 online-события не ретраит; наружу — «ok» (не раскрываем лимит), но в лог для диагностики.
     logger.warn('b24_deal_update_ratelimited', { msg: 'превышен лимит event-роута' })
@@ -65,13 +71,18 @@ export default defineEventHandler(async (event) => {
     const store = await useStore()
 
     // Клиент портала: токеном ПОРТАЛА (не события). Домен — из СОХРАНЁННОГО токена (валидирован
-    // allowlist'ом на установке), не из недоверенного события (SSRF). Общий для догрузки сделки и истории.
-    const portalClient = async (memberId: string) => {
-      const tokens = await tokenStore.load(memberId)
-      const accessToken = await tokenStore.accessToken(memberId, oauth)
-      if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
-      return createPortalClient(frameToB24Params({ domain: tokens.domain, accessToken, memberId }), cfg.secret)
-    }
+    // allowlist'ом на установке), не из недоверенного события (SSRF). ОДИН на обработку события
+    // (мемоизация): иначе догрузка сделки и запрос истории строили бы клиента дважды — два чтения
+    // токена с расшифровкой и, главное, два независимых лимитера SDK, не видящих суммарный темп.
+    // Инстанс single-tenant, `member_id` в запросе один — кэш по нему безопасен.
+    let clientPromise: Promise<ReturnType<typeof createPortalClient>> | undefined
+    const portalClient = (memberId: string) =>
+      (clientPromise ??= (async () => {
+        const tokens = await tokenStore.load(memberId)
+        const accessToken = await tokenStore.accessToken(memberId, oauth)
+        if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
+        return createPortalClient(frameToB24Params({ domain: tokens.domain, accessToken, memberId }), cfg.secret)
+      })())
 
     const outcome = await runDealUpdate(raw, {
       storedApplicationToken: async (memberId) => (await tokenStore.load(memberId))?.applicationToken,
@@ -81,13 +92,25 @@ export default defineEventHandler(async (event) => {
       confirmStageEntry: async (dealId, stageId, memberId) => {
         try {
           const records = await stageHistoryList(await portalClient(memberId), STAGE_HISTORY_ENTITY_TYPE_ID.deal, dealId)
-          return isFreshStageEntry(records, {
+          const seen = inspectStageEntry(records, {
             stageId,
             now: new Date(),
             windowSec: resolveStageEntryWindowSec(process.env.STAGE_ENTRY_WINDOW_SECONDS)
           })
+          if (!seen.fresh) {
+            // Пишем НАБЛЮДЁННОЕ: иначе системная поломка (рассинхрон формата стадии, уехавшие часы,
+            // пустая история) выглядит в логе ровно как штатное «переход был давно».
+            logger.info('b24_stage_entry_stale', {
+              dealId,
+              expectedStage: stageId,
+              observedStage: seen.observedStageId ?? '(история пуста)',
+              ageSec: seen.ageSec ?? null,
+              records: records.length
+            })
+          }
+          return seen.fresh
         } catch (e) {
-          logger.warn('b24_stage_history_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
+          logger.warn('b24_stage_history_fail', { dealId, detail: (e as Error).message })
           return false
         }
       },
@@ -114,7 +137,7 @@ export default defineEventHandler(async (event) => {
       logger.warn('b24_deal_update_reject', { reason: outcome.reason, memberId: outcome.memberId })
     } else if (outcome.kind === 'skipped') {
       // Штатная ветка: обычное редактирование сделки, давно стоящей в триггерной стадии. info, не warn.
-      logger.info('b24_deal_update_skip', { msg: `сделка ${outcome.dealId}: перехода в ${outcome.stageId} только что не было` })
+      logger.info('b24_deal_update_skip', { dealId: outcome.dealId, stageId: outcome.stageId })
     } else {
       logger.info('b24_deal_update', { msg: `создано приглашений: ${outcome.results.length}` })
     }

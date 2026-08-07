@@ -156,6 +156,13 @@ function build(min: LogLevel, now: () => Date, sink: (l: LogLevel, line: string)
     // Record<LogLevel,number>[LogLevel] ≠ undefined даже при noUncheckedIndexedAccess.
     if (RANK[level] < RANK[min]) return
     const safe = redact({ ...base, ...fields }) as LogFields
+    // `msg` зарезервирован под ИМЯ события, и раньше поле с тем же именем из `fields` просто
+    // затиралось — вся деталь вызова молча пропадала из лога (диагностика превращалась в пустышку).
+    // Теперь такое поле переносим в `detail`, а не теряем; если `detail` уже занят — не трогаем его.
+    if (safe.msg !== undefined) {
+      if (safe.detail === undefined) safe.detail = safe.msg
+      delete safe.msg
+    }
     // Зарезервированные поля идут ПОСЛЕ spread — их нельзя перетереть из fields.
     sink(level, JSON.stringify({ ...safe, level, time: now().toISOString(), msg }))
   }

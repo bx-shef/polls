@@ -72,7 +72,7 @@ describe('stageHistoryList — история движения по стадия
         entityTypeId: 2,
         order: { ID: 'DESC' },
         filter: { OWNER_ID: 759 },
-        select: ['ID', 'TYPE_ID', 'OWNER_ID', 'CREATED_TIME', 'CATEGORY_ID', 'STAGE_ID']
+        select: ['ID', 'CREATED_TIME', 'STAGE_ID']
       }
     ])
   })
@@ -82,10 +82,9 @@ describe('stageHistoryList — история движения по стадия
     expect(await stageHistoryList(client(ok({ items: 'не-массив' })), 2, 1)).toEqual([])
   })
 
-  it('берётся только хвост истории (полную не тянем)', async () => {
+  it('страница отдаётся целиком, БЕЗ среза (срез до сортировки мог бы оставить самые старые записи)', async () => {
     const many = Array.from({ length: 50 }, (_, i) => ({ ID: i }))
-    expect(await stageHistoryList(client(ok({ items: many })), 2, 1)).toHaveLength(10)
-    expect(await stageHistoryList(client(ok({ items: many })), 2, 1, { limit: 3 })).toHaveLength(3)
+    expect(await stageHistoryList(client(ok({ items: many })), 2, 1)).toHaveLength(50)
   })
 })
 

@@ -140,10 +140,23 @@ describe('runDealUpdate — подтверждение перехода стад
     expect(confirmStageEntry).toHaveBeenCalledWith(759, 'C1:WON', 'member-id-fake-0000000000000000')
   })
 
-  it('перехода не было (обычный апдейт давно стоящей сделки) → skipped, приглашения НЕТ', async () => {
+  it('перехода не было (обычный апдейт давно стоящей сделки) → skipped, приглашение НЕ создано', async () => {
     const invitations = new MemoryInvitationStore()
+    const create = vi.spyOn(invitations, 'create')
     const res = await runDealUpdate(rawEvent(), deps({ confirmStageEntry: async () => false, invitations }))
     expect(res).toEqual({ kind: 'skipped', reason: 'stale_stage', dealId: 759, stageId: 'C1:WON' })
+    expect(create).not.toHaveBeenCalled() // не только outcome — приглашения действительно нет
+  })
+
+  it('стадия не триггерит опросы → историю НЕ спрашиваем (дешёвый гейт по БД экономит REST)', async () => {
+    const confirmStageEntry = vi.fn(async () => true)
+    // сделка в C1:WON, но триггер настроен на другую стадию
+    const res = await runDealUpdate(
+      rawEvent(),
+      deps({ store: store({ 'C1:LOSE': ['x'] }, { x: 1 }), confirmStageEntry })
+    )
+    expect(confirmStageEntry).not.toHaveBeenCalled()
+    expect(res).toEqual({ kind: 'ok', results: [] })
   })
 
   it('проверка НЕ задана (путь робота) → работает как раньше, без обращения к истории', async () => {

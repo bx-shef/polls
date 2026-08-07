@@ -18,9 +18,6 @@ import type { InvitationStore } from '../api/invitation'
  * `application_token` (constant-time) → **только потом** догрузка сделки токеном ПОРТАЛА. I/O инжектируется.
  */
 
-/** Код робота в автоматизации портала (регистрируется при установке, `surveyRobotParams`). */
-export { SURVEY_ROBOT_CODE } from './install'
-
 /**
  * ⚠️ Wire-формат: Bitrix шлёт робота как **form-urlencoded в bracket-нотации**, поэтому после
  * `parseBracketForm` массив приходит НЕ массивом, а объектом с числовыми ключами:
@@ -31,11 +28,15 @@ export { SURVEY_ROBOT_CODE } from './install'
 function toStringArray(v: unknown): string[] | undefined {
   if (Array.isArray(v)) return v.every((x) => typeof x === 'string') ? (v as string[]) : undefined
   if (v && typeof v === 'object') {
-    const entries = Object.entries(v as Record<string, unknown>)
-      .map(([k, val]) => [Number(k), val] as const)
-      .filter(([k, val]) => Number.isInteger(k) && k >= 0 && typeof val === 'string')
-      .sort(([a], [b]) => a - b)
-    return entries.length ? entries.map(([, val]) => val as string) : undefined
+    const raw = Object.entries(v as Record<string, unknown>)
+    // Кап на число ключей — до сверки токена мы разбираем недоверенное тело; длинный список
+    // сортировать незачем (реальный document_id — 3 элемента).
+    if (raw.length === 0 || raw.length > 20) return undefined
+    const entries = raw.map(([k, val]) => [Number(k), val] as const).sort(([a], [b]) => a - b)
+    // Симметрично ветке массива: любой непригодный элемент → отказ целиком, а не тихое выбрасывание
+    // (иначе `{0:'crm',1:'DEAL_759',2:99}` дало бы усечённый путь и не тот элемент id).
+    if (!entries.every(([k, val]) => Number.isInteger(k) && k >= 0 && typeof val === 'string')) return undefined
+    return entries.map(([, val]) => val as string)
   }
   return undefined
 }
@@ -44,11 +45,13 @@ function toStringArray(v: unknown): string[] | undefined {
  * Полезная нагрузка робота. `document_id` — `['crm','CCrmDocumentDeal','DEAL_759']` (после нормализации
  * выше). Схема мягкая: лишние поля (`code`, `event_token`, `properties`, `ts`) не мешают.
  */
+// Капы длины зеркалят схему событий (`deal-event.ts`): тело недоверенное и разбирается ДО сверки токена,
+// поэтому многомегабайтный `member_id` не должен уезжать в SQL-параметр и в лог.
 const robotEventSchema = z.object({
-  document_id: z.preprocess(toStringArray, z.array(z.string()).min(1)),
+  document_id: z.preprocess(toStringArray, z.array(z.string().max(200)).min(1).max(10)),
   auth: z.object({
-    member_id: z.string().min(1),
-    application_token: z.string().min(1)
+    member_id: z.string().min(1).max(200),
+    application_token: z.string().min(1).max(253)
   })
 })
 export type RobotEvent = z.infer<typeof robotEventSchema>

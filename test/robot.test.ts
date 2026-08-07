@@ -127,4 +127,45 @@ describe('runRobotTrigger — робот автоматизации «Запус
     const res = await runRobotTrigger(rawRobot(), deps({ store: store({ 'C1:LOSE': ['x'] }, { x: 1 }) }))
     expect(res).toEqual({ kind: 'ok', results: [], dealId: 759 })
   })
+
+  it('непригодный document_id (не-строки, мусор, пусто) → ignored, без исходящих вызовов', async () => {
+    const fetchDeal = vi.fn(deps().fetchDeal)
+    for (const d of [{}, { foo: 'bar' }, ['crm', 'CCrmDocumentDeal', 123], { 0: 'crm', 1: 99 }]) {
+      const res = await runRobotTrigger(rawRobot({ document_id: d }), deps({ fetchDeal }))
+      expect(res.kind).toBe('ignored')
+    }
+    expect(fetchDeal).not.toHaveBeenCalled()
+  })
+
+  it('чрезмерно длинные значения отвергаются (тело недоверенное, разбор ДО сверки токена)', async () => {
+    const long = 'x'.repeat(500)
+    expect(await runRobotTrigger(rawRobot({ auth: { member_id: long, application_token: 't' } }), deps())).toEqual({
+      kind: 'ignored',
+      reason: 'parse'
+    })
+  })
+
+  it('паритет с событийным путём: одна сделка → тот же опрос/версия и тот же снимок контекста', async () => {
+    // два оркестратора дублируют dealToCrmContext + handleDealTrigger; расхождение поймается здесь
+    const { runDealUpdate } = await import('../src/bitrix24/deal-update')
+    const invR = new MemoryInvitationStore()
+    const invE = new MemoryInvitationStore()
+    const now = new Date('2026-07-31T12:00:00.000Z')
+    const r = await runRobotTrigger(rawRobot(), deps({ invitations: invR, now }))
+    const e = await runDealUpdate(
+      {
+        event: 'ONCRMDEALUPDATE',
+        data: { FIELDS: { ID: '759' } },
+        auth: { member_id: 'member-id-fake-0000000000000000', domain: 'acme.bitrix24.ru', application_token: 'app-token-fake-0000000000000000' }
+      },
+      { ...deps({ invitations: invE, now }), confirmStageEntry: async () => true }
+    )
+    expect(r.kind === 'ok' && e.kind === 'ok').toBe(true)
+    if (r.kind === 'ok' && e.kind === 'ok') {
+      expect(r.results.map(({ surveyKey, versionNo }) => ({ surveyKey, versionNo }))).toEqual(
+        e.results.map(({ surveyKey, versionNo }) => ({ surveyKey, versionNo }))
+      )
+      expect(invR.peek(r.results[0]!.token, now)?.context).toEqual(invE.peek(e.results[0]!.token, now)?.context)
+    }
+  })
 })

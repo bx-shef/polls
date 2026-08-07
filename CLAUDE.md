@@ -138,4 +138,4 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typeche
 `@bitrix24/b24ui-nuxt ^2.9`. Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
-*Обновлено: 2026-07-31. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
+*Обновлено: 2026-08-07. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*

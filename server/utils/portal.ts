@@ -2,6 +2,7 @@ import { TokenCipher, loadTokenKey } from '~core/bitrix24/crypto'
 import { PortalTokenStore } from '~core/bitrix24/portal'
 import { createPortalClient, callMethod, type B24OAuthParams, type B24OAuthSecret } from '~core/bitrix24/client'
 import { surveyPlacements, surveyEventBindParams, surveyRobotParams } from '~core/bitrix24/install'
+import { resolveTriggerMode, eventTriggerEnabled, robotTriggerEnabled } from '~core/bitrix24/trigger-mode'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalDb, logger } from './api'
 
@@ -64,14 +65,20 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
  */
 export async function registerIntegrations(authParams: B24OAuthParams, cfg: B24AppConfig): Promise<void> {
   const client = createPortalClient(authParams, cfg.secret)
+  // Режим триггера решает, ЧТО регистрировать: включать оба пути сразу = риск двух приглашений на один
+  // переход (робот сработает на входе, событие — тем же изменением). Дефолт `event` — на всех тарифах.
+  const mode = resolveTriggerMode(process.env.TRIGGER_MODE)
   const calls: Array<[string, Record<string, unknown>]> = [
-    // Авто-триггер на всех тарифах (#17): ONCRMDEALUPDATE → наш handler → подтверждение перехода
-    // историей стадий → фильтр по триггер-стадии.
-    ['event.bind', surveyEventBindParams(`${cfg.baseUrl}/api/b24/deal-update`)],
-    // Робот автоматизации (#122): срабатывает ровно НА ВХОДЕ в стадию (точнее события, но зависит от
-    // тарифа — bizproc есть не везде). Ошибка регистрации толерируется ниже, поэтому на младших тарифах
-    // установка просто продолжится с одним event.bind.
-    ['bizproc.robot.add', surveyRobotParams(`${cfg.baseUrl}/api/b24/robot`)],
+    // Авто-триггер (#17): ONCRMDEALUPDATE → наш handler → подтверждение перехода историей стадий →
+    // фильтр по триггер-стадии.
+    ...(eventTriggerEnabled(mode)
+      ? ([['event.bind', surveyEventBindParams(`${cfg.baseUrl}/api/b24/deal-update`)]] as Array<[string, Record<string, unknown>]>)
+      : []),
+    // Робот автоматизации (#122): срабатывает ровно НА ВХОДЕ в стадию (точнее события, но требует тариф
+    // с роботами). Ошибка регистрации толерируется ниже — на младших тарифах установка не падает.
+    ...(robotTriggerEnabled(mode)
+      ? ([['bizproc.robot.add', surveyRobotParams(`${cfg.baseUrl}/api/b24/robot`)]] as Array<[string, Record<string, unknown>]>)
+      : []),
     ...surveyPlacements(cfg.baseUrl).map((p): [string, Record<string, unknown>] => ['placement.bind', { ...p }])
   ]
   for (const [method, params] of calls) {

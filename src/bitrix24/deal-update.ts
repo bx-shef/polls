@@ -78,11 +78,18 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   const context = dealToCrmContext(deal, productRows)
 
   // Событие приходит на любой апдейт → подтверждаем, что переход в эту стадию был ТОЛЬКО ЧТО.
-  // Стадии в контексте нет — триггерить нечего, проверка не нужна (ниже handleDealTrigger вернёт []).
+  // ⚠️ Порядок важен: СНАЧАЛА дешёвый гейт по БД (`surveysTriggeredBy`, GIN-индекс), и только если стадия
+  // реально запускает опросы — дорогой REST к порталу за историей. Иначе `crm.stagehistory.list` уходил бы
+  // на КАЖДЫЙ апдейт любой сделки в любой стадии (в воронке их большинство), и при массовом редактировании
+  // портал упёрся бы в лимит запросов — а его ошибка гасится в `false`, то есть терялись бы легитимные переходы.
+  // Стадии в контексте нет — триггерить нечего (ниже `handleDealTrigger` вернёт []).
   if (deps.confirmStageEntry && context.dealStageId) {
-    const fresh = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
-    if (!fresh) {
-      return { kind: 'skipped', reason: 'stale_stage', dealId: ev.data.FIELDS.ID, stageId: context.dealStageId }
+    const triggered = await deps.store.surveysTriggeredBy(context.dealStageId)
+    if (triggered.length > 0) {
+      const fresh = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
+      if (!fresh) {
+        return { kind: 'skipped', reason: 'stale_stage', dealId: ev.data.FIELDS.ID, stageId: context.dealStageId }
+      }
     }
   }
 
