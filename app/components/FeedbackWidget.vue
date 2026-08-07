@@ -44,10 +44,14 @@ async function submitDown() {
 
 <template>
   <section v-if="enabled" class="mt-8 border-t border-base-200 pt-4 dark:border-base-800">
-    <div v-if="phase === 'idle'" class="flex flex-wrap items-center gap-3">
+    <!-- На узком экране вопрос уходит на свою строку, а кнопки остаются ПАРОЙ: при простом
+         flex-wrap «Нет» переносилась отдельно от «Да» и пара разъезжалась (видно на эталоне). -->
+    <div v-if="phase === 'idle'" class="flex flex-col gap-3 sm:flex-row sm:items-center">
       <span class="text-sm text-base-600 dark:text-base-300">Приложение помогает в работе?</span>
-      <B24Button color="air-tertiary" size="sm" label="👍 Да" @click="thumbUp" />
-      <B24Button color="air-tertiary" size="sm" label="👎 Нет" @click="askComment" />
+      <div class="flex items-center gap-3">
+        <B24Button color="air-tertiary" size="sm" label="👍 Да" @click="thumbUp" />
+        <B24Button color="air-tertiary" size="sm" label="👎 Нет" @click="askComment" />
+      </div>
     </div>
 
     <div v-else-if="phase === 'commenting'" class="flex flex-col gap-3">
