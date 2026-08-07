@@ -35,7 +35,13 @@ const METRIC_ITEMS = METRIC_VALUES.map((v) => ({ label: METRIC_LABELS[v] ?? v, v
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
-const { data, error, pending, refresh } = await useAsyncData<{ ok: boolean; draft: Draft; currentVersionNo: number }>(
+const { data, error, pending, refresh } = await useAsyncData<{
+  ok: boolean
+  draft: Draft
+  currentVersionNo: number
+  /** Администратор ли текущий пользователь портала: от этого зависит доступность публикации. */
+  admin: boolean
+}>(
   () => `admin-survey:${surveyKey.value}`,
   () => $fetch(`/api/admin/surveys/${surveyKey.value}`),
   { watch: [surveyKey] }
@@ -83,8 +89,15 @@ const structureErrors = computed<string[]>(() => coreStructureErrors(draft.value
 const saving = ref(false)
 const saveMsg = ref<{ ok: boolean; text: string } | null>(null)
 
+/**
+ * Можно ли публиковать. Правду решает сервер (он ответит 403), здесь — чтобы не показывать кнопку,
+ * которая заведомо не сработает. Роль снимается в момент входа в приложение, поэтому после выдачи
+ * прав нужно переоткрыть фрейм — об этом сказано в подсказке рядом с кнопкой.
+ */
+const canPublish = computed(() => data.value?.admin === true)
+
 async function publish() {
-  if (!draft.value || structureErrors.value.length) return
+  if (!draft.value || structureErrors.value.length || !canPublish.value) return
   saving.value = true
   saveMsg.value = null
   const stages = stagesInput.value.split(',').map((s) => s.trim()).filter(Boolean)
@@ -106,8 +119,18 @@ async function publish() {
     saveMsg.value = { ok: true, text: `Опубликована версия v${r.versionNo}.` }
     await refresh()
   } catch (e) {
-    const err = e as { statusMessage?: string; data?: { error?: string } }
-    saveMsg.value = { ok: false, text: err.data?.error ?? err.statusMessage ?? 'Не удалось опубликовать. Попробуйте ещё раз.' }
+    // Две формы ответа: роут отдаёт ошибки телом (`{ok:false,error}` → `err.data.error`), а брошенный
+    // где-то выше `createError` Nitro заворачивает в свой конверт (текст уезжает в `err.data.data.error`).
+    // Читаем обе, иначе пользователь увидит служебное значение вместо сообщения.
+    const err = e as { statusMessage?: string; data?: { error?: string; data?: { error?: string } } }
+    saveMsg.value = {
+      ok: false,
+      text:
+        err.data?.error ??
+        err.data?.data?.error ??
+        err.statusMessage ??
+        'Не удалось опубликовать. Попробуйте ещё раз.'
+    }
   } finally {
     saving.value = false
   }
@@ -217,13 +240,19 @@ async function publish() {
           title="Исправьте перед публикацией"
           :description="structureErrors.join(' ')"
         />
+        <B24Alert
+          v-if="!canPublish"
+          color="air-primary-warning"
+          title="Публиковать может только администратор портала"
+          description="Правки можно готовить и сейчас — они остаются в конструкторе. Опубликовать новую версию попросите администратора Bitrix24. Если права вам только что выдали, закройте и заново откройте приложение."
+        />
         <B24Button
           color="air-primary"
           size="lg"
           label="Опубликовать новую версию"
           class="self-start"
           :loading="saving"
-          :disabled="structureErrors.length > 0"
+          :disabled="!canPublish || structureErrors.length > 0"
           @click="publish"
         />
         <B24Alert

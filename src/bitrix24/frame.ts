@@ -16,7 +16,7 @@ import { signSession, type PortalSession } from '../api/session'
  *     его с заявленным в POST; расхождение → отказ.
  *
  * HTTP инжектируется (`authenticate`) — логика проверяется юнит-тестами без живого портала.
- * Боевой `authenticate` — `createPortalAuthenticator` (`authenticate.ts`): `app.info` к `{domain}` +
+ * Боевой `authenticate` — `createPortalAuthenticator` (`authenticate.ts`): `profile` к `{domain}` +
  * резолв `member_id` из install-маппинга. Эндпоинт `/api/b24/session` (+ cookie) уже привязан; осталось —
  * per-portal tenant-фильтр стора (#49).
  */
@@ -76,7 +76,7 @@ export function isAllowedPortalDomain(domain: string, allow: RegExp = DEFAULT_PO
  *
  * Почему `profile`, а не `app.info`: тот же один вызов и та же цена, но он дополнительно отдаёт
  * `ADMIN` — роль ИМЕННО ТОГО пользователя, чьим токеном открыт фрейм. Без неё сессия несла только
- * «какой это портал», и любой сотрудник портала мог опубликовать опрос (см. `requireAdminSession`).
+ * «какой это портал», и любой сотрудник портала мог опубликовать опрос (см. `resolveWriteAccess`).
  * Скоуп методу не нужен — `profile` доступен приложению всегда.
  */
 export type PortalAuthenticator = (input: {
@@ -127,8 +127,9 @@ export function mintPortalSession(
   now: number = Math.floor(Date.now() / 1000)
 ): { token: string; session: PortalSession } {
   // `admin` кладём в подписанный payload: подделать нельзя (HMAC), а гейт записи не тратит REST на
-  // каждый запрос. Цена решения — роль «залипает» на срок сессии: снятие прав у пользователя вступит
-  // в силу лишь после её истечения (8 ч). Записано в карту проекта, §Ключевые решения.
+  // каждый запрос. Цена — роль фиксируется на момент handshake. На практике окно узкое: фрейм
+  // переоткрывают часто, и каждое открытие минтит сессию заново с актуальной ролью; верхняя граница —
+  // TTL сессии (8 ч). Записано в карту проекта, §Ключевые решения.
   const session: PortalSession = { portalId: portal.portalId, exp: now + ttlSec, admin: portal.admin }
   return { token: signSession(session, secret), session }
 }

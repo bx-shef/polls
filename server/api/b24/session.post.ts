@@ -1,9 +1,9 @@
 // POST /api/b24/session — handshake app-фрейма Bitrix24 (#47): недоверенный POST `BX24.getAuth`
-// → авторитетная проверка (домен SSRF-allowlist → app.info → сверка member_id, всё в ядре) →
+// → авторитетная проверка (домен SSRF-allowlist → profile → сверка member_id, всё в ядре) →
 // подписанная сессия портала в cookie `polls_portal` (её читает `requirePortalSession` дашборда).
 //
 // Тонкая h3-обёртка: парс/проверка/минт — в `~core/bitrix24` (под юнит-тестами без живого портала),
-// здесь только маппинг event→ядро→статус/cookie. Rate-limit по IP (429) — до исходящего app.info.
+// здесь только маппинг event→ядро→статус/cookie. Rate-limit по IP (429) — до исходящего profile.
 // Fail-closed: без `DASHBOARD_AUTH_SECRET` → 503; любая неудача проверки (чужой домен/мёртвый
 // токен/cross-tenant/портал не установлен) → 401 без утечки причины. Body мал — cap 8КБ (жёстче submit).
 import { parseFrameAuth, verifyFrameAuth, mintPortalSession, DEFAULT_SESSION_TTL_SEC } from '~core/bitrix24/frame'
@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: 'Слишком большой объём данных.' }
   }
 
-  // Rate-limit РАНО — до исходящего app.info (амплификация/DoS, release-gate #49).
+  // Rate-limit РАНО — до исходящего profile (амплификация/DoS, release-gate #49).
   // IP за доверенным reverse-proxy (X-Forwarded-For) — слой деплоя #4; здесь socket-IP.
   if (!allowB24Session(getRequestIP(event) ?? '?')) {
     setResponseStatus(event, 429)

@@ -42,15 +42,15 @@ export function setPortalResolver(fn: (domain: string) => Promise<string | undef
   resolveMemberId = fn
 }
 
-/** Боевой `PortalAuthenticator` для роута: `app.info` к `{domain}` + резолв member_id (см. authenticate.ts).
- *  `fetch` с таймаутом — зависший `app.info` иначе держал бы соединение Nitro handshake до дефолта undici. */
+/** Боевой `PortalAuthenticator` для роута: `profile` к `{domain}` + резолв member_id (см. authenticate.ts).
+ *  `fetch` с таймаутом — зависший `profile` иначе держал бы соединение Nitro handshake до дефолта undici. */
 export function useB24Authenticator(): PortalAuthenticator {
   return createPortalAuthenticator({ resolveMemberId: (domain) => resolveMemberId(domain), fetch: timeoutFetch })
 }
 
 /**
  * Rate-limit handshake-эндпоинта `/api/b24/session` (release-gate #49). Каждый валидный POST
- * инициирует исходящий `app.info` к домену из тела → без лимита это вектор амплификации/DoS
+ * инициирует исходящий `profile` к домену из тела → без лимита это вектор амплификации/DoS
  * и перебор токенов. Handshake — редкая операция (загрузка фрейма), потому потолок низкий.
  * In-memory, на инстанс (общий стор лимитов для мульти-инстанса — #4, как и прочий анти-абьюз).
  */

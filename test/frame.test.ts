@@ -152,6 +152,8 @@ describe('mintPortalSession — выписать сессию из подтве�
     const forgedPayload = Buffer.from(JSON.stringify({ portalId: 'p', exp: 1000 + 3600, admin: true })).toString('base64url')
     expect(verifySession(`${forgedPayload}.${sig}`, SECRET, 1000)).toBeNull()
     expect(payload).not.toBe(forgedPayload)
+    // Контроль: сам токен исправен и читается — иначе тест прошёл бы и при вечно-null verifySession.
+    expect(verifySession(token, SECRET, 1000)?.admin).toBe(false)
   })
 
   it('TTL=0 → сессия немедленно просрочена (exp == now)', () => {

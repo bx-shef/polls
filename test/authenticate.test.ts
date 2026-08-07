@@ -50,6 +50,22 @@ describe('createPortalAuthenticator — боевой PortalAuthenticator (#47/#4
     }
   })
 
+  it('форма result сама по себе непригодна (число/строка/массив) → не администратор, не падаем', async () => {
+    for (const result of [5, 'ok', []]) {
+      const fetch = vi.fn<HttpFetch>(async () => resp(200, { result }))
+      const authenticate = createPortalAuthenticator({ resolveMemberId: async () => 'm', fetch })
+      await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).resolves.toMatchObject({ admin: false })
+    }
+  })
+
+  it('result === null → OAuthError (портал не подтвердил токен)', async () => {
+    const fetch = vi.fn<HttpFetch>(async () => resp(200, { result: null }))
+    const resolveMemberId = vi.fn(async () => 'm')
+    const authenticate = createPortalAuthenticator({ resolveMemberId, fetch })
+    await expect(authenticate({ domain: DOMAIN, authId: AUTH_ID })).rejects.toBeInstanceOf(OAuthError)
+    expect(resolveMemberId).not.toHaveBeenCalled()
+  })
+
   it('Bitrix вернул error → OAuthError, резолвер member_id не дёргается', async () => {
     const fetch = vi.fn<HttpFetch>(async () => resp(200, { error: 'expired_token', error_description: 'token expired' }))
     const resolveMemberId = vi.fn(async () => 'abc123member')

@@ -1,5 +1,5 @@
 import type { H3Event } from 'h3'
-import { resolveDashboardAuth, DEV_PORTAL_ID, type PortalSession } from '~core/api/session'
+import { resolveDashboardAuth, resolveWriteAccess, DEV_PORTAL_ID, type PortalSession } from '~core/api/session'
 
 const SESSION_COOKIE = 'polls_portal'
 
@@ -40,7 +40,18 @@ export function requirePortalSession(event: H3Event): PortalSession {
 }
 
 /**
- * Гейт ЗАПИСИ конфигурации опросов (#182-аналог): сессия портала + роль администратора портала.
+ * Единый текст отказа для гейта записи. Держим рядом с гейтом, чтобы не разъехался между роутами.
+ * По правилу проекта в сообщении видно ГДЕ, ЧТО и ЧТО ДАЛЬШЕ — плюс главное для человека,
+ * который только что жал «Опубликовать»: его правки не пропали.
+ */
+export const ADMIN_REQUIRED_MESSAGE =
+  'Публикация опроса: публиковать новые версии может только администратор портала Bitrix24. ' +
+  'Ваши правки не потеряны — они остались в конструкторе. Попросите администратора опубликовать опрос. ' +
+  'Если права администратора вам только что выдали, закройте и заново откройте приложение из Bitrix24.'
+
+/**
+ * Гейт ЗАПИСИ конфигурации опросов (аналог admin-гейта настроек в соседнем `ai-price-import`, там #182):
+ * сессия портала + роль администратора портала.
  *
  * Зачем отдельно от `requirePortalSession`: та отвечает лишь на вопрос «какой это портал». Пока
  * гейта роли не было, любой сотрудник портала, открывший приложение во фрейме, мог опубликовать
@@ -48,18 +59,20 @@ export function requirePortalSession(event: H3Event): PortalSession {
  * любой сотрудник (для этого хватает `requirePortalSession`), менять конфигурацию — только админ.
  *
  * Роль берётся из ПОДПИСАННОЙ сессии (`profile.ADMIN` на момент handshake): подделать её нельзя,
- * и каждый запрос не тратит REST к порталу. Цена — роль «залипает» на срок сессии (8 ч): снятие
- * прав вступит в силу после её истечения. Отсутствие поля = НЕ админ (fail-closed для сессий,
- * выписанных до появления гейта).
+ * и каждый запрос не тратит REST к порталу. Цена — роль фиксируется на момент handshake, в ОБЕ стороны:
+ * и снятые, и выданные права подействуют лишь при следующем открытии приложения (тогда сессия минтится
+ * заново), а если его не открывать — то по истечении TTL сессии, максимум через 8 ч. На практике окно
+ * узкое: фрейм переоткрывают часто. Случай «права выдали, а публикация всё равно 403» — самый частый
+ * повод обращения в поддержку, поэтому он прямо назван в {@link ADMIN_REQUIRED_MESSAGE}.
+ *
+ * Возвращает решение, а НЕ бросает: роуты проекта отвечают на ошибки конвенцией
+ * `setResponseStatus` + `return { ok: false, error }`. Брошенный `createError` с полем `data`
+ * до клиента этим текстом не доходит — Nitro заворачивает его в свой конверт, и виджет показал бы
+ * служебное значение вместо сообщения. Политика решения — чистая `resolveWriteAccess` в ядре (под тестами),
+ * здесь только чтение сессии.
  */
-export function requireAdminSession(event: H3Event): PortalSession {
+export function resolveAdminAccess(event: H3Event): { ok: true; session: PortalSession } | { ok: false; status: 403 } {
   const session = requirePortalSession(event)
-  if (session.admin !== true) {
-    throw createError({
-      statusCode: 403,
-      statusMessage: 'Forbidden',
-      data: { ok: false, error: 'Менять опросы может только администратор портала Bitrix24. Обратитесь к нему.' }
-    })
-  }
-  return session
+  const decision = resolveWriteAccess(session)
+  return decision.ok ? { ok: true, session } : decision
 }
