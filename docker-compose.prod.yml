@@ -17,6 +17,9 @@ services:
     environment:
       # nginx-proxy + acme-companion маршрутизируют по домену и выпускают TLS.
       # Email берётся из глобального DEFAULT_EMAIL acme-companion (в app не дублируем).
+      # ⚠️ Политику безопасности (CSP и прочие заголовки) задаёт САМО приложение.
+      # В nginx-proxy/vhost.d их дублировать нельзя: несколько заголовков CSP пересекаются по
+      # самому строгому, и чужой frame-ancestors молча сломает приложение во фрейме портала.
       VIRTUAL_HOST: ${DOMAIN}
       VIRTUAL_PORT: 3000
       LETSENCRYPT_HOST: ${DOMAIN}
@@ -48,6 +51,8 @@ services:
       NUXT_LOG_LEVEL: ${NUXT_LOG_LEVEL:-}
       # Кому ещё можно встраивать приложение в iframe (self-hosted/box-порталы); зоны Bitrix24 уже разрешены.
       CSP_FRAME_ANCESTORS: ${CSP_FRAME_ANCESTORS:-}
+      # Аварийный режим CSP: enforce (дефолт) | report (не блокирует, только отчёт) | off.
+      CSP_MODE: ${CSP_MODE:-}
     restart: unless-stopped
     depends_on:
       db:

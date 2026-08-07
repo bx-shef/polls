@@ -33,6 +33,8 @@ services:
       STAGE_ENTRY_WINDOW_SECONDS: "${STAGE_ENTRY_WINDOW_SECONDS:-}"
       # Кому ещё можно встраивать приложение в iframe (self-hosted/box-порталы).
       CSP_FRAME_ANCESTORS: "${CSP_FRAME_ANCESTORS:-}"
+      # Аварийный режим CSP: enforce (дефолт) | report (не блокирует, только отчёт) | off.
+      CSP_MODE: "${CSP_MODE:-}"
     restart: unless-stopped
 
   db:

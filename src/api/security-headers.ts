@@ -12,11 +12,33 @@
  * прозрачный слой и заставить сотрудника нажать не то, что он видит (кликджекинг). Публичная страница
  * прохождения опроса уязвима так же — чужой сайт мог бы выдать её за свою форму.
  *
+ * ⚠️ **Что эта политика НЕ закрывает — XSS.** `script-src` вынужденно допускает `'unsafe-inline'`
+ * (без него Nuxt не отдаст состояние гидратации), а значит внедрённый в страницу инлайн-скрипт
+ * выполнится. Реально остаётся: запрет внешних источников у `<script src>`, отсутствие `unsafe-eval`,
+ * `object-src 'none'`, `base-uri 'self'` (нельзя увести относительные адреса на чужой хост),
+ * `form-action 'self'` и `frame-ancestors`. Это не ноль, но и не «защита от XSS» — не считайте
+ * задачу закрытой. Ужесточение до nonce требует правок рендера и вынесено в roadmap.
+ * Смягчает то, что XSS-поверхность узкая: `v-html` в приложении не используется, весь текст из API
+ * выводится через `{{ }}` (авто-экранирование).
+ *
  * Чистая функция от «что за запрос» → набор заголовков: без h3, без env-чтения внутри, поэтому
  * проверяется юнит-тестами.
  */
 
-/** Зоны облачных порталов Bitrix24, которым разрешено встраивать нас в iframe. */
+/**
+ * Зоны облачных порталов Bitrix24, которым разрешено встраивать нас в iframe.
+ *
+ * ⚠️ **Список ЗАКРЫТЫЙ, и он у́же, чем allowlist установки** (`isAllowedPortalDomain` принимает любую
+ * зону вида `*.bitrix24.<tld>`). `frame-ancestors` не умеет шаблон «любая зона», перечислять источники
+ * приходится явно. Отсюда реальный сценарий: портал в незалистенной зоне **установится штатно, а
+ * приложение во фрейме покажет пустоту** — браузер режет iframe, сервер отвечает 200, в логах чисто.
+ * Лечится настройкой `CSP_FRAME_ANCESTORS` (см. таблицу «Если что-то пошло не так» в карте проекта).
+ *
+ * Инвариант, закреплённый тестом: **каждая зона отсюда обязана проходить `isAllowedPortalDomain`** —
+ * иначе в списке лежит зона, портал из которой всё равно не установится (так было с `bitrix24.com.tr`:
+ * двухуровневые зоны, кроме `com.br`, allowlist установки не пропускает — это отдельный пробел,
+ * вынесенный в roadmap).
+ */
 export const B24_FRAME_ZONES = [
   'bitrix24.ru',
   'bitrix24.com',
@@ -30,8 +52,7 @@ export const B24_FRAME_ZONES = [
   'bitrix24.it',
   'bitrix24.es',
   'bitrix24.com.br',
-  'bitrix24.in',
-  'bitrix24.com.tr'
+  'bitrix24.in'
 ] as const
 
 /**
@@ -44,20 +65,67 @@ export const B24_FRAME_ZONES = [
  */
 export function frameAncestors(extra: readonly string[] = []): string {
   const zones = B24_FRAME_ZONES.map((z) => `https://*.${z}`)
-  return ["'self'", ...zones, ...extra].join(' ')
+  // Фильтруем ЗДЕСЬ, а не только в вызывающем: иначе инвариант «в CSP не попадёт мусор» держался бы
+  // лишь на порядке вызовов, и один рефакторинг превращал бы настройку в дыру.
+  const safeExtra = sanitizeFrameAncestors(extra)
+  return ["'self'", ...zones, ...safeExtra].join(' ')
 }
 
 /**
- * Разобрать список дополнительных источников из настроек: через запятую или пробел.
- * Пустые и явно непригодные значения отбрасываем — мусор в CSP ломает ВСЮ директиву целиком,
- * поэтому лучше проигнорировать элемент, чем уронить политику.
+ * Пригоден ли элемент как источник `frame-ancestors`.
+ *
+ * ⚠️ Главное, что здесь отсекается, — **`https://*`**. Это валидный источник CSP со смыслом «любой
+ * https-хост», то есть одна такая настройка снимает защиту от кликджекинга целиком, ради которой всё
+ * и делалось. Поэтому требуем: только `https:`, минимум одна точка, подстановочный знак допустим
+ * ровно один и только как самый левый лейбл (`https://*.acme.local`), а после него — настоящее имя.
+ * Порт разрешён: box-порталы нередко стоят не на 443.
  */
+function isUsableFrameAncestor(s: string): boolean {
+  if (s.length === 0 || s.length > 253) return false
+  const m = /^https:\/\/(\*\.)?([a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+)(?::\d{1,5})?$/i.exec(s)
+  return m !== null
+}
+
+/**
+ * Отфильтровать и обеззаразить список источников: выкидываем непригодные, убираем дубли и ограничиваем
+ * количество. Мусор внутри CSP ломает директиву ЦЕЛИКОМ, поэтому элемент проще выбросить, чем уронить
+ * политику; кап — чтобы настройка не раздула заголовок, который уходит на КАЖДЫЙ ответ.
+ */
+export function sanitizeFrameAncestors(list: readonly string[]): string[] {
+  const seen = new Set<string>()
+  for (const raw of list) {
+    const s = raw.trim()
+    if (isUsableFrameAncestor(s)) seen.add(s.toLowerCase())
+    if (seen.size >= MAX_EXTRA_FRAME_ANCESTORS) break
+  }
+  return [...seen]
+}
+
+/** Сколько дополнительных источников максимум принимаем из настроек. */
+export const MAX_EXTRA_FRAME_ANCESTORS = 20
+
+/** Разобрать список дополнительных источников из настроек: через запятую или пробел. */
 export function parseExtraFrameAncestors(raw: unknown): string[] {
   if (typeof raw !== 'string') return []
-  return raw
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s.length <= 253 && !s.includes(';') && /^https:\/\/[a-z0-9*.-]+$/i.test(s))
+  return sanitizeFrameAncestors(raw.split(/[\s,]+/))
+}
+
+/**
+ * Режим политики содержимого — аварийный выключатель, а НЕ «способ выкатить прод без защиты».
+ *
+ * Зачем нужен: слишком строгая CSP ломает приложение во фрейме **молча** (браузер режет, сервер
+ * отвечает 200). Путь исправления через код занимает десятки минут (CI → образ → watchtower), а через
+ * переменную окружения — секунды. Дефолт `enforce`; `report` включает только отчётный заголовок
+ * (ничего не блокируется, нарушения видны в консоли браузера); `off` снимает CSP целиком, оставляя
+ * прочие заголовки.
+ */
+export const CSP_MODES = ['enforce', 'report', 'off'] as const
+export type CspMode = (typeof CSP_MODES)[number]
+
+/** Разбор режима из настроек; мусор/пусто → `enforce` (по умолчанию защищаем). */
+export function resolveCspMode(raw: unknown): CspMode {
+  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+  return (CSP_MODES as readonly string[]).includes(v) ? (v as CspMode) : 'enforce'
 }
 
 export interface SecurityHeaderOptions {
@@ -65,32 +133,68 @@ export interface SecurityHeaderOptions {
   extraFrameAncestors?: readonly string[]
   /** Запрос пришёл по HTTPS: только тогда имеет смысл HSTS. */
   https?: boolean
+  /** Режим CSP (см. {@link CSP_MODES}). По умолчанию — `enforce`. */
+  cspMode?: CspMode
+  /** Запретить встраивание во фрейм вообще (`frame-ancestors 'none'`) — см. {@link isNoFrameRoute}. */
+  noFrame?: boolean
 }
+
+/**
+ * Внешний источник скриптов, который мы обязаны разрешить: страница ЗАВЕРШЕНИЯ УСТАНОВКИ
+ * (`server/api/b24/install.post.ts`) грузит `//api.bitrix24.com/api/v1/` и зовёт `BX24.installFinish()`.
+ *
+ * ⚠️ Без этого источника ломается самый критичный путь, и ломается МОЛЧА: скрипт заблокирован → `BX24`
+ * не определён → вызов обёрнут в `try/catch` → портал НЕ помечает установку завершённой, а человек
+ * видит нашу надпись «Приложение установлено». Ни ошибки на сервере, ни записи в логе.
+ * (Фрейм-страницы внешних скриптов не грузят — там SDK собран в бандл и говорит через postMessage.)
+ */
+export const B24_SCRIPT_SRC = 'https://api.bitrix24.com'
 
 /**
  * Политика содержимого. Разрешаем только своё:
  *  - `script-src 'unsafe-inline'` обязателен — Nuxt отдаёт состояние гидратации инлайн-скриптом.
- *    Внешних скриптов у нас нет: SDK Bitrix24 собран в бандл, с порталом он говорит через
- *    postMessage (CSP это не ограничивает);
+ *    Отсюда честная оговорка: **эта CSP закрывает кликджекинг и утечку адреса, но НЕ XSS** —
+ *    инлайн-скрипт разрешён. Ужесточение до nonce потребует правок рендера и вынесено отдельно;
  *  - `style-src 'unsafe-inline'` — инлайновые стили компонентов b24ui;
- *  - `connect-src` — свой домен плюс порталы Bitrix24 (на случай прямых вызовов из фрейма);
+ *  - `connect-src` — свой домен плюс порталы Bitrix24. Сейчас страницы ходят только на свой origin,
+ *    но фрейм-SDK может обратиться к порталу напрямую, а путь этот вживую не проверялся — оставляем
+ *    разрешение, пока не подтвердим обратное на живом портале;
  *  - `object-src 'none'` и `base-uri 'self'` — отключают плагины и подмену базового адреса;
  *  - `form-action 'self'` — форму нельзя отправить на чужой домен.
+ *
+ * `X-Frame-Options` намеренно НЕ ставим: `SAMEORIGIN` запретил бы фрейм портала (то есть сломал бы
+ * приложение), а `ALLOW-FROM` не поддерживается браузерами. Роль этого заголовка полностью играет
+ * `frame-ancestors`. Не добавляйте его «для полноты» — приложение перестанет открываться.
  */
-export function contentSecurityPolicy(extraFrameAncestors: readonly string[] = []): string {
-  const b24 = B24_FRAME_ZONES.map((z) => `https://*.${z}`).join(' ')
+export function contentSecurityPolicy(extraFrameAncestors: readonly string[] = [], noFrame = false): string {
   return [
     "default-src 'self'",
-    "img-src 'self' data: https:",
+    // Не `https:`: при разрешённом инлайн-скрипте широкий img-src — рабочий канал утечки данных
+    // (`new Image().src = 'https://чужой/'+данные`). Внешних картинок в интерфейсе нет.
+    "img-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self' 'unsafe-inline'",
+    `script-src 'self' 'unsafe-inline' ${B24_SCRIPT_SRC}`,
     "font-src 'self' data:",
-    `connect-src 'self' ${b24}`,
-    `frame-ancestors ${frameAncestors(extraFrameAncestors)}`,
+    // Только свой домен: фрейм-SDK говорит с порталом через postMessage, а не через fetch, — прямых
+    // вызовов к порталу из браузера у нас нет. Появятся — сюда добавятся и зоны Bitrix24.
+    "connect-src 'self'",
+    `frame-ancestors ${noFrame ? "'none'" : frameAncestors(extraFrameAncestors)}`,
     "base-uri 'self'",
     "form-action 'self'",
     "object-src 'none'"
   ].join('; ')
+}
+
+/**
+ * Маршруты, которые не должны открываться во фрейме ВООБЩЕ (`frame-ancestors 'none'`).
+ *
+ * Публичная страница прохождения опроса: клиент открывает её по ссылке, встраивать её незачем — а
+ * чужой сайт мог бы выдать её за свою форму. Портал эту страницу тоже не фреймит (во фрейме живут
+ * `/b24/*` и дашборд), так что запрет ничего не ломает.
+ */
+export function isNoFrameRoute(path: string | undefined): boolean {
+  const p = (path ?? '').split('?')[0] ?? ''
+  return p === '/s' || p.startsWith('/s/')
 }
 
 /**
@@ -99,7 +203,6 @@ export function contentSecurityPolicy(extraFrameAncestors: readonly string[] = [
  */
 export function securityHeaders(opts: SecurityHeaderOptions = {}): Record<string, string> {
   const headers: Record<string, string> = {
-    'Content-Security-Policy': contentSecurityPolicy(opts.extraFrameAncestors ?? []),
     // Браузер не должен угадывать тип содержимого: иначе загруженный текст можно подать как скрипт.
     'X-Content-Type-Options': 'nosniff',
     // Чужому сайту уходит только origin, а полный адрес (в нём бывает токен приглашения) — нет.
@@ -107,8 +210,34 @@ export function securityHeaders(opts: SecurityHeaderOptions = {}): Record<string
     // Доступ к камере/микрофону/геолокации нам не нужен ни на одной странице.
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()'
   }
+  const mode = opts.cspMode ?? 'enforce'
+  if (mode !== 'off') {
+    const csp = contentSecurityPolicy(opts.extraFrameAncestors ?? [], opts.noFrame === true)
+    headers[mode === 'report' ? 'Content-Security-Policy-Report-Only' : 'Content-Security-Policy'] = csp
+  }
   // HSTS ставим только на HTTPS: на HTTP он бессмыслен, а в локальной разработке ещё и мешает
   // (браузер запомнит домен и перестанет пускать по http).
-  if (opts.https) headers['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains'
+  if (opts.https) headers['Strict-Transport-Security'] = HSTS_VALUE
   return headers
+}
+
+/**
+ * Значение HSTS. Пока **сутки**, а не два года: живого прогона на реальном домене ещё не было, а HSTS
+ * необратим для уже зашедших браузеров — ошибка в TLS заперла бы людей на весь срок. Поднимаем после
+ * подтверждённой стабильности TLS на проде (стандартная рампа: сутки → неделя → год).
+ */
+export const HSTS_VALUE = 'max-age=86400; includeSubDomains'
+
+/**
+ * Пришёл ли запрос по HTTPS. Вынесено из middleware в ядро: это единственная его логика, а
+ * server-слой у нас тестами не покрывается.
+ *
+ * `X-Forwarded-Proto` может содержать цепочку (`https, http`) — берём ПЕРВЫЙ элемент: его дописывает
+ * ближайший к клиенту прокси, то есть он и отражает схему, по которой пришёл пользователь. Заголовка
+ * нет → смотрим, зашифровано ли само соединение.
+ */
+export function isHttpsRequest(input: { forwardedProto?: string | null; encrypted?: boolean }): boolean {
+  const first = input.forwardedProto?.split(',')[0]?.trim().toLowerCase()
+  if (first) return first === 'https'
+  return input.encrypted === true
 }
