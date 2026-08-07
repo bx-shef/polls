@@ -1,4 +1,5 @@
 import type { FeedbackKind } from '~core/domain/feedback'
+import { serverMessage } from '~core/client/server-message'
 
 /**
  * Отправка отзыва 👍/👎. Держит фазу виджета и текст ошибки.
@@ -25,11 +26,8 @@ export function useFeedback() {
       await $fetch('/api/feedback', { method: 'POST', body: { kind, comment, context } })
       phase.value = 'sent'
     } catch (e) {
-      // Сервер кладёт понятный текст в тело (`{ error }`); брошенный выше createError Nitro
-      // заворачивает в свой конверт — читаем обе формы, иначе покажем служебное значение.
-      const err = e as { statusMessage?: string; data?: { error?: string; data?: { error?: string } } }
-      error.value =
-        err.data?.error ?? err.data?.data?.error ?? 'Не удалось отправить отзыв. Попробуйте ещё раз позже.'
+      // Обе формы ответа (тело роута и конверт брошенного `createError`) разбирает `serverMessage`.
+      error.value = serverMessage(e) ?? 'Не удалось отправить отзыв. Попробуйте ещё раз позже.'
       phase.value = 'failed'
     }
   }

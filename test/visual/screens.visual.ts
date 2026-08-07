@@ -59,10 +59,57 @@ test('экран «thanks» совпадает с эталоном', async ({ pa
 })
 
 test('экран «error» (опрос не найден) совпадает с эталоном', async ({ page }) => {
+  // Текст — СЕРВЕРНЫЙ (`api.survey` → 404), не клиентская заготовка: страница обязана показывать
+  // именно его, иначе респондент не узнает, что делать («попросите новую ссылку»).
   await page.goto('/s/nonexistent-survey', { waitUntil: 'networkidle' })
-  await expect(page.getByText('Опрос не найден или больше не активен.')).toBeVisible()
+  await expect(page.getByText('Опрос не найден. Возможно, ссылка устарела — попросите новую.')).toBeVisible()
   await expect(page).toHaveScreenshot('error.png', { fullPage: true })
 })
+
+test('причина отказа сервера доходит до респондента, ответы не пропадают', async ({ page }) => {
+  // Без скриншота: это проверка ПРОВОДКИ, а не вёрстки (алерт уже под эталоном submit-error).
+  // Сценарий достижимый именно из этого клиента: nonce не пережил перезапуск сервера → 403
+  // «Страница устарела». Раньше клиент глотал ответ сервера и показывал «проверьте соединение» —
+  // респондент шёл чинить интернет. Текст берём тот же, что отдаёт ядро (`src/api/handlers.ts`);
+  // связку «ядро действительно отвечает этой формой» держит test/server-message.test.ts.
+  const stale = 'Страница устарела. Обновите её и заполните опрос заново.'
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  await page.route('**/api/submit', (route) =>
+    route.fulfill({ status: 403, json: { ok: false, error: stale } })
+  )
+  await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await answerHappyPath(page)
+  await expect(page.getByText(stale)).toBeVisible()
+
+  // Второе обещание того же кода: снимок НЕ чистим — набранные ответы остаются при респонденте.
+  // Без этой проверки «остаёмся на опросе» держалось только на комментарии.
+  await expect(page.getByRole('button', { name: 'Отправить', exact: true })).toBeVisible()
+  const snapshot = await page.evaluate((k) => localStorage.getItem(k), `survey:${SURVEY_KEY}`)
+  expect(snapshot, 'снимок прохождения стёрт — ответы респондента потеряны').not.toBeNull()
+})
+
+test('без ответа сервера показывается клиентский фолбэк', async ({ page }) => {
+  // Вторая половина правила: текст пишет сервер, но когда ответа НЕТ (обрыв связи), строка наша.
+  // После перевода ассертов на серверные тексты фолбэки не проверялись больше нигде.
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  await page.route('**/api/submit', (route) => route.abort('failed'))
+  await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await answerHappyPath(page)
+  await expect(
+    page.getByText('Не удалось отправить ответы. Проверьте подключение и попробуйте ещё раз.')
+  ).toBeVisible()
+})
+
+// ⚠️ Парный фолбэк ЗАГРУЗКИ опроса («Не удалось открыть опрос…») гейтом не покрыт и покрыт быть не
+// может: версию тянет `useAsyncData` на СЕРВЕРЕ, туда `page.route` не достаёт, а провал серверного
+// запроса даёт тело с текстом — то есть другую ветку. Достижим он только при клиентской навигации
+// между опросами, которой в интерфейсе пока нет.
 
 test('экран «submit-error» (провал отправки) совпадает с эталоном', async ({ page }) => {
   // Изолируем именно провал submit: /api/session отдаём детерминированно (успех), а POST

@@ -29,7 +29,7 @@
     "nuxt:prepare": "nuxt prepare",
     "visual:install": "playwright install chromium",
     "test:visual": "playwright test",
-    "test:visual:update": "playwright test --update-snapshots",
+    "test:visual:update": "playwright test --update-snapshots=all",
     "env:check": "tsx scripts/env-check.ts"
   },
   "dependencies": {

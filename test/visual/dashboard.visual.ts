@@ -49,7 +49,8 @@ test('клик по селектору версии меняет срез (URL +
 
 test('дашборд (опрос не найден) совпадает с эталоном', async ({ page }) => {
   // SSR-fetch /api/dashboard/nonexistent → 404 → useAsyncData.error → алерт (реальный путь, без моков).
+  // Текст — СЕРВЕРНЫЙ: он называет причину («опрос не найден»), а не общий сбой загрузки.
   await page.goto('/d/nonexistent-survey', { waitUntil: 'networkidle' })
-  await expect(page.getByText('Не удалось загрузить дашборд.')).toBeVisible()
+  await expect(page.getByText('Опрос не найден. Проверьте адрес.')).toBeVisible()
   await expect(page).toHaveScreenshot('dashboard-error.png', { fullPage: true })
 })
