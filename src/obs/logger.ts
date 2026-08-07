@@ -159,8 +159,14 @@ function build(min: LogLevel, now: () => Date, sink: (l: LogLevel, line: string)
     // `msg` зарезервирован под ИМЯ события, и раньше поле с тем же именем из `fields` просто
     // затиралось — вся деталь вызова молча пропадала из лога (диагностика превращалась в пустышку).
     // Теперь такое поле переносим в `detail`, а не теряем; если `detail` уже занят — не трогаем его.
+    // Переносимое значение чаще всего — текст ошибки (`(e as Error).message`), а он у pg/redis несёт
+    // строку подключения с паролем. `redact` маскирует по ИМЕНИ ключа и такой текст не тронет, поэтому
+    // прогоняем через `scrubSecrets` — тот же барьер, что стоит на `errInfo`.
     if (safe.msg !== undefined) {
-      if (safe.detail === undefined) safe.detail = safe.msg
+      const promoted = typeof safe.msg === 'string' ? scrubSecrets(safe.msg) : safe.msg
+      // `detail` уже занят — не перетираем его, но и не теряем перенос (иначе чинили бы одну потерю другой).
+      if (safe.detail === undefined) safe.detail = promoted
+      else safe.msg_detail = promoted
       delete safe.msg
     }
     // Зарезервированные поля идут ПОСЛЕ spread — их нельзя перетереть из fields.

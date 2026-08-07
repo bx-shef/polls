@@ -8,6 +8,7 @@ import {
   parsePlacementDealId,
   parsePlacementEntityId,
   handleInstall,
+  integrationCalls,
   SURVEY_ROBOT_CODE,
   PLACEMENT_DEAL_ACTIVITY,
   PLACEMENT_ANALYTICS_MENU
@@ -152,6 +153,54 @@ describe('parsePlacementDealId (#17)', () => {
     expect(parsePlacementDealId('{"X":1}')).toBeUndefined()
     expect(parsePlacementDealId('{"ID":"0"}')).toBeUndefined()
     expect(parsePlacementDealId(null)).toBeUndefined()
+  })
+})
+
+describe('integrationCalls — что регистрируем по режиму триггера (#122)', () => {
+  const BASE = 'https://polls.example.com'
+  const methods = (mode: 'event' | 'robot' | 'both'): string[] => integrationCalls(mode, BASE).map((c) => c.method)
+
+  it('event (дефолт) → только подписка на событие, робота нет', () => {
+    expect(methods('event')).toEqual(['event.bind', 'placement.bind', 'placement.bind'])
+  })
+
+  it('robot → только робот, подписки на событие нет', () => {
+    expect(methods('robot')).toEqual(['bizproc.robot.add', 'placement.bind', 'placement.bind'])
+  })
+
+  it('both → оба пути (осознанный выбор оператора)', () => {
+    expect(methods('both')).toEqual(['event.bind', 'bizproc.robot.add', 'placement.bind', 'placement.bind'])
+  })
+
+  it('ГЛАВНОЕ: вне режима both два пути НИКОГДА не регистрируются вместе', () => {
+    // Это и есть защита от двух приглашений на один переход — регресс здесь стоит клиенту дубля.
+    for (const mode of ['event', 'robot'] as const) {
+      const m = methods(mode)
+      expect(m.includes('event.bind') && m.includes('bizproc.robot.add')).toBe(false)
+    }
+  })
+
+  it('плейсменты регистрируются при любом режиме (виджет и дашборд от триггера не зависят)', () => {
+    for (const mode of ['event', 'robot', 'both'] as const) {
+      expect(methods(mode).filter((m) => m === 'placement.bind')).toHaveLength(2)
+    }
+  })
+
+  it('единственный путь помечен soleTrigger — его провал нельзя проглотить как пропуск встройки', () => {
+    expect(integrationCalls('event', BASE).find((c) => c.method === 'event.bind')?.soleTrigger).toBe(true)
+    expect(integrationCalls('robot', BASE).find((c) => c.method === 'bizproc.robot.add')?.soleTrigger).toBe(true)
+    // при both ни один путь не единственный — падение одного не убивает авто-триггер
+    expect(integrationCalls('both', BASE).every((c) => !c.soleTrigger)).toBe(true)
+    // плейсменты — никогда не триггер
+    expect(integrationCalls('event', BASE).filter((c) => c.method === 'placement.bind').every((c) => !c.soleTrigger)).toBe(true)
+  })
+
+  it('HANDLER-адреса строятся от baseUrl и переживают хвостовой слэш', () => {
+    const withSlash = integrationCalls('both', `${BASE}/`)
+    expect(withSlash.find((c) => c.method === 'event.bind')?.params).toMatchObject({
+      handler: `${BASE}/api/b24/deal-update`
+    })
+    expect(JSON.stringify(withSlash)).not.toContain('//api/b24')
   })
 })
 

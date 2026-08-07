@@ -23,7 +23,9 @@ const robotLimiter = new SlidingWindowLimiter({ limit: 120, windowMs: 60_000 })
 export default defineEventHandler(async (event) => {
   // Режим триггера выключен для робота → не обслуживаем, даже если регистрация осталась с прошлой
   // установки. Иначе при включённом событии один переход дал бы ДВА приглашения.
-  if (!robotTriggerEnabled(resolveTriggerMode(process.env.TRIGGER_MODE))) {
+  const mode = resolveTriggerMode(process.env.TRIGGER_MODE)
+  if (!robotTriggerEnabled(mode)) {
+    logger.debug('b24_robot_disabled', { mode })
     setResponseStatus(event, 200)
     return 'ok'
   }

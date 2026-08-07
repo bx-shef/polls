@@ -50,12 +50,18 @@ export async function handleDealTrigger(deps: {
   invitations: InvitationStore
   context: CrmContext
   now?: Date
+  /**
+   * Уже полученный список опросов этой стадии. Событийный путь спрашивает его РАНЬШЕ — дешёвым гейтом
+   * перед дорогим REST за историей стадий; без проброса тот же запрос ушёл бы в БД второй раз за одно
+   * событие, да ещё и двумя независимыми снимками одного состояния.
+   */
+  triggeredSurveyKeys?: readonly string[]
 }): Promise<TriggerResult[]> {
   const stageId = deps.context.dealStageId
   if (!stageId) return [] // нет стадии в контексте — триггерить нечего
   const now = deps.now ?? new Date()
 
-  const surveyKeys = await deps.store.surveysTriggeredBy(stageId)
+  const surveyKeys = deps.triggeredSurveyKeys ?? (await deps.store.surveysTriggeredBy(stageId))
   const results: TriggerResult[] = []
   for (const surveyKey of surveyKeys) {
     const version = await deps.store.currentVersion(surveyKey)

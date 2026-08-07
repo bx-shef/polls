@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, stageHistoryList, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, stageHistoryList, stageHistoryParams, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -85,6 +85,18 @@ describe('stageHistoryList — история движения по стадия
   it('страница отдаётся целиком, БЕЗ среза (срез до сортировки мог бы оставить самые старые записи)', async () => {
     const many = Array.from({ length: 50 }, (_, i) => ({ ID: i }))
     expect(await stageHistoryList(client(ok({ items: many })), 2, 1)).toHaveLength(50)
+  })
+
+  it('null-результат портала не роняет разбор', async () => {
+    expect(await stageHistoryList(client(ok(null)), 2, 1)).toEqual([])
+  })
+
+  it('параметры вынесены отдельно и это ТЕ ЖЕ параметры, что шлёт боевой вызов', async () => {
+    // Живой smoke (`scripts/b24-smoke.ts`, секция B2) обязан бить тем же запросом, иначе он «зелёный»
+    // на форме, которой в проде нет. Гвоздь: билдер один и совпадает с фактическим вызовом.
+    const c = client(ok({ items: [] }))
+    await stageHistoryList(c, 2, 759)
+    expect(c.calls[0]?.[1]).toEqual(stageHistoryParams(2, 759))
   })
 })
 

@@ -83,9 +83,10 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   // на КАЖДЫЙ апдейт любой сделки в любой стадии (в воронке их большинство), и при массовом редактировании
   // портал упёрся бы в лимит запросов — а его ошибка гасится в `false`, то есть терялись бы легитимные переходы.
   // Стадии в контексте нет — триггерить нечего (ниже `handleDealTrigger` вернёт []).
+  let triggeredSurveyKeys: readonly string[] | undefined
   if (deps.confirmStageEntry && context.dealStageId) {
-    const triggered = await deps.store.surveysTriggeredBy(context.dealStageId)
-    if (triggered.length > 0) {
+    triggeredSurveyKeys = await deps.store.surveysTriggeredBy(context.dealStageId)
+    if (triggeredSurveyKeys.length > 0) {
       const fresh = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
       if (!fresh) {
         return { kind: 'skipped', reason: 'stale_stage', dealId: ev.data.FIELDS.ID, stageId: context.dealStageId }
@@ -97,7 +98,9 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
     store: deps.store,
     invitations: deps.invitations,
     context,
-    now: deps.now
+    now: deps.now,
+    // Список уже получен гейтом выше — не спрашиваем БД повторно за одно событие.
+    triggeredSurveyKeys
   })
   return { kind: 'ok', results }
 }

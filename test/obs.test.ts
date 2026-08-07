@@ -143,6 +143,31 @@ describe('createJsonLogger', () => {
     }
   })
 
+  it('поле msg из fields НЕ теряется — переезжает в detail (иначе деталь вызова пропадала молча)', () => {
+    // Регресс: `msg` зарезервирован под ИМЯ события, и одноимённое поле из fields затиралось —
+    // ~25 мест по репозиторию писали в лог пустоту. Проверяем на реальной форме вызова.
+    const lines: Record<string, unknown>[] = []
+    const logger = createJsonLogger({ sink: (_l, line) => lines.push(JSON.parse(line)) })
+    logger.warn('b24_register_skip', { msg: 'event.bind не зарегистрирован: нет прав' })
+    expect(lines[0]?.['msg']).toBe('b24_register_skip') // имя события на месте
+    expect(lines[0]?.['detail']).toBe('event.bind не зарегистрирован: нет прав') // деталь не потеряна
+  })
+
+  it('перенесённое значение чистится от секретов (текст ошибки часто несёт строку подключения)', () => {
+    const lines: Record<string, unknown>[] = []
+    const logger = createJsonLogger({ sink: (_l, line) => lines.push(JSON.parse(line)) })
+    logger.error('pg_pool_error', { msg: 'connect ECONNREFUSED postgres://polls:s3cret@db:5432/polls' })
+    // redact маскирует по ИМЕНИ ключа и такой текст не тронул бы — поэтому переносим через scrubSecrets
+    expect(String(lines[0]?.['detail'])).not.toContain('s3cret')
+  })
+
+  it('если заняты и msg, и detail — перенос идёт в msg_detail, ничего не теряется', () => {
+    const lines: Record<string, unknown>[] = []
+    const logger = createJsonLogger({ sink: (_l, line) => lines.push(JSON.parse(line)) })
+    logger.info('ev', { msg: 'из поля', detail: 'уже занято' })
+    expect(lines[0]).toMatchObject({ msg: 'ev', detail: 'уже занято', msg_detail: 'из поля' })
+  })
+
   it('дефолтный sink: info → stdout, error → stderr', () => {
     const out = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     const errOut = vi.spyOn(console, 'error').mockImplementation(() => undefined)

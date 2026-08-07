@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isFreshStageEntry,
+  inspectStageEntry,
   resolveStageEntryWindowSec,
   STAGE_ENTRY_WINDOW_DEFAULT_SEC,
   STAGE_ENTRY_WINDOW_MIN_SEC,
@@ -47,6 +48,14 @@ describe('resolveStageEntryWindowSec — окно из настроек', () => 
     expect(resolveStageEntryWindowSec(-100)).toBe(STAGE_ENTRY_WINDOW_MIN_SEC)
     expect(resolveStageEntryWindowSec(999_999)).toBe(STAGE_ENTRY_WINDOW_MAX_SEC)
     expect(resolveStageEntryWindowSec(60.9)).toBe(60) // дробь усекается
+  })
+
+  it('не-строка и не-число (объект/массив/булево/Infinity) → дефолт', () => {
+    // Значение приходит из окружения/настроек, то есть по типу недоверенное — фиксируем, что любая
+    // непригодная форма даёт дефолт, а не 0 (окно в минимум) и не Infinity (окно в бесконечность).
+    for (const v of [true, {}, [300], Infinity, -Infinity, () => 300]) {
+      expect(resolveStageEntryWindowSec(v)).toBe(STAGE_ENTRY_WINDOW_DEFAULT_SEC)
+    }
   })
 })
 
@@ -138,6 +147,50 @@ describe('isFreshStageEntry — был ли вход в стадию ТОЛЬК�
   it('смена воронки в триггерную стадию тоже считается входом', () => {
     const moved = rec({ STAGE_ID: 'C2:WON', agoSec: 1, TYPE_ID: STAGE_HISTORY_TYPE.categoryChange })
     expect(isFreshStageEntry([moved], check('C2:WON'))).toBe(true)
+  })
+})
+
+describe('latestRecord — упорядочивание записей fail-closed (#17)', () => {
+  it('часть записей БЕЗ ID → непригодная побеждает, приглашение не выписывается', () => {
+    // Регресс fail-OPEN: раньше запись без ID получала минимальный ранг и НИКОГДА не побеждала запись
+    // с ID. Здесь сделка уже ушла в C1:LOSE (свежая запись, но без ID), а старая запись говорит C1:WON —
+    // при старом порядке приглашение ушло бы по стадии, которую сделка покинула.
+    const records: StageHistoryRecord[] = [
+      rec({ ID: 101, STAGE_ID: 'C1:WON', agoSec: 30 }),
+      { STAGE_ID: 'C1:LOSE', CREATED_TIME: new Date(NOW.getTime() - 2000).toISOString() }
+    ]
+    const seen = inspectStageEntry(records, check('C1:WON'))
+    expect(seen.fresh).toBe(false)
+    expect(seen.observedStageId).toBe('C1:LOSE') // победила именно непригодная по ID запись
+  })
+
+  it('ID нет НИ У ОДНОЙ записи → запасной путь по времени (побеждает самая поздняя)', () => {
+    const records: StageHistoryRecord[] = [
+      { STAGE_ID: 'C1:NEW', CREATED_TIME: new Date(NOW.getTime() - 500_000).toISOString() },
+      { STAGE_ID: 'C1:WON', CREATED_TIME: new Date(NOW.getTime() - 2000).toISOString() }
+    ]
+    expect(isFreshStageEntry(records, check('C1:WON'))).toBe(true)
+  })
+})
+
+describe('inspectStageEntry — диагностический контракт для логов и smoke (#17)', () => {
+  // На observedStageId/ageSec завязаны ДВА потребителя с реальными решениями: лог b24_stage_entry_stale
+  // и process.exitCode в scripts/b24-smoke.ts. Смена единиц или знака сломала бы обоих молча.
+  it('пустая история → только fresh:false, полей наблюдения нет', () => {
+    expect(inspectStageEntry([], check('C1:WON'))).toEqual({ fresh: false })
+  })
+
+  it('битая дата → стадия видна, возраст неизвестен', () => {
+    const seen = inspectStageEntry([{ ID: 5, STAGE_ID: 'C1:WON', CREATED_TIME: 'не-дата' }], check('C1:WON'))
+    expect(seen).toEqual({ fresh: false, observedStageId: 'C1:WON' })
+  })
+
+  it('возраст — в СЕКУНДАХ и положительный для прошлого', () => {
+    expect(inspectStageEntry([rec({ STAGE_ID: 'C1:WON', agoSec: 120 })], check('C1:WON')).ageSec).toBe(120)
+  })
+
+  it('запись «из будущего» → возраст отрицательный (расхождение часов видно в логе)', () => {
+    expect(inspectStageEntry([rec({ STAGE_ID: 'C1:WON', agoSec: -120 })], check('C1:WON')).ageSec).toBe(-120)
   })
 })
 

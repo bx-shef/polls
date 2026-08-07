@@ -1,8 +1,8 @@
 import { TokenCipher, loadTokenKey } from '~core/bitrix24/crypto'
 import { PortalTokenStore } from '~core/bitrix24/portal'
 import { createPortalClient, callMethod, type B24OAuthParams, type B24OAuthSecret } from '~core/bitrix24/client'
-import { surveyPlacements, surveyEventBindParams, surveyRobotParams } from '~core/bitrix24/install'
-import { resolveTriggerMode, eventTriggerEnabled, robotTriggerEnabled } from '~core/bitrix24/trigger-mode'
+import { integrationCalls } from '~core/bitrix24/install'
+import { resolveTriggerMode } from '~core/bitrix24/trigger-mode'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalDb, logger } from './api'
 
@@ -59,34 +59,45 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
 }
 
 /**
- * Регистрирует встройки приложения на портале (робот + плейсменты) клиентом `B24OAuth`.
- * Ошибки КАЖДОЙ регистрации толерируются (лог, не throw): робот недоступен на части тарифов и
- * падает с ошибкой — плейсменты всё равно дают охват; повторная установка идемпотентна по CODE/PLACEMENT.
+ * Регистрирует встройки приложения на портале (авто-триггер + плейсменты) клиентом `B24OAuth`.
+ * Ошибки КАЖДОЙ регистрации толерируются (лог, не throw): робот недоступен на части тарифов, а
+ * плейсменты всё равно дают охват; повторная установка идемпотентна по CODE/PLACEMENT.
+ *
+ * ⚠️ Но у толерантности есть острый край. Пока регистрировались ОБА пути, падение робота было безвредно —
+ * оставалось событие. С `TRIGGER_MODE` путь ровно один, и его падение означает, что авто-триггер мёртв
+ * ЦЕЛИКОМ, а установка при этом «успешна». Поэтому провал единственного пути логируется `error` с
+ * готовым указанием, что делать, — иначе оператор на младшем тарифе поставит `robot`, увидит зелёную
+ * установку и будет ждать приглашений, которых не будет.
  */
 export async function registerIntegrations(authParams: B24OAuthParams, cfg: B24AppConfig): Promise<void> {
   const client = createPortalClient(authParams, cfg.secret)
-  // Режим триггера решает, ЧТО регистрировать: включать оба пути сразу = риск двух приглашений на один
+  // Режим триггера решает, ЧТО регистрировать: включать оба пути сразу = два приглашения на один
   // переход (робот сработает на входе, событие — тем же изменением). Дефолт `event` — на всех тарифах.
   const mode = resolveTriggerMode(process.env.TRIGGER_MODE)
-  const calls: Array<[string, Record<string, unknown>]> = [
-    // Авто-триггер (#17): ONCRMDEALUPDATE → наш handler → подтверждение перехода историей стадий →
-    // фильтр по триггер-стадии.
-    ...(eventTriggerEnabled(mode)
-      ? ([['event.bind', surveyEventBindParams(`${cfg.baseUrl}/api/b24/deal-update`)]] as Array<[string, Record<string, unknown>]>)
-      : []),
-    // Робот автоматизации (#122): срабатывает ровно НА ВХОДЕ в стадию (точнее события, но требует тариф
-    // с роботами). Ошибка регистрации толерируется ниже — на младших тарифах установка не падает.
-    ...(robotTriggerEnabled(mode)
-      ? ([['bizproc.robot.add', surveyRobotParams(`${cfg.baseUrl}/api/b24/robot`)]] as Array<[string, Record<string, unknown>]>)
-      : []),
-    ...surveyPlacements(cfg.baseUrl).map((p): [string, Record<string, unknown>] => ['placement.bind', { ...p }])
-  ]
-  for (const [method, params] of calls) {
+  // Режим применяется ТОЛЬКО здесь, при установке: смена переменной на живом портале ничего не
+  // перепривязывает (см. docs/process.md, шаг 1). Пишем его в лог, чтобы по установке было видно,
+  // какой путь реально привязан.
+  logger.info('b24_trigger_mode', { mode })
+  for (const { method, params, soleTrigger } of integrationCalls(mode, cfg.baseUrl)) {
     try {
       await callMethod(client, method, params)
     } catch (e) {
-      // Толерируем (тариф/повторная установка) — не валим всю установку из-за одной встройки.
-      logger.warn('b24_register_skip', { msg: `${method} не зарегистрирован: ${(e as Error).message}` })
+      const reason = (e as Error).message
+      if (soleTrigger) {
+        // Единственный путь не привязался — авто-триггер не заработает вообще. Это не «пропуск встройки».
+        logger.error('b24_trigger_not_registered', {
+          method,
+          mode,
+          detail:
+            `Авто-триггер НЕ зарегистрирован (${method}): ${reason}. ` +
+            (mode === 'robot'
+              ? 'Скорее всего тариф портала без бизнес-процессов — переключите TRIGGER_MODE=event и переустановите приложение.'
+              : 'Опросы по стадии запускаться не будут — проверьте скоупы приложения и переустановите его.')
+        })
+      } else {
+        // Толерируем (тариф/повторная установка) — не валим всю установку из-за одной встройки.
+        logger.warn('b24_register_skip', { detail: `${method} не зарегистрирован: ${reason}` })
+      }
     }
   }
 }

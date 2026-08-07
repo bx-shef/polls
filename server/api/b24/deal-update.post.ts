@@ -32,8 +32,12 @@ import { useStore, useInvitations, logger } from '../../utils/api'
 const dealUpdateLimiter = new SlidingWindowLimiter({ limit: 600, windowMs: 60_000 })
 
 export default defineEventHandler(async (event) => {
-  // Режим триггера выключен для события → не обслуживаем (регистрация могла остаться с прошлой установки).
-  if (!eventTriggerEnabled(resolveTriggerMode(process.env.TRIGGER_MODE))) {
+  // Режим триггера выключен для события → не обслуживаем. Штатный сценарий: режим сменили на `robot`,
+  // а `event.bind` с прошлой установки остался (отписки нет — см. docs/process.md, шаг 1), и портал
+  // продолжает слать события. Логируем, иначе это выглядит полной тишиной при живом потоке запросов.
+  const mode = resolveTriggerMode(process.env.TRIGGER_MODE)
+  if (!eventTriggerEnabled(mode)) {
+    logger.debug('b24_deal_update_disabled', { mode })
     setResponseStatus(event, 200)
     return 'ok'
   }
@@ -74,15 +78,21 @@ export default defineEventHandler(async (event) => {
     // allowlist'ом на установке), не из недоверенного события (SSRF). ОДИН на обработку события
     // (мемоизация): иначе догрузка сделки и запрос истории строили бы клиента дважды — два чтения
     // токена с расшифровкой и, главное, два независимых лимитера SDK, не видящих суммарный темп.
-    // Инстанс single-tenant, `member_id` в запросе один — кэш по нему безопасен.
-    let clientPromise: Promise<ReturnType<typeof createPortalClient>> | undefined
-    const portalClient = (memberId: string) =>
-      (clientPromise ??= (async () => {
+    // Кэш — ПО `memberId`, а не один на запрос: tenant-изоляция — инвариант проекта, и держаться она
+    // должна структурно, а не на комментарии «в запросе member_id всё равно один».
+    const clients = new Map<string, Promise<ReturnType<typeof createPortalClient>>>()
+    const portalClient = (memberId: string) => {
+      const cached = clients.get(memberId)
+      if (cached) return cached
+      const p = (async () => {
         const tokens = await tokenStore.load(memberId)
         const accessToken = await tokenStore.accessToken(memberId, oauth)
         if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
         return createPortalClient(frameToB24Params({ domain: tokens.domain, accessToken, memberId }), cfg.secret)
-      })())
+      })()
+      clients.set(memberId, p)
+      return p
+    }
 
     const outcome = await runDealUpdate(raw, {
       storedApplicationToken: async (memberId) => (await tokenStore.load(memberId))?.applicationToken,

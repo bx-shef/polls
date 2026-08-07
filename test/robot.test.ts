@@ -145,6 +145,45 @@ describe('runRobotTrigger — робот автоматизации «Запус
     })
   })
 
+  it('капы разбора bracket-формы держатся: много ключей и длинные элементы document_id', async () => {
+    const fetchDeal = vi.fn(deps().fetchDeal)
+    // кап на число ключей bracket-объекта (иначе раздутое тело заставит нас собирать мусорный массив)
+    const manyKeys = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [String(i), 'x']))
+    // кап на длину одного элемента
+    const longItem = ['crm', 'CCrmDocumentDeal', 'D'.repeat(300)]
+    for (const d of [manyKeys, longItem, Array.from({ length: 11 }, () => 'x')]) {
+      expect((await runRobotTrigger(rawRobot({ document_id: d }), deps({ fetchDeal }))).kind).toBe('ignored')
+    }
+    expect(fetchDeal).not.toHaveBeenCalled()
+  })
+
+  it('ХАРАКТЕРИЗАЦИЯ: оба пути на одном переходе → ДВА приглашения (осознанный риск режима both)', async () => {
+    // Фиксируем ровно тот дефект, который описан в доках: робот срабатывает на входе в стадию, событие
+    // приходит тем же изменением и подтверждается историей — на выходе два РАЗНЫХ токена на одну сделку.
+    // Тест обязан упасть, когда приедет идемпотентность по ключу перехода, — тогда решение примут явно.
+    const { runDealUpdate } = await import('../src/bitrix24/deal-update')
+    const invitations = new MemoryInvitationStore()
+    const now = new Date('2026-07-31T12:00:00.000Z')
+    const r = await runRobotTrigger(rawRobot(), deps({ invitations, now }))
+    const e = await runDealUpdate(
+      {
+        event: 'ONCRMDEALUPDATE',
+        data: { FIELDS: { ID: '759' } },
+        auth: {
+          member_id: 'member-id-fake-0000000000000000',
+          domain: 'acme.bitrix24.ru',
+          application_token: 'app-token-fake-0000000000000000'
+        }
+      },
+      { ...deps({ invitations, now }), confirmStageEntry: async () => true }
+    )
+    if (r.kind !== 'ok' || e.kind !== 'ok') throw new Error('unreachable')
+    const tokens = new Set([r.results[0]!.token, e.results[0]!.token])
+    expect(tokens.size).toBe(2) // ← упадёт, когда появится дедуп по переходу: это и есть цель теста
+    expect(invitations.peek(r.results[0]!.token, now)?.context.dealId).toBe(759)
+    expect(invitations.peek(e.results[0]!.token, now)?.context.dealId).toBe(759)
+  })
+
   it('паритет с событийным путём: одна сделка → тот же опрос/версия и тот же снимок контекста', async () => {
     // два оркестратора дублируют dealToCrmContext + handleDealTrigger; расхождение поймается здесь
     const { runDealUpdate } = await import('../src/bitrix24/deal-update')

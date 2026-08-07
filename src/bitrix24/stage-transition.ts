@@ -73,9 +73,14 @@ export function resolveStageEntryWindowSec(raw: unknown): number {
 /**
  * Самая свежая запись истории. Порядок определяем по **`ID`** (у Bitrix он монотонный и есть всегда),
  * а НЕ по дате: иначе запись с битым `CREATED_TIME` выпала бы из сравнения и «победила» бы более старая —
- * приглашение ушло бы по стадии, которую сделка уже покинула (fail-OPEN). Теперь такая запись выигрывает
- * упорядочивание и заваливает проверку свежести ниже → `false`, как и обещано.
- * Записи без числового `ID` упорядочиваются по времени (запасной путь), совсем непригодные — пропускаются.
+ * приглашение ушло бы по стадии, которую сделка уже покинула (fail-OPEN).
+ *
+ * **Непригодная запись выигрывает упорядочивание намеренно.** И при битом `CREATED_TIME`, и при
+ * отсутствующем/нечисловом `ID` мы НЕ можем доказать, что запись не самая свежая, — поэтому даём ей
+ * победить и заваливаем проверку свежести ниже (`false`). Иначе получался бы тот же fail-OPEN с другого
+ * конца: запись без `ID` получала бы минимальный ранг, побеждала бы более старая запись с `ID`, и
+ * приглашение ушло бы по уже покинутой стадии. Ценой этого мы иногда промолчим — что и обещано:
+ * молчание дешевле ложной рассылки клиентам.
  */
 function latestRecord(records: readonly StageHistoryRecord[]): StageHistoryRecord | undefined {
   let best: StageHistoryRecord | undefined
@@ -83,10 +88,10 @@ function latestRecord(records: readonly StageHistoryRecord[]): StageHistoryRecor
   let bestTime = -Infinity
   for (const r of records) {
     const idRaw = Number(r.ID)
-    const id = Number.isFinite(idRaw) ? idRaw : -Infinity
+    // Нечитаемый ID → +Infinity: такая запись побеждает и проваливает проверку свежести (fail-closed).
+    const id = r.ID != null && Number.isFinite(idRaw) ? idRaw : Infinity
     const tRaw = r.CREATED_TIME ? new Date(r.CREATED_TIME).getTime() : NaN
     const t = Number.isFinite(tRaw) ? tRaw : -Infinity
-    if (id === -Infinity && t === -Infinity) continue // нечем упорядочить
     if (id > bestId || (id === bestId && t > bestTime)) {
       best = r
       bestId = id
