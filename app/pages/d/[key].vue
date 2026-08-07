@@ -5,6 +5,7 @@
 // (fail-closed в проде; открыт вне production или с DASHBOARD_DEV_OPEN=1 — для демо). Tenant-фильтр — #49.
 // Типы метрик — из ядра (type-only: в клиентский бандл не попадают, граница ~core
 // соблюдена). Один источник правды с серверным агрегатом — расхождение ловит компилятор.
+import { serverMessage } from '~core/client/server-message'
 import type { NpsSummary, CsatSummary } from '~core/domain/metrics'
 import type { TrendPoint, BreakdownRow } from '~core/domain/aggregate'
 
@@ -53,6 +54,29 @@ const { data, error } = await useAsyncData<Dashboard>(
 // Смена версии = навигация (состояние в URL): деплинк + кнопка «назад» работают сами собой.
 // `query: {}` очищает `?version` (path берётся из текущего маршрута — остаёмся на `/d/:key`).
 const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { version: v } : {} })
+
+/**
+ * Что показать вместо дашборда, когда он не загрузился.
+ *
+ * Порядок такой же, как в контуре A: сначала текст сервера (он знает причину — «опрос не найден,
+ * проверьте адрес»), потом наши строки на случаи, где сервер отвечает без тела. 401/503 приходят
+ * из гейта авторизации (`requirePortalSession` бросает `createError`, а его конверт до сюда с нашим
+ * текстом не доезжает) — поэтому их называем здесь и по-разному: первое чинит сам сотрудник,
+ * второе — только администратор.
+ */
+const errorText = computed(() => {
+  if (!error.value) return ''
+  const fromServer = serverMessage(error.value)
+  if (fromServer) return fromServer
+  const status = error.value.statusCode
+  if (status === 401) {
+    return 'Сессия портала истекла. Закройте и заново откройте приложение из Bitrix24 — дашборд откроется снова.'
+  }
+  if (status === 503) {
+    return 'Дашборд не настроен: администратору нужно задать переменную DASHBOARD_AUTH_SECRET.'
+  }
+  return 'Не удалось загрузить дашборд. Проверьте подключение и обновите страницу.'
+})
 </script>
 
 <template>
@@ -86,14 +110,14 @@ const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { ve
     <B24Alert
       v-if="error"
       color="air-primary-alert"
-      title="Не удалось загрузить дашборд."
+      :title="errorText"
     />
 
     <B24Alert
       v-else-if="data?.suppressed"
       color="air-primary-warning"
-      title="Недостаточно ответов"
-      :description="`Данные скрыты для анонимности (порог — ${data.threshold}). Соберите больше ответов.`"
+      title="Пока мало ответов"
+      :description="`Цифры откроются, когда ответов станет ${data.threshold} или больше: на меньшей выборке по ним можно узнать конкретного человека. Ответы уже сохраняются — ничего не потеряно.`"
     />
 
     <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2">

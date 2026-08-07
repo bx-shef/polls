@@ -59,9 +59,29 @@ test('экран «thanks» совпадает с эталоном', async ({ pa
 })
 
 test('экран «error» (опрос не найден) совпадает с эталоном', async ({ page }) => {
+  // Текст — СЕРВЕРНЫЙ (`api.survey` → 404), не клиентская заготовка: страница обязана показывать
+  // именно его, иначе респондент не узнает, что делать («попросите новую ссылку»).
   await page.goto('/s/nonexistent-survey', { waitUntil: 'networkidle' })
-  await expect(page.getByText('Опрос не найден или больше не активен.')).toBeVisible()
+  await expect(page.getByText('Опрос не найден. Возможно, ссылка устарела — попросите новую.')).toBeVisible()
   await expect(page).toHaveScreenshot('error.png', { fullPage: true })
+})
+
+test('причина отказа сервера доходит до респондента', async ({ page }) => {
+  // Без скриншота: это проверка ПРОВОДКИ, а не вёрстки (алерт уже под эталоном submit-error).
+  // Самый дорогой случай из реальных: ссылка истекла. Раньше клиент глотал ответ сервера и
+  // показывал «проверьте соединение» — респондент чинил интернет вместо того, чтобы попросить
+  // новую ссылку. Тест красный, если текст сервера снова перестанет доезжать.
+  const expired = 'Срок ссылки истёк или она недействительна. Попросите новую ссылку у менеджера.'
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  await page.route('**/api/submit', (route) =>
+    route.fulfill({ status: 403, json: { ok: false, error: expired } })
+  )
+  await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await answerHappyPath(page)
+  await expect(page.getByText(expired)).toBeVisible()
 })
 
 test('экран «submit-error» (провал отправки) совпадает с эталоном', async ({ page }) => {

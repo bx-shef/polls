@@ -1,4 +1,5 @@
 import { SurveyFill, surveyFillSnapshotSchema } from '~core/client/survey-fill'
+import { serverMessage } from '~core/client/server-message'
 import type { PublicVersion, Question } from '~core/domain/schema'
 import type { QuestionAnswer } from '~core/client/survey-fill'
 
@@ -75,8 +76,10 @@ export function useSurvey() {
   function reset(nextVersion: PublicVersion | null, fetchError?: unknown) {
     fill.value = null
     if (fetchError) {
-      const code = (fetchError as { statusCode?: number }).statusCode
-      errorMsg.value = code === 404 ? 'Опрос не найден или больше не активен.' : 'Не удалось загрузить опрос.'
+      // Сервер на 404 объясняет и что делать («ссылка устарела — попросите новую»); свой текст
+      // нужен, только когда ответа не было вовсе.
+      errorMsg.value = serverMessage(fetchError)
+        ?? 'Не удалось открыть опрос. Проверьте подключение и обновите страницу.'
       version.value = null
       phase.value = 'error'
     } else {
@@ -177,10 +180,13 @@ export function useSurvey() {
       })
       clearSnapshot() // опрос завершён — прогресс больше не восстанавливаем
       phase.value = 'thanks'
-    } catch {
+    } catch (e) {
       // Остаёмся на опросе, показываем ошибку отправки. Снимок НЕ чистим — намеренно: повтор
-      // не теряет ответы (nonce одноразов, повтор берёт новый через /api/session).
-      errorMsg.value = 'Не удалось отправить ответы. Проверьте соединение и попробуйте ещё раз.'
+      // не теряет ответы (nonce одноразов, повтор берёт новый через /api/session). Это верно и
+      // для «терминальных» отказов (409/403): ответы респондента остаются при нём, а не пропадают
+      // вместе с сообщением.
+      errorMsg.value = serverMessage(e)
+        ?? 'Не удалось отправить ответы. Проверьте подключение и попробуйте ещё раз.'
     } finally {
       submitting.value = false
     }
