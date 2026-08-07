@@ -13,13 +13,13 @@ import { nullLogger, errInfo, type Logger } from '../obs/logger'
 
 const HOUR_MS = 3_600_000
 /** Дефолт каденции keep-alive (часов). B24 предупреждает: частый рефреш → риск авто-блока. */
-const DEFAULT_KEEPALIVE_HOURS = 24
-const MIN_KEEPALIVE_HOURS = 1
+export const DEFAULT_KEEPALIVE_HOURS = 24
+export const MIN_KEEPALIVE_HOURS = 1
 /**
  * Верхний клэмп КРИТИЧЕН: `setInterval` с задержкой > 2³¹−1 мс (~24.8 сут) переполняется —
  * Node молча схлопывает её в 1 мс (tight loop). 168ч (7 сут) — с большим запасом ниже предела.
  */
-const MAX_KEEPALIVE_HOURS = 168
+export const MAX_KEEPALIVE_HOURS = 168
 
 /**
  * Интервал keep-alive в мс из env-значения (часы): парс → клэмп `[1ч, 168ч]` → мс.

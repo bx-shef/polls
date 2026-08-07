@@ -9,8 +9,13 @@ import { logger } from '../utils/api'
  * режима, решать за владельца мы не должны. Молчим, когда всё в порядке.
  *
  * В лог идут ИМЕНА переменных и характер проблемы — значения никогда: там секреты.
+ *
+ * ⚠️ Предупреждения идут через `logger.warn`, а порог логгера берётся из той же переменной уровня,
+ * которую мы проверяем: при `LOG_LEVEL=error` замечания до лога не дойдут. Ошибки дойдут всегда.
  */
 export default defineNitroPlugin(() => {
+  // При пререндере окружение пустое по определению — поток замечаний в лог сборки бесполезен.
+  if (import.meta.prerender) return
   const report = checkEnv(process.env, { isProduction: process.env.NODE_ENV === 'production' })
   if (!hasEnvIssues(report)) return
   for (const issue of report.errors) logger.error('env_problem', { variable: issue.name, detail: issue.message })
