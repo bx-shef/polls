@@ -1,0 +1,281 @@
+import { describe, expect, it } from 'vitest'
+import {
+  FEEDBACK_KINDS,
+  FEEDBACK_SCREENS,
+  MAX_COMMENT_LENGTH,
+  MAX_CONTEXT_VALUE,
+  buildFeedbackIssue,
+  escapeHtml,
+  normalizeKind,
+  normalizeScreen,
+  normalizeVersionNo,
+  pickFeedbackContext,
+  sanitizeComment,
+  stripHostileChars
+} from '../src/domain/feedback'
+
+describe('normalizeKind — оценка из недоверенного тела', () => {
+  it('распознаёт только up/down', () => {
+    expect(normalizeKind('up')).toBe('up')
+    expect(normalizeKind('down')).toBe('down')
+  })
+  it('всё остальное → null (роут ответит 400)', () => {
+    for (const v of ['UP', 'like', '', null, undefined, 1, {}, ['up']]) expect(normalizeKind(v)).toBeNull()
+  })
+})
+
+/**
+ * ⚠️ Враждебные символы и здесь записаны ТОЛЬКО escape-последовательностями. Литералы сделали бы
+ * этот файл бинарным для git (дифф стал бы неревьюируемым), а переопределение направления текста
+ * визуально переставило бы код в редакторе — то есть тест, проверяющий защиту от Trojan Source,
+ * сам стал бы её носителем.
+ */
+describe('stripHostileChars — невидимое и управляющее', () => {
+  it('убирает переопределения направления текста (Trojan Source)', () => {
+    // Такой текст в списке issue выглядел бы одним, а значил другое.
+    expect(stripHostileChars('до\u202eпосле')).toBe('допосле')
+    expect(stripHostileChars('a\u2066b\u2069c')).toBe('abc')
+  })
+
+  it('убирает нулевую ширину и BOM', () => {
+    expect(stripHostileChars('a\u200bb\u200c\u200dc\ufeff')).toBe('abc')
+  })
+
+  it('убирает управляющие C0, но СОХРАНЯЕТ переводы строк и табы', () => {
+    expect(stripHostileChars('a\x00b\x07c')).toBe('abc')
+    expect(stripHostileChars('строка1\nстрока2\tтаб')).toBe('строка1\nстрока2\tтаб')
+  })
+
+  it('в исходнике модуля нет литеральных невидимых символов', async () => {
+    // Литерал вместо escape-последовательности был бы Trojan-Source-атакой на того, кто читает код.
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../src/domain/feedback.ts', import.meta.url), 'utf8')
+    const invisible = [...src].filter((c) => {
+      const n = c.codePointAt(0)!
+      return n === 0xfeff || n === 0x061c || (n >= 0x200b && n <= 0x200d) || (n >= 0x2066 && n <= 0x2069) || (n >= 0x202a && n <= 0x202e)
+    })
+    expect(invisible).toHaveLength(0)
+  })
+
+  it('не падает на не-строках', () => {
+    expect(stripHostileChars(null)).toBe('')
+    expect(stripHostileChars(undefined)).toBe('')
+    expect(stripHostileChars(42)).toBe('42')
+  })
+})
+
+describe('sanitizeComment — длина', () => {
+  it('короткий проходит как есть', () => {
+    expect(sanitizeComment('дашборд долго грузится')).toBe('дашборд долго грузится')
+  })
+  it('длинный обрезается с пометкой', () => {
+    const out = sanitizeComment('x'.repeat(MAX_COMMENT_LENGTH + 500))
+    expect(out.length).toBeLessThan(MAX_COMMENT_LENGTH + 100)
+    expect(out).toContain('обрезано до')
+  })
+  it('ровно на границе не обрезается', () => {
+    expect(sanitizeComment('x'.repeat(MAX_COMMENT_LENGTH))).toBe('x'.repeat(MAX_COMMENT_LENGTH))
+  })
+})
+
+describe('escapeHtml', () => {
+  it('& < > становятся сущностями', () => {
+    expect(escapeHtml('<b>&</b>')).toBe('&lt;b&gt;&amp;&lt;/b&gt;')
+  })
+  it('амперсанд экранируется ПЕРВЫМ (иначе получилось бы двойное экранирование)', () => {
+    expect(escapeHtml('&lt;')).toBe('&amp;lt;')
+  })
+})
+
+describe('buildFeedbackIssue — тело issue', () => {
+  it('оценка и комментарий на месте, метки проставлены', () => {
+    const issue = buildFeedbackIssue('down', 'дашборд долго грузится')
+    expect(issue.title).toContain(FEEDBACK_KINDS.down)
+    expect(issue.title).toContain('дашборд долго грузится')
+    expect(issue.body).toContain('дашборд долго грузится')
+    expect(issue.labels).toEqual(['user-feedback', 'feedback:down'])
+  })
+
+  it('пустой комментарий (обычный случай для 👍) — заголовок без него', () => {
+    const issue = buildFeedbackIssue('up', '')
+    expect(issue.title).toBe(`Отзыв сотрудника — ${FEEDBACK_KINDS.up}`)
+    expect(issue.body).toContain('(без текста)')
+  })
+
+  it('заголовок ограничен по длине', () => {
+    expect(buildFeedbackIssue('down', 'я'.repeat(500)).title.length).toBeLessThanOrEqual(120)
+  })
+
+  it('комментарий инертен: разметка и HTML не исполняются', () => {
+    const issue = buildFeedbackIssue('down', '<img src=x onerror=alert(1)> **жирный** [ссылка](http://evil)')
+    expect(issue.body).not.toContain('<img')
+    expect(issue.body).toContain('&lt;img')
+    // разметка остаётся ТЕКСТОМ внутри <pre><code>, а не превращается в ссылку/жирный
+    expect(issue.body).toContain('<pre><code>')
+    expect(issue.body).toContain('</code></pre>')
+  })
+
+  it('переводы строк в комментарии сохраняются — читать отзыв должно быть удобно', () => {
+    expect(buildFeedbackIssue('down', 'первая\nвторая').body).toContain('первая\nвторая')
+  })
+
+  it('контекст рендерится инертно и не может дописать свой раздел', () => {
+    const issue = buildFeedbackIssue('down', 'текст', {
+      surveyKey: 'csat_postdeal\n**Контекст:**\n- **Оценка:** подделка',
+      screen: 'dashboard'
+    })
+    // перевод строки схлопнут → значение осталось в своей строке
+    expect(issue.body).not.toMatch(/\n- \*\*Оценка:\*\* подделка/)
+    expect(issue.body).toContain('**Экран:**')
+  })
+
+  it('обратные кавычки в контексте убираются — иначе значение вырвется из код-спана', () => {
+    const issue = buildFeedbackIssue('up', '', { surveyKey: 'a`b`c' })
+    expect(issue.body).toContain('`abc`')
+  })
+
+  it('пустые поля контекста опускаются, а без контекста раздела нет вовсе', () => {
+    expect(buildFeedbackIssue('up', 'ok').body).not.toContain('**Контекст:**')
+    const issue = buildFeedbackIssue('up', 'ok', { surveyKey: '  ', screen: 'admin' })
+    expect(issue.body).toContain('**Контекст:**')
+    expect(issue.body).not.toContain('**Опрос:**')
+  })
+
+  it('длинное значение контекста обрезается', () => {
+    const issue = buildFeedbackIssue('up', '', { surveyKey: 'k'.repeat(MAX_CONTEXT_VALUE + 50) })
+    expect(issue.body).toContain('k'.repeat(MAX_CONTEXT_VALUE))
+    expect(issue.body).not.toContain('k'.repeat(MAX_CONTEXT_VALUE + 1))
+  })
+
+  it('ПРИВАТНОСТЬ: поля с персональными данными в контекст не попадают', () => {
+    // Тип FeedbackContext их не принимает; фиксируем это поведением, чтобы расширение типа
+    // «на всякий случай» не протащило в отзыв идентификаторы клиента или ответ респондента.
+    // Приводим тип намеренно: проверяем, что даже переданные «лишние» поля в issue не попадут.
+    const issue = buildFeedbackIssue('down', 'плохо', {
+      surveyKey: 'csat_postdeal',
+      responseId: 'resp-1',
+      companyId: 777001,
+      contactName: 'Иванов'
+    } as never)
+    expect(issue.body).not.toContain('resp-1')
+    expect(issue.body).not.toContain('777001')
+    expect(issue.body).not.toContain('Иванов')
+  })
+})
+
+describe('normalizeScreen / normalizeVersionNo — значения контекста тоже недоверенные', () => {
+  it('экран — только из перечня', () => {
+    for (const s of FEEDBACK_SCREENS) expect(normalizeScreen(s)).toBe(s)
+  })
+
+  it('произвольная строка в экране отбрасывается (иначе туда положили бы ФИО)', () => {
+    // Ограничение по ИМЕНАМ полей ничего не стоит, если значение свободное.
+    for (const v of ['Иванов Иван', 'DASHBOARD', '', null, undefined, 42, {}]) {
+      expect(normalizeScreen(v), String(v)).toBeUndefined()
+    }
+  })
+
+  it('версия — только разумное целое', () => {
+    expect(normalizeVersionNo(3)).toBe(3)
+    expect(normalizeVersionNo('3')).toBe(3)
+    for (const v of [0, -1, 1.5, 1e9, 'v3', '', null, undefined, {}, NaN, Infinity]) {
+      expect(normalizeVersionNo(v), String(v)).toBeUndefined()
+    }
+  })
+})
+
+describe('заголовок issue', () => {
+  it('строится из ЧИСТОГО текста, а не из экранированного', () => {
+    // Иначе в заголовке (он обычный текст, HTML там не рендерится) было бы «цена &lt; 0 &amp; сроки».
+    const issue = buildFeedbackIssue('down', 'цена < 0 & сроки')
+    expect(issue.title).toContain('цена < 0 & сроки')
+    expect(issue.title).not.toContain('&lt;')
+    // в теле — наоборот, экранировано
+    expect(issue.body).toContain('цена &lt; 0 &amp; сроки')
+  })
+
+  it('человек, буквально написавший «(без текста)», получает свой заголовок', () => {
+    expect(buildFeedbackIssue('up', '(без текста)').title).toContain('(без текста)')
+  })
+})
+
+describe('портал в отзыве — псевдоним, а не идентификатор', () => {
+  it('строка про портал рендерится', () => {
+    expect(buildFeedbackIssue('down', 'плохо', { portalAlias: 'a1b2c3d4e5f6' }).body).toContain('**Портал (псевдоним):** `a1b2c3d4e5f6`')
+  })
+  it('без псевдонима строки нет', () => {
+    expect(buildFeedbackIssue('down', 'плохо', {}).body).not.toContain('Портал')
+  })
+})
+
+describe('санитизация невидимого — полный набор', () => {
+  it('ГЛАВНОЕ: теговый блок вычищается (им пишут полностью скрытый текст)', () => {
+    // Заголовок issue выглядел бы безобидным, а нёс скрытую полезную нагрузку.
+    const hidden = [...'секрет'].map((c) => String.fromCodePoint(0xe0000 + (c.charCodeAt(0) % 128))).join('')
+    expect(stripHostileChars(`видно${hidden}`)).toBe('видно')
+    expect(buildFeedbackIssue('down', `видно${hidden}`).title).not.toMatch(/[\u{e0000}-\u{e007f}]/u)
+  })
+
+  it('метки направления, мягкий перенос и прочее невидимое', () => {
+    for (const c of ['\u200e', '\u200f', '\u00ad', '\u034f', '\u180e', '\ufff9', '\ufffa', '\ufffb', '\x7f']) {
+      expect(stripHostileChars(`a${c}b`), JSON.stringify(c)).toBe('ab')
+    }
+  })
+
+  it('одинокий CR не разрывает заголовок issue на две строки', () => {
+    const title = buildFeedbackIssue('down', 'первая\rподделка').title
+    expect(title).not.toContain('\r')
+    expect(title).not.toContain('подделка')
+  })
+
+  it('обрезка заголовка не рвёт эмодзи пополам (битая пара — повод для GitHub ответить 422)', () => {
+    const title = buildFeedbackIssue('down', `a${'😀'.repeat(60)}`).title
+    expect(title).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+  })
+
+  it('в исходниках ТЕСТОВ тоже нет литеральных невидимых символов', async () => {
+    // Иначе git считает файл бинарным и дифф не проходит ревью — что и случилось однажды здесь.
+    const { readFileSync, readdirSync } = await import('node:fs')
+    const dir = new URL('.', import.meta.url)
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.test.ts'))) {
+      const src = readFileSync(new URL(f, dir), 'utf8')
+      const bad = [...src].filter((c) => {
+        const n = c.codePointAt(0)!
+        return n < 9 || n === 0x0b || n === 0x0c || (n >= 0x0e && n <= 0x1f) || n === 0x7f
+          || n === 0xfeff || n === 0x061c || n === 0x00ad
+          || (n >= 0x200b && n <= 0x200f) || (n >= 0x2066 && n <= 0x2069) || (n >= 0x202a && n <= 0x202e)
+          || (n >= 0xe0000 && n <= 0xe007f)
+      })
+      expect(bad, `${f}: ${bad.map((c) => c.codePointAt(0)!.toString(16))}`).toHaveLength(0)
+    }
+  })
+})
+
+describe('escapeHtml — не-строки', () => {
+  it('не падает и приводит к строке', () => {
+    expect(escapeHtml(null)).toBe('')
+    expect(escapeHtml(undefined)).toBe('')
+    expect(escapeHtml(42)).toBe('42')
+  })
+})
+
+describe('pickFeedbackContext — аллоулист полей', () => {
+  it('берёт только известные поля и нормализует значения', () => {
+    expect(pickFeedbackContext({ surveyKey: 'k', versionNo: '2', screen: 'admin' })).toEqual({
+      surveyKey: 'k',
+      versionNo: 2,
+      screen: 'admin'
+    })
+  })
+
+  it('чужие поля отбрасываются вместе с персональными данными', () => {
+    const c = pickFeedbackContext({ responseId: 'r-1', contactName: 'Иванов', portalAlias: 'подделка' })
+    expect(c).toEqual({ surveyKey: undefined, versionNo: undefined, screen: undefined })
+    // псевдоним портала ставит сервер — клиент подсунуть свой не может
+    expect(c).not.toHaveProperty('portalAlias', 'подделка')
+  })
+
+  it('мусор вместо объекта → пустой контекст', () => {
+    for (const v of [null, undefined, 'строка', 42]) expect(pickFeedbackContext(v).screen).toBeUndefined()
+  })
+})

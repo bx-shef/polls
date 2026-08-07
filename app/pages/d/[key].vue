@@ -153,5 +153,9 @@ const selectVersion = (v: number | null) => navigateTo({ query: v != null ? { ve
       <BreakdownCard v-if="data?.responsibles?.length" title="По ответственным" :rows="data.responsibles" />
       <BreakdownCard v-if="data?.clients?.length" title="По клиентам" :rows="data.clients" />
     </div>
+
+    <!-- Отзыв о сервисе: внутренний экран, сотрудник под сессией портала. На публичной странице
+         прохождения опроса виджета быть не должно — там клиент заказчика. -->
+    <FeedbackWidget screen="dashboard" :survey-key="surveyKey" />
   </main>
 </template>

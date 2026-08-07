@@ -27,8 +27,6 @@ export interface WriteOriginHeaders {
   origin?: string | null
   /** `Host` запроса — с чем сверяем `Origin`, когда `Sec-Fetch-Site` недоступен. */
   host?: string | null
-  /** `X-Forwarded-Proto`/схема — чтобы сверка `Origin` не падала на http vs https за прокси. */
-  proto?: string | null
 }
 
 /** Голый хост из значения `Origin` (`https://polls.example.com:443` → `polls.example.com:443`). */

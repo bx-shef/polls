@@ -40,6 +40,32 @@ export function requirePortalSession(event: H3Event): PortalSession {
 }
 
 /**
+ * То же решение, что и {@link requirePortalSession}, но РЕШЕНИЕМ, а не броском. Нужно роутам, которые
+ * обязаны ответить своим текстом: брошенный `createError` Nitro заворачивает в свой конверт, и клиент
+ * показывает служебное значение вместо сообщения.
+ *
+ * `devOpen` отдаётся отдельным признаком: в этом режиме авторизации нет вовсе, и роутам, которые
+ * что-то отправляют НАРУЖУ (например, отзыв в чужой трекер), синтетическую сессию принимать нельзя —
+ * иначе они превращаются в анонимный релей.
+ */
+export function resolvePortalSession(
+  event: H3Event
+): { ok: true; session: PortalSession; devOpen: boolean } | { ok: false; status: 401 | 503 } {
+  const decision = resolveDashboardAuth(
+    {
+      secret: process.env.DASHBOARD_AUTH_SECRET,
+      devOpen: !!process.env.DASHBOARD_DEV_OPEN,
+      isProduction: process.env.NODE_ENV === 'production'
+    },
+    getCookie(event, SESSION_COOKIE)
+  )
+  if (!decision.ok) return decision
+  const devOpen = decision.session.portalId === DEV_PORTAL_ID
+  if (devOpen) warnDevOpenOnce()
+  return { ok: true, session: decision.session, devOpen }
+}
+
+/**
  * Единый текст отказа для гейта записи. Держим рядом с гейтом, чтобы не разъехался между роутами.
  * По правилу проекта в сообщении видно ГДЕ, ЧТО и ЧТО ДАЛЬШЕ — плюс главное для человека,
  * который только что жал «Опубликовать»: его правки не пропали.

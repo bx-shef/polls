@@ -44,7 +44,16 @@ export default defineConfig({
     // запущенный сервер ТОЛЬКО на :3030 (`PORT=3030 DASHBOARD_DEV_OPEN=1 pnpm preview`), иначе соберёт сам.
     // DASHBOARD_DEV_OPEN=1 — открывает дашборд без auth (#47): собранный сервер бежит как
     // production, иначе гейт упрётся в 503 fail-closed. Боевой деплой флаг НЕ ставит (ставит секрет).
-    env: { PORT: '3030', NITRO_HOST: '127.0.0.1', DASHBOARD_DEV_OPEN: '1' }
+    // GITHUB_FEEDBACK_* — ФИКТИВНЫЕ: включают виджет отзывов, чтобы он попал в эталоны (иначе
+    // `enabled:false` и нового UI не видит ни один снимок). Отправки при этом не происходит:
+    // `GET /api/feedback` только читает настройки, а POST в гейте отзыв не делает — сеть не нужна.
+    env: {
+      PORT: '3030',
+      NITRO_HOST: '127.0.0.1',
+      DASHBOARD_DEV_OPEN: '1',
+      GITHUB_FEEDBACK_TOKEN: 'visual-gate-fake-token',
+      GITHUB_FEEDBACK_REPO: 'example/visual-gate-fake'
+    }
   },
   use: {
     baseURL: 'http://127.0.0.1:3030',
