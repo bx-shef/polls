@@ -13,9 +13,12 @@ import type { InvitationStore } from '../api/invitation'
  * успешной `verifyApplicationToken` — иначе open-trigger. Здесь порядок гарантирован: `fetchDeal` зовётся
  * ниже сверки токена, а на форджери — не зовётся вовсе (нет амплификации исходящих REST от подделки).
  *
- * ⚠️ **Триггер на ЛЮБОЙ апдейт, не на переход стадии** (`ONCRMDEALUPDATE` так устроен) + событие несёт
+ * ⚠️ **Событие приходит на ЛЮБОЙ апдейт, не на переход стадии** (`ONCRMDEALUPDATE` так устроен) и несёт
  * лишь `data.FIELDS.ID` (без стадии) ⇒ `fetchDeal` (2 REST к порталу) идёт на КАЖДЫЙ апдейт сделки ДО
- * фильтра по стадии. Дедуп/детекция перехода — БЛОКЕР перед подключением доставки (см. `handleDealTrigger`).
+ * фильтра по стадии. Чтобы не рассылать приглашение на каждое редактирование сделки, стоящей в триггерной
+ * стадии, переход подтверждается историей портала: `confirmStageEntry` (см. `stage-transition.ts`).
+ * Проверка **опциональна** — путь робота автоматизации её не использует (робот вызывается ровно на входе
+ * в стадию), а ядровые тесты могут её не подключать.
  */
 
 export type DealUpdateOutcome =
@@ -28,6 +31,11 @@ export type DealUpdateOutcome =
   | { kind: 'forged'; reason: 'unknown_portal' | 'token_mismatch'; memberId: string }
   /** Верифицировано: создано 0..N приглашений (0 — стадия сделки не триггерит ни один опрос). */
   | { kind: 'ok'; results: TriggerResult[] }
+  /**
+   * Верифицировано, стадия триггерная, но перехода «только что» НЕ было (обычный апдейт сделки, давно
+   * стоящей в этой стадии) либо историю не удалось подтвердить → приглашение не выписываем.
+   */
+  | { kind: 'skipped'; reason: 'stale_stage'; dealId: number; stageId: string }
 
 export interface DealUpdateDeps {
   /** Сохранённый `application_token` портала по `member_id` (из `PortalTokenStore.load`); `undefined` — портал не установлен. */
@@ -42,6 +50,13 @@ export interface DealUpdateDeps {
   ) => Promise<{ deal: Record<string, unknown>; productRows: Array<Record<string, unknown>> }>
   store: TriggerStore
   invitations: InvitationStore
+  /**
+   * Подтверждение РЕАЛЬНОГО перехода в стадию (история портала, `crm.stagehistory.list`): `true` — переход
+   * произошёл только что, приглашаем. **Не задана** → проверки нет (путь робота автоматизации: он и так
+   * вызывается ровно на входе в стадию). Ошибку REST вызывающий гасит в `false` — молчание безопаснее
+   * ложной рассылки клиентам.
+   */
+  confirmStageEntry?: (dealId: number, stageId: string, memberId: string) => Promise<boolean>
   now?: Date
 }
 
@@ -61,6 +76,16 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   // Токен сошёлся → догружаем АВТОРИТЕТНЫЕ поля сделки токеном портала и строим снимок контекста.
   const { deal, productRows } = await deps.fetchDeal(ev.data.FIELDS.ID, ev.auth.member_id)
   const context = dealToCrmContext(deal, productRows)
+
+  // Событие приходит на любой апдейт → подтверждаем, что переход в эту стадию был ТОЛЬКО ЧТО.
+  // Стадии в контексте нет — триггерить нечего, проверка не нужна (ниже handleDealTrigger вернёт []).
+  if (deps.confirmStageEntry && context.dealStageId) {
+    const fresh = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
+    if (!fresh) {
+      return { kind: 'skipped', reason: 'stale_stage', dealId: ev.data.FIELDS.ID, stageId: context.dealStageId }
+    }
+  }
+
   const results = await handleDealTrigger({
     store: deps.store,
     invitations: deps.invitations,

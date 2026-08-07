@@ -9,7 +9,12 @@
 import { runDealUpdate } from '~core/bitrix24/deal-update'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
-import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
+import { createPortalClient, dealGet, dealProductRows, frameToB24Params, stageHistoryList } from '~core/bitrix24/client'
+import {
+  isFreshStageEntry,
+  resolveStageEntryWindowSec,
+  STAGE_HISTORY_ENTITY_TYPE_ID
+} from '~core/bitrix24/stage-transition'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
@@ -58,18 +63,36 @@ export default defineEventHandler(async (event) => {
     // `member_id` события НЕ выбирает стор. Для мульти-портала ОБЯЗАТЕЛЕН scoped-стор по member_id, иначе
     // стадия одного портала триггернёт опрос данных другого (cross-tenant). Гейт — #49.
     const store = await useStore()
+
+    // Клиент портала: токеном ПОРТАЛА (не события). Домен — из СОХРАНЁННОГО токена (валидирован
+    // allowlist'ом на установке), не из недоверенного события (SSRF). Общий для догрузки сделки и истории.
+    const portalClient = async (memberId: string) => {
+      const tokens = await tokenStore.load(memberId)
+      const accessToken = await tokenStore.accessToken(memberId, oauth)
+      if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
+      return createPortalClient(frameToB24Params({ domain: tokens.domain, accessToken, memberId }), cfg.secret)
+    }
+
     const outcome = await runDealUpdate(raw, {
       storedApplicationToken: async (memberId) => (await tokenStore.load(memberId))?.applicationToken,
+      // Событие приходит на ЛЮБОЙ апдейт сделки, а отдельного события смены стадии в Bitrix24 нет —
+      // подтверждаем реальный переход историей портала (`crm.stagehistory.list`). Ошибку гасим в false:
+      // без доказательства перехода молчим (ложная рассылка клиентам дороже пропуска).
+      confirmStageEntry: async (dealId, stageId, memberId) => {
+        try {
+          const records = await stageHistoryList(await portalClient(memberId), STAGE_HISTORY_ENTITY_TYPE_ID.deal, dealId)
+          return isFreshStageEntry(records, {
+            stageId,
+            now: new Date(),
+            windowSec: resolveStageEntryWindowSec(process.env.STAGE_ENTRY_WINDOW_SECONDS)
+          })
+        } catch (e) {
+          logger.warn('b24_stage_history_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
+          return false
+        }
+      },
       fetchDeal: async (dealId, memberId) => {
-        // Токеном ПОРТАЛА (не события): accessToken авто-рефрешит и сверяет member_id. Домен — из
-        // СОХРАНЁННОГО токена (валидирован allowlist'ом на установке), не из недоверенного события (SSRF).
-        const tokens = await tokenStore.load(memberId)
-        const accessToken = await tokenStore.accessToken(memberId, oauth)
-        if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
-        const client = createPortalClient(
-          frameToB24Params({ domain: tokens.domain, accessToken, memberId }),
-          cfg.secret
-        )
+        const client = await portalClient(memberId)
         const deal = await dealGet(client, dealId)
         // Товарные позиции best-effort (у сделки может не быть товаров / нет скоупа): без них срез
         // «услуга/товар» пуст. Ошибку глушим, но ЛОГИРУЕМ — иначе систематический провал незаметен.
@@ -89,6 +112,9 @@ export default defineEventHandler(async (event) => {
     } else if (outcome.kind === 'forged') {
       // Подделка / портал не установлен — наружу не раскрываем; в лог с заявленным member_id для сверки.
       logger.warn('b24_deal_update_reject', { reason: outcome.reason, memberId: outcome.memberId })
+    } else if (outcome.kind === 'skipped') {
+      // Штатная ветка: обычное редактирование сделки, давно стоящей в триггерной стадии. info, не warn.
+      logger.info('b24_deal_update_skip', { msg: `сделка ${outcome.dealId}: перехода в ${outcome.stageId} только что не было` })
     } else {
       logger.info('b24_deal_update', { msg: `создано приглашений: ${outcome.results.length}` })
     }

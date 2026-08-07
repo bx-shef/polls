@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, stageHistoryList, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -58,6 +58,34 @@ describe('dealProductRows (#17 — товарные позиции)', () => {
     const rows = await dealProductRows(c, 21)
     expect(rows).toEqual([{ PRODUCT_ID: '13', PRODUCT_NAME: 'X' }])
     expect(c.calls[0]).toEqual(['crm.deal.productrows.get', { id: 21 }])
+  })
+})
+
+describe('stageHistoryList — история движения по стадиям (#17)', () => {
+  it('зовёт crm.stagehistory.list с типом/фильтром/сортировкой и разворачивает items', async () => {
+    const c = client(ok({ items: [{ ID: 2, STAGE_ID: 'C1:WON' }, { ID: 1, STAGE_ID: 'NEW' }] }))
+    const rows = await stageHistoryList(c, 2, 759)
+    expect(rows).toEqual([{ ID: 2, STAGE_ID: 'C1:WON' }, { ID: 1, STAGE_ID: 'NEW' }])
+    expect(c.calls[0]).toEqual([
+      'crm.stagehistory.list',
+      {
+        entityTypeId: 2,
+        order: { ID: 'DESC' },
+        filter: { OWNER_ID: 759 },
+        select: ['ID', 'TYPE_ID', 'OWNER_ID', 'CREATED_TIME', 'CATEGORY_ID', 'STAGE_ID']
+      }
+    ])
+  })
+
+  it('пустой/неожиданный ответ → пустой массив (не падаем)', async () => {
+    expect(await stageHistoryList(client(ok({})), 2, 1)).toEqual([])
+    expect(await stageHistoryList(client(ok({ items: 'не-массив' })), 2, 1)).toEqual([])
+  })
+
+  it('берётся только хвост истории (полную не тянем)', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({ ID: i }))
+    expect(await stageHistoryList(client(ok({ items: many })), 2, 1)).toHaveLength(10)
+    expect(await stageHistoryList(client(ok({ items: many })), 2, 1, { limit: 3 })).toHaveLength(3)
   })
 })
 

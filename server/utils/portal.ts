@@ -1,7 +1,7 @@
 import { TokenCipher, loadTokenKey } from '~core/bitrix24/crypto'
 import { PortalTokenStore } from '~core/bitrix24/portal'
 import { createPortalClient, callMethod, type B24OAuthParams, type B24OAuthSecret } from '~core/bitrix24/client'
-import { surveyPlacements, surveyEventBindParams } from '~core/bitrix24/install'
+import { surveyPlacements, surveyEventBindParams, surveyRobotParams } from '~core/bitrix24/install'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { usePortalDb, logger } from './api'
 
@@ -65,11 +65,13 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
 export async function registerIntegrations(authParams: B24OAuthParams, cfg: B24AppConfig): Promise<void> {
   const client = createPortalClient(authParams, cfg.secret)
   const calls: Array<[string, Record<string, unknown>]> = [
-    // Авто-триггер на всех тарифах (#17): ONCRMDEALUPDATE → наш handler → фильтр по триггер-стадии.
+    // Авто-триггер на всех тарифах (#17): ONCRMDEALUPDATE → наш handler → подтверждение перехода
+    // историей стадий → фильтр по триггер-стадии.
     ['event.bind', surveyEventBindParams(`${cfg.baseUrl}/api/b24/deal-update`)],
-    // ⚠️ Робот `bizproc.robot.add` НЕ регистрируем: его handler `/api/b24/robot` ещё не реализован
-    // (был бы 404 при срабатывании). Параметры готовы (`surveyRobotParams`, под тестами) — включим
-    // ВМЕСТЕ с реализацией эндпоинта (follow-up). До тех пор триггер идёт через event.bind выше.
+    // Робот автоматизации (#122): срабатывает ровно НА ВХОДЕ в стадию (точнее события, но зависит от
+    // тарифа — bizproc есть не везде). Ошибка регистрации толерируется ниже, поэтому на младших тарифах
+    // установка просто продолжится с одним event.bind.
+    ['bizproc.robot.add', surveyRobotParams(`${cfg.baseUrl}/api/b24/robot`)],
     ...surveyPlacements(cfg.baseUrl).map((p): [string, Record<string, unknown>] => ['placement.bind', { ...p }])
   ]
   for (const [method, params] of calls) {

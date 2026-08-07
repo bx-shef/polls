@@ -78,6 +78,29 @@ export function dealProductRows(client: PortalClient, dealId: number): Promise<A
   return callMethod<Array<Record<string, unknown>>>(client, 'crm.deal.productrows.get', { id: dealId })
 }
 
+/**
+ * `crm.stagehistory.list` → записи истории движения по стадиям (детекция РЕАЛЬНОГО перехода, #17).
+ * Отдельного события смены стадии в Bitrix24 нет, поэтому переход подтверждаем историей портала.
+ * Метод отдаёт `{ items: [...] }`; сортируем по `ID DESC` (монотонный) и берём небольшой хвост —
+ * решение принимает чистая `isFreshStageEntry`, ей нужна только последняя запись.
+ */
+export async function stageHistoryList(
+  client: PortalClient,
+  entityTypeId: number,
+  ownerId: number,
+  opts: { limit?: number } = {}
+): Promise<Array<Record<string, unknown>>> {
+  const result = await callMethod<{ items?: Array<Record<string, unknown>> }>(client, 'crm.stagehistory.list', {
+    entityTypeId,
+    order: { ID: 'DESC' },
+    filter: { OWNER_ID: ownerId },
+    select: ['ID', 'TYPE_ID', 'OWNER_ID', 'CREATED_TIME', 'CATEGORY_ID', 'STAGE_ID']
+  })
+  const items = Array.isArray(result?.items) ? result.items : []
+  // Хвост нужен лишь чтобы пережить одинаковые CREATED_TIME; полную историю тянуть незачем.
+  return items.slice(0, opts.limit ?? 10)
+}
+
 /** CRM-сущности, догружаемые через `crm.*.get`. Совпадает с `EntityType` (все сущности — CRM-типы). */
 export type CrmEntityType = EntityType
 
