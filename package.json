@@ -29,7 +29,8 @@
     "nuxt:prepare": "nuxt prepare",
     "visual:install": "playwright install chromium",
     "test:visual": "playwright test",
-    "test:visual:update": "playwright test --update-snapshots"
+    "test:visual:update": "playwright test --update-snapshots",
+    "env:check": "tsx scripts/env-check.ts"
   },
   "dependencies": {
     "@bitrix24/b24jssdk": "^2.0.0",

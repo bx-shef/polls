@@ -30,6 +30,8 @@ pnpm test         # vitest;  pnpm test:cov — с покрытием (порог
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 pnpm check:boundary  # гард границы ~core (#36): клиент app/** не тянет server-only ядро (отд. шаг CI)
 pnpm typecheck:app   # vue-tsc app/+server/ (Nuxt; отд. шаг CI). Перед — pnpm nuxt:prepare
+pnpm env:check    # предполётная проверка окружения: читает .env.prod (или указанный файл) по
+                  # прод-правилам, печатает ИМЕНА проблемных переменных (не значения), exit 1 на ошибках
 pnpm serve        # демо HTTP-сервер на MemoryStore+seed (PORT=8080)
 pnpm migrate up   # применить миграции БД (node-pg-migrate; DATABASE_URL). Создать: pnpm migrate create
 pnpm dev          # Nuxt-приложение в dev (HMR);  pnpm build / pnpm preview
