@@ -16,6 +16,13 @@
  * не должен уметь ни подделать разметку, ни спрятать содержимое от читателя (Trojan Source).
  */
 
+// Санитизация недоверенного текста — общая с показом ошибок на странице опроса (`domain/text`):
+// правило «символ, который умеет переставить или спрятать текст, до читателя не доходит» одно на оба
+// места, а две копии регулярки однажды разъехались бы.
+import { stripHostileChars, toSingleLine } from './text'
+
+export { stripHostileChars }
+
 /** Оценка: 👍 или 👎. Слова — для заголовка issue. */
 export const FEEDBACK_KINDS = { up: 'положительный 👍', down: 'отрицательный 👎' } as const
 export type FeedbackKind = keyof typeof FEEDBACK_KINDS
@@ -24,21 +31,6 @@ export type FeedbackKind = keyof typeof FEEDBACK_KINDS
 export const MAX_COMMENT_LENGTH = 5000
 /** Кап одного поля контекста. */
 export const MAX_CONTEXT_VALUE = 200
-
-/**
- * Враждебные и невидимые символы. Записаны escape-последовательностями НАМЕРЕННО: литералы здесь сами
- * были бы Trojan-Source-атакой на того, кто читает этот файл. Убираем: управляющие C0 (кроме таба и
- * переводов строк), переопределения направления текста (U+202A–U+202E, U+2066–U+2069, U+061C),
- * нулевой ширины, метки направления и BOM (U+200B–U+200F, U+FEFF), невидимые операторы (U+2060–U+2064), разделители
- * строк и абзацев (U+2028/U+2029).
- */
-// eslint-disable-next-line no-control-regex
-const HOSTILE_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u00ad\u034f\u061c\u180e\u200b-\u200f\u2028-\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufff9-\ufffb\ufeff\u{e0000}-\u{e007f}]/gu
-
-/** Убрать управляющие, направляющие и невидимые символы из произвольного текста. */
-export function stripHostileChars(input: unknown): string {
-  return String(input ?? '').replace(HOSTILE_CHARS, '')
-}
 
 /** Очистить комментарий и обрезать до разумного предела. */
 export function sanitizeComment(input: unknown): string {
@@ -132,11 +124,7 @@ export function pickFeedbackContext(raw: unknown): FeedbackContext {
  * Пустое значение → строка опускается целиком.
  */
 function contextLine(label: string, value: unknown): string | null {
-  const flat = stripHostileChars(value)
-    .replace(/[\r\n\t]+/g, ' ')
-    .replace(/`/g, '')
-    .trim()
-    .slice(0, MAX_CONTEXT_VALUE)
+  const flat = toSingleLine(value).replace(/`/g, '').trim().slice(0, MAX_CONTEXT_VALUE)
   return flat ? `- **${label}:** \`${flat}\`` : null
 }
 

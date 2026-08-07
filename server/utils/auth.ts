@@ -1,5 +1,11 @@
 import type { H3Event } from 'h3'
-import { resolveDashboardAuth, resolveWriteAccess, DEV_PORTAL_ID, type PortalSession } from '~core/api/session'
+import {
+  resolveDashboardAuth,
+  resolveWriteAccess,
+  ADMIN_REQUIRED_MESSAGE,
+  DEV_PORTAL_ID,
+  type PortalSession
+} from '~core/api/session'
 
 const SESSION_COOKIE = 'polls_portal'
 
@@ -65,15 +71,10 @@ export function resolvePortalSession(
   return { ok: true, session: decision.session, devOpen }
 }
 
-/**
- * Единый текст отказа для гейта записи. Держим рядом с гейтом, чтобы не разъехался между роутами.
- * По правилу проекта в сообщении видно ГДЕ, ЧТО и ЧТО ДАЛЬШЕ — плюс главное для человека,
- * который только что жал «Опубликовать»: его правки не пропали.
- */
-export const ADMIN_REQUIRED_MESSAGE =
-  'Публикация опроса: публиковать новые версии может только администратор портала Bitrix24. ' +
-  'Ваши правки не потеряны — они остались в конструкторе. Попросите администратора опубликовать опрос. ' +
-  'Если права администратора вам только что выдали, закройте и заново откройте приложение из Bitrix24.'
+// Текст отказа гейта записи переехал в ядро (`~core/api/session`): его длина упирается в предел
+// `serverMessage`, а из `server/**` этот предел ничем не проверяется — тестов тут нет. Реэкспорт
+// оставлен, чтобы роуты не переучивались, откуда его брать.
+export { ADMIN_REQUIRED_MESSAGE }
 
 /**
  * Гейт ЗАПИСИ конфигурации опросов (аналог admin-гейта настроек в соседнем `ai-price-import`, там #182):

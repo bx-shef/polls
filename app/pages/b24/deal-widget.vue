@@ -4,15 +4,13 @@
 // options) → по кнопке POST /api/b24/deal-invite → ссылка-приглашение /s/:key?token=…
 // Только клиент (iframe нет на SSR).
 import { initializeB24Frame } from '@bitrix24/b24jssdk'
+// Текст ошибки берёт ядровая `serverMessage` (одна на всё приложение). Своя копия здесь падала на
+// `statusMessage` — служебную АНГЛИЙСКУЮ строку h3, которую сотрудник в карточке сделки видеть не должен.
+import { serverMessage } from '~core/client/server-message'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
 
-// Достаём ДРУЖЕЛЮБНЫЙ текст из ошибки $fetch: сервер кладёт его в тело `{ error }` → `e.data.error`
-// (иначе показали бы сырой FetchError вида `[POST] "/api/…": 502` — техношум). Фолбэк — заданная подсказка.
-function serverError(e: unknown, fallback: string): string {
-  const fe = e as { data?: { error?: string }; statusMessage?: string }
-  return fe.data?.error ?? fe.statusMessage ?? fallback
-}
+const serverError = (e: unknown, fallback: string): string => serverMessage(e) ?? fallback
 
 const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
 const message = ref('Загрузка…')

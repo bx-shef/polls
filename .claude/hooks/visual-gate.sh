@@ -37,7 +37,10 @@ changed="$(
     git diff --name-only main...HEAD 2>/dev/null || git diff --name-only HEAD~1..HEAD 2>/dev/null
   } | grep -v '/__screenshots__/' | sort -u
 )"
-ui_re='^(app|pages|components|layouts|composables|assets|public|test/visual)/|^playwright\.config\.'
+# src/client — ядро, но НЕ «чистое»: там живёт логика, определяющая, какой текст видит
+# пользователь (serverMessage). Без неё правка предела или разбора меняла бы экраны, не
+# разбудив гейт.
+ui_re='^(app|pages|components|layouts|composables|assets|public|test/visual|src/client)/|^playwright\.config\.'
 if ! printf '%s\n' "$changed" | grep -Eq "$ui_re"; then
   exit 0  # UI не затронут — гейт не применяется
 fi

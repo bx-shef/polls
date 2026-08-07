@@ -17,6 +17,7 @@ import {
   normalizeForPublish,
   type EditorQuestion
 } from '~core/client/survey-editor'
+import { serverMessage } from '~core/client/server-message'
 
 interface Draft {
   surveyKey: string
@@ -119,17 +120,11 @@ async function publish() {
     saveMsg.value = { ok: true, text: `Опубликована версия v${r.versionNo}.` }
     await refresh()
   } catch (e) {
-    // Две формы ответа: роут отдаёт ошибки телом (`{ok:false,error}` → `err.data.error`), а брошенный
-    // где-то выше `createError` Nitro заворачивает в свой конверт (текст уезжает в `err.data.data.error`).
-    // Читаем обе, иначе пользователь увидит служебное значение вместо сообщения.
-    const err = e as { statusMessage?: string; data?: { error?: string; data?: { error?: string } } }
+    // Обе формы ответа (тело роута и конверт брошенного `createError`) разбирает ядровая
+    // `serverMessage`; фолбэк на английский `statusMessage` убран — админ его читать не должен.
     saveMsg.value = {
       ok: false,
-      text:
-        err.data?.error ??
-        err.data?.data?.error ??
-        err.statusMessage ??
-        'Не удалось опубликовать. Попробуйте ещё раз.'
+      text: serverMessage(e) ?? 'Не удалось опубликовать. Попробуйте ещё раз.'
     }
   } finally {
     saving.value = false

@@ -5,6 +5,9 @@
 //   + резолвит member_id из таблицы portal) → cookie polls_portal → переход на дашборд /d/:key,
 //   который теперь проходит requirePortalSession. Только клиент (iframe нет на SSR).
 import { initializeB24Frame } from '@bitrix24/b24jssdk'
+// Текст ошибки берёт ядровая `serverMessage` (одна на всё приложение). Своя копия здесь падала на
+// `statusMessage` — служебную АНГЛИЙСКУЮ строку h3 («Unauthorized»), которую сотрудник видеть не должен.
+import { serverMessage } from '~core/client/server-message'
 
 // Демо-опрос по умолчанию (до выбора опроса в аналитике — отдельная задача).
 const DEFAULT_SURVEY = 'csat_postdeal'
@@ -12,12 +15,7 @@ const DEFAULT_SURVEY = 'csat_postdeal'
 const phase = ref<'auth' | 'error'>('auth')
 const message = ref('Авторизация в портале…')
 
-// Дружелюбный текст из ошибки $fetch: сервер кладёт его в тело `{ error }` → `e.data.error`
-// (иначе показали бы сырой FetchError-техношум). Фолбэк — заданная подсказка.
-function serverError(e: unknown, fallback: string): string {
-  const fe = e as { data?: { error?: string }; statusMessage?: string }
-  return fe.data?.error ?? fe.statusMessage ?? fallback
-}
+const serverError = (e: unknown, fallback: string): string => serverMessage(e) ?? fallback
 
 onMounted(async () => {
   try {
