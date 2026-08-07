@@ -32,13 +32,10 @@ export interface TriggerResult {
  * стадией (`surveysTriggeredBy`, GIN #22), и создаёт по приглашению на каждый со СНИМКОМ контекста.
  * Возвращает созданные приглашения (токены → ссылки рассылает слой доставки).
  *
- * ⚠️ **НЕ детектит ПЕРЕХОД стадии.** `ONCRMDEALUPDATE` (event.bind, #17) прилетает на ЛЮБОЙ апдейт сделки
- * (сумма/ответственный/коммент), а не только на смену стадии. Пока сделка стоит на триггер-стадии, каждый
- * её апдейт снова матчит `surveysTriggeredBy` и выписывает НОВЫЙ токен. Сегодня безвредно (слой доставки
- * не подключён, `MemoryInvitationStore`), но **ДО подключения доставки ОБЯЗАТЕЛЕН дедуп** по
- * `(dealId, surveyKey, stage)` (или сравнение прошлой стадии), иначе клиент получит по ссылке на каждое
- * редактирование выигранной сделки. Идемпотентность записи ОТВЕТА (#4, durable по токену) — про другое
- * (не выписывать один токен дважды), тут проблема на уровне ВЫПИСКИ приглашений.
+ * ⚠️ **Сама эта функция НЕ детектит переход стадии** — она лишь сопоставляет текущую стадию с триггерами.
+ * Детекция реального перехода живёт СНАРУЖИ и зависит от пути: событийный путь подтверждает переход историей
+ * портала (`stage-transition.ts` → `confirmStageEntry` в `deal-update.ts`), а робот автоматизации вызывается
+ * ровно на входе в стадию и в подтверждении не нуждается. Какой путь активен — решает режим (`trigger-mode.ts`).
  *
  * ИНВАРИАНТЫ слоя связки (ядро их НЕ обеспечивает — как SSRF-allowlist в oauth.ts):
  *  1. **Tenant-изоляция:** `store` ОБЯЗАН быть scoped на АВТОРИТЕТНЫЙ портал события (PgStore по
@@ -53,12 +50,18 @@ export async function handleDealTrigger(deps: {
   invitations: InvitationStore
   context: CrmContext
   now?: Date
+  /**
+   * Уже полученный список опросов этой стадии. Событийный путь спрашивает его РАНЬШЕ — дешёвым гейтом
+   * перед дорогим REST за историей стадий; без проброса тот же запрос ушёл бы в БД второй раз за одно
+   * событие, да ещё и двумя независимыми снимками одного состояния.
+   */
+  triggeredSurveyKeys?: readonly string[]
 }): Promise<TriggerResult[]> {
   const stageId = deps.context.dealStageId
   if (!stageId) return [] // нет стадии в контексте — триггерить нечего
   const now = deps.now ?? new Date()
 
-  const surveyKeys = await deps.store.surveysTriggeredBy(stageId)
+  const surveyKeys = deps.triggeredSurveyKeys ?? (await deps.store.surveysTriggeredBy(stageId))
   const results: TriggerResult[] = []
   for (const surveyKey of surveyKeys) {
     const version = await deps.store.currentVersion(surveyKey)

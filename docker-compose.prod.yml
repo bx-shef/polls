@@ -32,6 +32,20 @@ services:
       # PostgreSQL: постоянное хранение. Миграции применяются приложением на старте.
       # Без DATABASE_URL приложение падает обратно на эфемерный MemoryStore.
       DATABASE_URL: postgres://polls:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/polls
+      # ── Настройки поведения (все опциональны; пустое значение = дефолт приложения) ──
+      # Путь авто-триггера по стадии: event (дефолт, любой тариф) | robot (точно, нужен тариф
+      # с бизнес-процессами) | both (полезной настройки не даёт, см. .env.prod.example).
+      # ⚠️ Применяется при УСТАНОВКЕ приложения — после смены нужна переустановка на портале.
+      TRIGGER_MODE: ${TRIGGER_MODE:-}
+      # Окно «переход был только что» для пути event, секунды (дефолт 60, диапазон 5–3600).
+      STAGE_ENTRY_WINDOW_SECONDS: ${STAGE_ENTRY_WINDOW_SECONDS:-}
+      # Какой опрос запускать по сущности (иначе SURVEY_KEY_DEFAULT, иначе встроенный csat_postdeal).
+      SURVEY_KEY_DEAL: ${SURVEY_KEY_DEAL:-}
+      SURVEY_KEY_DEFAULT: ${SURVEY_KEY_DEFAULT:-}
+      # Как часто освежать OAuth-токены, часы (дефолт 24, диапазон 1–168).
+      TOKEN_KEEPALIVE_HOURS: ${TOKEN_KEEPALIVE_HOURS:-}
+      # Уровень логов: debug|info|warn|error (невалидное молча падает на info).
+      NUXT_LOG_LEVEL: ${NUXT_LOG_LEVEL:-}
     restart: unless-stopped
     depends_on:
       db:

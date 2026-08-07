@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
+import { callMethod, dealGet, dealProductRows, entityGet, frameToB24Params, stageHistoryList, stageHistoryParams, Bitrix24CallError, type PortalClient, type CallResult } from '../src/bitrix24/client'
 
 /** Мок результата AjaxResult. */
 function ok(result: unknown): CallResult {
@@ -58,6 +58,45 @@ describe('dealProductRows (#17 — товарные позиции)', () => {
     const rows = await dealProductRows(c, 21)
     expect(rows).toEqual([{ PRODUCT_ID: '13', PRODUCT_NAME: 'X' }])
     expect(c.calls[0]).toEqual(['crm.deal.productrows.get', { id: 21 }])
+  })
+})
+
+describe('stageHistoryList — история движения по стадиям (#17)', () => {
+  it('зовёт crm.stagehistory.list с типом/фильтром/сортировкой и разворачивает items', async () => {
+    const c = client(ok({ items: [{ ID: 2, STAGE_ID: 'C1:WON' }, { ID: 1, STAGE_ID: 'NEW' }] }))
+    const rows = await stageHistoryList(c, 2, 759)
+    expect(rows).toEqual([{ ID: 2, STAGE_ID: 'C1:WON' }, { ID: 1, STAGE_ID: 'NEW' }])
+    expect(c.calls[0]).toEqual([
+      'crm.stagehistory.list',
+      {
+        entityTypeId: 2,
+        order: { ID: 'DESC' },
+        filter: { OWNER_ID: 759 },
+        select: ['ID', 'CREATED_TIME', 'STAGE_ID']
+      }
+    ])
+  })
+
+  it('пустой/неожиданный ответ → пустой массив (не падаем)', async () => {
+    expect(await stageHistoryList(client(ok({})), 2, 1)).toEqual([])
+    expect(await stageHistoryList(client(ok({ items: 'не-массив' })), 2, 1)).toEqual([])
+  })
+
+  it('страница отдаётся целиком, БЕЗ среза (срез до сортировки мог бы оставить самые старые записи)', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({ ID: i }))
+    expect(await stageHistoryList(client(ok({ items: many })), 2, 1)).toHaveLength(50)
+  })
+
+  it('null-результат портала не роняет разбор', async () => {
+    expect(await stageHistoryList(client(ok(null)), 2, 1)).toEqual([])
+  })
+
+  it('параметры вынесены отдельно и это ТЕ ЖЕ параметры, что шлёт боевой вызов', async () => {
+    // Живой smoke (`scripts/b24-smoke.ts`, секция B2) обязан бить тем же запросом, иначе он «зелёный»
+    // на форме, которой в проде нет. Гвоздь: билдер один и совпадает с фактическим вызовом.
+    const c = client(ok({ items: [] }))
+    await stageHistoryList(c, 2, 759)
+    expect(c.calls[0]?.[1]).toEqual(stageHistoryParams(2, 759))
   })
 })
 

@@ -78,6 +78,43 @@ export function dealProductRows(client: PortalClient, dealId: number): Promise<A
   return callMethod<Array<Record<string, unknown>>>(client, 'crm.deal.productrows.get', { id: dealId })
 }
 
+/**
+ * Параметры запроса истории стадий — ОТДЕЛЬНО от вызова, чтобы живой smoke (`scripts/b24-smoke.ts`)
+ * бил ровно тем же запросом, что прод. Иначе смысл смоука теряется: он объявлен гейтом формата, но
+ * сверял бы форму запроса, которой в бою нет (например, без суженного `select` — а именно на нём портал
+ * может ответить пустыми полями, и механизм молча перестанет работать).
+ */
+export function stageHistoryParams(entityTypeId: number, ownerId: number): Record<string, unknown> {
+  return {
+    entityTypeId,
+    order: { ID: 'DESC' },
+    filter: { OWNER_ID: ownerId },
+    select: ['ID', 'CREATED_TIME', 'STAGE_ID']
+  }
+}
+
+/**
+ * `crm.stagehistory.list` → записи истории движения по стадиям (детекция РЕАЛЬНОГО перехода, #17).
+ * Отдельного события смены стадии в Bitrix24 нет, поэтому переход подтверждаем историей портала.
+ * Метод отдаёт `{ items: [...] }`; решение принимает чистая `isFreshStageEntry` — ей нужна только
+ * последняя запись, которую она находит сама (порядок ответа портала не принимается на веру).
+ */
+export async function stageHistoryList(
+  client: PortalClient,
+  entityTypeId: number,
+  ownerId: number
+): Promise<Array<Record<string, unknown>>> {
+  const result = await callMethod<{ items?: Array<Record<string, unknown>> } | undefined>(
+    client,
+    'crm.stagehistory.list',
+    stageHistoryParams(entityTypeId, ownerId)
+  )
+  // Страница уже получена по сети — резать её здесь нечего экономить, а срез ДО сортировки был бы опасен:
+  // если портал когда-нибудь не применит `order`, в срез попали бы САМЫЕ СТАРЫЕ записи и подтверждение
+  // перехода перестало бы срабатывать вообще (молча). Порядок восстанавливает `latestRecord` сам.
+  return Array.isArray(result?.items) ? result.items : []
+}
+
 /** CRM-сущности, догружаемые через `crm.*.get`. Совпадает с `EntityType` (все сущности — CRM-типы). */
 export type CrmEntityType = EntityType
 

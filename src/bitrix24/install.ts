@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { oauthTokensSchema, MAX_EXPIRES_IN, type OAuthTokens } from './oauth'
 import type { B24OAuthParams } from './client'
+import { eventTriggerEnabled, robotTriggerEnabled, type TriggerMode } from './trigger-mode'
 
 /**
  * Установка приложения на портал (ISSUE #17) — ЯДРО-рантайм. При установке локального/тиражного
@@ -8,8 +9,8 @@ import type { B24OAuthParams } from './client'
  *  - `parseInstallEvent` — мягкий zod-парс недоверенного POST установки;
  *  - `installToTokens` — нормализация в `OAuthTokens` (что шифруется и хранится `PortalTokenStore`);
  *  - `surveyRobotParams` — параметры робота автоматизации «Запустить опрос» для `bizproc.robot.add`;
- *  - `handleInstall` — оркестрация: сохранить токены → зарегистрировать `event.bind` + плейсменты
- *    (робот `bizproc.robot.add` пока НЕ регистрируется — его эндпоинт не реализован; зависимости инжектируются).
+ *  - `handleInstall` — оркестрация: сохранить токены → зарегистрировать встройки (что именно — решает
+ *    режим триггера, см. `trigger-mode.ts`; зависимости инжектируются).
  * HTTP/стор/клиент инжектируются → под тестами без живого портала.
  */
 
@@ -210,6 +211,44 @@ export function surveyPlacements(baseUrl: string): PlacementSpec[] {
       TITLE: 'Опросы — аналитика',
       LANG_ALL: { en: { TITLE: 'Surveys — analytics' }, ru: { TITLE: 'Опросы — аналитика' } }
     }
+  ]
+}
+
+/** Одна регистрация на портале: метод, параметры и признак «это единственный путь авто-триггера». */
+export interface IntegrationCall {
+  method: string
+  params: Record<string, unknown>
+  /**
+   * true — авто-триггер держится ТОЛЬКО на этой регистрации, её провал = фича мертва целиком.
+   * Серверный слой обязан отличать такой провал от пропуска встройки (лог `error`, не `warn`).
+   */
+  soleTrigger: boolean
+}
+
+/**
+ * Что регистрировать на портале при установке — чистая функция от режима триггера. Вынесена из
+ * серверного слоя намеренно: именно здесь живёт защита от двух приглашений на один переход (робот
+ * срабатывает на входе в стадию, событие приходит тем же изменением), а такую вещь нельзя оставлять
+ * непокрытой тестом. Плейсменты от режима не зависят — виджет и дашборд нужны всегда.
+ */
+export function integrationCalls(mode: TriggerMode, baseUrl: string): IntegrationCall[] {
+  const eventOn = eventTriggerEnabled(mode)
+  const robotOn = robotTriggerEnabled(mode)
+  const base = baseUrl.replace(/\/+$/, '')
+  return [
+    ...(eventOn
+      ? [
+          {
+            method: 'event.bind',
+            params: surveyEventBindParams(`${base}/api/b24/deal-update`),
+            soleTrigger: !robotOn
+          }
+        ]
+      : []),
+    ...(robotOn
+      ? [{ method: 'bizproc.robot.add', params: surveyRobotParams(`${base}/api/b24/robot`), soleTrigger: !eventOn }]
+      : []),
+    ...surveyPlacements(base).map((p) => ({ method: 'placement.bind', params: { ...p }, soleTrigger: false }))
   ]
 }
 

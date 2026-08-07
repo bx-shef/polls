@@ -131,6 +131,60 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
   })
 })
 
+describe('runDealUpdate — подтверждение перехода стадии (confirmStageEntry, #17)', () => {
+  it('переход подтверждён → приглашение выписывается; проверка получила сделку+стадию+портал', async () => {
+    const confirmStageEntry = vi.fn(async () => true)
+    const res = await runDealUpdate(rawEvent(), deps({ confirmStageEntry }))
+    expect(res.kind).toBe('ok')
+    if (res.kind === 'ok') expect(res.results).toHaveLength(1)
+    expect(confirmStageEntry).toHaveBeenCalledWith(759, 'C1:WON', 'member-id-fake-0000000000000000')
+  })
+
+  it('перехода не было (обычный апдейт давно стоящей сделки) → skipped, приглашение НЕ создано', async () => {
+    const invitations = new MemoryInvitationStore()
+    const create = vi.spyOn(invitations, 'create')
+    const res = await runDealUpdate(rawEvent(), deps({ confirmStageEntry: async () => false, invitations }))
+    expect(res).toEqual({ kind: 'skipped', reason: 'stale_stage', dealId: 759, stageId: 'C1:WON' })
+    expect(create).not.toHaveBeenCalled() // не только outcome — приглашения действительно нет
+  })
+
+  it('стадия не триггерит опросы → историю НЕ спрашиваем (дешёвый гейт по БД экономит REST)', async () => {
+    const confirmStageEntry = vi.fn(async () => true)
+    // сделка в C1:WON, но триггер настроен на другую стадию
+    const res = await runDealUpdate(
+      rawEvent(),
+      deps({ store: store({ 'C1:LOSE': ['x'] }, { x: 1 }), confirmStageEntry })
+    )
+    expect(confirmStageEntry).not.toHaveBeenCalled()
+    expect(res).toEqual({ kind: 'ok', results: [] })
+  })
+
+  it('проверка НЕ задана (путь робота) → работает как раньше, без обращения к истории', async () => {
+    const res = await runDealUpdate(rawEvent(), deps())
+    expect(res.kind).toBe('ok')
+  })
+
+  it('нет стадии в сделке → проверку не зовём (триггерить всё равно нечего)', async () => {
+    const confirmStageEntry = vi.fn(async () => true)
+    const res = await runDealUpdate(
+      rawEvent(),
+      deps({ fetchDeal: async () => ({ deal: { ID: '759' }, productRows: [] }), confirmStageEntry })
+    )
+    expect(confirmStageEntry).not.toHaveBeenCalled()
+    expect(res).toEqual({ kind: 'ok', results: [] })
+  })
+
+  it('подделка токена → до проверки перехода дело не доходит (порядок гейтов)', async () => {
+    const confirmStageEntry = vi.fn(async () => true)
+    const res = await runDealUpdate(
+      rawEvent(),
+      deps({ storedApplicationToken: async () => 'ДРУГОЙ-токен', confirmStageEntry })
+    )
+    expect(res.kind).toBe('forged')
+    expect(confirmStageEntry).not.toHaveBeenCalled()
+  })
+})
+
 describe('surveyEventBindParams — параметры event.bind (#17)', () => {
   it('ONCRMDEALUPDATE + handler на наш домен', () => {
     expect(surveyEventBindParams('https://polls.example.com/api/b24/deal-update')).toEqual({
