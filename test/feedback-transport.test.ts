@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { resolveFeedbackConfig, postFeedbackIssue, type FetchLike } from '../src/api/feedback'
+import { resolveFeedbackConfig, postFeedbackIssue, assertPrivateRepo, type FetchLike } from '../src/api/feedback'
 
 const CONFIG = { token: 'ghp_fake_token_value_0000000000', repo: 'owner/private-inbox' }
 const PAYLOAD = { title: 'заголовок', body: 'тело', labels: ['user-feedback'] }
@@ -81,5 +81,66 @@ describe('postFeedbackIssue — отправка', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${CONFIG.token}`)
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual(PAYLOAD)
+  })
+})
+
+describe('assertPrivateRepo — приёмник обязан быть приватным', () => {
+  const fresh = () => new Map<string, boolean>()
+
+  it('приватный → пропускаем', async () => {
+    const fetchFn = vi.fn<FetchLike>(async () => ({ status: 200, json: async () => ({ private: true }) }))
+    await expect(assertPrivateRepo(CONFIG, fetchFn, fresh())).resolves.toBe(true)
+    const [url, init] = fetchFn.mock.calls[0]!
+    expect(url).toBe('https://api.github.com/repos/owner/private-inbox')
+    expect(init.method).toBe('GET')
+  })
+
+  it('ГЛАВНОЕ: публичный репозиторий → отказ (одна опечатка отправила бы текст в открытый интернет)', async () => {
+    const fetchFn = vi.fn<FetchLike>(async () => ({ status: 200, json: async () => ({ private: false }) }))
+    await expect(assertPrivateRepo(CONFIG, fetchFn, fresh())).resolves.toBe(false)
+  })
+
+  it('поле private в неожиданной форме → отказ (права не выдаём по догадке)', async () => {
+    for (const priv of ['true', 1, null, undefined, {}]) {
+      const fetchFn = vi.fn<FetchLike>(async () => ({ status: 200, json: async () => ({ private: priv }) }))
+      await expect(assertPrivateRepo(CONFIG, fetchFn, fresh())).resolves.toBe(false)
+    }
+  })
+
+  it('нет доступа / нет репозитория / сбой сети → отказ (fail-closed во все стороны)', async () => {
+    for (const status of [401, 403, 404, 500]) {
+      const fetchFn = vi.fn<FetchLike>(async () => ({ status, json: async () => ({}) }))
+      await expect(assertPrivateRepo(CONFIG, fetchFn, fresh())).resolves.toBe(false)
+    }
+    const boom = vi.fn<FetchLike>(async () => { throw new Error('ECONNREFUSED') })
+    await expect(assertPrivateRepo(CONFIG, boom, fresh())).resolves.toBe(false)
+  })
+
+  it('положительный ответ кэшируется, отрицательный — НЕТ', async () => {
+    const cache = fresh()
+    const yes = vi.fn<FetchLike>(async () => ({ status: 200, json: async () => ({ private: true }) }))
+    await assertPrivateRepo(CONFIG, yes, cache)
+    await assertPrivateRepo(CONFIG, yes, cache)
+    expect(yes).toHaveBeenCalledTimes(1) // второй раз к GitHub не ходим
+
+    const cache2 = fresh()
+    const no = vi.fn<FetchLike>(async () => ({ status: 404, json: async () => ({}) }))
+    await assertPrivateRepo(CONFIG, no, cache2)
+    await assertPrivateRepo(CONFIG, no, cache2)
+    // Владелец мог просто ещё не выдать права — после починки канал должен заработать без рестарта.
+    expect(no).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('resolveFeedbackConfig — сегменты пути', () => {
+  it('точечные сегменты отвергаются (увели бы запрос на другой путь GitHub)', () => {
+    for (const repo of ['owner/..', '../repo', 'owner/.', './repo', '../..']) {
+      expect(resolveFeedbackConfig({ GITHUB_FEEDBACK_TOKEN: 't', GITHUB_FEEDBACK_REPO: repo }), repo).toBeNull()
+    }
+  })
+  it('точка ВНУТРИ имени — законна', () => {
+    expect(resolveFeedbackConfig({ GITHUB_FEEDBACK_TOKEN: 't', GITHUB_FEEDBACK_REPO: 'owner/my.repo' })).toMatchObject({
+      repo: 'owner/my.repo'
+    })
   })
 })

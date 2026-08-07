@@ -261,6 +261,10 @@ async function publish() {
           :title="saveMsg.text"
         />
       </div>
+
+      <!-- Отзыв о сервисе. Конструктор — шаг, на котором чаще всего застревают, поэтому виджет
+           нужен здесь не меньше, чем на дашборде. -->
+      <FeedbackWidget screen="admin" :survey-key="surveyKey" :version-no="baseVersionNo || undefined" />
     </div>
   </main>
 </template>

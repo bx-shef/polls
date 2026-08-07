@@ -6,10 +6,21 @@ import type { IssuePayload } from '../domain/feedback'
  *
  * **Fail-closed по репозиторию — намеренно.** Репозиторий-приёмник не дефолтится ни на что: в отзыве
  * лежит свободный текст сотрудника, и он не должен попасть в публичный репозиторий с кодом. Не задан
- * или задан неверно → канал выключен: виджет скрыт, `POST` отвечает 503.
+ * или задан неверно → канал выключен: виджет скрыт, `POST` отвечает 503. Канал включается, только когда
+ * заданы ОБЕ переменные; нет любой из них — выключен.
+ *
+ * **Приватность приёмника проверяется вживую** (`assertPrivateRepo`) перед первой отправкой: одна
+ * опечатка в настройке (`bx-shef/polls` — наш ПУБЛИЧНЫЙ репозиторий с кодом) отправила бы свободный
+ * текст сотрудника в открытый интернет. Формат `owner/repo` такую ошибку не ловит, а комментарий в
+ * `.env` — не контроль. Не удалось убедиться, что репозиторий приватный → канал молчит (fail-closed).
  */
 
-const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+// Сегменты `.`/`..` отвергаем: в адресе GitHub они увели бы запрос на другой путь.
+const REPO_SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9_.-]+$/
+const isRepoRef = (repo: string): boolean => {
+  const parts = repo.split('/')
+  return parts.length === 2 && parts.every((s) => REPO_SEGMENT.test(s))
+}
 
 export interface FeedbackConfig {
   token: string
@@ -22,9 +33,51 @@ export function resolveFeedbackConfig(env: Record<string, string | undefined> = 
   const token = (env.GITHUB_FEEDBACK_TOKEN ?? '').trim()
   if (!token) return null
   const repo = (env.GITHUB_FEEDBACK_REPO ?? '').trim()
-  if (!REPO_RE.test(repo)) return null
+  if (!isRepoRef(repo)) return null
   return { token, repo }
 }
+
+/**
+ * Убедиться, что репозиторий-приёмник ПРИВАТНЫЙ. Результат кэшируется на процесс: ответ не меняется
+ * в течение жизни контейнера, а лишний запрос к GitHub на каждый отзыв не нужен.
+ *
+ * Fail-closed во все стороны: публичный репозиторий, нет доступа, сбой сети или неожиданный ответ —
+ * все случаи дают `false`, то есть отзыв не отправляется. Лучше потерять отзыв, чем опубликовать
+ * текст сотрудника в открытом доступе.
+ */
+export async function assertPrivateRepo(
+  config: FeedbackConfig,
+  fetchFn: FetchLike,
+  cache: Map<string, boolean> = privateRepoCache
+): Promise<boolean> {
+  const cached = cache.get(config.repo)
+  if (cached !== undefined) return cached
+  let isPrivate = false
+  try {
+    const res = await fetchFn(`https://api.github.com/repos/${config.repo}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'polls-feedback',
+        'X-GitHub-Api-Version': '2022-11-28'
+      }
+    })
+    if (res.status === 200) {
+      const body = (await res.json().catch(() => null)) as { private?: unknown } | null
+      isPrivate = body?.private === true
+    }
+  } catch {
+    // Сбой сети — считаем непроверенным. Ошибку не включаем: она может содержать адрес.
+    isPrivate = false
+  }
+  // Отрицательный ответ НЕ кэшируем: владелец мог просто ещё не создать репозиторий или выдать права,
+  // и после починки канал должен заработать без перезапуска контейнера.
+  if (isPrivate) cache.set(config.repo, true)
+  return isPrivate
+}
+
+const privateRepoCache = new Map<string, boolean>()
 
 export interface PostIssueResult {
   ok: boolean

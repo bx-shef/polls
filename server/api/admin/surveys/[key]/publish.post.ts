@@ -35,8 +35,7 @@ export default defineEventHandler(async (event) => {
     !isSameOriginWrite({
       secFetchSite: getRequestHeader(event, 'sec-fetch-site'),
       origin: getRequestHeader(event, 'origin'),
-      host: getRequestHeader(event, 'host'),
-      proto: getRequestHeader(event, 'x-forwarded-proto')
+      host: getRequestHeader(event, 'host')
     })
   ) {
     setResponseStatus(event, 403)

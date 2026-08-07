@@ -1,7 +1,7 @@
 import type { HttpFetch, HttpResponse } from '~core/bitrix24/oauth'
 
 /**
- * Таймаут исходящих HTTP к Bitrix24 (`oauth.bitrix.info` — рефреш токена; `<portal>/rest/profile` —
+ * Таймаут исходящих HTTP к внешним сервисам (Bitrix24, GitHub) (`oauth.bitrix.info` — рефреш токена; `<portal>/rest/profile` —
  * проверка фрейм-токена в handshake). Ядро (`Bitrix24OAuth`/`createPortalAuthenticator`) намеренно
  * делегирует таймауты «слою деплоя» — этот слой здесь. Без лимита зависший upstream держал бы соединение
  * до дефолта undici (~300с): у keep-alive это пинит весь проход по порталам, у handshake/install — копит

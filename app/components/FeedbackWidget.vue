@@ -1,16 +1,19 @@
 <script setup lang="ts">
+import type { FeedbackScreen } from '~core/domain/feedback'
+
 /**
- * Виджет обратной связи 👍/👎 для ВНУТРЕННИХ экранов (дашборд, конструктор, виджеты портала).
+ * Виджет обратной связи 👍/👎 для ВНУТРЕННИХ экранов. Сейчас стоит на дашборде и в конструкторе.
  *
  * ⚠️ На публичной странице прохождения опроса (`/s/:key`) его быть не должно: там клиент заказчика,
  * сессии портала у него нет, а анонимный приём отзывов — готовый спам-канал в чужой трекер.
  *
  * Поведение по замыслу: 👍 уходит сразу (не заставляем писать, когда всё хорошо), 👎 сначала просит
  * пару слов — именно там объяснение и нужно. Если канал не настроен, виджет не показывается вовсе.
+ * Отказ — не тупик: даём вернуться и повторить, не потеряв набранный текст.
  */
 const props = defineProps<{
-  /** Экран, с которого отправлен отзыв: попадает в issue как контекст. */
-  screen: string
+  /** Экран, с которого отправлен отзыв. Сервер принимает только значения из `FEEDBACK_SCREENS`. */
+  screen: FeedbackScreen
   /** Ключ опроса, если экран о конкретном опросе. */
   surveyKey?: string
   /** Номер версии опроса. */
@@ -53,14 +56,26 @@ async function submitDown() {
       </label>
       <B24Textarea id="feedback-comment" v-model="comment" :rows="3" placeholder="Например: дашборд долго грузится" />
       <div class="flex items-center gap-3">
-        <B24Button color="air-primary" size="sm" label="Отправить" :loading="phase === 'sending'" @click="submitDown" />
+        <!-- `loading` здесь не нужен: при отправке эта ветка размонтируется в пользу «Отправляем отзыв…». -->
+        <B24Button color="air-primary" size="sm" label="Отправить" @click="submitDown" />
         <B24Button color="air-tertiary" size="sm" label="Отмена" @click="phase = 'idle'" />
       </div>
     </div>
 
     <B24Alert v-else-if="phase === 'sent'" color="air-primary-success" title="Спасибо, отзыв отправлен." />
 
-    <B24Alert v-else-if="phase === 'failed'" color="air-primary-alert" :title="error" />
+    <!-- Отказ не терминальный: текст ошибки просит попробовать снова, значит такая возможность
+         должна быть на экране. Набранный комментарий при этом сохраняется. -->
+    <div v-else-if="phase === 'failed'" class="flex flex-col gap-3">
+      <B24Alert color="air-primary-alert" :title="error" />
+      <B24Button
+        color="air-tertiary"
+        size="sm"
+        label="Попробовать снова"
+        class="self-start"
+        @click="phase = comment ? 'commenting' : 'idle'"
+      />
+    </div>
 
     <div v-else class="text-sm text-base-600 dark:text-base-300">Отправляем отзыв…</div>
   </section>
