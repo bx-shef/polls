@@ -1,4 +1,4 @@
-import { surveyDraftSchema, draftTooLargeIssue } from '~core/domain/schema'
+import { publishableDraftSchema, draftTooLargeIssue } from '~core/domain/schema'
 import { isSameOriginWrite, CROSS_ORIGIN_MESSAGE } from '~core/api/csrf'
 import { logger } from '../../../../utils/api'
 
@@ -19,10 +19,12 @@ import { logger } from '../../../../utils/api'
  * стора — пробрасывается, не маскируется под 422). Body-limit по content-length — паритет с
  * /api/submit; срабатывает первым (общий бэкстоп — 128 КБ), chunked-тело без заявленной длины отсекает
  * раньше него бэкстоп `server/middleware/body-limit.ts` (411), до маршрутизации.
- * Размер черновика ограничен в САМОЙ схеме (`MAX_DRAFT_BYTES`, 60 КБ) — черновик, прошедший
- * валидацию, по построению влезает в кап тела. Отказ по размеру отделён от прочих ошибок схемы: он
- * отдаётся как 413 с числами («X КБ при пределе Y»), потому что это упёршийся предел, а не ошибка
- * заполнения, и без чисел совет «сократите» невыполним.
+ * Размер черновика ограничен в ядре — схемой ГРАНИЦЫ ЗАПИСИ `publishableDraftSchema`
+ * (`MAX_DRAFT_BYTES`, 60 КБ). Именно она, а не общая `surveyDraftSchema`: та же схема читает версию
+ * обратно в редактор, и предел на ней запер бы уже опубликованные большие опросы (открыть нельзя ⇒
+ * сократить нельзя). Предел меряет РАЗОБРАННОЕ значение, кап выше — провод; одно из другого не следует.
+ * Отказ по размеру отделён от прочих ошибок схемы: 413 с числами («X КБ при пределе Y»), потому что
+ * это упёршийся предел, а не ошибка заполнения, и без чисел совет «сократите» невыполним.
  *
  * AUTH: `resolveAdminAccess` (fail-closed) — мало быть авторизованным порталом, нужна роль
  * АДМИНИСТРАТОРА портала (`profile.ADMIN`, снят при handshake и лежит в подписанной сессии).
@@ -72,7 +74,7 @@ export default defineEventHandler(async (event) => {
   const rawExpected = (rawBody as { expectedVersionNo?: unknown } | null)?.expectedVersionNo
   const expectedVersionNo = typeof rawExpected === 'number' && Number.isInteger(rawExpected) ? rawExpected : undefined
 
-  const parsed = surveyDraftSchema.safeParse(rawBody)
+  const parsed = publishableDraftSchema.safeParse(rawBody)
   if (!parsed.success) {
     // Упёршийся предел размера — не ошибка заполнения: человеку нужны числа, иначе «сократите»
     // невыполнимо. 413, а не 422: это про объём, и статус совпадает с тем, чем ответил бы кап тела,

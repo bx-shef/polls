@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { compile, versionToDraft } from '../src/domain/compile'
 import {
   crmContextSchema,
   optionSchema,
@@ -9,10 +10,12 @@ import {
   responseRecordSchema,
   submissionSchema,
   surveyDraftSchema,
+  publishableDraftSchema,
   MAX_DRAFT_BYTES,
   DRAFT_TOO_LARGE,
   draftByteSize,
-  draftTooLargeIssue
+  draftTooLargeIssue,
+  draftTooLargeMessage
 } from '../src/domain/schema'
 
 describe('rawAnswerSchema — границы payload', () => {
@@ -113,9 +116,13 @@ describe('surveyDraftSchema: размер черновика', () => {
       fileURLToPath(new URL('../server/api/admin/surveys/[key]/publish.post.ts', import.meta.url)),
       'utf8'
     )
-    const m = /MAX_BODY_BYTES\s*=\s*(\d+)\s*\*\s*(\d+)/.exec(route)
+    const m = /MAX_BODY_BYTES\s*=\s*([^\n]+)/.exec(route)
     expect(m, 'кап роута публикации не найден — изменилась запись?').not.toBeNull()
-    const routeCap = Number(m?.[1]) * Number(m?.[2])
+    const raw = (m?.[1] ?? '').trim()
+    // Непонятая запись — КРАСНЫЙ тест, а не пропуск: гард, рапортующий об успехе на входе, который он
+    // не разобрал, хуже отсутствующего.
+    expect(raw, `кап записан в форме, которую гард не умеет разобрать: ${raw}`).toMatch(/^\d+(\s*\*\s*\d+)*$/)
+    const routeCap = raw.split('*').reduce((a, part) => a * Number(part.trim()), 1)
     expect(MAX_DRAFT_BYTES).toBeLessThan(routeCap)
     expect(MAX_DRAFT_BYTES).toBe(61440)
   })
@@ -127,7 +134,7 @@ describe('surveyDraftSchema: размер черновика', () => {
       title: 't',
       questions: [{ key: 'q1', type: 'text', metric: 'text', text: fill(40_000) }]
     }
-    const r = surveyDraftSchema.safeParse(big)
+    const r = publishableDraftSchema.safeParse(big)
     expect(r.success).toBe(false)
     if (r.success) return
     const msg = draftTooLargeIssue(r.error)
@@ -139,7 +146,7 @@ describe('surveyDraftSchema: размер черновика', () => {
   it('отказ помечен, а не опознаётся по подстроке', () => {
     // Сообщение — пользовательский текст, его перепишут не задумываясь; вызывающий, разбирающий
     // текст, сломается молча.
-    const r = surveyDraftSchema.safeParse({
+    const r = publishableDraftSchema.safeParse({
       surveyKey: 's', title: 't',
       questions: [{ key: 'q1', type: 'text', metric: 'text', text: fill(40_000) }]
     })
@@ -148,7 +155,7 @@ describe('surveyDraftSchema: размер черновика', () => {
     const issue = r.error.issues.find((i) => i.code === 'custom')
     expect((issue as { params?: { kind?: string } }).params?.kind).toBe(DRAFT_TOO_LARGE)
     // Обычная ошибка заполнения меткой размера НЕ помечается.
-    const other = surveyDraftSchema.safeParse({ surveyKey: 's', title: 't', questions: [] })
+    const other = publishableDraftSchema.safeParse({ surveyKey: 's', title: 't', questions: [] })
     expect(other.success).toBe(false)
     if (!other.success) expect(draftTooLargeIssue(other.error)).toBeUndefined()
   })
@@ -159,7 +166,7 @@ describe('surveyDraftSchema: размер черновика', () => {
     const template = JSON.parse(
       readFileSync(fileURLToPath(new URL('../docs/reference/survey-schema.template.json', import.meta.url)), 'utf8')
     )
-    expect(surveyDraftSchema.safeParse(template).success).toBe(true)
+    expect(publishableDraftSchema.safeParse(template).success).toBe(true)
     expect(draftByteSize(template)).toBeLessThan(MAX_DRAFT_BYTES / 2)
   })
 
@@ -168,5 +175,59 @@ describe('surveyDraftSchema: размер черновика', () => {
     // границе черновик прошёл бы схему, а транспорт его отверг — то есть предел не работал бы там,
     // где он единственно и нужен.
     expect(draftByteSize({ a: 'яя' })).toBeGreaterThan(JSON.stringify({ a: 'яя' }).length)
+  })
+})
+
+describe('предел размера — граница и путь чтения', () => {
+  /**
+   * Черновик РОВНО заданного размера в байтах.
+   *
+   * Набираем вопросами (у `title` свой предел в 500 символов — им до 60 КБ не добить), а точную
+   * величину добираем ASCII-символами: они по одному байту, значит попасть можно в любое число.
+   * Меряем ПОСЛЕ разбора — zod дописывает `required`/`options`/`lang`, и разобранное больше исходного.
+   */
+  const draftOfSize = (target: number) => {
+    const q = (key: string, text: string) => ({ key, type: 'text', metric: 'text', text })
+    const size = (questions: unknown[]) =>
+      draftByteSize(surveyDraftSchema.parse({ surveyKey: 's', title: 't', questions }))
+    const questions: unknown[] = [q('q0', 'a')]
+    while (size([...questions, q('qz', 'a'.repeat(2000))]) < target) {
+      questions.push(q(`q${questions.length}`, 'a'.repeat(2000)))
+    }
+    for (let pad = 0; pad <= 2000; pad++) {
+      const draft = { surveyKey: 's', title: 't', questions: [...questions, q('qz', 'a'.repeat(pad))] }
+      if (draftByteSize(surveyDraftSchema.parse(draft)) === target) return draft
+    }
+    return null
+  }
+
+  it('ровно предел проходит, предел+1 отвергается', () => {
+    // Мутация `>` → `>=` раньше проходила незамеченной по всему набору из 955 тестов: граница
+    // проверялась только «сильно больше» и «сильно меньше», то есть не проверялась вовсе.
+    const exact = draftOfSize(MAX_DRAFT_BYTES)
+    const over = draftOfSize(MAX_DRAFT_BYTES + 1)
+    expect(exact, 'не удалось собрать черновик ровно на предел').not.toBeNull()
+    expect(over).not.toBeNull()
+    expect(publishableDraftSchema.safeParse(exact).success).toBe(true)
+    expect(publishableDraftSchema.safeParse(over).success).toBe(false)
+  })
+
+  it('на границе сообщение НЕ вырождается в «60 КБ при пределе 60 КБ»', () => {
+    // Самый частый случай — «чуть перебрал». Именно там сообщение обязано объяснять отказ.
+    const msg = draftTooLargeMessage(MAX_DRAFT_BYTES + 1)
+    const nums = msg.match(/\d+/g) ?? []
+    expect(nums).toHaveLength(2)
+    expect(nums[0]).not.toBe(nums[1])
+  })
+
+  it('предел НЕ мешает читать уже опубликованный большой опрос', () => {
+    // Регресс, найденный проверяющими: предел стоял в общей схеме, а ею же читают версию обратно в
+    // редактор. Опрос, опубликованный до появления предела, переставал открываться — то есть
+    // единственный способ его сократить отказывал. Инвариант: чтение пределом не ограничено.
+    const big = draftOfSize(MAX_DRAFT_BYTES + 4000)
+    expect(big).not.toBeNull()
+    expect(publishableDraftSchema.safeParse(big).success, 'опубликовать такой уже нельзя').toBe(false)
+    const version = compile(surveyDraftSchema.parse(big), 1)
+    expect(() => versionToDraft(version), 'редактор не открыл бы существующий опрос').not.toThrow()
   })
 })
