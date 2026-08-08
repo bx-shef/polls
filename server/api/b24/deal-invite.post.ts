@@ -3,6 +3,9 @@
 // rate-limit → parseFrameAuth → verifyFrameAuth (SSRF-allowlist → profile → сверка member_id) →
 // crm.deal.get токеном виджета → dealToCrmContext → createSurveyInvitation (общий стор приглашений)
 // → ссылка /s/:key?token=… для адресата. Fail-closed: невалидный фрейм → 401, нет сделки/версии → 422.
+// Своего кап-лимита на тело нет намеренно: его держит общий бэкстоп `server/middleware/body-limit.ts`
+// (128 КБ → 413, тело без заявленной длины → 411) — ровно для таких роутов он и сделан. Раньше `readBody`
+// здесь шёл до подтверждения фрейма вообще без ограничения.
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
 import { dealToCrmContext } from '~core/bitrix24/deal-event'
