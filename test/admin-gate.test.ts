@@ -28,6 +28,11 @@ const READ_ROUTES = [
   'server/api/dashboard/[key].get.ts'
 ]
 
+/** Код без комментариев: иначе гард удовлетворяется упоминанием имени в прозе. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}
+
 describe('гейт прав на роутах (#139)', () => {
   it.each(WRITE_ROUTES)('%s требует роль администратора', (path) => {
     const src = read(path)
@@ -40,10 +45,22 @@ describe('гейт прав на роутах (#139)', () => {
     expect(read(path)).toContain('isSameOriginWrite')
   })
 
-  it.each(READ_ROUTES)('%s НЕ требует роль администратора (чтение доступно любому сотруднику)', (path) => {
-    const src = read(path)
-    expect(src).toContain('requirePortalSession')
+  it.each(READ_ROUTES)('%s гейтит сессией портала, но НЕ ролью администратора', (path) => {
+    // ⚠️ Сверяем по коду БЕЗ комментариев и по факту ВЫЗОВА, а не по вхождению слова: гард уже успел
+    // один раз выродиться — роут переехал с `requirePortalSession` на `resolvePortalSession`, а
+    // прежнее имя осталось в комментарии, и проверка проходила на прозе. То есть гейт можно было
+    // удалить целиком, не уронив ни одного теста, — ровно то, ради чего этот файл написан.
+    const src = stripComments(read(path))
+    expect(src, `${path}: нет вызова гейта сессии портала`).toMatch(/\b(require|resolve)PortalSession\(event\)/)
     expect(src).not.toContain('resolveAdminAccess')
+  })
+
+  it.each(READ_ROUTES)('%s гейтит ДО обращения к хранилищу (не тратим работу на отказ)', (path) => {
+    const src = stripComments(read(path))
+    const gate = src.search(/\b(require|resolve)PortalSession\(event\)/)
+    const store = src.indexOf('useStore(')
+    if (store < 0) return // роут в стор не ходит — проверять нечего
+    expect(gate, `${path}: обращение к хранилищу раньше гейта`).toBeLessThan(store)
   })
 
   it('гейт записи стоит ДО чтения тела запроса (не тратим работу на отказ)', () => {

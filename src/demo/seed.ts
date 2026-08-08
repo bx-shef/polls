@@ -10,6 +10,24 @@ import type { Option, RawAnswer, SurveyDraft } from '../domain/schema'
  */
 
 export const SURVEY_KEY = 'csat_postdeal'
+
+/**
+ * Второй демо-опрос — ОПУБЛИКОВАННЫЙ, НО БЕЗ ОТВЕТОВ.
+ *
+ * Нужен ровно для одного: чтобы состояние «ответов меньше порога» можно было увидеть глазами и
+ * поставить под визуальный гейт. Раньше оно не воспроизводилось на демо-данных вовсе (12 ответов при
+ * пороге 5), и его текст правился вслепую — то есть не правился, а откладывался.
+ *
+ * Ответов намеренно НЕТ ни одного: так набор остаётся детерминированным, все агрегаты и `pnpm verify`
+ * считаются ровно по прежним 12 ответам, а состояние при этом достижимо. И это не искусственная
+ * ситуация — только что опубликованный опрос выглядит именно так.
+ *
+ * ⚠️ **В боевую базу он не уезжает.** Тем же сидом засевается пустая прод-БД (`seedDemoIfEmpty`), и
+ * лишний опрос там был бы не фикстурой, а продуктом: живой публичный маршрут `/s/nps_quarterly`,
+ * принимающий анонимные ответы, плюс вторая строка в списке админки. Мотив правки — эталон, поэтому
+ * опрос добавляется только при демо-сборке в память (`buildDemo()` без стора).
+ */
+export const EMPTY_SURVEY_KEY = 'nps_quarterly'
 export const NPS_Q = 'q_nps'
 export const CSAT_Q = 'q_csat'
 export const LIKED_Q = 'q_liked'
@@ -124,19 +142,26 @@ function rawFor(e: SeedEntry): Record<string, RawAnswer> {
   }
 }
 
-/** Строит хранилище с двумя версиями и сидовыми ответами через реальный пайплайн. */
+/**
+ * Строит хранилище с двумя версиями и сидовыми ответами через реальный пайплайн.
+ *
+ * Пустой второй опрос добавляется ТОЛЬКО в демо-сборку в память: в переданный стор (боевая пустая БД,
+ * тесты паритета) он не идёт — там это был бы продукт, а не фикстура. См. {@link EMPTY_SURVEY_KEY}.
+ */
 export async function buildDemo(): Promise<MemoryStore>
 /** То же, но в переданный стор — для тестов паритета реализаций (MemoryStore vs PgStore). */
 export async function buildDemo<T extends IStore>(store: T): Promise<T>
-export async function buildDemo(store: IStore = new MemoryStore()): Promise<IStore> {
-  await store.publish(draftV1(), 1)
-  await store.publish(draftV2(), 2)
+export async function buildDemo(store?: IStore): Promise<IStore> {
+  const target = store ?? new MemoryStore()
+  await target.publish(draftV1(), 1)
+  await target.publish(draftV2(), 2)
+  if (store === undefined) await target.publish(emptyDraft(), 1)
 
   for (const [idx, e] of SEED.entries()) {
-    const version = await store.getVersion(SURVEY_KEY, e.v)
+    const version = await target.getVersion(SURVEY_KEY, e.v)
     if (!version) throw new Error(`Версия ${e.v} не найдена`)
     const { answers } = buildResponseAnswers(version.questions, rawFor(e))
-    await store.addResponse({
+    await target.addResponse({
       id: `r${idx + 1}`,
       surveyKey: SURVEY_KEY,
       versionNo: e.v,
@@ -155,5 +180,38 @@ export async function buildDemo(store: IStore = new MemoryStore()): Promise<ISto
     })
   }
 
-  return store
+  return target
+}
+
+/**
+ * Черновик второго опроса — только чтобы существовало опубликованное, но пустое. Вопросов минимум:
+ * содержание тут ни на что не влияет, экран всё равно подавлен порогом анонимности.
+ */
+export function emptyDraft(): SurveyDraft {
+  return {
+    surveyKey: EMPTY_SURVEY_KEY,
+    title: 'Ежеквартальный NPS',
+    lang: 'ru',
+    intro: {
+      kicker: 'Опрос · 1 минута',
+      title: 'Порекомендуете нас коллегам?',
+      lead: 'Один вопрос — и мы поймём, куда двигаться дальше.',
+      meta: ['Анонимно', '~1 минута'],
+      cta: 'Начать',
+      count: '1 вопрос'
+    },
+    questions: [
+      {
+        // СВОЙ ключ, не общий `q_nps`: агрегаты (`verify`, тесты) считают по всем ответам стора, и
+        // одинаковый ключ означал бы, что первый же ответ на этот опрос молча вольётся в цифры
+        // постпродажного.
+        key: 'q_nps_quarterly',
+        text: 'Насколько вероятно, что вы порекомендуете нас коллегам?',
+        type: 'single',
+        metric: 'nps',
+        required: true,
+        options: scaleOptions(0, 10)
+      }
+    ]
+  }
 }

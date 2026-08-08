@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { SURVEY_KEY } from '../../src/demo/seed'
+import { EMPTY_SURVEY_KEY, SURVEY_KEY } from '../../src/demo/seed'
 
 /**
  * Визуальный гейт дашборда (контур B, #34/#13) — живые маршруты `/d/:key`, нативная тема b24ui.
@@ -10,8 +10,9 @@ import { SURVEY_KEY } from '../../src/demo/seed'
  * «гейт-тесты НЕ пишут ответы» — submit в thanks/submit-error замокан. Не добавляйте в гейт
  * тест с реальным submit, иначе число ответов «поплывёт».
  *
- * Состояние «мало ответов» (suppressed) пока не под гейтом: нужен опрос с n<5, а seed — 12
- * (а data-fetch SSR, page.route его не перехватит). Покрытие suppressed — отдельный слайс (#49).
+ * Состояние «мало ответов» (suppressed) под гейтом с #144: в сиде есть второй опрос, опубликованный
+ * БЕЗ ответов. Раньше воспроизвести его было нечем (12 ответов при пороге 5, а SSR-фетч `page.route`
+ * не перехватывает), поэтому и текст на нём правился вслепую — то есть не правился.
  */
 test('дашборд совпадает с эталоном', async ({ page }) => {
   await page.goto(`/d/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
@@ -53,4 +54,22 @@ test('дашборд (опрос не найден) совпадает с эта
   await page.goto('/d/nonexistent-survey', { waitUntil: 'networkidle' })
   await expect(page.getByText('Опрос не найден. Проверьте адрес.')).toBeVisible()
   await expect(page).toHaveScreenshot('dashboard-error.png', { fullPage: true })
+})
+
+test('дашборд (мало ответов) совпадает с эталоном', async ({ page }) => {
+  // Второй опрос сида опубликован без ответов → n=0 < порога → весь дашборд подавлен.
+  // Ситуация не искусственная: только что опубликованный опрос выглядит именно так.
+  await page.goto(`/d/${EMPTY_SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await expect(page.getByText('Пока мало ответов')).toBeVisible()
+  await expect(page).toHaveScreenshot('dashboard-suppressed.png', { fullPage: true })
+})
+
+test('в заголовке НЕ печатается текст из адреса', async ({ page }) => {
+  // Без скриншота. Раньше `<h1>` показывал сырой параметр маршрута — то есть ссылкой можно было
+  // нарисовать чужой текст заголовком на нашей странице. Берём текст, который и пытались бы
+  // подставить: проверка «ключ не напечатан» на безобидном слаге доказывала бы меньше, чем обещает.
+  const payload = 'Ваш-аккаунт-заблокирован-позвоните-по-номеру'
+  await page.goto(`/d/${payload}`, { waitUntil: 'networkidle' })
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Дашборд опроса')
+  await expect(page.getByText(payload)).toHaveCount(0)
 })
