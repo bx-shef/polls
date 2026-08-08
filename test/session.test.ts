@@ -160,3 +160,20 @@ describe('resolveWriteAccess — гейт записи конфигурации 
     }
   })
 })
+
+describe('dashboardAuthMessage — связка «статус → текст»', () => {
+  it('401 говорит про сессию, 503 — про настройку', async () => {
+    // Без этой проверки две строки можно поменять местами и не уронить ничего: server/** вне тестов,
+    // а визуальный гейт до отказов не достаёт (он бежит с DASHBOARD_DEV_OPEN=1).
+    const { dashboardAuthMessage } = await import('../src/api/session')
+    expect(dashboardAuthMessage(401)).toMatch(/сессия портала истекла/i)
+    expect(dashboardAuthMessage(503)).toMatch(/временно недоступен/i)
+  })
+
+  it('503 не называет переменную окружения', async () => {
+    // Гейт срабатывает раньше проверки ключа: /d/что-угодно открыт любому из интернета, и точный
+    // доклад рассказал бы неизвестному, что авторизация дашборда сейчас не работает.
+    const { dashboardAuthMessage } = await import('../src/api/session')
+    expect(dashboardAuthMessage(503)).not.toMatch(/DASHBOARD_AUTH_SECRET|SECRET|env/i)
+  })
+})

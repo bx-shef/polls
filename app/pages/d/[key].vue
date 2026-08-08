@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Дашборд результатов (контур B): аналитика опроса в нативной теме b24ui (air-токены, без
 // индиго-айдентики контура A). Данные — серверный агрегат /api/dashboard/:key (domain/aggregate
-// + подавление малых N; распределение приходит с метками опций). Тонкий рендер. Гейт requirePortalSession
+// + подавление малых N; распределение приходит с метками опций). Тонкий рендер. Гейт resolvePortalSession (роут отвечает текстом, а не броском)
 // (fail-closed в проде; открыт вне production или с DASHBOARD_DEV_OPEN=1 — для демо). Tenant-фильтр — #49.
 // Типы метрик — из ядра (type-only: в клиентский бандл не попадают, граница ~core
 // соблюдена). Один источник правды с серверным агрегатом — расхождение ловит компилятор.
@@ -47,10 +47,16 @@ const selectedVersion = computed(() => {
   return Number.isInteger(v) && v > 0 ? v : null
 })
 
+// ⚠️ `useRequestFetch()`, а НЕ голый `$fetch`: на сервере запрос к своему же роуту идёт без заголовков
+// исходного запроса, то есть без cookie `polls_portal`. В проде это означало, что дашборд, открытый
+// по прямой ссылке или обновлённый по F5, отвечал «сессия истекла» при живой сессии — работал только
+// переход из фрейма (клиентская навигация, там cookie уходит). Визуальный гейт этого не видит: он
+// поднимает сервер с `DASHBOARD_DEV_OPEN=1`, где гейт вообще не срабатывает.
+const requestFetch = useRequestFetch()
 const { data, error } = await useAsyncData<Dashboard>(
   () => `dashboard:${surveyKey.value}:${selectedVersion.value ?? 'all'}`,
   () =>
-    $fetch(`/api/dashboard/${surveyKey.value}`, {
+    requestFetch(`/api/dashboard/${surveyKey.value}`, {
       query: selectedVersion.value != null ? { version: selectedVersion.value } : {}
     }),
   { watch: [selectedVersion] }
@@ -74,17 +80,20 @@ const errorText = computed(() =>
 )
 
 /**
- * Заголовок страницы. На экране ОШИБКИ — статичный: в обычном режиме сюда идёт название опроса с
- * сервера, но при ошибке названия нет и в `<h1>` печатался бы сырой ключ из адреса. То есть ссылкой
- * `/d/<двести символов текста>` можно было нарисовать чужой текст заголовком на нашей странице.
+ * Заголовок страницы: название опроса с сервера, иначе — статичная строка.
+ *
+ * Раньше фолбэком был сырой ключ из адреса, то есть ссылкой `/d/<двести символов текста>` рисовался
+ * чужой текст заголовком на нашей странице. Экранирование от этого не спасает: оно закрывает разметку,
+ * а не смысл. Фолбэк намеренно НЕ завязан на признак ошибки — иначе защита держалась бы на том, что
+ * роут в другом файле не забыл выставить статус ответа.
  */
-const heading = computed(() => (error.value ? 'Результаты опроса' : (data.value?.title ?? surveyKey.value)))
+const heading = computed(() => data.value?.title ?? 'Дашборд опроса')
 </script>
 
 <template>
   <main class="mx-auto max-w-4xl p-6">
     <header class="mb-6">
-      <p class="text-sm text-gray-500 dark:text-gray-400">Результаты опроса</p>
+      <p v-if="!error" class="text-sm text-gray-500 dark:text-gray-400">Результаты опроса</p>
       <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ heading }}</h1>
       <p v-if="data?.n !== undefined" class="mt-1 text-sm text-gray-500 dark:text-gray-400">
         Ответов: {{ data.n }}

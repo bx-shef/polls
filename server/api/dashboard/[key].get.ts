@@ -8,6 +8,7 @@ import {
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
+import { dashboardAuthMessage } from '~core/api/session'
 
 /**
  * GET /api/dashboard/:key — агрегаты опроса для дашборда (контур B). Считается СЕРВЕРНО через
@@ -50,13 +51,7 @@ export default defineEventHandler(async (event) => {
   const session = resolvePortalSession(event)
   if (!session.ok) {
     setResponseStatus(event, session.status)
-    return {
-      ok: false,
-      error:
-        session.status === 401
-          ? 'Сессия портала истекла. Закройте и заново откройте приложение из Bitrix24 — дашборд откроется снова.'
-          : 'Дашборд временно недоступен. Обратитесь к администратору приложения.'
-    }
+    return { ok: false, error: dashboardAuthMessage(session.status) }
   }
 
   const surveyKey = getRouterParam(event, 'key') ?? ''
