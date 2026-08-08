@@ -6,6 +6,9 @@
 // поэтому сначала parseBracketForm, затем ядровой runRobotTrigger: parseRobotEvent → dealIdFromDocumentId →
 // verifyApplicationToken (constant-time) → crm.deal.get ТОКЕНОМ ПОРТАЛА → handleDealTrigger.
 // ВСЕГДА 200: bizproc повторов не гарантирует, а форджери/мисконфиг наружу не раскрываем (только лог).
+// ⚠️ Единственное исключение — общий бэкстоп размера тела (`server/middleware/body-limit.ts`, 413/411):
+// он стоит ДО маршрутизации, решает по одному заголовку и до хранилища не доходит, поэтому оракулом
+// «установлен ли портал» не служит. Легальному bizproc-вызову недостижимо (тело — единицы килобайт).
 import { runRobotTrigger } from '~core/bitrix24/robot'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'

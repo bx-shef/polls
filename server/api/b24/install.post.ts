@@ -7,6 +7,9 @@
 // Конвейер: merge(query, body) → parseInstallEvent → handleInstall(сохранить токены PortalTokenStore →
 // зарегистрировать робот+плейсменты B24OAuth). Ответ — HTML, вызывающий BX24.installFinish() (портал
 // помечает установку завершённой); на ошибке — HTML с текстом. Fail-closed: без конфига/БД/ключа — 503.
+// ⚠️ Общий бэкстоп размера тела (`server/middleware/body-limit.ts`) отвечает раньше этого обработчика
+// и отдаёт JSON, а не HTML, — форма ответа тут разойдётся с контрактом (issue #156). Недостижимо на
+// легальной установке: её тело — единицы килобайт при потолке 128 КБ.
 import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitrix24/install'
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'

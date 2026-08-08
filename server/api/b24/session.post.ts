@@ -5,7 +5,8 @@
 // Тонкая h3-обёртка: парс/проверка/минт — в `~core/bitrix24` (под юнит-тестами без живого портала),
 // здесь только маппинг event→ядро→статус/cookie. Rate-limit по IP (429) — до исходящего profile.
 // Fail-closed: без `DASHBOARD_AUTH_SECRET` → 503; любая неудача проверки (чужой домен/мёртвый
-// токен/cross-tenant/портал не установлен) → 401 без утечки причины. Body мал — cap 8КБ (жёстче submit).
+// токен/cross-tenant/портал не установлен) → 401 без утечки причины. Body мал — cap 8КБ (жёстче
+// общего бэкстопа `server/middleware/body-limit.ts`, который режет 128КБ и тела без заявленной длины).
 import { parseFrameAuth, verifyFrameAuth, mintPortalSession, DEFAULT_SESSION_TTL_SEC } from '~core/bitrix24/frame'
 import { allowB24Session, resolveB24Secret, useB24Authenticator } from '../../utils/b24-session'
 

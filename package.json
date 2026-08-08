@@ -46,6 +46,7 @@
     "@types/node": "^22.10.2",
     "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "^2.1.8",
+    "h3": "^1.15.11",
     "node-pg-migrate": "^8.0.4",
     "tailwindcss": "^4.3.1",
     "tsx": "^4.19.2",

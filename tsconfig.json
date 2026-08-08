@@ -11,7 +11,12 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    // Тот же алиас, что у Nuxt и у vitest. Нужен, потому что тест бэкстопа импортирует реальный
+    // `server/middleware/body-limit.ts` (иначе его поведение проверялось бы грепом по исходнику,
+    // а греп не ловит даже полностью выключенную защиту).
+    "paths": { "~core/*": ["src/*"] }
   },
   "include": ["src", "test", "scripts"]
 }

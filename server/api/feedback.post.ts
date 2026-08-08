@@ -90,6 +90,8 @@ export default defineEventHandler(async (event) => {
   const len = getRequestHeader(event, 'content-length')
   if (len === undefined) {
     // Тело без заявленной длины (chunked) прошло бы мимо капа: `readBody` буферизует его целиком.
+    // Эта ветка появилась здесь раньше остальных и стала образцом для общего бэкстопа
+    // (`server/middleware/body-limit.ts`), который теперь отсекает такой запрос ещё до маршрутизации.
     setResponseStatus(event, 411)
     return { ok: false, error: 'Не удалось принять отзыв: не указан размер запроса. Обновите страницу.' }
   }

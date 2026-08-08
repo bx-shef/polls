@@ -1,6 +1,13 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  // Тот же алиас, что у Nuxt (`~core → src/`). Нужен, чтобы тесты могли загрузить файлы из `server/`:
+  // без него `server/middleware/body-limit.ts` в vitest не резолвится, и единственной проверкой
+  // бэкстопа остаётся греп по исходнику — а он не ловит даже полностью выключенную защиту.
+  resolve: {
+    alias: { '~core': fileURLToPath(new URL('./src', import.meta.url)) }
+  },
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],

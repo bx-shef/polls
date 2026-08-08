@@ -4,7 +4,10 @@
 // h3 `readBody` отдаёт ПЛОСКИЙ объект, поэтому СНАЧАЛА `parseBracketForm` (→ вложенный `{data:{FIELDS:{ID}}}`),
 // затем ядровой `runDealUpdate`: parseDealUpdateEvent → verifyApplicationToken (сохранённый app_token,
 // constant-time — анти-форджери) → crm.deal.get ТОКЕНОМ ПОРТАЛА (домен из СОХРАНЁННОГО токена, не из
-// события — SSRF) → dealToCrmContext → handleDealTrigger. ВСЕГДА 200: B24 online-события НЕ ретраит,
+// события — SSRF) → dealToCrmContext → handleDealTrigger. ВСЕГДА 200 — кроме общего бэкстопа размера
+// тела (`server/middleware/body-limit.ts`, 413/411): он стоит ДО маршрутизации, решает по одному
+// заголовку и до хранилища не доходит, поэтому оракулом не служит. Легальному событию недостижимо.
+// Внутри же обработчика — всегда 200: B24 online-события НЕ ретраит,
 // форджери/ошибку/отсутствие конфига наружу не раскрываем (только лог). Доставка ссылки адресату — отдельный слой.
 import { runDealUpdate } from '~core/bitrix24/deal-update'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
