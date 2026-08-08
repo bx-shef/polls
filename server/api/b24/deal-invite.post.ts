@@ -16,7 +16,7 @@ import { useStore, useInvitations, useSurveyRouting, logger } from '../../utils/
 // с дефолтом. UI-маппинг entityType→surveyKey — отдельный issue.
 
 export default defineEventHandler(async (event) => {
-  if (!allowB24Session(getRequestIP(event) ?? '?')) {
+  if (!allowB24Session(requestIp(event))) {
     setResponseStatus(event, 429)
     return { ok: false, error: 'Слишком много запросов. Подождите немного и попробуйте снова.' }
   }

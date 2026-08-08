@@ -88,7 +88,7 @@ export default defineEventHandler(async (event) => {
   // Rate-limit ДО исходящего верификационного рефреша (§2.3 follow-up, CTO MAJOR-3): install-эндпоинт —
   // амплификатор (well-formed POST → рефреш на oauth.bitrix.info). Применяем на install-пути (uninstall
   // выше уже ответил и вышел — его НЕ лимитируем, B24 online-события не ретраит). IP за прокси — #4.
-  if (!allowB24Install(getRequestIP(event) ?? '?')) {
+  if (!allowB24Install(requestIp(event))) {
     logger.warn('b24_install_ratelimited', { memberId: auth.memberId })
     return html(event, 429, errorHtml('слишком много попыток установки — повторите позже'))
   }

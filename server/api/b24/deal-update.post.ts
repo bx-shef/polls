@@ -41,7 +41,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 200)
     return 'ok'
   }
-  if (!dealUpdateLimiter.allow(getRequestIP(event) ?? '?', new Date())) {
+  if (!dealUpdateLimiter.allow(requestIp(event), new Date())) {
     // B24 online-события не ретраит; наружу — «ok» (не раскрываем лимит), но в лог для диагностики.
     logger.warn('b24_deal_update_ratelimited', { msg: 'превышен лимит event-роута' })
     setResponseStatus(event, 200)

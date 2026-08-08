@@ -12,6 +12,8 @@ import { ensureDefaultPortal, seedDemoIfEmpty } from '~core/store/bootstrap'
 import { resolveMemberIdByDomain } from '~core/bitrix24/portal'
 import type { IStore, Queryable } from '~core/store/types'
 import { setPortalResolver } from './b24-session'
+import type { H3Event } from 'h3'
+import { clientIp, resolveTrustedProxies, FORWARDED_FOR_HEADER } from '~core/api/client-ip'
 
 /**
  * Nitro-привязка ядра. SERVER-ONLY: `~core/api`/`~core/store`/`~core/obs`/`~core/bitrix24` сюда
@@ -129,4 +131,25 @@ async function buildApi(): Promise<Api> {
   // ложные 429, оставляя ceiling от примитивного флуда.
   const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
   return createApi({ store, logger, limiter, invitations: useInvitations() })
+}
+
+/**
+ * Адрес клиента для ключа анти-абьюза — ЕДИНАЯ точка на все роуты.
+ *
+ * Штатный `getRequestIP(event)` без параметров отдаёт адрес сокета, а за нашим обратным прокси это
+ * адрес прокси: одинаковый для всех, то есть все лимитеры вырождаются в один общий счётчик на весь
+ * сервис. С флагом `xForwardedFor: true` он берёт ПЕРВЫЙ адрес заголовка — а его пишет отправитель
+ * запроса, и лимит обходится одной строкой. Оба варианта выглядят рабочими и не работают, поэтому
+ * решение вынесено в чистую `clientIp` (под тестами), а роуты зовут её отсюда.
+ *
+ * Сколько своих прокси перед приложением — `TRUSTED_PROXIES` (по умолчанию 0: заголовок игнорируется).
+ * Значение читается на каждый запрос намеренно: это дешёвое чтение `process.env`, зато перенастройка
+ * не требует пересборки образа, а забытая переменная не «запекается» в замыкание при старте.
+ */
+export function requestIp(event: H3Event): string {
+  return clientIp({
+    socketIp: getRequestIP(event),
+    forwardedFor: getRequestHeader(event, FORWARDED_FOR_HEADER),
+    trustedProxies: resolveTrustedProxies(process.env.TRUSTED_PROXIES)
+  })
 }

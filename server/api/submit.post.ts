@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
   }
   const api = await useApi()
   const body = await readBody(event)
-  const r = await api.submit({ ip: getRequestIP(event) ?? '?', body })
+  const r = await api.submit({ ip: requestIp(event), body })
   setResponseStatus(event, r.status)
   return r.body
 })

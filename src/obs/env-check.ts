@@ -4,6 +4,7 @@ import { MAX_KEEPALIVE_HOURS, MIN_KEEPALIVE_HOURS, DEFAULT_KEEPALIVE_HOURS } fro
 import { TRIGGER_MODES } from '../bitrix24/trigger-mode'
 import { CSP_MODES } from '../api/security-headers'
 import { LOG_LEVELS } from './logger'
+import { resolveTrustedProxies } from '../api/client-ip'
 
 /**
  * Проверка окружения при старте.
@@ -305,6 +306,24 @@ export function checkEnv(env: Record<string, string | undefined>, opts: EnvCheck
     warnings.push({
       name: 'GITHUB_FEEDBACK_REPO',
       message: 'осталось значение-заглушка из примера — канал отзывов работать не будет. Укажите свой приватный репозиторий'
+    })
+  }
+
+  // ── Анти-абьюз за прокси ─────────────────────────────────────────────────────────────────
+  // Молчаливая деградация: без этой переменной за обратным прокси адрес сокета одинаков у ВСЕХ, и
+  // лимиты по IP превращаются в один общий счётчик на сервис. Ошибка не видна ни в логе, ни в
+  // ответах — поэтому про неё говорим при старте. Сказать наверняка, стоит ли прокси, мы не можем,
+  // поэтому это предупреждение, а не ошибка, и только в боевом режиме.
+  const trustedRaw = val('TRUSTED_PROXIES')
+  if (prod && !trustedRaw) {
+    warnings.push({
+      name: 'TRUSTED_PROXIES',
+      message: 'не задан — если приложение стоит за обратным прокси (типичный прод), лимиты по IP считаются по адресу прокси, то есть одним счётчиком на всех. За одним nginx задайте 1'
+    })
+  } else if (trustedRaw && resolveTrustedProxies(trustedRaw) === 0) {
+    warnings.push({
+      name: 'TRUSTED_PROXIES',
+      message: 'значение не распознано как положительное целое — заголовок X-Forwarded-For игнорируется, лимиты считаются по адресу сокета'
     })
   }
 

@@ -25,6 +25,10 @@ services:
       LETSENCRYPT_HOST: ${DOMAIN}
       # Секрет сессии дашборда/handshake (>= 32). Без него прод-дашборд fail-closed (503).
       DASHBOARD_AUTH_SECRET: ${DASHBOARD_AUTH_SECRET:?DASHBOARD_AUTH_SECRET не задан}
+      # Сколько своих прокси перед приложением. Здесь ровно один — nginx-proxy, поэтому дефолт 1:
+      # без него адрес сокета у всех клиентов одинаков (адрес прокси), и лимиты по IP считаются
+      # ОДНИМ счётчиком на весь сервис — анти-абьюз выглядит рабочим и не работает.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-1}
       # Ключ шифрования OAuth-токенов Bitrix24 (AES-256-GCM, 64 hex). Нужен при связке портала.
       NUXT_BITRIX_TOKEN_KEY: ${NUXT_BITRIX_TOKEN_KEY:-}
       # Домен приложения В КОНТЕЙНЕРЕ (для HANDLER-URL встроек при установке, #17).
