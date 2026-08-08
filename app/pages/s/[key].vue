@@ -11,6 +11,11 @@ import type { PublicVersion } from '~core/domain/schema'
 // onMounted (а с ним hydrate) не отрабатывает повторно. С ремоунтом — свежий setup + onMounted.
 definePageMeta({ key: (route) => route.path })
 
+// В индекс этой странице не надо: у контура A ссылка одноразовая, у дашборда без сессии
+// портала виден только экран отказа. `robots.txt` это уже просит — здесь дублируем на
+// уровне страницы, потому что robots.txt краулер вправе проигнорировать.
+useSeoMeta({ robots: 'noindex, nofollow' })
+
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
