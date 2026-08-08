@@ -29,7 +29,7 @@ import {
  *     `npsTrend` (параметр `minN`) — тот же порог, но применяется к бакету отдельно.
  * Per-bin k-анонимность распределения — отдельное ужесточение для реальных данных (#49).
  *
- * AUTH (#47): `requirePortalSession` — прод (`DASHBOARD_AUTH_SECRET`) требует валидную
+ * AUTH (#47): `resolvePortalSession` — прод (`DASHBOARD_AUTH_SECRET`) требует валидную
  * подписанную сессию портала, иначе 401 (срезы раскрывают ИМЕНА клиентов/`responsibleName`-PII —
  * fail-closed). Dev/гейт — открыто (portalId='dev'). Handshake app-фрейма (минт сессии) уже сделан
  * (`/api/b24/session`). Осталось: tenant-фильтрация стора по portalId (PgStore-путь, #49); ещё без
@@ -38,7 +38,26 @@ import {
 export default defineEventHandler(async (event) => {
   // Гейт #47: прод без валидной сессии портала → 401/503 (не отдаём имена клиентов/сотрудников
   // без auth); dev/гейт — открыто. tenant-фильтрация стора по portalId — на PgStore-пути (#49).
-  requirePortalSession(event)
+  //
+  // Отвечаем ТЕЛОМ, а не броском: `requirePortalSession` кидает `createError`, Nitro заворачивает его
+  // в свой конверт, и до страницы текст не доезжает — ей приходилось писать свои 401/503, то есть
+  // нарушать правило «текст отказа пишет сервер». `resolvePortalSession` заведён ровно для этого.
+  //
+  // ⚠️ 503 намеренно НЕ называет переменную окружения: гейт срабатывает раньше проверки ключа, поэтому
+  // `/d/что-угодно` открыт любому из интернета — точный доклад «задайте DASHBOARD_AUTH_SECRET»
+  // рассказал бы неизвестному, что авторизация дашборда сейчас не работает. Имя переменной админ и так
+  // получит в логе запуска и в `pnpm env:check`.
+  const session = resolvePortalSession(event)
+  if (!session.ok) {
+    setResponseStatus(event, session.status)
+    return {
+      ok: false,
+      error:
+        session.status === 401
+          ? 'Сессия портала истекла. Закройте и заново откройте приложение из Bitrix24 — дашборд откроется снова.'
+          : 'Дашборд временно недоступен. Обратитесь к администратору приложения.'
+    }
+  }
 
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {

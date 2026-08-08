@@ -10,6 +10,19 @@ import type { Option, RawAnswer, SurveyDraft } from '../domain/schema'
  */
 
 export const SURVEY_KEY = 'csat_postdeal'
+
+/**
+ * Второй демо-опрос — ОПУБЛИКОВАННЫЙ, НО БЕЗ ОТВЕТОВ.
+ *
+ * Нужен ровно для одного: чтобы состояние «ответов меньше порога» можно было увидеть глазами и
+ * поставить под визуальный гейт. Раньше оно не воспроизводилось на демо-данных вовсе (12 ответов при
+ * пороге 5), и его текст правился вслепую — то есть не правился, а откладывался.
+ *
+ * Ответов намеренно НЕТ ни одного: так набор остаётся детерминированным, все агрегаты и `pnpm verify`
+ * считаются ровно по прежним 12 ответам, а состояние при этом достижимо. И это не искусственная
+ * ситуация — только что опубликованный опрос выглядит именно так.
+ */
+export const EMPTY_SURVEY_KEY = 'nps_quarterly'
 export const NPS_Q = 'q_nps'
 export const CSAT_Q = 'q_csat'
 export const LIKED_Q = 'q_liked'
@@ -131,6 +144,7 @@ export async function buildDemo<T extends IStore>(store: T): Promise<T>
 export async function buildDemo(store: IStore = new MemoryStore()): Promise<IStore> {
   await store.publish(draftV1(), 1)
   await store.publish(draftV2(), 2)
+  await store.publish(emptyDraft(), 1)
 
   for (const [idx, e] of SEED.entries()) {
     const version = await store.getVersion(SURVEY_KEY, e.v)
@@ -156,4 +170,34 @@ export async function buildDemo(store: IStore = new MemoryStore()): Promise<ISto
   }
 
   return store
+}
+
+/**
+ * Черновик второго опроса — только чтобы существовало опубликованное, но пустое. Вопросов минимум:
+ * содержание тут ни на что не влияет, экран всё равно подавлен порогом анонимности.
+ */
+export function emptyDraft(): SurveyDraft {
+  return {
+    surveyKey: EMPTY_SURVEY_KEY,
+    title: 'Ежеквартальный NPS',
+    lang: 'ru',
+    intro: {
+      kicker: 'Опрос · 1 минута',
+      title: 'Порекомендуете нас коллегам?',
+      lead: 'Один вопрос — и мы поймём, куда двигаться дальше.',
+      meta: ['Анонимно', '~1 минута'],
+      cta: 'Начать',
+      count: '1 вопрос'
+    },
+    questions: [
+      {
+        key: NPS_Q,
+        text: 'Насколько вероятно, что вы порекомендуете нас коллегам?',
+        type: 'single',
+        metric: 'nps',
+        required: true,
+        options: scaleOptions(0, 10)
+      }
+    ]
+  }
 }
