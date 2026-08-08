@@ -31,8 +31,9 @@ import { MemoryInvitationStore, type InvitationStore } from './invitation'
  *
  * Nitro-адаптер (фаза связки) — тонкая обёртка:
  *   export default defineEventHandler(async (event) => {
- *     // getRequestIP по умолчанию отдаёт socket-IP; за reverse-proxy —
- *     // { xForwardedFor: true } ТОЛЬКО при доверенном прокси (см. server/node.ts)
+ *     // Адрес клиента — ТОЛЬКО через единую точку `requestIp(event)` (server/utils/api.ts):
+ *     // `getRequestIP` отдаёт адрес прокси (один на всех), а `{ xForwardedFor: true }` берёт
+ *     // адрес, который написал сам отправитель. Оба варианта ломают лимитер молча — см. api/client-ip.
  *     const r = await api.submit({ ip: getRequestIP(event) ?? '?', body: await readBody(event) })
  *     setResponseStatus(event, r.status); return r.body
  *   })

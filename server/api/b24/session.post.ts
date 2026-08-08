@@ -20,7 +20,7 @@ export default defineEventHandler(async (event) => {
   }
 
   // Rate-limit РАНО — до исходящего profile (амплификация/DoS, release-gate #49).
-  // IP за доверенным reverse-proxy (X-Forwarded-For) — слой деплоя #4; здесь socket-IP.
+  // IP за доверенным reverse-proxy (X-Forwarded-For) — слой деплоя #4; адрес клиента даёт requestIp (см. ~core/api/client-ip).
   if (!allowB24Session(requestIp(event))) {
     setResponseStatus(event, 429)
     return { ok: false, error: 'Слишком много запросов. Подождите немного и попробуйте снова.' }

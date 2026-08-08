@@ -13,18 +13,27 @@ import { usePortalDb, logger } from './api'
  */
 
 /**
- * Rate-limit install-эндпоинта (§2.3 follow-up, CTO MAJOR-3). После §2.3 каждый well-formed install-POST
- * порождает ИСХОДЯЩИЙ рефреш на `oauth.bitrix.info` (сверка authoritative member_id) → эндпоинт стал
+ * Rate-limit install-эндпоинта (§2.3 follow-up, CTO MAJOR-3). Каждый well-formed install-POST порождает
+ * ИСХОДЯЩИЙ рефреш на `oauth.bitrix.info` (сверка authoritative member_id) → эндпоинт стал
  * амплификатором: флуд → Bitrix лимитит НАС (429) → keep-alive/легитимные install получают 503. Лимитер
  * гасит потолок ДО исходящего рефреша. Install — редкая операция, потому лимит невысокий. In-memory,
- * на инстанс (общий стор для мульти-инстанса — #4). За доверенным reverse-proxy IP собирается в один
- * bucket (nginx-IP) — для анти-амплификации это ОК (кап суммарных исходящих рефрешей), X-Forwarded-For — #4.
+ * на инстанс (общий стор для мульти-инстанса — #4).
+ *
+ * ⚠️ Потолков ДВА, и второй важнее первого. Пер-IP отвечает на вопрос «не борзеет ли один источник»,
+ * но защита здесь — не про справедливость, а про то, чтобы НАШ суммарный исходящий поток к Bitrix не
+ * вышел за их лимит. Пока IP схлопывался в адрес прокси, глобальный кап получался сам собой; как
+ * только ключ стал реальным адресом клиента, «20 в минуту» превратились в «20 в минуту с каждого
+ * адреса» — то есть 20×N исходящих рефрешей, ровно тот сценарий, ради которого лимитер и заводили.
+ * Поэтому глобальный кап теперь стоит явно, отдельным лимитером с константным ключом.
  */
 const installLimiter = new SlidingWindowLimiter({ limit: 20, windowMs: 60_000 })
+const installGlobalLimiter = new SlidingWindowLimiter({ limit: 60, windowMs: 60_000 })
+const GLOBAL_KEY = 'all'
 
-/** true — install-запрос с этого IP допущен (и учтён); false — лимит исчерпан (→ 429). */
+/** true — install-запрос допущен (и учтён) обоими потолками; false — лимит исчерпан (→ 429). */
 export function allowB24Install(ip: string, now: Date = new Date()): boolean {
-  return installLimiter.allow(ip, now)
+  // Порядок важен: сначала пер-IP, иначе один флудер выжигал бы общий счётчик за всех.
+  return installLimiter.allow(ip, now) && installGlobalLimiter.allow(GLOBAL_KEY, now)
 }
 
 export interface B24AppConfig {

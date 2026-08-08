@@ -375,9 +375,20 @@ describe('checkEnv — анти-абьюз за прокси', () => {
   })
 
   it('нераспознанное значение — предупреждение, а не молчание', () => {
-    for (const raw of ['два', '0', '-1', '1.5']) {
+    // В том числе завышенное: оно НЕ прижимается к границе, потому что лишний хоп увёл бы ключ
+    // лимитера в клиентскую часть заголовка. Значение выглядит заданным, а доверия не даёт.
+    for (const raw of ['два', '-1', '1.5', '0x2', '9']) {
       expect(names(prod({ TRUSTED_PROXIES: raw }).warnings), raw).toContain('TRUSTED_PROXIES')
     }
+  })
+
+  it('явный 0 — документированный выбор «прокси нет», молчим', () => {
+    expect(names(prod({ TRUSTED_PROXIES: '0' }).warnings)).not.toContain('TRUSTED_PROXIES')
+  })
+
+  it('про мусор говорим и вне прода — иначе опечатку заметят только в бою', () => {
+    const dev = checkEnv({ ...GOOD, TRUSTED_PROXIES: 'два' }, { isProduction: false })
+    expect(names(dev.warnings)).toContain('TRUSTED_PROXIES')
   })
 
   it('корректное значение — тишина', () => {

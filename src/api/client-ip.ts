@@ -1,5 +1,5 @@
 /**
- * Кто именно пришёл: адрес клиента для анти-абьюза.
+ * Кто именно пришёл: адрес клиента для ключа анти-абьюза.
  *
  * Почему это отдельный модуль, а не одна строка в роуте. Лимитеры (`SlidingWindowLimiter`) считают
  * события **по ключу**, и ключ у них — IP. За обратным прокси адрес сокета — это адрес ПРОКСИ, один
@@ -10,8 +10,12 @@
  * лимитера в руки отправителю запроса. Заголовок клиентский, подделывается строкой, и тогда лимит
  * обходится сменой одного символа.
  *
- * Поэтому решение принимается ЧИСЛОМ доверенных прокси, а не флагом «доверять/не доверять»:
- * мы точно знаем, сколько своих хопов стоит перед приложением, и берём адрес ровно оттуда.
+ * Поэтому доверие устроено ДВУМЯ условиями, и оба обязательны:
+ *  1. **кто подключился** — заголовок читается, только если адрес сокета внутренний (наш прокси стоит
+ *     с нами в одной сети). Запрос, пришедший в приложение напрямую из интернета, заголовком управлять
+ *     не может, каким бы ни было число хопов. Это снимает три реальных пути: сосед по общей
+ *     docker-сети, запуск без nginx (Vibecode-деплой — один процесс), скопированный `.env` не туда;
+ *  2. **сколько хопов** — отступ от достоверного конца цепочки ровно на число своих прокси.
  *
  * ⚠️ IP — персональные данные. Здесь он используется как **ключ в памяти** и никуда не пишется;
  * решение «хешировать или не логировать» — отдельный пункт roadmap, и этот модуль его не предрешает.
@@ -37,28 +41,92 @@ export interface ClientIpInput {
   trustedProxies?: number
 }
 
-/**
- * Похоже ли на адрес. Проверка нарочно грубая: цель — отсечь мусор и подделку вида
- * `X-Forwarded-For: не-адрес, ещё-строка`, а не валидировать RFC. Точная проверка тут не нужна —
- * значение используется как ключ, а не как адрес для соединения.
- */
-function looksLikeIp(value: string): boolean {
-  const v = value.trim()
-  if (!v || v.length > 45) return false
-  // IPv4 (возможно с портом) либо IPv6 (возможно в скобках).
-  return /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(v) || /^\[?[0-9a-f:]+\]?(:\d+)?$/i.test(v)
-}
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+/** IPv6: только hex-группы и двоеточия, минимум одно двоеточие — иначе `deadbeef` сошло бы за адрес. */
+const IPV6 = /^[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}$/i
 
-/** Убрать скобки IPv6 и хвостовой порт: ключ лимитера должен быть стабильным между запросами. */
-function normalize(value: string): string {
-  let v = value.trim()
+/**
+ * Разобрать значение в канонический ключ либо вернуть `null`.
+ *
+ * Каноничность здесь не педантизм, а требование к ключу: один и тот же хост обязан давать одну строку,
+ * иначе он получает по счётчику на каждую форму записи и лимит перестаёт работать. Поэтому снимаем
+ * порт и скобки, приводим регистр, отбрасываем зону (`%eth0`) и **разворачиваем IPv4-mapped**
+ * `::ffff:1.2.3.4` в `1.2.3.4` — эту форму отдаёт Node на dual-stack сокете, и без разворота один
+ * клиент считался бы двумя ключами, а при строгой проверке — вовсе улетал в «неопознанные».
+ *
+ * IPv6 схлопывается до префикса /64: провайдер выдаёт клиенту целую подсеть, то есть 2⁶⁴ адресов —
+ * лимит «по адресу» там не значит ничего, а таблица ключей лимитера набивается на раз.
+ */
+export function parseIp(value: string | undefined): string | null {
+  let v = (value ?? '').trim().toLowerCase()
+  if (!v || v.length > 60) return null
+
+  // [::1]:443 → ::1 ;  ::1 остаётся как есть
   if (v.startsWith('[')) {
     const end = v.indexOf(']')
-    if (end > 0) return v.slice(1, end).toLowerCase()
+    if (end < 0) return null
+    v = v.slice(1, end)
+  } else if (IPV4.test(v.slice(0, v.lastIndexOf(':')))) {
+    v = v.slice(0, v.lastIndexOf(':')) // 1.2.3.4:5678 → 1.2.3.4
   }
-  // Порт снимаем только у IPv4 — у голого IPv6 двоеточия принадлежат самому адресу.
-  if (/^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(v)) v = v.slice(0, v.lastIndexOf(':'))
-  return v.toLowerCase()
+  const zone = v.indexOf('%')
+  if (zone > 0) v = v.slice(0, zone)
+
+  if (IPV4.test(v)) return v
+  // IPv4-mapped: ::ffff:1.2.3.4 → 1.2.3.4 (одна форма ключа на один хост).
+  const mapped = /^::ffff:(.+)$/.exec(v)
+  if (mapped?.[1] && IPV4.test(mapped[1])) return mapped[1]
+  if (!IPV6.test(v)) return null
+  return ipv6Prefix(v)
+}
+
+/**
+ * Первые четыре группы IPv6 (/64) — ключ на подсеть, а не на адрес.
+ *
+ * Сначала разворачиваем сокращение `::` до полных восьми групп, иначе `2001:db8::1` и
+ * `2001:0db8:0:0:0:0:0:1` дали бы разные ключи для одного хоста.
+ */
+function ipv6Prefix(v: string): string {
+  const gap = v.indexOf('::')
+  let groups: string[]
+  if (gap < 0) {
+    groups = v.split(':')
+  } else {
+    const head = v.slice(0, gap).split(':').filter(Boolean)
+    const tail = v.slice(gap + 2).split(':').filter(Boolean)
+    const zeros = Array<string>(Math.max(0, 8 - head.length - tail.length)).fill('0')
+    groups = [...head, ...zeros, ...tail]
+  }
+  // Ведущие нули в группе не значимы: `0db8` и `db8` — один и тот же адрес.
+  const prefix = groups.slice(0, 4).map((g) => (g === '' ? '0' : g.replace(/^0+(?=.)/, '')))
+  while (prefix.length < 4) prefix.push('0')
+  return `${prefix.join(':')}::/64`
+}
+
+/**
+ * Внутренний ли адрес — то есть может ли он быть НАШИМ прокси.
+ *
+ * Loopback, RFC1918, link-local, RFC6598 (CGNAT — в него попадают docker-сети некоторых хостеров) и
+ * IPv6 ULA/loopback. Публичный адрес сокета означает, что запрос пришёл в приложение напрямую, минуя
+ * прокси, — и тогда `X-Forwarded-For` писал сам отправитель.
+ */
+export function isInternalIp(ip: string): boolean {
+  // ⚠️ Сюда приходит уже КАНОНИЧЕСКИЙ ключ из `parseIp`, а он схлопывает IPv6 до /64: петля `::1`
+  // выглядит как `0:0:0:0::/64`, ULA `fd00::1` — как `fd00:0:0:0::/64`. Сверять с исходной записью
+  // здесь нельзя, это и был первый промах.
+  if (ip.startsWith('0:0:0:0::')) return true // ::1 и :: после канонизации
+  if (ip.startsWith('fc') || ip.startsWith('fd')) return true // ULA
+  if (ip.startsWith('fe80:')) return true // link-local
+  const parts = ip.split('.')
+  if (parts.length !== 4) return false
+  const a = Number(parts[0])
+  const b = Number(parts[1])
+  if (a === 127 || a === 10) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
+  if (a === 169 && b === 254) return true // link-local
+  return false
 }
 
 /**
@@ -70,14 +138,19 @@ function normalize(value: string): string {
  * отправитель запроса, и доверия не имеет.
  *
  * Пример подделки, который так гасится: клиент шлёт `X-Forwarded-For: 9.9.9.9`, наш nginx дописывает
- * реальный адрес → приходит `9.9.9.9, 203.0.113.7`. При `trustedProxies: 1` берётся `203.0.113.7`,
- * а не подставленный `9.9.9.9`.
+ * реальный адрес → приходит `9.9.9.9, 203.0.113.7`. При `trustedProxies: 1` берётся `203.0.113.7`.
+ *
+ * ⚠️ Если цепочка КОРОЧЕ заявленного числа хопов, отступ уводит в клиентскую часть заголовка — и ключ
+ * выбрал бы отправитель. Это самый вероятный симптом неверной настройки (`TRUSTED_PROXIES` завышен,
+ * запрос пришёл в обход прокси), поэтому такой случай не «дотягивается до крайнего элемента», а
+ * честно падает на адрес сокета.
  */
 export function clientIp(input: ClientIpInput): string {
-  const socket = input.socketIp?.trim()
+  const socket = parseIp(input.socketIp)
+  const fallback = socket ?? UNKNOWN_IP
   const trusted = Math.max(0, Math.trunc(input.trustedProxies ?? 0))
-  const fallback = socket && looksLikeIp(socket) ? normalize(socket) : UNKNOWN_IP
-  if (trusted === 0) return fallback
+  // Ни хопов, ни доверия к тому, кто подключился, — заголовок не читаем вовсе.
+  if (trusted === 0 || socket === null || !isInternalIp(socket)) return fallback
 
   const raw = Array.isArray(input.forwardedFor) ? input.forwardedFor.join(',') : (input.forwardedFor ?? '')
   const forwarded = raw
@@ -86,24 +159,29 @@ export function clientIp(input: ClientIpInput): string {
     .filter((s) => s.length > 0)
 
   // Цепочка «кто кому подключился»; правый конец достоверен, потому что его дописали мы.
-  const chain = [...forwarded, socket ?? '']
+  const chain = [...forwarded, socket]
   const index = chain.length - 1 - trusted
-  const picked = chain[Math.max(0, index)]
-  if (picked && looksLikeIp(picked)) return normalize(picked)
-  // Заголовок пришёл кривым или слишком коротким — падаем на сокет, а не на чужую строку.
-  return fallback
+  if (index < 0) return fallback
+  return parseIp(chain[index]) ?? fallback
 }
+
+/** Больше этого числа хопов у нас не бывает; всё сверх — почти наверняка опечатка. */
+export const MAX_TRUSTED_PROXIES = 4
 
 /**
  * Сколько прокси перед нами, по переменной окружения.
  *
- * Мусор и отрицательные значения → `0`, то есть заголовок игнорируется. Это осознанный fail-safe:
- * ошибка в БОЛЬШУЮ сторону страшнее — она заставит взять адрес левее реального клиента, то есть
- * подконтрольный ему, и лимит станет обходимым. Ошибка в меньшую сторону лишь схлопывает счётчик.
+ * Всё, что не «положительное десятичное целое в пределах {@link MAX_TRUSTED_PROXIES}», даёт `0`, то
+ * есть заголовок игнорируется. Это осознанный fail-safe в МЕНЬШУЮ сторону: ошибка в большую заставит
+ * взять адрес левее реального клиента — подконтрольный ему, — и лимит станет обходимым; ошибка в
+ * меньшую лишь схлопывает счётчик. Поэтому и завышенное число НЕ прижимается к границе, а
+ * отвергается: молча «поправить» опечатку `11` до `4` значило бы принять опасное значение.
+ * Формы вроде `0x2`, `1e0`, `1.5` тоже не проходят — распознаём только десятичную запись.
  */
-export const MAX_TRUSTED_PROXIES = 4
 export function resolveTrustedProxies(raw: string | undefined): number {
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n <= 0) return 0
-  return Math.min(n, MAX_TRUSTED_PROXIES)
+  const s = (raw ?? '').trim()
+  if (!/^\d+$/.test(s)) return 0
+  const n = Number(s)
+  if (n <= 0 || n > MAX_TRUSTED_PROXIES) return 0
+  return n
 }
