@@ -29,7 +29,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 200)
     return 'ok'
   }
-  if (!robotLimiter.allow(getRequestIP(event) ?? '?', new Date())) {
+  if (!robotLimiter.allow(requestIp(event), new Date())) {
     logger.warn('b24_robot_ratelimited', { detail: 'превышен лимит роут-робота' })
     setResponseStatus(event, 200)
     return 'ok'

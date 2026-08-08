@@ -2,7 +2,7 @@
 // над ядровым `api.session`; вся логика — в `~core/api`.
 export default defineEventHandler(async (event) => {
   const api = await useApi()
-  const r = await api.session({ ip: getRequestIP(event) ?? '?' })
+  const r = await api.session({ ip: requestIp(event) })
   setResponseStatus(event, r.status)
   return r.body
 })

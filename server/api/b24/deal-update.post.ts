@@ -27,8 +27,8 @@ import { useStore, useInvitations, logger } from '../../utils/api'
 // Rate-limit публичного event-роута: до сверки токена каждый запрос делает SELECT (+ расшифровку blob).
 // Без лимита — вектор DoS-амплификации неаутентифицированным флудом. Потолок высокий: ONCRMDEALUPDATE
 // бьёт на ЛЮБОЙ апдейт сделки, у активного портала событий много — режем только флуд, не легитимный поток.
-// In-memory, на инстанс (общий стор для мульти-инстанса — #4; политика X-Forwarded-For — отдельный
-// пункт роадмапа: за доверенным прокси все IP схлопнутся в один bucket, пока XFF не разбираем).
+// In-memory, на инстанс (общий стор для мульти-инстанса — #4). Ключ — реальный адрес клиента
+// (`requestIp` → `~core/api/client-ip`), а не адрес прокси: иначе весь портал считался бы одним.
 const dealUpdateLimiter = new SlidingWindowLimiter({ limit: 600, windowMs: 60_000 })
 
 export default defineEventHandler(async (event) => {
@@ -41,7 +41,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 200)
     return 'ok'
   }
-  if (!dealUpdateLimiter.allow(getRequestIP(event) ?? '?', new Date())) {
+  if (!dealUpdateLimiter.allow(requestIp(event), new Date())) {
     // B24 online-события не ретраит; наружу — «ok» (не раскрываем лимит), но в лог для диагностики.
     logger.warn('b24_deal_update_ratelimited', { msg: 'превышен лимит event-роута' })
     setResponseStatus(event, 200)

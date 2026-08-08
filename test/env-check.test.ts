@@ -16,7 +16,9 @@ const GOOD: Record<string, string> = {
   NUXT_BITRIX_TOKEN_KEY: 'b'.repeat(64),
   NUXT_B24_CLIENT_ID: 'local.abc',
   NUXT_B24_CLIENT_SECRET: 'secret',
-  DOMAIN: 'polls.bx-shef.by'
+  DOMAIN: 'polls.bx-shef.by',
+  // Прод у нас стоит за обратным прокси; без этого лимиты по IP считаются одним счётчиком на всех.
+  TRUSTED_PROXIES: '1'
 }
 const prod = (over: Record<string, string | undefined> = {}): EnvReport =>
   checkEnv({ ...GOOD, ...over }, { isProduction: true })
@@ -291,7 +293,7 @@ describe('checkEnv — полный отчёт на пустом окружен�
     // ровно это показала мутационная проверка на первой версии.
     const r = checkEnv({}, { isProduction: true })
     expect(names(r.errors)).toEqual(['DASHBOARD_AUTH_SECRET', 'DATABASE_URL'])
-    expect(names(r.warnings)).toEqual(['NUXT_BITRIX_TOKEN_KEY', 'NUXT_B24_CLIENT_ID', 'APP_DOMAIN'])
+    expect(names(r.warnings)).toEqual(['NUXT_BITRIX_TOKEN_KEY', 'NUXT_B24_CLIENT_ID', 'APP_DOMAIN', 'TRUSTED_PROXIES'])
   })
 
   it('вне прода — только предупреждения, ошибок нет', () => {
@@ -356,5 +358,40 @@ describe('плагин проверки окружения — гард по и�
   it('в лог не выгружается окружение целиком', () => {
     expect(src).not.toContain('JSON.stringify(process.env)')
     expect(src).not.toMatch(/logger\.(error|warn)\([^)]*process\.env[^)]*\)/)
+  })
+})
+
+describe('checkEnv — анти-абьюз за прокси', () => {
+  it('в проде без TRUSTED_PROXIES — предупреждение', () => {
+    // Молчаливая деградация: адрес сокета за прокси одинаков у всех, «10 в минуту на IP»
+    // превращается в «10 в минуту на весь сервис». Ни в логе, ни в ответах это не видно.
+    expect(names(prod({ TRUSTED_PROXIES: undefined }).warnings)).toContain('TRUSTED_PROXIES')
+  })
+
+  it('вне прода молчит', () => {
+    // Локально прокси нет, и требовать переменную незачем.
+    const dev = checkEnv({ ...GOOD, TRUSTED_PROXIES: undefined }, { isProduction: false })
+    expect(names(dev.warnings)).not.toContain('TRUSTED_PROXIES')
+  })
+
+  it('нераспознанное значение — предупреждение, а не молчание', () => {
+    // В том числе завышенное: оно НЕ прижимается к границе, потому что лишний хоп увёл бы ключ
+    // лимитера в клиентскую часть заголовка. Значение выглядит заданным, а доверия не даёт.
+    for (const raw of ['два', '-1', '1.5', '0x2', '9']) {
+      expect(names(prod({ TRUSTED_PROXIES: raw }).warnings), raw).toContain('TRUSTED_PROXIES')
+    }
+  })
+
+  it('явный 0 — документированный выбор «прокси нет», молчим', () => {
+    expect(names(prod({ TRUSTED_PROXIES: '0' }).warnings)).not.toContain('TRUSTED_PROXIES')
+  })
+
+  it('про мусор говорим и вне прода — иначе опечатку заметят только в бою', () => {
+    const dev = checkEnv({ ...GOOD, TRUSTED_PROXIES: 'два' }, { isProduction: false })
+    expect(names(dev.warnings)).toContain('TRUSTED_PROXIES')
+  })
+
+  it('корректное значение — тишина', () => {
+    expect(names(prod({ TRUSTED_PROXIES: '2' }).warnings)).not.toContain('TRUSTED_PROXIES')
   })
 })

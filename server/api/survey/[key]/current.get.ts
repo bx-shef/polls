@@ -9,7 +9,7 @@ export default defineEventHandler(async (event) => {
   const api = await useApi()
   const surveyKey = getRouterParam(event, 'key') ?? ''
   // Rate-limit/lookup — в ядре (api.survey), ДО кэш-логики: 304 не обходит анти-перебор surveyKey.
-  const r = await api.survey({ ip: getRequestIP(event) ?? '?', surveyKey })
+  const r = await api.survey({ ip: requestIp(event), surveyKey })
 
   const cache = cacheDecision(r.status, r.body, getRequestHeader(event, 'if-none-match'))
   if (cache.etag) {
