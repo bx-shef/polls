@@ -151,6 +151,36 @@ export const thanksSchema = z.object({
 })
 export type Thanks = z.infer<typeof thanksSchema>
 
+/**
+ * Предел размера черновика в БАЙТАХ сериализованного JSON.
+ *
+ * **Зачем предел на целое, если у каждого поля свой.** Поштучные пределы перемножаются: 200 вопросов ×
+ * (2000 символов текста + 100 опций по 700) дают теоретический максимум около **14 МБ** — на два
+ * порядка больше, чем можно отправить (кап роута публикации — 64 КБ). То есть схема принимала
+ * черновики, которые физически не доедут до сервера, и человек узнавал об этом **в момент публикации**,
+ * когда работа уже сделана, а черновик нигде не сохранён. Отказ приходил общий («слишком большой
+ * объём»), то есть буквально «удалите что-нибудь».
+ *
+ * Поэтому граница ставится там же, где остальная валидация: черновик, прошедший `surveyDraftSchema`,
+ * **по построению** влезает в транспорт. Инвариант `MAX_DRAFT_BYTES <` кап роута закреплён тестом.
+ *
+ * Величина: 60 КБ при капе роута 64 КБ. Запас в 4 КБ — на то, что тело запроса чуть больше самого
+ * черновика (форматирование JSON, служебное поле `expectedVersionNo`). Для ориентира: обезличенный
+ * шаблон на 25 вопросов — около 11 КБ, то есть предел это примерно 130 вопросов такой плотности.
+ *
+ * Байты, а не символы: тексты русские, в UTF-8 кириллическая буква занимает два байта, и счёт по
+ * символам занизил бы реальный размер вдвое — ровно на границе это и подвело бы.
+ */
+export const MAX_DRAFT_BYTES = 60 * 1024
+
+/** Метка нашего отказа по размеру — чтобы вызывающий опознавал его, не разбирая текст. */
+export const DRAFT_TOO_LARGE = 'draft_too_large'
+
+/** Размер черновика в байтах UTF-8 — как он поедет по сети. */
+export function draftByteSize(draft: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(draft)).length
+}
+
 export const surveyDraftSchema = z.object({
   surveyKey: z.string().min(1).max(200),
   title: z.string().max(500),
@@ -165,8 +195,31 @@ export const surveyDraftSchema = z.object({
   questions: z.array(questionSchema).min(1).max(200),
   /** Политика приглашения (опц.): когда и каким каналом звать клиента. */
   invitationPolicy: invitationPolicySchema.optional()
+}).superRefine((draft, ctx) => {
+  // Считаем по УЖЕ разобранному значению: неизвестные ключи zod отбросил, а значит меряем ровно то,
+  // что будет храниться и отдаваться, а не то, что прислал клиент.
+  const bytes = draftByteSize(draft)
+  if (bytes > MAX_DRAFT_BYTES) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: draftTooLargeMessage(bytes),
+      // Метка, а не разбор текста: сообщение — пользовательский текст, его перепишут не задумываясь,
+      // и вызывающий, опознающий отказ по подстроке, сломается молча.
+      params: { kind: DRAFT_TOO_LARGE }
+    })
+  }
 })
 export type SurveyDraft = z.infer<typeof surveyDraftSchema>
+
+/**
+ * Текст отказа для человека. Называет ОБЕ величины: без «сколько есть» и «сколько можно» совет
+ * «сократите» невыполним — непонятно, на сколько сокращать.
+ */
+export function draftTooLargeMessage(bytes: number): string {
+  const kb = (n: number) => Math.round(n / 1024)
+  return `Опрос слишком большой: ${kb(bytes)} КБ при пределе ${kb(MAX_DRAFT_BYTES)} КБ. `
+    + 'Сократите тексты вопросов или уменьшите их число.'
+}
 
 /** Снимок CRM-контекста, снятый при закрытии сделки. */
 export const crmProductSchema = z.object({
@@ -293,3 +346,17 @@ export const responseRecordSchema = z.object({
   invitationToken: z.string().min(1).max(256).optional()
 })
 export type ResponseRecord = z.infer<typeof responseRecordSchema>
+
+/**
+ * Отказ по размеру среди ошибок разбора — или `undefined`.
+ *
+ * Роут публикации на любую ошибку схемы отвечает общим «в опросе есть ошибки»: перечислять человеку
+ * внутренности zod бессмысленно. Но «слишком большой» — не ошибка заполнения, а упёршийся предел, и
+ * без чисел совет «сократите» невыполним. Поэтому именно этот отказ вынимается отдельно.
+ */
+export function draftTooLargeIssue(error: z.ZodError): string | undefined {
+  const issue = error.issues.find(
+    (i) => i.code === 'custom' && (i as { params?: { kind?: string } }).params?.kind === DRAFT_TOO_LARGE
+  )
+  return issue?.message
+}
