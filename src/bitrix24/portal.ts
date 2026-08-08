@@ -20,8 +20,8 @@ import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from '
  *
  * Известные ограничения координации (single-write DB-операции, вынесено в #4/§2.5):
  *  - `save`-гард — check-then-act (SELECT тумбстоуна → upsert) без лока: при РЕАЛЬНОЙ
- *    конкуренции install↔uninstall возможна интерлейсинг-гонка. Сейчас не эксплуатируется
- *    (events-эндпоинт не подключён, install.post.ts не шлёт eventTs);
+ *    конкуренции install↔uninstall возможна интерлейсинг-гонка — с включением гарда на install-пути
+ *    путь стал живым, поэтому три запроса идут одной транзакцией (если драйвер её умеет);
  *  - `updateOnRefresh` — одиночный DB-write ПОСЛЕ успешного OAuth-рефреша: при сбое персиста
  *    новые токены теряются, а сервер уже мог отозвать старый refresh_token. Общий лок между
  *    инстансами (advisory-lock) закроет оба случая при scale-out.
@@ -59,9 +59,10 @@ export interface SaveTokensOpts {
   /** Часы для `updated_at` (тест фиксирует). Default: `new Date()`. */
   now?: Date
   /**
-   * unix-СЕКУНДЫ top-level `ts` install-события. Если задан — включается тумбстоун-гард:
-   * install не старше зафиксированного uninstall не воскрешает портал. Без него (ручной
-   * вызов/тест/текущий install.post.ts) гард не применяется — поведение как раньше (upsert).
+   * unix-СЕКУНДЫ момента install-события (top-level `ts`, прижатый к «сейчас»). Если задан —
+   * включается тумбстоун-гард: install не новее зафиксированного uninstall не воскрешает портал.
+   * Роут установки его передаёт ВСЕГДА; опция остаётся необязательной только для ручных вызовов и
+   * тестов, где гард не нужен (поведение как раньше — обычный upsert).
    */
   eventTs?: number
 }
@@ -123,15 +124,22 @@ export class PortalTokenStore {
    * выполнена. Refresh идёт отдельным путём (`updateOnRefresh`, UPDATE-only).
    */
   async save(tokens: OAuthTokens, opts: SaveTokensOpts = {}): Promise<boolean> {
+    // Гонка check-then-act (SELECT тумбстоуна → upsert → DELETE) до активации гарда была теоретической,
+    // теперь путь живой: параллельный uninstall между чтением и записью воскресил бы портал. Три
+    // запроса идут одной транзакцией, если драйвер её умеет.
+    return this.inTx((db) => this.saveIn(db, tokens, opts))
+  }
+
+  private async saveIn(db: Queryable, tokens: OAuthTokens, opts: SaveTokensOpts): Promise<boolean> {
     const stampedAt = (opts.now ?? new Date()).toISOString()
     if (opts.eventTs !== undefined) {
-      const blocked = await this.db.query(
+      const blocked = await db.query(
         'select 1 from portal_tombstone where member_id = $1 and deleted_ts >= $2 limit 1',
         [tokens.memberId, opts.eventTs]
       )
       if (blocked.rows.length > 0) return false // out-of-order install после uninstall — не воскрешаем
     }
-    await this.db.query(
+    await db.query(
       `insert into portal (member_id, domain, tokens, updated_at) values ($1, $2, $3, $4)
        on conflict (member_id) do update
          set tokens = excluded.tokens, domain = excluded.domain, updated_at = excluded.updated_at`,
@@ -139,7 +147,7 @@ export class PortalTokenStore {
     )
     if (opts.eventTs !== undefined) {
       // Настоящая переустановка (строго новее любого зафиксированного uninstall) — чистим тумбстоун.
-      await this.db.query(
+      await db.query(
         'delete from portal_tombstone where member_id = $1 and deleted_ts < $2',
         [tokens.memberId, opts.eventTs]
       )
@@ -175,12 +183,20 @@ export class PortalTokenStore {
    * вариант (сравнивать в миллисекундах) снёс бы секундные записи МГНОВЕННО, то есть выключил бы гард
    * ровно тогда, когда он нужен.
    */
-  async sweepTombstones(days: number, db: Queryable = this.db): Promise<number> {
-    const seconds = Math.max(1, Math.trunc(days)) * 86_400
+  async sweepTombstones(days: number): Promise<number> {
+    // `Math.trunc(NaN)` — это NaN, а `Math.max(1, NaN)` — тоже NaN: без явной проверки клэмп не
+    // клэмпит, и Postgres, считая NaN больше любого числа, снёс бы ВСЮ таблицу, включая свежие записи.
+    const safeDays = Number.isFinite(days) ? Math.trunc(days) : DEFAULT_TOMBSTONE_DAYS
+    const seconds = Math.max(MIN_TOMBSTONE_DAYS, safeDays) * 86_400
     // `returning` вместо `rowCount`: контракт `Queryable` отдаёт только `rows` — он общий для
     // pg-пула и pglite, и лишнее поле привязало бы ядро к конкретному драйверу.
-    const res = await db.query(
-      'delete from portal_tombstone where deleted_ts < extract(epoch from now()) - $1 returning member_id',
+    // Вторая ветка — записи «из будущего»: сегодня их создать нельзя (запись клэмпится к `nowSec`),
+    // но попавшая раньше лежала бы вечно и блокировала установку для своего member_id — `deleted_ts
+    // < now - ttl` для неё ложно всегда. Подметаем и их.
+    const res = await this.db.query(
+      `delete from portal_tombstone
+       where deleted_ts < extract(epoch from now()) - $1 or deleted_ts > extract(epoch from now())
+       returning member_id`,
       [seconds]
     )
     return res.rows.length

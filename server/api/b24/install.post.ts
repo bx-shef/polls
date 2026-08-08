@@ -37,6 +37,13 @@ const FINISH_HTML = `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 const errorHtml = (msg: string): string =>
   `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"></head><body><p>Установка не завершена: ${msg}</p></body></html>`
 
+/** Маркер отказа тумбстоун-гарда: не ошибка, а штатный исход — установка не выполняется. */
+class InstallStale extends Error {
+  constructor(readonly memberId: string) {
+    super('install skipped by tombstone guard')
+  }
+}
+
 export default defineEventHandler(async (event) => {
   // DOMAIN install-страницы приходит в query; токены — в теле. Объединяем.
   const body = await readBody(event).catch(() => ({}))
@@ -72,9 +79,13 @@ export default defineEventHandler(async (event) => {
     return html(event, 200, 'ok')
   }
 
-  // Текущее время передаём вторым аргументом: у install-СТРАНИЦЫ своего `ts` нет, а тумбстоун-гард
-  // должен работать и там — иначе настоящая переустановка оставляла бы тумбстоун лежать до TTL.
-  const auth = parseInstallEvent(merged, Math.floor(Date.now() / 1000))
+  // ⚠️ `parseBracketForm` ОБЯЗАТЕЛЕН и здесь, не только на uninstall-ветке выше. Bitrix шлёт события
+  // формой с bracket-нотацией, и h3 отдаёт ПЛОСКИЕ ключи `auth[access_token]`, а не вложенный объект.
+  // Без разбора event-формат установки не распознавался вовсе: настоящий `ONAPPINSTALL` уходил в
+  // `b24_install_parse_fail` → 400. Проверено на сыром wire-теле, тест — в `install.test.ts`.
+  // Install-СТРАНИЦА при этом не страдает: её плоские поля скобок не содержат и проходят как есть.
+  const nowSec = Math.floor(Date.now() / 1000)
+  const auth = parseInstallEvent(parseBracketForm(merged as Record<string, unknown>), nowSec)
   if (!auth) {
     // Диагностика: какие ключи реально прислал портал (значения-секреты НЕ логируем).
     logger.warn('b24_install_parse_fail', { msg: `Неизвестный формат установки; ключи: ${Object.keys(merged).join(',')}` })
@@ -142,19 +153,18 @@ export default defineEventHandler(async (event) => {
 
   try {
     await handleInstall(verifiedAuth, {
-      // Тумбстоун-гард включён: `eventTs` — момент, когда портал отправил событие. Опоздавший
-      // `ONAPPINSTALL` (ретрай вебхука, задержка на стороне Bitrix) не воскресит портал, который
-      // пользователь уже удалил, а настоящая переустановка снимет устаревший тумбстоун.
+      // Тумбстоун-гард: `eventTs` — момент, когда портал отправил событие. Опоздавший `ONAPPINSTALL`
+      // (ретрай вебхука, задержка на стороне Bitrix) не воскресит портал, который пользователь уже
+      // удалил, а настоящая переустановка снимет устаревший тумбстоун.
       //
-      // ⚠️ Отказ здесь НЕ ошибка установки: это ровно тот случай, ради которого гард и стоит, —
-      // событие устарело, портал остаётся удалённым. Отвечаем порталу успехом (иначе он будет
-      // ретраить то же самое), но пишем видимый след: молчаливый пропуск потом не отличить от бага.
+      // ⚠️ Отказ гарда ОСТАНАВЛИВАЕТ установку броском. Иначе получалось хуже, чем без гарда: токенов
+      // в базе нет, а `registerIntegrations` всё равно шёл бы на портал, который мы только что признали
+      // удалённым, и в лог ложились три противоречивых записи подряд — «пропущено», «встройки не
+      // зарегистрированы» (ложная тревога) и «установка завершена». Человек видел бы «Приложение
+      // установлено» при мёртвом приложении.
       saveTokens: async (tokens) => {
-        const saved = await tokenStore.save(tokens, { eventTs: auth.eventTs })
-        if (!saved) {
-          logger.warn('b24_install_stale', {
-            msg: `Установка портала ${auth.memberId} пропущена: событие старше зафиксированного удаления`
-          })
+        if (!(await tokenStore.save(tokens, { eventTs: verifiedAuth.eventTs }))) {
+          throw new InstallStale(verifiedAuth.memberId)
         }
       },
       registerIntegrations: () => registerIntegrations(installToB24Params(verifiedAuth), cfg)
@@ -162,6 +172,15 @@ export default defineEventHandler(async (event) => {
     logger.info('b24_install_ok', { msg: `Установка портала ${auth.memberId} завершена (member_id сверен)` })
     return html(event, 200, FINISH_HTML)
   } catch (e) {
+    if (e instanceof InstallStale) {
+      // Не ошибка нашей стороны: событие устарело, портал остаётся удалённым — так и задумано.
+      // Порталу отвечаем 200 (он online-события не ретраит, а 4xx только запутал бы), но НЕ рисуем
+      // «Приложение установлено».
+      logger.warn('b24_install_stale', {
+        msg: `Установка портала ${e.memberId} пропущена: событие не новее зафиксированного удаления`
+      })
+      return html(event, 200, 'ok')
+    }
     logger.warn('b24_install_fail', { msg: `Установка не завершена: ${(e as Error).message}` })
     return html(event, 502, errorHtml('ошибка при сохранении/регистрации'))
   }

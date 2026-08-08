@@ -241,7 +241,24 @@ describe('parseInstallEvent — момент события для тумбст�
     expect(parseInstallEvent(eventBody())?.eventTs).toBe(1700000000)
   })
 
-  it('нет ts, мусор или «из будущего» → текущее время, а не пропуск гарда', () => {
+  it('ts из БУДУЩЕГО прижимается к нашему «сейчас»', () => {
+    // Сравниваются часы разных машин. Значение из будущего и обходило бы гард, и НАВСЕГДА сносило
+    // тумбстоун (`delete … where deleted_ts < eventTs`) — то есть выключало защиту одним событием.
+    const nowSec = 1800000000
+    expect(parseInstallEvent(eventBody({ ts: 4000000000 }), nowSec)?.eventTs).toBe(nowSec)
+    expect(parseInstallEvent(eventBody({ ts: String(nowSec + 3600) }), nowSec)?.eventTs).toBe(nowSec)
+  })
+
+  it('булево и hex не считаются временем', () => {
+    // Общая коэрсия zod даёт из `true` единицу, а из `'0x10'` — 16: «валидные» числа из мусора.
+    // С ts=1 любой тумбстоун блокировал бы установку.
+    const nowSec = 1800000000
+    for (const ts of [true, '0x10', '1e9', ' 17 ']) {
+      expect(parseInstallEvent(eventBody({ ts }), nowSec)?.eventTs, String(ts)).toBe(nowSec)
+    }
+  })
+
+  it('нет ts, мусор или ноль → текущее время, а не пропуск гарда', () => {
     // Гард должен работать в любом случае: `undefined` выключил бы его целиком, а огромный ts снёс бы
     // тумбстоун навсегда и открыл дорогу воскрешению.
     const nowSec = 1800000000
@@ -259,15 +276,36 @@ describe('parseInstallEvent — момент события для тумбст�
     expect(parseInstallEvent(page, 1800000000)?.eventTs).toBe(1800000000)
   })
 
+  it('БОЕВОЙ формат портала: событие приходит bracket-формой', async () => {
+    // Bitrix шлёт события формой с bracket-нотацией, и h3 отдаёт ПЛОСКИЕ ключи `auth[access_token]`.
+    // Без `parseBracketForm` event-формат установки не распознавался вовсе — настоящий ONAPPINSTALL
+    // уходил в 400. Тест на «красивом» вложенном объекте этого не ловил.
+    const { parseBracketForm } = await import('../src/bitrix24/bracket-form')
+    const wire = 'event=ONAPPINSTALL&ts=1700000000&auth%5Baccess_token%5D=a&auth%5Brefresh_token%5D=r'
+      + '&auth%5Bexpires_in%5D=3600&auth%5Bmember_id%5D=m1&auth%5Bdomain%5D=p.bitrix24.ru'
+    const flat = Object.fromEntries(new URLSearchParams(wire))
+
+    expect(parseInstallEvent(flat, 1800000000), 'сырое тело портала не должно распознаваться').toBeNull()
+    const parsed = parseInstallEvent(parseBracketForm(flat), 1800000000)
+    expect(parsed?.memberId).toBe('m1')
+    expect(parsed?.eventTs).toBe(1700000000)
+  })
+
+  it('роут install разбирает bracket-форму ДО парса установки', async () => {
+    // Гард по исходнику: `server/**` юнит-тестами не покрывается, а без этого шага событийная
+    // установка отвечает 400 — и обнаружилось бы только на живом портале.
+    const src = await routeSource()
+    expect(src).toMatch(/parseInstallEvent\(parseBracketForm\(/)
+  })
+
   it('роут install передаёт eventTs в сохранение токенов', async () => {
     // Гард по исходнику: `server/**` юнит-тестами не покрывается, а без этого аргумента вся защита
     // молча выключается — save просто сделает upsert, как раньше.
-    const { readFileSync } = await import('node:fs')
-    const { fileURLToPath } = await import('node:url')
-    const src = readFileSync(fileURLToPath(new URL('../server/api/b24/install.post.ts', import.meta.url)), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    const src = await routeSource()
+    // Проверяем и то, что отказ гарда ОСТАНАВЛИВАЕТ установку: иначе получается хуже, чем без гарда —
+    // токенов нет, а встройки регистрируются и в лог идёт «установка завершена».
     expect(src).toMatch(/tokenStore\.save\(tokens,\s*\{\s*eventTs/)
+    expect(src).toMatch(/throw new InstallStale/)
   })
 })
 
@@ -284,3 +322,12 @@ describe('resolveTombstoneDays', () => {
     expect(resolveTombstoneDays('99999')).toBe(MAX_TOMBSTONE_DAYS)
   })
 })
+
+/** Исходник роута установки без комментариев: гард не должен удовлетворяться прозой. */
+async function routeSource(): Promise<string> {
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  return readFileSync(fileURLToPath(new URL('../server/api/b24/install.post.ts', import.meta.url)), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}

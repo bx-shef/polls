@@ -495,12 +495,23 @@ describe('PortalTokenStore (pglite)', () => {
     expect(left.rows.map((r) => r.member_id)).toEqual(['fresh'])
   })
 
-  it('sweepTombstones: значение в МИЛЛИсекундах просто не подметается (безопасная деградация)', async () => {
-    // Единица выбрана так, чтобы ошибка не выключала гард: мс-значение выглядит как далёкое будущее и
-    // остаётся лежать. Обратный вариант (сравнивать в мс) снёс бы секундные записи мгновенно — то есть
-    // выключил бы защиту ровно тогда, когда она нужна.
+  it('sweepTombstones: запись «из будущего» подметается — иначе она блокирует установку навсегда', async () => {
+    // Значение в МИЛЛИсекундах (или чужие часы вперёд) выглядит как далёкое будущее. Такая запись
+    // никогда не попала бы под `deleted_ts < now - ttl`, а гард `deleted_ts >= eventTs` для неё истинен
+    // всегда — то есть member_id больше не смог бы установить приложение, и лечилось бы это только
+    // руками в SQL. Поэтому подметаем обе крайности.
     await db.query('insert into portal_tombstone (member_id, deleted_ts) values ($1, $2)', ['ms', Date.now()])
-    expect(await store.sweepTombstones(1)).toBe(0)
+    expect(await store.sweepTombstones(1)).toBe(1)
+  })
+
+  it('sweepTombstones: NaN не сносит всю таблицу', async () => {
+    // `Math.max(1, Math.trunc(NaN))` — это NaN, а Postgres считает NaN больше любого числа: без явной
+    // проверки условие стало бы истинным для всех строк, включая свежие.
+    const nowSec = Math.floor(Date.now() / 1000)
+    await db.query('insert into portal_tombstone (member_id, deleted_ts) values ($1, $2)', ['fresh', nowSec - 60])
+    expect(await store.sweepTombstones(Number.NaN)).toBe(0)
+    const left = await db.query('select 1 from portal_tombstone')
+    expect(left.rows.length).toBe(1)
   })
 
   it('save с eventTs: настоящая переустановка (ts > тумбстоун) проходит и чистит тумбстоун', async () => {

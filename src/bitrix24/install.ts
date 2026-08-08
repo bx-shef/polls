@@ -52,9 +52,11 @@ export interface InstallAuth {
 
 /** Формат серверного события `ONAPPINSTALL`: `{ auth: { access_token, … } }`. */
 /**
- * Верхняя граница `ts` (unix-СЕКУНДЫ, ~2100) — та же, что у uninstall. Больше — мусор либо попытка
- * протолкнуть install «из будущего»: он навсегда снёс бы тумбстоун и открыл дорогу воскрешению.
- * За границей → `undefined`, гард отработает по текущему времени.
+ * Верхняя граница `ts` (unix-СЕКУНДЫ, ~2100) — та же, что у uninstall: за ней явный мусор.
+ *
+ * ⚠️ Кап сам по себе от «install из будущего» НЕ защищает — до 2100 года пролезает что угодно, а такой
+ * `ts` и обходит гард, и НАВСЕГДА сносит тумбстоун (`delete … where deleted_ts < eventTs`). Защищает
+ * клэмп к текущему времени в {@link resolveEventTs}: чужие часы не могут оказаться в будущем.
  */
 const MAX_TS = 4_102_444_800
 
@@ -87,14 +89,30 @@ const pageAuthSchema = z.object({
 /**
  * `ts` вебхука: целые ПОЛОЖИТЕЛЬНЫЕ секунды в пределах {@link MAX_TS}; всё прочее → `undefined`.
  *
- * ⚠️ Именно положительные, а не «неотрицательные». `z.coerce.number()` превращает пустую строку в `0`,
- * а `0` — это не «нет значения», это 1970 год: гард сравнивал бы `deleted_ts >= 0` и блокировал бы
- * ЛЮБУЮ установку при наличии хоть одного тумбстоуна. Отказ в обе стороны тихий, поэтому граница здесь
- * важнее, чем кажется.
+ * ⚠️ Именно положительные, а не «неотрицательные». `0` — это не «нет значения», это 1970 год: гард
+ * сравнивал бы `deleted_ts >= 0` и блокировал бы ЛЮБУЮ установку при наличии хоть одного тумбстоуна.
+ * По той же причине принимаем только число либо строку из цифр: общая коэрсия zod превращает `true`
+ * в `1` и `'0x10'` в `16` — то есть тем же путём выдаёт «валидные» единицы из мусора.
  */
+const tsSchema = z.union([z.number(), z.string().regex(/^\d+$/).transform(Number)])
+  .pipe(z.number().int().positive().max(MAX_TS))
 function parseEventTs(raw: unknown): number | undefined {
-  const r = z.coerce.number().int().positive().max(MAX_TS).safeParse(raw)
+  const r = tsSchema.safeParse(raw)
   return r.success ? r.data : undefined
+}
+
+/**
+ * Момент события для тумбстоун-гарда: `ts` портала, но НЕ ПОЗЖЕ нашего «сейчас».
+ *
+ * Клэмп — не педантизм. Сравниваются часы разных машин: `deleted_ts` пишет Bitrix, `eventTs`
+ * install-страницы ставим мы. Значение из будущего (дрейф часов, `ts` не в UTC, подстановка) и
+ * обходило бы гард, и навсегда сносило тумбстоун — то есть выключало защиту одним событием.
+ * Обратная сторона тоже закрыта: `ts` отсутствует или не разобрался → берём текущее время, а не
+ * `undefined`, иначе гард просто не применился бы.
+ */
+export function resolveEventTs(raw: unknown, nowSec: number): number {
+  const parsed = parseEventTs(raw)
+  return parsed === undefined ? nowSec : Math.min(parsed, nowSec)
 }
 
 /**
@@ -102,14 +120,14 @@ function parseEventTs(raw: unknown): number | undefined {
  * Сначала пробуем event-формат (`auth.*`), затем install-страницу (плоские поля). `raw` — обычно
  * объединение query+body (DOMAIN install-страницы приходит в query).
  */
-export function parseInstallEvent(raw: unknown, nowSec?: number): InstallAuth | null {
+export function parseInstallEvent(raw: unknown, nowSec = Math.floor(Date.now() / 1000)): InstallAuth | null {
   if (raw && typeof raw === 'object' && 'auth' in (raw as Record<string, unknown>)) {
     const e = eventAuthSchema.safeParse((raw as { auth: unknown }).auth)
     if (e.success) {
       const a = e.data
       return {
         // `ts` лежит РЯДОМ с `auth`, а не внутри него: берём его из корня события.
-        eventTs: parseEventTs((raw as { ts?: unknown }).ts) ?? nowSec,
+        eventTs: resolveEventTs((raw as { ts?: unknown }).ts, nowSec),
         accessToken: a.access_token,
         refreshToken: a.refresh_token,
         expiresIn: a.expires_in,
