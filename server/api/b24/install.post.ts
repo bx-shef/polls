@@ -72,7 +72,9 @@ export default defineEventHandler(async (event) => {
     return html(event, 200, 'ok')
   }
 
-  const auth = parseInstallEvent(merged)
+  // Текущее время передаём вторым аргументом: у install-СТРАНИЦЫ своего `ts` нет, а тумбстоун-гард
+  // должен работать и там — иначе настоящая переустановка оставляла бы тумбстоун лежать до TTL.
+  const auth = parseInstallEvent(merged, Math.floor(Date.now() / 1000))
   if (!auth) {
     // Диагностика: какие ключи реально прислал портал (значения-секреты НЕ логируем).
     logger.warn('b24_install_parse_fail', { msg: `Неизвестный формат установки; ключи: ${Object.keys(merged).join(',')}` })
@@ -140,10 +142,20 @@ export default defineEventHandler(async (event) => {
 
   try {
     await handleInstall(verifiedAuth, {
-      // save → Promise<boolean> (durable-гард по member_id). Тумбстоун-гард против out-of-order install
-      // (eventTs) здесь НЕ передаётся — активируется на events-пути §2.1 (там есть top-level `ts`).
+      // Тумбстоун-гард включён: `eventTs` — момент, когда портал отправил событие. Опоздавший
+      // `ONAPPINSTALL` (ретрай вебхука, задержка на стороне Bitrix) не воскресит портал, который
+      // пользователь уже удалил, а настоящая переустановка снимет устаревший тумбстоун.
+      //
+      // ⚠️ Отказ здесь НЕ ошибка установки: это ровно тот случай, ради которого гард и стоит, —
+      // событие устарело, портал остаётся удалённым. Отвечаем порталу успехом (иначе он будет
+      // ретраить то же самое), но пишем видимый след: молчаливый пропуск потом не отличить от бага.
       saveTokens: async (tokens) => {
-        await tokenStore.save(tokens)
+        const saved = await tokenStore.save(tokens, { eventTs: auth.eventTs })
+        if (!saved) {
+          logger.warn('b24_install_stale', {
+            msg: `Установка портала ${auth.memberId} пропущена: событие старше зафиксированного удаления`
+          })
+        }
       },
       registerIntegrations: () => registerIntegrations(installToB24Params(verifiedAuth), cfg)
     })

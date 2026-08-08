@@ -79,6 +79,23 @@ export interface NearExpiryOpts {
   limit?: number
 }
 
+/**
+ * Сколько дней держать тумбстоун. Дефолт 30 суток — с огромным запасом: гард нужен, чтобы пережить
+ * ОПОЗДАВШЕЕ событие той же деинсталляции (минуты и часы), а не месяцы.
+ *
+ * Клэмп [1, 365] и деградация мусора в дефолт: занижение до нуля выключило бы гард целиком, а
+ * завышение на годы вернуло бы ту самую проблему, ради которой TTL и вводится, — вечную строку на
+ * каждый навсегда удалённый портал.
+ */
+export const DEFAULT_TOMBSTONE_DAYS = 30
+export const MIN_TOMBSTONE_DAYS = 1
+export const MAX_TOMBSTONE_DAYS = 365
+export function resolveTombstoneDays(raw: string | undefined): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_TOMBSTONE_DAYS
+  return Math.min(MAX_TOMBSTONE_DAYS, Math.max(MIN_TOMBSTONE_DAYS, Math.trunc(n)))
+}
+
 export class PortalTokenStore {
   constructor(
     private readonly db: Queryable,
@@ -142,6 +159,31 @@ export class PortalTokenStore {
       [this.sealBlob(tokens), tokens.domain ?? '', now.toISOString(), tokens.memberId]
     )
     return r.rows.length > 0
+  }
+
+  /**
+   * Подмести тумбстоуны старше `days` дней. Возвращает число удалённых строк.
+   *
+   * Зачем вообще подметать. Тумбстоун решает узкую задачу: пережить ОПОЗДАВШЕЕ событие установки той
+   * же деинсталляции. Опоздание измеряется минутами и часами — ретрай вебхука, задержка на стороне
+   * Bitrix. Держать запись дольше незачем, а вот вреда от неё два: на каждый навсегда удалённый портал
+   * копится строка, и настоящая переустановка через год упирается в гард, поставленный годом раньше.
+   *
+   * ⚠️ Единица времени выбрана так, чтобы ошибка деградировала БЕЗОПАСНО. `deleted_ts` — unix-СЕКУНДЫ,
+   * и сравнение идёт с `extract(epoch from now())`. Если куда-то просочится значение в миллисекундах,
+   * оно окажется в далёком будущем — то есть такая строка просто никогда не подметётся. Обратный
+   * вариант (сравнивать в миллисекундах) снёс бы секундные записи МГНОВЕННО, то есть выключил бы гард
+   * ровно тогда, когда он нужен.
+   */
+  async sweepTombstones(days: number, db: Queryable = this.db): Promise<number> {
+    const seconds = Math.max(1, Math.trunc(days)) * 86_400
+    // `returning` вместо `rowCount`: контракт `Queryable` отдаёт только `rows` — он общий для
+    // pg-пула и pglite, и лишнее поле привязало бы ядро к конкретному драйверу.
+    const res = await db.query(
+      'delete from portal_tombstone where deleted_ts < extract(epoch from now()) - $1 returning member_id',
+      [seconds]
+    )
+    return res.rows.length
   }
 
   /**

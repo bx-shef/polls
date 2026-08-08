@@ -1,5 +1,6 @@
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { runKeepAlive, keepAliveIntervalMs } from '~core/bitrix24/keep-alive'
+import { resolveTombstoneDays } from '~core/bitrix24/portal'
 import { errInfo } from '~core/obs/logger'
 import { usePortalTokenStore } from '../utils/portal'
 import { timeoutFetch } from '../utils/b24-fetch'
@@ -34,6 +35,8 @@ export default defineNitroPlugin((nitroApp) => {
   // у keep-alive не было своего таймаута — в отличие от install/deal-update).
   const oauth = new Bitrix24OAuth({ clientId, clientSecret, fetch: timeoutFetch })
 
+  const tombstoneDays = resolveTombstoneDays(process.env.TOMBSTONE_TTL_DAYS)
+
   const tick = async (): Promise<void> => {
     const store = await usePortalTokenStore()
     if (!store) {
@@ -42,6 +45,17 @@ export default defineNitroPlugin((nitroApp) => {
       logger.warn('keepalive_no_store', { reason: 'нет DATABASE_URL/NUXT_BITRIX_TOKEN_KEY' })
       return
     }
+    // Подметание тумбстоунов едет на той же каденции. Отдельного таймера не заводим: работа копеечная
+    // (один DELETE), а держать два расписания ради неё — лишняя деталь. Гейт на OAuth-креды выше её
+    // тоже касается, и это безвредно: без кред установок не бывает вовсе, а значит и тумбстоунов.
+    // Ошибка подметания НЕ должна отменять рефреш токенов — он важнее, поэтому ловим отдельно.
+    try {
+      const swept = await store.sweepTombstones(tombstoneDays)
+      if (swept > 0) logger.info('tombstones_swept', { count: swept, olderThanDays: tombstoneDays })
+    } catch (e) {
+      logger.warn('tombstone_sweep_fail', { reason: errInfo(e).message })
+    }
+
     await runKeepAlive({
       listNearExpiry: () => store.listNearExpiry(),
       // access-токен near-expiry портала давно протух → accessToken рефрешит, ротируя refresh_token.
@@ -65,5 +79,5 @@ export default defineNitroPlugin((nitroApp) => {
     clearTimeout(initial)
     clearInterval(timer)
   })
-  logger.info('keepalive_on', { intervalHours: intervalMs / 3_600_000 })
+  logger.info('keepalive_on', { intervalHours: intervalMs / 3_600_000, tombstoneDays })
 })

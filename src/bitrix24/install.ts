@@ -23,6 +23,19 @@ import { eventTriggerEnabled, robotTriggerEnabled, type TriggerMode } from './tr
  * (захватывается там для верификации). Доп. поля (`scope`/`status`/`expires`/…) — для клиента `B24OAuth`.
  */
 export interface InstallAuth {
+  /**
+   * unix-СЕКУНДЫ top-level `ts` события установки — момент, когда портал его отправил.
+   *
+   * Нужен тумбстоун-гарду: без него ОПОЗДАВШЕЕ событие `ONAPPINSTALL` воскрешает портал, который
+   * пользователь уже удалил. Угроза отдельная от подделки `member_id`: там подставляют чужой портал,
+   * здесь приходит совершенно легитимное событие своего портала, просто доставленное не в том порядке
+   * (ретрай вебхука, задержка на стороне Bitrix).
+   *
+   * У формата install-СТРАНИЦЫ этого поля нет: там человек прямо сейчас нажал «Установить», а не
+   * вебхук доехал с опозданием. Такому вызову подставляется текущее время (см. `parseInstallEvent`),
+   * чтобы настоящая переустановка чистила устаревший тумбстоун, а не оставляла его лежать до TTL.
+   */
+  eventTs?: number
   accessToken: string
   refreshToken: string
   expiresIn: number
@@ -38,6 +51,13 @@ export interface InstallAuth {
 }
 
 /** Формат серверного события `ONAPPINSTALL`: `{ auth: { access_token, … } }`. */
+/**
+ * Верхняя граница `ts` (unix-СЕКУНДЫ, ~2100) — та же, что у uninstall. Больше — мусор либо попытка
+ * протолкнуть install «из будущего»: он навсегда снёс бы тумбстоун и открыл дорогу воскрешению.
+ * За границей → `undefined`, гард отработает по текущему времени.
+ */
+const MAX_TS = 4_102_444_800
+
 const eventAuthSchema = z.object({
   access_token: z.string().min(1).max(4096),
   refresh_token: z.string().min(1).max(4096),
@@ -65,16 +85,31 @@ const pageAuthSchema = z.object({
 })
 
 /**
+ * `ts` вебхука: целые ПОЛОЖИТЕЛЬНЫЕ секунды в пределах {@link MAX_TS}; всё прочее → `undefined`.
+ *
+ * ⚠️ Именно положительные, а не «неотрицательные». `z.coerce.number()` превращает пустую строку в `0`,
+ * а `0` — это не «нет значения», это 1970 год: гард сравнивал бы `deleted_ts >= 0` и блокировал бы
+ * ЛЮБУЮ установку при наличии хоть одного тумбстоуна. Отказ в обе стороны тихий, поэтому граница здесь
+ * важнее, чем кажется.
+ */
+function parseEventTs(raw: unknown): number | undefined {
+  const r = z.coerce.number().int().positive().max(MAX_TS).safeParse(raw)
+  return r.success ? r.data : undefined
+}
+
+/**
  * Безопасно распарсить недоверенный POST установки (любого из двух форматов) → `InstallAuth` | `null`.
  * Сначала пробуем event-формат (`auth.*`), затем install-страницу (плоские поля). `raw` — обычно
  * объединение query+body (DOMAIN install-страницы приходит в query).
  */
-export function parseInstallEvent(raw: unknown): InstallAuth | null {
+export function parseInstallEvent(raw: unknown, nowSec?: number): InstallAuth | null {
   if (raw && typeof raw === 'object' && 'auth' in (raw as Record<string, unknown>)) {
     const e = eventAuthSchema.safeParse((raw as { auth: unknown }).auth)
     if (e.success) {
       const a = e.data
       return {
+        // `ts` лежит РЯДОМ с `auth`, а не внутри него: берём его из корня события.
+        eventTs: parseEventTs((raw as { ts?: unknown }).ts) ?? nowSec,
         accessToken: a.access_token,
         refreshToken: a.refresh_token,
         expiresIn: a.expires_in,
@@ -94,6 +129,9 @@ export function parseInstallEvent(raw: unknown): InstallAuth | null {
   if (p.success) {
     const a = p.data
     return {
+      // У install-страницы `ts` нет — подставляем текущее время: человек нажал «Установить» сейчас,
+      // и настоящая переустановка обязана снять устаревший тумбстоун.
+      eventTs: nowSec,
       accessToken: a.AUTH_ID,
       refreshToken: a.REFRESH_ID,
       expiresIn: a.AUTH_EXPIRES ?? 3600,

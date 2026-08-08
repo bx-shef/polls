@@ -1,3 +1,4 @@
+import { DEFAULT_TOMBSTONE_DAYS, MAX_TOMBSTONE_DAYS, resolveTombstoneDays } from '../src/bitrix24/portal'
 import { describe, expect, it, vi } from 'vitest'
 import {
   parseInstallEvent,
@@ -217,5 +218,69 @@ describe('handleInstall — оркестрация (#17)', () => {
     expect(order).toEqual(['save', 'register']) // регистрация после сохранения
     expect(saveTokens).toHaveBeenCalledWith(expect.objectContaining({ memberId: 'm-abc', applicationToken: 'app-tok-xyz' }))
     expect(registerIntegrations).toHaveBeenCalledWith(tokens)
+  })
+})
+
+describe('parseInstallEvent — момент события для тумбстоун-гарда', () => {
+  const eventBody = (over: Record<string, unknown> = {}) => ({
+    event: 'ONAPPINSTALL',
+    ts: '1700000000',
+    auth: {
+      access_token: 'a',
+      refresh_token: 'r',
+      expires_in: 3600,
+      member_id: 'm1',
+      domain: 'p.bitrix24.ru',
+      application_token: 'at'
+    },
+    ...over
+  })
+
+  it('берёт top-level ts события — он лежит РЯДОМ с auth, а не внутри', () => {
+    // Без него опоздавший ONAPPINSTALL воскрешает портал, который пользователь уже удалил.
+    expect(parseInstallEvent(eventBody())?.eventTs).toBe(1700000000)
+  })
+
+  it('нет ts, мусор или «из будущего» → текущее время, а не пропуск гарда', () => {
+    // Гард должен работать в любом случае: `undefined` выключил бы его целиком, а огромный ts снёс бы
+    // тумбстоун навсегда и открыл дорогу воскрешению.
+    const nowSec = 1800000000
+    // Пустая строка и 0 — отдельно важны: zod-коэрсия даёт из них 0, а с ts=0 гард блокировал бы
+      // ЛЮБУЮ установку (deleted_ts >= 0 истинно всегда).
+    for (const ts of [undefined, 'позавчера', 9e15, -1, '', 0, '0']) {
+      expect(parseInstallEvent(eventBody({ ts }), nowSec)?.eventTs, String(ts)).toBe(nowSec)
+    }
+  })
+
+  it('install-СТРАНИЦА: своего ts нет → текущее время', () => {
+    // Там человек нажал «Установить» сейчас. Настоящая переустановка обязана снять устаревший
+    // тумбстоун, иначе он лежал бы до истечения TTL.
+    const page = { AUTH_ID: 'a', REFRESH_ID: 'r', member_id: 'm1', DOMAIN: 'p.bitrix24.ru' }
+    expect(parseInstallEvent(page, 1800000000)?.eventTs).toBe(1800000000)
+  })
+
+  it('роут install передаёт eventTs в сохранение токенов', async () => {
+    // Гард по исходнику: `server/**` юнит-тестами не покрывается, а без этого аргумента вся защита
+    // молча выключается — save просто сделает upsert, как раньше.
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(fileURLToPath(new URL('../server/api/b24/install.post.ts', import.meta.url)), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    expect(src).toMatch(/tokenStore\.save\(tokens,\s*\{\s*eventTs/)
+  })
+})
+
+describe('resolveTombstoneDays', () => {
+  it('дефолт, клэмп и деградация мусора', () => {
+    // Занижение до нуля выключило бы гард целиком, завышение на годы вернуло бы вечную строку на
+    // каждый навсегда удалённый портал — обе крайности гасим.
+    expect(resolveTombstoneDays(undefined)).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('дней сорок')).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('0')).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('-5')).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('7')).toBe(7)
+    expect(resolveTombstoneDays('7.9')).toBe(7)
+    expect(resolveTombstoneDays('99999')).toBe(MAX_TOMBSTONE_DAYS)
   })
 })

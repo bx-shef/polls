@@ -476,11 +476,31 @@ describe('PortalTokenStore (pglite)', () => {
     expect(await store.load('m-b2')).toBeUndefined()
   })
 
-  it('save БЕЗ eventTs: гард opt-in — игнорирует существующий тумбстоун (текущий install.post.ts)', async () => {
+  it('save БЕЗ eventTs: гард opt-in — игнорирует существующий тумбстоун (ручной вызов/тест)', async () => {
     await store.deletePortal('m-noguard', 1000)
     const wrote = await store.save(tokens({ memberId: 'm-noguard' })) // без eventTs → гард выключен
     expect(wrote).toBe(true)
     expect(await store.load('m-noguard')).toMatchObject({ memberId: 'm-noguard' })
+  })
+
+  it('sweepTombstones: сносит старые записи и НЕ трогает свежие', async () => {
+    // Без подметания на каждый навсегда удалённый портал копилась бы строка, а настоящая
+    // переустановка через год упиралась бы в гард, поставленный годом раньше.
+    const nowSec = Math.floor(Date.now() / 1000)
+    await db.query('insert into portal_tombstone (member_id, deleted_ts) values ($1, $2)', ['old', nowSec - 40 * 86_400])
+    await db.query('insert into portal_tombstone (member_id, deleted_ts) values ($1, $2)', ['fresh', nowSec - 3600])
+
+    expect(await store.sweepTombstones(30)).toBe(1)
+    const left = await db.query<{ member_id: string }>('select member_id from portal_tombstone order by member_id')
+    expect(left.rows.map((r) => r.member_id)).toEqual(['fresh'])
+  })
+
+  it('sweepTombstones: значение в МИЛЛИсекундах просто не подметается (безопасная деградация)', async () => {
+    // Единица выбрана так, чтобы ошибка не выключала гард: мс-значение выглядит как далёкое будущее и
+    // остаётся лежать. Обратный вариант (сравнивать в мс) снёс бы секундные записи мгновенно — то есть
+    // выключил бы защиту ровно тогда, когда она нужна.
+    await db.query('insert into portal_tombstone (member_id, deleted_ts) values ($1, $2)', ['ms', Date.now()])
+    expect(await store.sweepTombstones(1)).toBe(0)
   })
 
   it('save с eventTs: настоящая переустановка (ts > тумбстоун) проходит и чистит тумбстоун', async () => {
