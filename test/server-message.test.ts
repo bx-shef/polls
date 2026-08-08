@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { serverMessage, MAX_SERVER_MESSAGE } from '../src/client/server-message'
+import { draftTooLargeMessage } from '../src/domain/schema'
 
 /**
  * Правило одно: пользователю показывается текст СЕРВЕРА, если сервер его прислал, и ничего —
@@ -187,6 +188,18 @@ describe('тексты для пользователя пишет сервер �
       expect(guilty, `${file}: текст отказа собран шаблоном — его напишет отправитель запроса`).toEqual([])
     }
     expect(seen).toBeGreaterThan(30) // выражения действительно найдены, а не «ноль проверок»
+  })
+
+  it('шаблонный текст из ядра: подставляются ТОЛЬКО числа', () => {
+    // Гард выше сканирует `error:` в handlers.ts и server/api/**. `draftTooLargeMessage` рождается в
+    // ядре и мимо него проходит — то есть правило «текст пишем мы» держалось бы на честном слове.
+    // Держим его отдельно и по существу: форма фиксирована, меняются лишь цифры.
+    const SHAPE = 'Опрос слишком большой: # КБ при пределе # КБ. Сократите тексты вопросов или уменьшите их число.'
+    for (const bytes of [0, 1, 61_440, 61_441, 9_999_999, Number.MAX_SAFE_INTEGER]) {
+      const msg = draftTooLargeMessage(bytes)
+      expect(msg.replace(/\d+/g, '#'), String(bytes)).toBe(SHAPE)
+      expect(msg.length, `${bytes}: длиннее предела serverMessage`).toBeLessThanOrEqual(MAX_SERVER_MESSAGE)
+    }
   })
 
   it('каждый текст отказа укладывается в предел serverMessage', () => {
