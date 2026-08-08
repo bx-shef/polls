@@ -230,9 +230,16 @@ describe('isNoFrameRoute — публичную страницу опроса ф
     expect(isNoFrameRoute('/s')).toBe(true)
   })
 
+  it('лендинг тоже нельзя фреймить', () => {
+    // Иначе любой владелец бесплатного портала Bitrix24 показывает нашу витрину под своей вывеской:
+    // по умолчанию `frame-ancestors` разрешает все облачные зоны портала.
+    expect(isNoFrameRoute('/')).toBe(true)
+    expect(isNoFrameRoute('/?utm_source=x')).toBe(true)
+  })
+
   it('маршруты, которые портал открывает во фрейме, — не трогаем', () => {
     // Запрет здесь сломал бы приложение: дашборд и виджеты живут именно во фрейме портала.
-    for (const p of ['/d/csat_postdeal', '/b24/dashboard', '/b24/deal-widget', '/admin/surveys', '/api/health', '/']) {
+    for (const p of ['/d/csat_postdeal', '/b24/dashboard', '/b24/deal-widget', '/admin/surveys', '/api/health']) {
       expect(isNoFrameRoute(p), p).toBe(false)
     }
     expect(isNoFrameRoute('/settings')).toBe(false) // не ловим по префиксу «/s»

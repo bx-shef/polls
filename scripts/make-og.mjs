@@ -7,7 +7,9 @@ import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chromium } from 'playwright'
+// `@playwright/test`, а не `playwright`: отдельного пакета `playwright` в зависимостях нет, и
+// `pnpm og` падал на ERR_MODULE_NOT_FOUND. Тестовый пакет реэкспортирует тот же `chromium`.
+import { chromium } from '@playwright/test'
 import { resolveChromium } from './lib/chromium.mjs'
 import { HEIGHT, WIDTH, buildOgHtml } from './lib/ogTemplate.mjs'
 
