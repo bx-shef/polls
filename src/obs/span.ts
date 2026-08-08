@@ -12,17 +12,25 @@
  * канал, которым в трейсы уезжают строка подключения к БД и адрес REST с токеном. Вместо него — вид
  * ошибки ({@link errorKind}). По той же причине статусу спана не передаётся `message`.
  *
- * **Пока SDK не зарегистрирован, всё это no-op.** `@opentelemetry/api` без SDK отдаёт пустой трейсер:
- * спаны не создаются, атрибуты не считаются, стоимость — вызов функции. Поэтому обёртку можно ставить
- * в горячие пути до появления коллектора, и это не «мёртвый код», а заявленное состояние по умолчанию:
- * нет адреса коллектора — нет телеметрии.
+ * **Пока SDK не зарегистрирован, спаны no-op.** `@opentelemetry/api` без SDK отдаёт пустой трейсер:
+ * спан не создаётся и никуда не отправляется. ⚠️ Но «no-op» здесь не значит «бесплатно»:
+ * `pickSafeAttributes(attrs)` — обычный аргумент, он вычисляется ВСЕГДА, как и шаблон имени спана, а на
+ * ошибке ещё и {@link errorKind}. Цена — перебор объекта из нескольких полей, поэтому в горячие пути
+ * ставить можно; но утверждать «стоимость нулевая» было бы неправдой.
  */
 
-import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
-import { errorKind, pickSafeAttributes } from './telemetry'
+import { SpanKind, SpanStatusCode, trace, type Span } from '@opentelemetry/api'
+import { errorKind, pickSafeAttributes, MAX_SPAN_NAME_LENGTH, safeSpanName } from './telemetry'
 
 /** Имя инструментирующей библиотеки в трейсах — наш сервис. */
 export const TRACER_NAME = 'polls'
+
+/**
+ * Один трейсер на модуль — штатная практика OTel, и `ProxyTracer` для этого и существует: он
+ * переключится на настоящий, когда SDK зарегистрируется позже. `trace.getTracer()` не мемоизирован
+ * (проверено: два вызова дают разные объекты), а зовётся он у нас на каждый REST-вызов.
+ */
+const tracer = trace.getTracer(TRACER_NAME)
 
 /**
  * Обернуть операцию спаном.
@@ -39,22 +47,54 @@ export async function withSpan<T>(
   fn: () => Promise<T>,
   kind: SpanKind = SpanKind.INTERNAL
 ): Promise<T> {
-  const tracer = trace.getTracer(TRACER_NAME)
-  return await tracer.startActiveSpan(name, { kind, attributes: pickSafeAttributes(attrs) }, async (span) => {
-    try {
-      const result = await fn()
-      span.setStatus({ code: SpanStatusCode.OK })
-      return result
-    } catch (e) {
-      // Вид ошибки, а НЕ её текст и НЕ recordException: см. шапку файла.
-      span.setAttribute('error_kind', errorKind(e))
-      // Без `message`: статус спана — тоже поле для свободной строки.
-      span.setStatus({ code: SpanStatusCode.ERROR })
-      throw e
-    } finally {
-      span.end()
-    }
-  })
+  // ⚠️ Всё, что относится к спану, обёрнуто и НЕ может повлиять на наблюдаемый код. Ревью показало,
+  // что без этого телеметрия меняла поведение сразу двумя способами: синхронный throw в
+  // `startActiveSpan` вообще отменял бизнес-вызов (портал не получал запроса), а throw в
+  // `setStatus`/`end` превращал успешный вызов в ошибку и терял результат. Для нашего же плана это не
+  // гипотеза: анонсированный redaction-процессор вызывается синхронно в `onStart` внутри `startSpan`,
+  // то есть один баг в нём убил бы все вызовы к Bitrix24.
+  // ⚠️ Имя спана — ВТОРОЙ канал тех же данных, и белый список его не касается: `withSpan(err.message)`
+  // отправил бы текст ошибки в трейс мимо всей защиты. Поэтому имя тоже вычищается и капается.
+  const spanName = safeSpanName(name)
+  const attributes = quiet(() => pickSafeAttributes(attrs)) ?? {}
+  let started: ReturnType<typeof tracer.startActiveSpan<(span: Span) => Promise<T>>> | undefined
+  try {
+    started = tracer.startActiveSpan(spanName, { kind, attributes }, async (span) => {
+      try {
+        const result = await fn()
+        quiet(() => span.setStatus({ code: SpanStatusCode.OK }))
+        return result
+      } catch (e) {
+        // Вид ошибки, а НЕ её текст и НЕ recordException: см. шапку файла.
+        quiet(() => span.setAttribute('error_kind', errorKind(e)))
+        // Без `message`: статус спана — тоже поле для свободной строки.
+        quiet(() => span.setStatus({ code: SpanStatusCode.ERROR }))
+        throw e
+      } finally {
+        quiet(() => span.end())
+      }
+    })
+  } catch {
+    // Трейсер сломался ДО того, как отдал управление в `fn`, — значит операция ещё не выполнялась.
+    // Выполняем её без спана: наблюдение не имеет права отменять наблюдаемое.
+    return await fn()
+  }
+  return await started
+}
+
+/**
+ * Выполнить действие над спаном, проглотив его сбой.
+ *
+ * Единственное место в проекте, где проглатывание ошибки правильно: телеметрия обязана быть невидимой
+ * для наблюдаемого кода, и её собственный сбой не должен ни ронять запрос, ни подменять ошибку. В лог
+ * тоже НЕ пишем: сломанный экспортёр сбоит на каждом вызове, и лог захлебнулся бы.
+ */
+function quiet<R>(action: () => R): R | undefined {
+  try {
+    return action()
+  } catch {
+    return undefined
+  }
 }
 
 /**

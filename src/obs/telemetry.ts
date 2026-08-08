@@ -30,6 +30,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { toSingleLine } from '../domain/text'
 
 /**
  * Полный список имён атрибутов, которые нам разрешено прикреплять.
@@ -38,37 +39,49 @@ import { createHash } from 'node:crypto'
  * может ли это быть данными человека». Если ответ «зависит» — не добавляем.
  */
 export const TELEMETRY_ATTRIBUTES = [
-  /** Хеш портала (НЕ member_id) — связать спаны одного заказчика, не называя его. */
+  /** Хеш портала (НЕ member_id и НЕ домен) — связать спаны одного заказчика, не называя его. */
   'portal.hash',
   /** Имя метода REST Bitrix24 (`crm.deal.get`) — из нашего кода, не из данных. */
   'b24.method',
   /** Вид ошибки (НЕ текст) — см. {@link errorKind}. */
   'error_kind',
-  /** Исход операции: короткая метка из нашего кода. */
-  'outcome',
-  /** Имя очереди/стадии обработки — из нашего кода. */
-  'stage',
-  /** Ключ опроса. Это НАШ идентификатор (`csat_postdeal`), а не данные клиента. */
-  'survey.key',
-  /** Номер версии опроса — число. */
-  'survey.version',
-  /** Сколько записей вернуло чтение — число, не содержимое. */
-  'result.count',
-  /** HTTP-исход роута: `ok`/`no_auth`/`forbidden`/… — закрытый набор из нашего кода. */
-  'http.outcome',
-  /** Сработал ли лимитер — булево. */
-  'rate_limited'
+  /** Стадия исходящего вызова — закрытый набор {@link OUTGOING_STAGES}, не URL. */
+  'stage'
 ] as const
+
+// ⚠️ Список пополняется ТОЛЬКО вместе с местом вызова. Имя без места вызова — то же, от чего проект
+// отказался в #31 («хелпер без места вызова — мёртвый код»): оно выглядит поддержанным, а на деле
+// никем не проверено. Атрибуты исхода операции (`outcome`, `result.count`, `http.outcome`) требуют
+// способа проставить значение ПОСЛЕ операции, которого у обёртки пока нет, — приезжают вместе с ним.
 
 export type TelemetryAttributeName = (typeof TELEMETRY_ATTRIBUTES)[number]
 
 /** Значение атрибута: только скаляры. Объект или массив — путь протащить структуру данных целиком. */
 export type TelemetryValue = string | number | boolean
 
-const ALLOWED = new Set<string>(TELEMETRY_ATTRIBUTES)
-
 /** Кап длины значения: атрибут — метка, а не поле для содержимого. */
-export const MAX_ATTRIBUTE_LENGTH = 200
+export const MAX_ATTRIBUTE_LENGTH = 64
+
+/**
+ * Правило для КАЖДОГО имени: что именно допустимо в значении.
+ *
+ * ⚠️ Это вторая половина белого списка, и без неё первая почти ничего не даёт. Ревью показало ровно
+ * это: список фильтровал ИМЕНА, а значение под разрешённым именем проходило дословно — то есть
+ * `{ stage: текстОтвета }` уезжал в трейс целиком, и все проверки оставались зелёными. Утверждение
+ * «текст ответа прикрепить нельзя, для него нет имени» было неверным: имя находилось.
+ *
+ * Поэтому каждое имя объявляет форму значения, и она узкая: закрытый набор либо строгий шаблон.
+ * Свободного текста в атрибутах не бывает вовсе — по замыслу, а не по договорённости.
+ */
+const ATTRIBUTE_RULES: Record<TelemetryAttributeName, (v: TelemetryValue) => boolean> = {
+  // Хеш ровно той формы, что выдаёт portalHash: ни домен, ни member_id так не выглядят.
+  'portal.hash': (v) => typeof v === 'string' && new RegExp(`^[0-9a-f]{${PORTAL_HASH_LENGTH}}$`).test(v),
+  // Имя REST-метода Bitrix: буквы, цифры, точки. Данных человека такая форма не вмещает.
+  'b24.method': (v) => typeof v === 'string' && /^[a-z][a-z0-9._]{0,63}$/i.test(v),
+  // Закрытые наборы — сверяем принадлежность, а не форму.
+  error_kind: (v) => typeof v === 'string' && (ERROR_KINDS as readonly string[]).includes(v),
+  stage: (v) => typeof v === 'string' && (OUTGOING_STAGES as readonly string[]).includes(v)
+}
 
 /**
  * Отобрать разрешённые атрибуты.
@@ -83,25 +96,32 @@ export function pickSafeAttributes(
 ): Partial<Record<TelemetryAttributeName, TelemetryValue>> {
   const out: Record<string, TelemetryValue> = {}
   for (const [key, value] of Object.entries(input)) {
-    if (!ALLOWED.has(key)) continue
+    const rule = Object.prototype.hasOwnProperty.call(ATTRIBUTE_RULES, key)
+      ? ATTRIBUTE_RULES[key as TelemetryAttributeName]
+      : undefined
+    if (!rule) continue // имени нет в белом списке
     if (value === undefined || value === null) continue
+
+    let candidate: TelemetryValue
     if (typeof value === 'number') {
-      // NaN/Infinity в атрибуте — мусор, который экспортёр отдаст как «null» или уронит сериализацию.
-      if (Number.isFinite(value)) out[key] = value
+      // NaN/Infinity — мусор, который экспортёр отдаст как «null» или уронит сериализацию.
+      if (!Number.isFinite(value)) continue
+      candidate = value
+    } else if (typeof value === 'boolean') {
+      candidate = value
+    } else if (typeof value === 'string') {
+      // `toSingleLine` вычищает управляющие и bidi-символы (NUL, ESC, RLO, zero-width) и схлопывает
+      // пробелы. Одного `\s+` тут не хватало: ANSI-escape и NUL проходили насквозь и в терминальном
+      // просмотрщике оператора перекрашивали и подделывали соседние поля, а RLO переворачивал текст.
+      candidate = toSingleLine(value).slice(0, MAX_ATTRIBUTE_LENGTH)
+      if (!candidate) continue
+    } else {
+      // Объект, массив, функция, symbol, bigint: скаляр — граница по замыслу.
       continue
     }
-    if (typeof value === 'boolean') {
-      out[key] = value
-      continue
-    }
-    if (typeof value === 'string') {
-      // Одна строка: перевод строки в значении атрибута ломает читаемость и позволяет подделать
-      // соседнее поле в текстовых бэкендах.
-      const flat = value.replace(/\s+/g, ' ').trim()
-      if (flat) out[key] = flat.slice(0, MAX_ATTRIBUTE_LENGTH)
-      continue
-    }
-    // Всё прочее (объект, массив, функция, symbol, bigint) не пропускаем: скаляр — граница по замыслу.
+
+    // Форма значения обязана совпасть с объявленной для этого имени.
+    if (rule(candidate)) out[key] = candidate
   }
   return out as Partial<Record<TelemetryAttributeName, TelemetryValue>>
 }
@@ -117,8 +137,10 @@ export const PORTAL_HASH_LENGTH = 16
  * хранилище в открытом виде и не искался по нему поиском. Для разбора инцидента этого достаточно:
  * нужен лишь признак «тот же портал или другой».
  */
-export function portalHash(memberId: string | undefined): string | undefined {
-  const id = (memberId ?? '').trim()
+export function portalHash(memberId: unknown): string | undefined {
+  // `unknown`, а не `string`: member_id приходит из JSON-тел и строк БД, где типу верят на слово, —
+  // а `TypeError` здесь превратился бы в 500 в роуте из-за телеметрии.
+  const id = typeof memberId === 'string' ? memberId.trim() : ''
   if (!id) return undefined
   return createHash('sha256').update(id).digest('hex').slice(0, PORTAL_HASH_LENGTH)
 }
@@ -140,11 +162,19 @@ export type ErrorKind = (typeof ERROR_KINDS)[number]
  * за счёт приватности, и это недопустимо.
  */
 export function errorKind(e: unknown): ErrorKind {
-  const name = e instanceof Error ? e.name : ''
-  const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : ''
-  const hay = `${name} ${msg}`.toLowerCase()
+  // ⚠️ Чтение `name`/`message` обёрнуто: у наследника Error геттер может бросить, и тогда исключение
+  // вылетело бы ИЗ catch-блока обёртки, подменив настоящую ошибку вызывающего. Телеметрия не имеет
+  // права менять то, что увидит вызывающий, — даже собственным сбоем.
+  let hay = ''
+  try {
+    const name = e instanceof Error ? String(e.name) : ''
+    const msg = e instanceof Error ? String(e.message) : typeof e === 'string' ? e : ''
+    hay = `${name} ${msg}`.toLowerCase()
+  } catch {
+    return 'other'
+  }
 
-  if (name === 'AbortError' || /timeout|timed out|etimedout|aborted/.test(hay)) return 'timeout'
+  if (/aborterror|timeout|timed out|etimedout|aborted/.test(hay)) return 'timeout'
   if (/econnrefused|econnreset|enotfound|eai_again|socket hang up|fetch failed|network/.test(hay)) return 'network'
   if (/invalid_grant|invalid_token|expired_token|unauthorized|\b401\b|\b403\b/.test(hay)) return 'auth'
   if (/query_limit_exceeded|operation_time_limit|too many requests|\b429\b/.test(hay)) return 'rate_limit'
@@ -162,4 +192,53 @@ export function errorKind(e: unknown): ErrorKind {
  */
 export function telemetryEnabled(env: Record<string, string | undefined>): boolean {
   return Boolean((env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '').trim())
+}
+
+/**
+ * Стадии исходящих вызовов к Bitrix24 — ЗАКРЫТЫЙ набор.
+ *
+ * Почему набор, а не URL. В адресе портала стоит его домен (`acme.bitrix24.by`), то есть имя заказчика,
+ * а в query у некоторых путей ещё и токен. Положить URL в спан значит отдать и то и другое. Стадия
+ * отвечает на вопрос «что мы делали» — этого хватает для разбора, и унести с собой она ничего не может.
+ */
+export const OUTGOING_STAGES = ['profile', 'oauth.refresh', 'other'] as const
+export type OutgoingStage = (typeof OUTGOING_STAGES)[number]
+
+/**
+ * Атрибуты исходящего HTTP-вызова, выведенные из его адреса.
+ *
+ * Домен портала НЕ попадает в спан ни в каком виде — только его хеш, тот же {@link portalHash}. Для
+ * OAuth-сервера хеш не проставляется: хост там один на всех, различать нечего, а лишний атрибут — лишний
+ * повод его однажды разлогировать.
+ */
+export function outgoingCallAttributes(url: string): { stage: OutgoingStage, 'portal.hash'?: string } {
+  let host = ''
+  let path = ''
+  try {
+    const u = new URL(url)
+    host = u.hostname.toLowerCase()
+    path = u.pathname
+  } catch {
+    return { stage: 'other' }
+  }
+  if (host === 'oauth.bitrix.info') return { stage: 'oauth.refresh' }
+  const stage: OutgoingStage = path.endsWith('/rest/profile') ? 'profile' : 'other'
+  const hash = portalHash(host)
+  return hash ? { stage, 'portal.hash': hash } : { stage }
+}
+
+/** Кап длины имени спана. Имя — метка операции, а не место для содержимого. */
+export const MAX_SPAN_NAME_LENGTH = 80
+
+/**
+ * Имя спана, пригодное к отправке.
+ *
+ * Белый список атрибутов имени не касается, а имя уезжает в трейс так же — то есть это второй канал
+ * тех же данных: `withSpan(err.message, …)` отправил бы текст ошибки мимо всей защиты. Поэтому вычищаем
+ * управляющие и bidi-символы, схлопываем пробелы и режем по капу. Пусто → `unnamed`, а не пустая строка:
+ * безымянный спан в интерфейсе коллектора неотличим от сбоя.
+ */
+export function safeSpanName(name: unknown): string {
+  const flat = toSingleLine(name).slice(0, MAX_SPAN_NAME_LENGTH)
+  return flat || 'unnamed'
 }
