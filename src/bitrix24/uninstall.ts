@@ -17,9 +17,9 @@ import { verifyApplicationToken } from './deal-event'
  */
 
 /**
- * Верхняя граница `ts` (unix-СЕКУНДЫ, ~год 2100). Больше — вероятно мусор/атака: огромный `ts`
- * навсегда поднял бы `portal_tombstone.deleted_ts` через `greatest()`, заблокировав будущую
- * переустановку тумбстоун-гардом. За границей → деградируем в `undefined` (используется `nowSec`).
+ * Верхняя граница `ts` (unix-СЕКУНДЫ, ~год 2100): за ней явный мусор → деградируем в `undefined`.
+ * ⚠️ Сам кап от «удаления из будущего» НЕ защищает (до 2100 пролезает что угодно) — защищает клэмп
+ * к `nowSec` при вычислении `deletedTs`.
  */
 const MAX_TS = 4_102_444_800
 
@@ -71,7 +71,10 @@ export function decideUninstall(
   return {
     ok: true,
     memberId: event.auth.member_id,
-    deletedTs: event.ts ?? nowSec,
+    // Клэмп к «сейчас»: `ts` из будущего дал бы тумбстоун, который НИКОГДА не подметётся
+    // (`deleted_ts < now - ttl` ложно) и навсегда заблокирует установку для этого member_id.
+    // Кап `MAX_TS` от этого не спасает — до 2100 года пролезает любое значение.
+    deletedTs: Math.min(event.ts ?? nowSec, nowSec),
     clean: event.data?.CLEAN === 1
   }
 }

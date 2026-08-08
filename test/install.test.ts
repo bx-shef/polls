@@ -1,3 +1,4 @@
+import { DEFAULT_TOMBSTONE_DAYS, MAX_TOMBSTONE_DAYS, resolveTombstoneDays } from '../src/bitrix24/portal'
 import { describe, expect, it, vi } from 'vitest'
 import {
   parseInstallEvent,
@@ -219,3 +220,114 @@ describe('handleInstall — оркестрация (#17)', () => {
     expect(registerIntegrations).toHaveBeenCalledWith(tokens)
   })
 })
+
+describe('parseInstallEvent — момент события для тумбстоун-гарда', () => {
+  const eventBody = (over: Record<string, unknown> = {}) => ({
+    event: 'ONAPPINSTALL',
+    ts: '1700000000',
+    auth: {
+      access_token: 'a',
+      refresh_token: 'r',
+      expires_in: 3600,
+      member_id: 'm1',
+      domain: 'p.bitrix24.ru',
+      application_token: 'at'
+    },
+    ...over
+  })
+
+  it('берёт top-level ts события — он лежит РЯДОМ с auth, а не внутри', () => {
+    // Без него опоздавший ONAPPINSTALL воскрешает портал, который пользователь уже удалил.
+    expect(parseInstallEvent(eventBody())?.eventTs).toBe(1700000000)
+  })
+
+  it('ts из БУДУЩЕГО прижимается к нашему «сейчас»', () => {
+    // Сравниваются часы разных машин. Значение из будущего и обходило бы гард, и НАВСЕГДА сносило
+    // тумбстоун (`delete … where deleted_ts < eventTs`) — то есть выключало защиту одним событием.
+    const nowSec = 1800000000
+    expect(parseInstallEvent(eventBody({ ts: 4000000000 }), nowSec)?.eventTs).toBe(nowSec)
+    expect(parseInstallEvent(eventBody({ ts: String(nowSec + 3600) }), nowSec)?.eventTs).toBe(nowSec)
+  })
+
+  it('булево и hex не считаются временем', () => {
+    // Общая коэрсия zod даёт из `true` единицу, а из `'0x10'` — 16: «валидные» числа из мусора.
+    // С ts=1 любой тумбстоун блокировал бы установку.
+    const nowSec = 1800000000
+    for (const ts of [true, '0x10', '1e9', ' 17 ']) {
+      expect(parseInstallEvent(eventBody({ ts }), nowSec)?.eventTs, String(ts)).toBe(nowSec)
+    }
+  })
+
+  it('нет ts, мусор или ноль → текущее время, а не пропуск гарда', () => {
+    // Гард должен работать в любом случае: `undefined` выключил бы его целиком, а огромный ts снёс бы
+    // тумбстоун навсегда и открыл дорогу воскрешению.
+    const nowSec = 1800000000
+    // Пустая строка и 0 — отдельно важны: zod-коэрсия даёт из них 0, а с ts=0 гард блокировал бы
+      // ЛЮБУЮ установку (deleted_ts >= 0 истинно всегда).
+    for (const ts of [undefined, 'позавчера', 9e15, -1, '', 0, '0']) {
+      expect(parseInstallEvent(eventBody({ ts }), nowSec)?.eventTs, String(ts)).toBe(nowSec)
+    }
+  })
+
+  it('install-СТРАНИЦА: своего ts нет → текущее время', () => {
+    // Там человек нажал «Установить» сейчас. Настоящая переустановка обязана снять устаревший
+    // тумбстоун, иначе он лежал бы до истечения TTL.
+    const page = { AUTH_ID: 'a', REFRESH_ID: 'r', member_id: 'm1', DOMAIN: 'p.bitrix24.ru' }
+    expect(parseInstallEvent(page, 1800000000)?.eventTs).toBe(1800000000)
+  })
+
+  it('БОЕВОЙ формат портала: событие приходит bracket-формой', async () => {
+    // Bitrix шлёт события формой с bracket-нотацией, и h3 отдаёт ПЛОСКИЕ ключи `auth[access_token]`.
+    // Без `parseBracketForm` event-формат установки не распознавался вовсе — настоящий ONAPPINSTALL
+    // уходил в 400. Тест на «красивом» вложенном объекте этого не ловил.
+    const { parseBracketForm } = await import('../src/bitrix24/bracket-form')
+    const wire = 'event=ONAPPINSTALL&ts=1700000000&auth%5Baccess_token%5D=a&auth%5Brefresh_token%5D=r'
+      + '&auth%5Bexpires_in%5D=3600&auth%5Bmember_id%5D=m1&auth%5Bdomain%5D=p.bitrix24.ru'
+    const flat = Object.fromEntries(new URLSearchParams(wire))
+
+    expect(parseInstallEvent(flat, 1800000000), 'сырое тело портала не должно распознаваться').toBeNull()
+    const parsed = parseInstallEvent(parseBracketForm(flat), 1800000000)
+    expect(parsed?.memberId).toBe('m1')
+    expect(parsed?.eventTs).toBe(1700000000)
+  })
+
+  it('роут install разбирает bracket-форму ДО парса установки', async () => {
+    // Гард по исходнику: `server/**` юнит-тестами не покрывается, а без этого шага событийная
+    // установка отвечает 400 — и обнаружилось бы только на живом портале.
+    const src = await routeSource()
+    expect(src).toMatch(/parseInstallEvent\(parseBracketForm\(/)
+  })
+
+  it('роут install передаёт eventTs в сохранение токенов', async () => {
+    // Гард по исходнику: `server/**` юнит-тестами не покрывается, а без этого аргумента вся защита
+    // молча выключается — save просто сделает upsert, как раньше.
+    const src = await routeSource()
+    // Проверяем и то, что отказ гарда ОСТАНАВЛИВАЕТ установку: иначе получается хуже, чем без гарда —
+    // токенов нет, а встройки регистрируются и в лог идёт «установка завершена».
+    expect(src).toMatch(/tokenStore\.save\(tokens,\s*\{\s*eventTs/)
+    expect(src).toMatch(/throw new InstallStale/)
+  })
+})
+
+describe('resolveTombstoneDays', () => {
+  it('дефолт, клэмп и деградация мусора', () => {
+    // Занижение до нуля выключило бы гард целиком, завышение на годы вернуло бы вечную строку на
+    // каждый навсегда удалённый портал — обе крайности гасим.
+    expect(resolveTombstoneDays(undefined)).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('дней сорок')).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('0')).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('-5')).toBe(DEFAULT_TOMBSTONE_DAYS)
+    expect(resolveTombstoneDays('7')).toBe(7)
+    expect(resolveTombstoneDays('7.9')).toBe(7)
+    expect(resolveTombstoneDays('99999')).toBe(MAX_TOMBSTONE_DAYS)
+  })
+})
+
+/** Исходник роута установки без комментариев: гард не должен удовлетворяться прозой. */
+async function routeSource(): Promise<string> {
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  return readFileSync(fileURLToPath(new URL('../server/api/b24/install.post.ts', import.meta.url)), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}

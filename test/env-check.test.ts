@@ -361,6 +361,21 @@ describe('плагин проверки окружения — гард по и�
   })
 })
 
+describe('checkEnv — TTL тумбстоунов', () => {
+  it('мусор и значение вне диапазона — предупреждение', () => {
+    // Переменная с клэмпом и молчаливой деградацией: без проверки опечатка «трицать» осталась бы
+    // незамеченной, а гард молча жил бы 30 суток вместо заданных.
+    for (const raw of ['трицать', '0', '99999', '-1']) {
+      expect(names(prod({ TOMBSTONE_TTL_DAYS: raw }).warnings), raw).toContain('TOMBSTONE_TTL_DAYS')
+    }
+  })
+
+  it('корректное значение и отсутствие — тишина', () => {
+    expect(names(prod({ TOMBSTONE_TTL_DAYS: '7' }).warnings)).not.toContain('TOMBSTONE_TTL_DAYS')
+    expect(names(prod().warnings)).not.toContain('TOMBSTONE_TTL_DAYS')
+  })
+})
+
 describe('checkEnv — анти-абьюз за прокси', () => {
   it('в проде без TRUSTED_PROXIES — предупреждение', () => {
     // Молчаливая деградация: адрес сокета за прокси одинаков у всех, «10 в минуту на IP»

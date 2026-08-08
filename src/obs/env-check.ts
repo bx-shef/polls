@@ -5,6 +5,7 @@ import { TRIGGER_MODES } from '../bitrix24/trigger-mode'
 import { CSP_MODES } from '../api/security-headers'
 import { LOG_LEVELS } from './logger'
 import { resolveTrustedProxies, MAX_TRUSTED_PROXIES } from '../api/client-ip'
+import { DEFAULT_TOMBSTONE_DAYS, MAX_TOMBSTONE_DAYS, MIN_TOMBSTONE_DAYS } from '../bitrix24/portal'
 
 /**
  * Проверка окружения при старте.
@@ -308,6 +309,15 @@ export function checkEnv(env: Record<string, string | undefined>, opts: EnvCheck
       message: 'осталось значение-заглушка из примера — канал отзывов работать не будет. Укажите свой приватный репозиторий'
     })
   }
+
+  addRangeNotice(warnings, {
+    name: 'TOMBSTONE_TTL_DAYS',
+    raw: val('TOMBSTONE_TTL_DAYS'),
+    min: MIN_TOMBSTONE_DAYS,
+    max: MAX_TOMBSTONE_DAYS,
+    fallback: DEFAULT_TOMBSTONE_DAYS,
+    unit: 'суток'
+  })
 
   // ── Анти-абьюз за прокси ─────────────────────────────────────────────────────────────────
   // Молчаливая деградация: без этой переменной за обратным прокси адрес сокета одинаков у ВСЕХ, и
