@@ -40,7 +40,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     // crm.deal.get токеном пользователя виджета → снимок контекста.
-    const client = createPortalClient(
+    const client = await createPortalClient(
       frameToB24Params({ domain: portal.domain, accessToken: frame.AUTH_ID, memberId: portal.portalId }),
       { clientId: process.env.NUXT_B24_CLIENT_ID ?? '', clientSecret: process.env.NUXT_B24_CLIENT_SECRET ?? '' }
     )

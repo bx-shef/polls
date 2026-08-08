@@ -63,7 +63,7 @@ export default defineEventHandler(async (event) => {
         const tokens = await tokenStore.load(memberId)
         const accessToken = await tokenStore.accessToken(memberId, oauth)
         if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
-        const client = createPortalClient(
+        const client = await createPortalClient(
           frameToB24Params({ domain: tokens.domain, accessToken, memberId }),
           cfg.secret
         )

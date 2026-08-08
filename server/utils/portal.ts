@@ -79,7 +79,7 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
  * установку и будет ждать приглашений, которых не будет.
  */
 export async function registerIntegrations(authParams: B24OAuthParams, cfg: B24AppConfig): Promise<void> {
-  const client = createPortalClient(authParams, cfg.secret)
+  const client = await createPortalClient(authParams, cfg.secret)
   // Режим триггера решает, ЧТО регистрировать: включать оба пути сразу = два приглашения на один
   // переход (робот сработает на входе, событие — тем же изменением). Дефолт `event` — на всех тарифах.
   const mode = resolveTriggerMode(process.env.TRIGGER_MODE)

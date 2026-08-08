@@ -143,3 +143,42 @@ describe('frameToB24Params (#17)', () => {
     expect(p.expiresIn).toBe(3600)
   })
 })
+
+describe('ретрай SDK на уровне одного REST-вызова запрещён', () => {
+  it('createPortalClient дожидается настройки, а не ставит её «на потом»', async () => {
+    // `setRestrictionManagerParams` асинхронна: без `await` настройка могла бы не примениться до
+    // первого вызова, и ретрай остался бы включённым — тихо и незаметно.
+    const { NO_RETRY_PARAMS } = await import('../src/bitrix24/client')
+    expect(NO_RETRY_PARAMS).toEqual({ maxRetries: 1, retryOnNetworkError: false })
+
+    const src = await sourceOf('../src/bitrix24/client.ts')
+    expect(src).toMatch(/await client\.setRestrictionManagerParams\(/)
+  })
+
+  it('ни один роут не строит клиент портала в обход createPortalClient', async () => {
+    // Голый `new B24OAuth(...)` вернул бы дефолтный ретрай: повтор `*.add` после клиентского таймаута
+    // создаёт ВТОРУЮ сущность в портале, а уникальности по originId/xmlId Bitrix не гарантирует.
+    const { readdirSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.ts') ? [join(dir, e.name)] : []
+      )
+    for (const f of [...walk(join(root, 'server')), join(root, 'src/bitrix24/portal.ts')]) {
+      const code = await sourceOf(f)
+      expect(code.includes('new B24OAuth('), `${f}: клиент портала мимо createPortalClient`).toBe(false)
+    }
+  })
+})
+
+/** Исходник без комментариев: гард не должен удовлетворяться упоминанием в прозе. */
+async function sourceOf(pathOrRel: string): Promise<string> {
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const abs = pathOrRel.startsWith('/') ? pathOrRel : fileURLToPath(new URL(pathOrRel, import.meta.url))
+  return readFileSync(abs, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}

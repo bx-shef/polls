@@ -80,7 +80,7 @@ export default defineEventHandler(async (event) => {
     // токена с расшифровкой и, главное, два независимых лимитера SDK, не видящих суммарный темп.
     // Кэш — ПО `memberId`, а не один на запрос: tenant-изоляция — инвариант проекта, и держаться она
     // должна структурно, а не на комментарии «в запросе member_id всё равно один».
-    const clients = new Map<string, Promise<ReturnType<typeof createPortalClient>>>()
+    const clients = new Map<string, ReturnType<typeof createPortalClient>>()
     const portalClient = (memberId: string) => {
       const cached = clients.get(memberId)
       if (cached) return cached
@@ -88,7 +88,7 @@ export default defineEventHandler(async (event) => {
         const tokens = await tokenStore.load(memberId)
         const accessToken = await tokenStore.accessToken(memberId, oauth)
         if (!tokens?.domain || !accessToken) throw new Error(`портал ${memberId}: токен/домен недоступен`)
-        return createPortalClient(frameToB24Params({ domain: tokens.domain, accessToken, memberId }), cfg.secret)
+        return await createPortalClient(frameToB24Params({ domain: tokens.domain, accessToken, memberId }), cfg.secret)
       })()
       clients.set(memberId, p)
       return p
