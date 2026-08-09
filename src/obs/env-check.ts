@@ -4,6 +4,7 @@ import { MAX_KEEPALIVE_HOURS, MIN_KEEPALIVE_HOURS, DEFAULT_KEEPALIVE_HOURS } fro
 import { TRIGGER_MODES } from '../bitrix24/trigger-mode'
 import { CSP_MODES } from '../api/security-headers'
 import { LOG_LEVELS } from './logger'
+import { telemetryEnabled } from './telemetry'
 import { resolveTrustedProxies, MAX_TRUSTED_PROXIES } from '../api/client-ip'
 import { DEFAULT_TOMBSTONE_DAYS, MAX_TOMBSTONE_DAYS, MIN_TOMBSTONE_DAYS } from '../bitrix24/portal'
 
@@ -353,6 +354,21 @@ export function checkEnv(env: Record<string, string | undefined>, opts: EnvCheck
       name: 'NODE_ENV',
       message: 'не равен production, хотя окружение выглядит боевым (заданы база / OAuth-креды / домен). В этом режиме дашборд открыт без авторизации, а часть проверок не выполняется'
     })
+  }
+
+  // ── Телеметрия ───────────────────────────────────────────────────────────────────────────
+  // Признак включённости спрашиваем у того же кода, что решает в бою (`telemetryEnabled`), а не
+  // повторяем условие здесь: иначе предполётная проверка однажды соврёт про включённость.
+  // Адрес коллектора — единственный рычаг, отдельного флага нет. Проверяем ФОРМУ, а не доступность:
+  // недоступный коллектор телеметрию просто не даёт, а вот опечатка в схеме тихо не даст её никогда.
+  if (telemetryEnabled(env)) {
+    const endpoint = val('OTEL_EXPORTER_OTLP_ENDPOINT')
+    if (!/^https?:\/\//i.test(endpoint)) {
+      warnings.push({
+        name: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+        message: 'задан, но не похож на адрес (ожидается http:// или https://) — трейсы уходить не будут'
+      })
+    }
   }
 
   return { errors, warnings }

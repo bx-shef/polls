@@ -1,5 +1,6 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
 import type { EntityType } from '../domain/schema'
+import { withDependencySpan } from '../obs/span'
 
 /**
  * Серверный REST-клиент портала Bitrix24 на ОФИЦИАЛЬНОМ `@bitrix24/b24jssdk` (`B24OAuth`) —
@@ -54,15 +55,22 @@ export function createPortalClient(auth: B24OAuthParams, secret: B24OAuthSecret)
  * работал с чистым `result`.
  */
 export async function callMethod<T = unknown>(client: PortalClient, method: string, params: object = {}): Promise<T> {
-  const res = await client.actions.v2.call.make({ method, params })
-  if (!res.isSuccess) {
-    throw new Bitrix24CallError(res.getErrorMessages().join('; ') || `Bitrix24 ${method}: ошибка`)
-  }
-  const data = res.getData() as { result?: T } | null | undefined
-  if (!data || data.result === undefined) {
-    throw new Bitrix24CallError(`Bitrix24 ${method}: пустой ответ`)
-  }
-  return data.result
+  // Спан исходящего вызова — ЗДЕСЬ, в единой точке: обёртка по месту вызова означала бы, что каждый
+  // новый вызов к порталу нужно не забыть обернуть, а забывший код внешне неотличим от правильного.
+  // В атрибуты идёт только имя метода: `params` содержат id сделки и поля CRM, то есть данные людей, —
+  // белый список для них имени не предусматривает, и прикрепить их нельзя. Без SDK телеметрии это
+  // no-op (см. src/obs/span.ts), поведение вызова не меняется.
+  return await withDependencySpan(`b24 ${method}`, { 'b24.method': method }, async () => {
+    const res = await client.actions.v2.call.make({ method, params })
+    if (!res.isSuccess) {
+      throw new Bitrix24CallError(res.getErrorMessages().join('; ') || `Bitrix24 ${method}: ошибка`)
+    }
+    const data = res.getData() as { result?: T } | null | undefined
+    if (!data || data.result === undefined) {
+      throw new Bitrix24CallError(`Bitrix24 ${method}: пустой ответ`)
+    }
+    return data.result
+  })
 }
 
 /** `crm.deal.get` → поля сделки (для `dealToCrmContext`, #17). */
