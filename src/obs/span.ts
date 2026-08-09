@@ -20,7 +20,7 @@
  */
 
 import { SpanKind, SpanStatusCode, trace, type Span } from '@opentelemetry/api'
-import { errorKind, pickSafeAttributes, MAX_SPAN_NAME_LENGTH, safeSpanName } from './telemetry'
+import { errorKind, pickSafeAttributes, safeSpanName } from './telemetry'
 
 /** Имя инструментирующей библиотеки в трейсах — наш сервис. */
 export const TRACER_NAME = 'polls'
@@ -55,31 +55,51 @@ export async function withSpan<T>(
   // то есть один баг в нём убил бы все вызовы к Bitrix24.
   // ⚠️ Имя спана — ВТОРОЙ канал тех же данных, и белый список его не касается: `withSpan(err.message)`
   // отправил бы текст ошибки в трейс мимо всей защиты. Поэтому имя тоже вычищается и капается.
-  const spanName = safeSpanName(name)
+  // Тоже под `quiet`: это единственная строка телеметрии до `try`, и бросающий `toString` в имени
+  // улетал бы вызывающему — ровно тот сценарий, который шапка объявляет невозможным.
+  const spanName = quiet(() => safeSpanName(name)) ?? 'unnamed'
   const attributes = quiet(() => pickSafeAttributes(attrs)) ?? {}
-  let started: ReturnType<typeof tracer.startActiveSpan<(span: Span) => Promise<T>>> | undefined
+  // ⚠️ Флаг против ДВОЙНОГО вызова. Фолбэк ниже исходит из «трейсер сломался до передачи управления
+  // в `fn`», но это верно не всегда: бросок при восстановлении контекста происходит уже ПОСЛЕ входа в
+  // колбэк, и без флага операция выполнялась бы второй раз. Под обёрткой лежат неидемпотентные вызовы
+  // (`crm.activity.configurable.add` — респондент получил бы второе приглашение; POST рефреша OAuth —
+  // двойная ротация выбила бы портал до ручного reauth). Проверено исполнением: без флага два вызова.
+  // ⚠️ Промис операции держим САМИ, а не берём то, что вернул трейсер. Ревью показало три разных
+  // способа, которыми доверие к чужому возврату ломает бизнес-вызов:
+  //  — трейсер бросил ПОСЛЕ входа в колбэк → операция выполнялась бы второй раз, а первая, осиротевшая,
+  //    давала `unhandledRejection` (в Node по умолчанию — падение процесса). Под обёрткой лежат
+  //    неидемпотентные вызовы: второй POST рефреша ротирует токен и выбивает портал до ручного reauth;
+  //  — трейсер не вызвал колбэк → наружу уходил `undefined`, типизированный как `T`, а операция
+  //    не выполнялась вовсе;
+  //  — трейсер подменил возврат → вызывающий получал чужое значение.
+  // Держа промис, мы возвращаем результат ИМЕННО операции, чем бы ни ответил трейсер.
+  let pending: Promise<T> | undefined
   try {
-    started = tracer.startActiveSpan(spanName, { kind, attributes }, async (span) => {
-      try {
-        const result = await fn()
-        quiet(() => span.setStatus({ code: SpanStatusCode.OK }))
-        return result
-      } catch (e) {
-        // Вид ошибки, а НЕ её текст и НЕ recordException: см. шапку файла.
-        quiet(() => span.setAttribute('error_kind', errorKind(e)))
-        // Без `message`: статус спана — тоже поле для свободной строки.
-        quiet(() => span.setStatus({ code: SpanStatusCode.ERROR }))
-        throw e
-      } finally {
-        quiet(() => span.end())
-      }
+    tracer.startActiveSpan(spanName, { kind, attributes }, (span: Span): Promise<T> => {
+      pending = (async () => {
+        try {
+          const result = await fn()
+          quiet(() => span.setStatus({ code: SpanStatusCode.OK }))
+          return result
+        } catch (e) {
+          // Вид ошибки, а НЕ её текст и НЕ recordException: см. шапку файла. Через белый список, а не
+          // напрямую: иначе утверждение «атрибуты идут ТОЛЬКО через pickSafeAttributes» неверно уже в
+          // этом же файле, и инвариант держится на типе возврата, а не на коде.
+          quiet(() => span.setAttributes(pickSafeAttributes({ error_kind: errorKind(e) })))
+          // Без `message`: статус спана — тоже поле для свободной строки.
+          quiet(() => span.setStatus({ code: SpanStatusCode.ERROR }))
+          throw e
+        } finally {
+          quiet(() => span.end())
+        }
+      })()
+      return pending
     })
   } catch {
-    // Трейсер сломался ДО того, как отдал управление в `fn`, — значит операция ещё не выполнялась.
-    // Выполняем её без спана: наблюдение не имеет права отменять наблюдаемое.
-    return await fn()
+    // Трейсер сломался. Если операция уже запущена — её промис и есть ответ; если нет — выполняем
+    // без спана. Наблюдение не имеет права ни отменять наблюдаемое, ни повторять его.
   }
-  return await started
+  return await (pending ?? fn())
 }
 
 /**

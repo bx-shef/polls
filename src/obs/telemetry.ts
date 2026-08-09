@@ -38,7 +38,7 @@
  * До появления SDK спаны — no-op, и утечь неоткуда.
  */
 
-import { createHash } from 'node:crypto'
+import { createHmac } from 'node:crypto'
 import { toSingleLine } from '../domain/text'
 
 /**
@@ -85,12 +85,32 @@ export const MAX_ATTRIBUTE_LENGTH = 64
 const ATTRIBUTE_RULES: Record<TelemetryAttributeName, (v: TelemetryValue) => boolean> = {
   // Хеш ровно той формы, что выдаёт portalHash: ни домен, ни member_id так не выглядят.
   'portal.hash': (v) => typeof v === 'string' && new RegExp(`^[0-9a-f]{${PORTAL_HASH_LENGTH}}$`).test(v),
-  // Имя REST-метода Bitrix: буквы, цифры, точки. Данных человека такая форма не вмещает.
-  'b24.method': (v) => typeof v === 'string' && /^[a-z][a-z0-9._]{0,63}$/i.test(v),
+  // ⚠️ ЗАКРЫТЫЙ список, а не шаблон. Шаблон «буквы, цифры, точки» пропускал ровно то, ради чего
+  // модуль написан: `acme.bitrix24.by` (домен заказчика) и `a1b2c3d4e5f6…` (форма member_id) ему
+  // соответствуют. Методов у нас единицы, все — литералы в нашем коде, и расхождение ловит тест.
+  'b24.method': (v) => typeof v === 'string' && (B24_METHODS as readonly string[]).includes(v),
   // Закрытые наборы — сверяем принадлежность, а не форму.
   error_kind: (v) => typeof v === 'string' && (ERROR_KINDS as readonly string[]).includes(v),
   stage: (v) => typeof v === 'string' && (OUTGOING_STAGES as readonly string[]).includes(v)
 }
+
+/**
+ * REST-методы Bitrix24, которые мы вызываем. Полный список — тест сверяет его с литералами в коде,
+ * поэтому забытый метод даёт КРАСНЫЙ тест, а не тихо потерянный атрибут.
+ */
+export const B24_METHODS = [
+  'crm.deal.get',
+  'crm.deal.productrows.get',
+  'crm.lead.get',
+  'crm.contact.get',
+  'crm.company.get',
+  'crm.item.get',
+  'crm.stagehistory.list',
+  'crm.activity.configurable.add',
+  'event.bind',
+  'placement.bind',
+  'bizproc.robot.add'
+] as const
 
 /**
  * Отобрать разрешённые атрибуты.
@@ -122,8 +142,10 @@ export function pickSafeAttributes(
       // `toSingleLine` вычищает управляющие и bidi-символы (NUL, ESC, RLO, zero-width) и схлопывает
       // пробелы. Одного `\s+` тут не хватало: ANSI-escape и NUL проходили насквозь и в терминальном
       // просмотрщике оператора перекрашивали и подделывали соседние поля, а RLO переворачивал текст.
-      candidate = toSingleLine(value).slice(0, MAX_ATTRIBUTE_LENGTH)
-      if (!candidate) continue
+      // ⚠️ НЕ режем: обрезка превращала нарушение правила в успех — строка из 200 символов
+      // укорачивалась до 64 и начинала соответствовать шаблону. Слишком длинное — отбрасываем.
+      candidate = toSingleLine(value)
+      if (!candidate || candidate.length > MAX_ATTRIBUTE_LENGTH) continue
     } else {
       // Объект, массив, функция, symbol, bigint: скаляр — граница по замыслу.
       continue
@@ -146,12 +168,19 @@ export const PORTAL_HASH_LENGTH = 16
  * хранилище в открытом виде и не искался по нему поиском. Для разбора инцидента этого достаточно:
  * нужен лишь признак «тот же портал или другой».
  */
-export function portalHash(memberId: unknown): string | undefined {
-  // `unknown`, а не `string`: member_id приходит из JSON-тел и строк БД, где типу верят на слово, —
+export function portalHash(value: unknown, salt: string): string | undefined {
+  // `unknown`, а не `string`: значение приходит из JSON-тел и строк БД, где типу верят на слово, —
   // а `TypeError` здесь превратился бы в 500 в роуте из-за телеметрии.
-  const id = typeof memberId === 'string' ? memberId.trim() : ''
+  const id = typeof value === 'string' ? value.trim().toLowerCase() : ''
   if (!id) return undefined
-  return createHash('sha256').update(id).digest('hex').slice(0, PORTAL_HASH_LENGTH)
+  // ⚠️ HMAC с секретом деплоя, а не голый SHA-256. Голый перебирается тривиально: домены имеют вид
+  // `<имя>.bitrix24.<зона>`, то есть пространство узкое и угадываемое, а замер дал ~587 тысяч хешей в
+  // секунду на одном ядре — словаря из нескольких десятков кандидатов хватает, чтобы восстановить
+  // заказчика, и проверка «является ли ACME клиентом» стоит ОДИН хеш. С секретом деплоя корреляция
+  // внутри одной установки сохраняется, а восстановить прообраз без секрета нельзя.
+  // Соль пустая → атрибута нет вовсе (fail-closed): лучше потерять корреляцию, чем отдать домен.
+  if (!salt) return undefined
+  return createHmac('sha256', salt).update(id).digest('hex').slice(0, PORTAL_HASH_LENGTH)
 }
 
 /** Виды ошибок, которые мы различаем. Закрытый набор — иначе это снова свободная строка. */
@@ -185,9 +214,16 @@ export function errorKind(e: unknown): ErrorKind {
 
   if (/aborterror|timeout|timed out|etimedout|aborted/.test(hay)) return 'timeout'
   if (/econnrefused|econnreset|enotfound|eai_again|socket hang up|fetch failed|network/.test(hay)) return 'network'
-  if (/invalid_grant|invalid_token|expired_token|unauthorized|\b401\b|\b403\b/.test(hay)) return 'auth'
-  if (/query_limit_exceeded|operation_time_limit|too many requests|\b429\b/.test(hay)) return 'rate_limit'
-  if (/not_found|\b404\b/.test(hay)) return 'not_found'
+  // Битрикс отдаёт СВОИ коды отказа: без них перебор с угнанным токеном выглядел бы в трейсах как
+  // «прочее», неотличимо от сбоя разбора, — то есть терялся бы именно security-сигнал.
+  // ⚠️ Матчим РЕАЛЬНЫЕ тексты, а не коды: SDK Bitrix кладёт в ошибку `error_description`, поэтому
+  // приходит «The access token provided has expired», «Invalid request credentials», «Access denied!»,
+  // «NO_AUTH_FOUND» — по кодам не ловится ничего, и вся авторизационная семья схлопывалась в `other`,
+  // то есть терялся ровно тот сигнал, ради которого наблюдаемость и вводится. Проверено на живых
+  // ответах портала.
+  if (/invalid[_ ]?(grant|token|credentials|request credentials)|expired[_ ]?token|token provided has expired|access[_ ]?denied|no_auth_found|unauthoriz|insufficient_scope|wrong_client|\b401\b|\b403\b/.test(hay)) return 'auth'
+  if (/query_limit_exceeded|operation_time_limit|overload_limit|too many requests|\b429\b/.test(hay)) return 'rate_limit'
+  if (/not[_ ]?found|\b404\b/.test(hay)) return 'not_found'
   if (/unexpected|malformed|invalid json|parse/.test(hay)) return 'bad_response'
   return 'other'
 }
@@ -220,7 +256,7 @@ export type OutgoingStage = (typeof OUTGOING_STAGES)[number]
  * OAuth-сервера хеш не проставляется: хост там один на всех, различать нечего, а лишний атрибут — лишний
  * повод его однажды разлогировать.
  */
-export function outgoingCallAttributes(url: string): { stage: OutgoingStage, 'portal.hash'?: string } {
+export function outgoingCallAttributes(url: string, salt: string): { stage: OutgoingStage, 'portal.hash'?: string } {
   let host = ''
   let path = ''
   try {
@@ -231,9 +267,17 @@ export function outgoingCallAttributes(url: string): { stage: OutgoingStage, 'po
     return { stage: 'other' }
   }
   if (host === 'oauth.bitrix.info') return { stage: 'oauth.refresh' }
+  // ⚠️ Хеш ставим ТОЛЬКО домену портала. Через ту же точку инъекции идёт канал отзывов на
+  // `api.github.com` — там атрибут с именем «портал» означал бы не портал, то есть имя врало бы.
+  if (!isPortalHost(host)) return { stage: 'other' }
   const stage: OutgoingStage = path.endsWith('/rest/profile') ? 'profile' : 'other'
-  const hash = portalHash(host)
+  const hash = portalHash(host, salt)
   return hash ? { stage, 'portal.hash': hash } : { stage }
+}
+
+/** Похож ли хост на облачный портал Bitrix24 (`<портал>.bitrix24.<зона>`, в т.ч. двухуровневые). */
+function isPortalHost(host: string): boolean {
+  return /^[a-z0-9][a-z0-9-]*\.bitrix24\.[a-z]{2,}(\.[a-z]{2,})?$/.test(host)
 }
 
 /** Кап длины имени спана. Имя — метка операции, а не место для содержимого. */

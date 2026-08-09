@@ -410,3 +410,24 @@ describe('checkEnv — анти-абьюз за прокси', () => {
     expect(names(prod({ TRUSTED_PROXIES: '2' }).warnings)).not.toContain('TRUSTED_PROXIES')
   })
 })
+
+describe('телеметрия: форма адреса коллектора', () => {
+  // Блок был не покрыт ничем: удаление его целиком оставляло все 52 теста зелёными — то есть по
+  // критерию #31 это был мёртвый код, на который сам же модуль ссылается.
+  it('адрес не задан → замечаний нет', () => {
+    expect(checkEnv({}).warnings.some((w) => w.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')).toBe(false)
+  })
+
+  it('нормальный адрес → замечаний нет', () => {
+    expect(checkEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' })
+      .warnings.some((w) => w.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')).toBe(false)
+  })
+
+  it('адрес без схемы → предупреждение с ИМЕНЕМ и без значения', () => {
+    // Правило проекта: печатаем имена проблемных переменных, никогда значения.
+    const w = checkEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'collector:4318' })
+      .warnings.find((x) => x.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(w).toBeDefined()
+    expect(w?.message).not.toContain('collector:4318')
+  })
+})
