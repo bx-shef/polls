@@ -13,94 +13,140 @@
  * осознанный: альтернатива — собирать бутстрап отдельным шагом сборки ради одного массива строк.
  */
 
-const endpoint = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '').trim()
-if (endpoint) {
-  await start()
-}
+/**
+ * ⚠️ Списки, процессор и сборка конвейера объявлены на ВЕРХНЕМ уровне и экспортируются — ради
+ * исполняемого теста. Раньше они лежали внутри `start()`, и проверить их можно было только грепом по
+ * исходнику: ни выпавший из `spanProcessors` процессор, ни пустой `onEnd` греп не ловит. В этом
+ * проекте такой подход уже дважды провалился (#153, #159), поэтому здесь он не повторяется.
+ * Импорты самого SDK остаются ВНУТРИ `start()`: без адреса коллектора мы не должны ни грузить их, ни
+ * платить временем старта — модулей может не быть в образе вовсе.
+ */
 
-async function start() {
-  // Импорты — ВНУТРИ ветки: без адреса коллектора мы не должны ни грузить SDK, ни платить за него
-  // временем старта. Модули тяжёлые, и в образе их может не быть вовсе.
-  const { NodeSDK } = await import('@opentelemetry/sdk-node')
-  const { getNodeAutoInstrumentations } = await import('@opentelemetry/auto-instrumentations-node')
-  const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-http')
-  const { BatchSpanProcessor } = await import('@opentelemetry/sdk-trace-base')
-  const { resourceFromAttributes } = await import('@opentelemetry/resources')
+// ⚠️ ДУБЛЬ `SAFE_FOREIGN_ATTRIBUTES` из src/obs/redact-span.ts — сверяется тестом.
+export const SAFE_FOREIGN_ATTRIBUTES = [
+  'http.request.method',
+  'http.method',
+  'http.response.status_code',
+  'http.status_code',
+  'url.scheme',
+  'http.route',
+  'db.system',
+  'db.operation',
+  'messaging.system'
+]
+// ⚠️ ДУБЛЬ `OWN_ATTRIBUTE_PREFIXES` из src/obs/redact-span.ts — сверяется тестом.
+export const OWN_ATTRIBUTE_PREFIXES = ['portal.', 'b24.', 'error_kind', 'stage']
 
-  // ⚠️ ДУБЛЬ `SAFE_FOREIGN_ATTRIBUTES` из src/obs/redact-span.ts — сверяется тестом.
-  const SAFE_FOREIGN_ATTRIBUTES = [
-    'http.request.method',
-    'http.method',
-    'http.response.status_code',
-    'http.status_code',
-    'url.scheme',
-    'http.route',
-    'db.system',
-    'db.operation',
-    'messaging.system'
-  ]
-  // ⚠️ ДУБЛЬ `OWN_ATTRIBUTE_PREFIXES` из src/obs/redact-span.ts — сверяется тестом.
-  const OWN_ATTRIBUTE_PREFIXES = ['portal.', 'b24.', 'error_kind', 'stage']
+const allowed = new Set(SAFE_FOREIGN_ATTRIBUTES)
+const isOwn = (key) =>
+  OWN_ATTRIBUTE_PREFIXES.some((p) => (p.endsWith('.') ? key.startsWith(p) : key === p))
 
-  const allowed = new Set(SAFE_FOREIGN_ATTRIBUTES)
-  const isOwn = (key) =>
-    OWN_ATTRIBUTE_PREFIXES.some((p) => (p.endsWith('.') ? key.startsWith(p) : key === p))
+/**
+ * Останется ли атрибут в спане. Экспортируется, чтобы тест проверял РЕШЕНИЕ, а не литерал массива:
+ * сверка списков обходится и комментарием-обманкой с таким же объявлением выше настоящего, и
+ * расширением прямо на месте использования (`new Set([...SAFE_FOREIGN_ATTRIBUTES, 'db.statement'])`).
+ * Оба обхода показало ревью, и оба оставляли тесты зелёными.
+ */
+export const isAttributeKept = (key) => allowed.has(key) || isOwn(key)
 
-  /**
-   * Процессор вычистки. Стоит ПЕРЕД экспортирующим: `MultiSpanProcessor` вызывает `onEnd` по порядку,
-   * и спан, дошедший до экспортёра нередактированным, уже не вернуть.
-   *
-   * Правит спан НА МЕСТЕ, потому что интерфейс процессора не даёт вернуть новый объект. Отсюда же
-   * `try/catch` вокруг всего: сбой вычистки не должен ни ронять процесс, ни — что важнее —
-   * пропустить спан дальше нетронутым.
-   */
-  class RedactingSpanProcessor {
-    onStart() {}
+/**
+ * Процессор вычистки. Стоит ПЕРЕД экспортирующим: `MultiSpanProcessor` вызывает `onEnd` по порядку,
+ * и спан, дошедший до экспортёра нередактированным, уже не вернуть.
+ *
+ * Правит спан НА МЕСТЕ, потому что интерфейс процессора не даёт вернуть новый объект. Отсюда же
+ * `try/catch` вокруг всего: сбой вычистки не должен ни ронять процесс, ни — что важнее — выпустить
+ * спан наружу полузачищенным.
+ */
+export class RedactingSpanProcessor {
+  onStart() {}
 
-    onEnd(span) {
+  onEnd(span) {
+    try {
+      const attrs = span.attributes ?? {}
+      for (const key of Object.keys(attrs)) {
+        if (!allowed.has(key) && !isOwn(key)) delete attrs[key]
+      }
+      // События несут `exception.message` и `exception.stacktrace` — тот же свободный текст, из-за
+      // которого у себя мы запретили `recordException`. Наш запрет покрывает НАШ код, не чужой.
+      if (Array.isArray(span.events) && span.events.length) span.events.length = 0
+      // Сообщение статуса — ещё одно поле для свободной строки.
+      if (span.status && typeof span.status === 'object' && span.status.message) {
+        delete span.status.message
+      }
+    } catch {
+      // Вычистка сломалась на полпути — спан НЕ выпускаем полузачищенным. Пустой спан плох для
+      // диагностики; нередактированный плох для людей, чьи данные в нём лежат.
       try {
         const attrs = span.attributes ?? {}
-        for (const key of Object.keys(attrs)) {
-          if (!allowed.has(key) && !isOwn(key)) delete attrs[key]
-        }
-        // События несут `exception.message` и `exception.stacktrace` — тот же свободный текст, из-за
-        // которого у себя мы запретили `recordException`. Наш запрет покрывает НАШ код, не чужой.
-        if (Array.isArray(span.events) && span.events.length) span.events.length = 0
-        // Сообщение статуса — ещё одно поле для свободной строки.
-        if (span.status && typeof span.status === 'object' && span.status.message) {
-          delete span.status.message
-        }
-      } catch {
-        // Вычистка сломалась — спан не выпускаем. Пустые атрибуты хуже, чем нередактированные,
-        // только для диагностики; наоборот — хуже для людей, чьи данные в них лежат.
-        try {
-          for (const key of Object.keys(span.attributes ?? {})) delete span.attributes[key]
-          if (Array.isArray(span.events)) span.events.length = 0
-        } catch { /* уже ничего не поделать */ }
-      }
+        for (const key of Object.keys(attrs)) delete attrs[key]
+        if (Array.isArray(span.events)) span.events.length = 0
+        if (span.status && typeof span.status === 'object') delete span.status.message
+      } catch { /* уже ничего не поделать */ }
     }
-
-    shutdown() { return Promise.resolve() }
-    forceFlush() { return Promise.resolve() }
   }
 
-  const sdk = new NodeSDK({
+  shutdown() { return Promise.resolve() }
+  forceFlush() { return Promise.resolve() }
+}
+
+/**
+ * Конфиг `NodeSDK` — чистая функция от инъектированных конструкторов SDK. Вынесена ровно затем, чтобы
+ * тест мог ИСПОЛНИТЬ сборку конвейера на фейках, не устанавливая сам SDK, и проверить ПОРЯДОК
+ * процессоров, а не упоминание процессора в исходнике.
+ */
+export function buildSdkConfig(deps, endpoint) {
+  const { resourceFromAttributes, BatchSpanProcessor, OTLPTraceExporter } = deps
+  return {
     resource: resourceFromAttributes({
       'service.name': process.env.OTEL_SERVICE_NAME ?? 'polls'
     }),
+    // ⚠️ Детекторы РЕСУРСА отключены явно. По умолчанию `NodeSDK` включает host/process-детекторы, и в
+    // каждый спан уезжают `host.name`, `process.owner`, `process.command_args` (а там бывает строка
+    // подключения) — то есть топология нашей инфраструктуры в общий приёмник. Ревью показало это на
+    // перехваченном OTLP-трафике; до правки JSDoc и карта утверждали, что вычистка есть, а её не было.
+    resourceDetectors: [],
     spanProcessors: [
       new RedactingSpanProcessor(),
       new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces` }))
     ],
-    instrumentations: [
-      getNodeAutoInstrumentations({
-        // ⚠️ Файловые операции засыпают трейс шумом и несут пути — выключаем.
-        '@opentelemetry/instrumentation-fs': { enabled: false },
-        // ⚠️ Параметры запроса к БД — это значения полей, то есть тексты ответов. Никогда.
-        '@opentelemetry/instrumentation-pg': { enhancedDatabaseReporting: false }
-      })
-    ]
-  })
+    // ⚠️ Авто-инструментирование НЕ подключено, и это осознанно, а не забыто. Точка входа рантайма —
+    // `.output/server/index.mjs`, то есть ESM: патчить модули без хука `import-in-the-middle` OTel не
+    // умеет (проверено ревью — при ESM-загрузке `http` спанов ноль, при CJS три). А `pg` Nitro
+    // вбандливает в `.output`, и подменить его нельзя в принципе. Итог был бы 80 МБ зависимостей,
+    // в 6,7 раза тяжелее самого приложения, ради нулевого выхлопа.
+    // Экспортируются НАШИ спаны (`withSpan`/`withDependencySpan`) — они на `@opentelemetry/api` и от
+    // системы модулей не зависят. Вычистка чужих атрибутов остаётся на месте: она понадобится в тот
+    // же день, когда авто-инструментирование включат, и ставить её задним числом поздно.
+    instrumentations: []
+  }
+}
+
+const endpoint = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '').trim()
+if (endpoint) {
+  // ⚠️ FAIL-OPEN, и это не перестраховка. Бутстрап грузится через `--import`, то есть ДО приложения:
+  // любой брошенный отсюда сбой убивает процесс раньше, чем стартует сервис, и падает он в preload —
+  // до нашего логгера, поэтому в журнале будет только чужой стектрейс. Проверено ревью на раскладке
+  // образа: без этого включение телеметрии переменной окружения превращалось в выключение СЕРВИСА,
+  // причём без PR, без CI и без ревью. Телеметрия не имеет права ронять то, что наблюдает, — это тот
+  // же инвариант, что и в `withSpan`, только ценой ошибки здесь — весь процесс.
+  try {
+    await start()
+  } catch (e) {
+    // Единственная строка, которую мы можем себе позволить: логгер приложения ещё не существует.
+    console.error('[otel] бутстрап не поднялся, сервис продолжает работу без телеметрии:', e?.message ?? e)
+  }
+}
+
+async function start() {
+  const { NodeSDK } = await import('@opentelemetry/sdk-node')
+  const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-http')
+  const { BatchSpanProcessor } = await import('@opentelemetry/sdk-trace-base')
+  const { resourceFromAttributes } = await import('@opentelemetry/resources')
+
+  const sdk = new NodeSDK(buildSdkConfig(
+    { resourceFromAttributes, BatchSpanProcessor, OTLPTraceExporter },
+    endpoint
+  ))
 
   sdk.start()
 

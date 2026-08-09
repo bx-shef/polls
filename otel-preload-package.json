@@ -2,10 +2,9 @@
   "name": "polls-otel-preload",
   "private": true,
   "type": "module",
-  "description": "Зависимости бутстрапа телеметрии. Ставятся ОТДЕЛЬНО от приложения и НЕ попадают в бандл Nitro — иначе авто-инструментирование не сможет подменить http/pg. Версии точные: расхождение версии @opentelemetry/api между бандлом и preload даёт молчаливый вечный no-op.",
+  "description": "Зависимости бутстрапа телеметрии. Ставятся ОТДЕЛЬНО от приложения (бутстрап грузится до сборки и его модулей в .output нет). Версии точные: расхождение версии @opentelemetry/api между бандлом и preload даёт молчаливый вечный no-op. Авто-инструментирование НЕ ставим: точка входа рантайма — ESM, а патчить модули без хука import-in-the-middle оно не умеет, при этом pg вбандлен в .output и подменить его нельзя в принципе. Итог был бы 80 МБ ради нуля спанов.",
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
-    "@opentelemetry/auto-instrumentations-node": "0.79.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.221.0",
     "@opentelemetry/resources": "2.10.0",
     "@opentelemetry/sdk-node": "0.221.0",

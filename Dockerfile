@@ -20,6 +20,9 @@ RUN pnpm build
 # подменить уже не может — require-хуки ставятся до загрузки, а бандл загружает свою копию сам.
 # Версии в `otel-preload-package.json` ТОЧНЫЕ: расхождение версии `@opentelemetry/api` между бандлом
 # приложения и preload даёт молчаливый вечный no-op — трейсов нет, ошибки нет.
+# ⚠️ Раскладка «бутстрап рядом со своими node_modules» обязательна: ESM резолвит зависимости ВВЕРХ по
+# дереву каталогов и `NODE_PATH` не читает вовсе (документированное поведение Node, проверено запуском
+# в раскладке образа — с `NODE_PATH` получался `ERR_MODULE_NOT_FOUND` и мёртвый процесс).
 RUN mkdir -p /otel && cp otel-preload-package.json /otel/package.json \
     && cd /otel && npm install --omit=dev --no-audit --no-fund
 
@@ -34,16 +37,14 @@ COPY --from=build /app/migrations ./migrations
 # Бутстрап телеметрии и его зависимости. Без `OTEL_EXPORTER_OTLP_ENDPOINT` файл выходит на первой
 # строке и SDK не грузит — то есть в обычной установке это мёртвый вес в несколько мегабайт и ноль
 # накладных в рантайме.
-COPY --from=build /otel/node_modules ./otel_modules
-COPY --from=build /app/otel.instrument.mjs ./otel.instrument.mjs
+COPY --from=build /otel/node_modules ./otel/node_modules
+COPY --from=build /app/otel.instrument.mjs ./otel/instrument.mjs
 # Непривилегированный пользователь (образ node уже содержит `node`).
 USER node
 EXPOSE 3000
 # Nitro слушает PORT (по умолчанию 3000), HOST 0.0.0.0 — чтобы был доступен из сети контейнера.
 ENV PORT=3000 HOST=0.0.0.0
-# ⚠️ `--import` грузит бутстрап ДО приложения — иначе авто-инструментирование не перехватит http/pg,
-# и это провалится МОЛЧА: сервис работает, трейсов нет. `NODE_PATH` нужен, чтобы бутстрап нашёл свои
-# зависимости, лежащие вне `.output`.
-ENV NODE_PATH=/app/otel_modules
-ENV NODE_OPTIONS=--import=/app/otel.instrument.mjs
+# ⚠️ `--import` грузит бутстрап ДО приложения. Путь — внутри `/app/otel`, рядом с его `node_modules`:
+# ESM ищет зависимости вверх по дереву каталогов, и лежи бутстрап в `/app`, он бы их не нашёл.
+ENV NODE_OPTIONS=--import=/app/otel/instrument.mjs
 CMD ["node", ".output/server/index.mjs"]
