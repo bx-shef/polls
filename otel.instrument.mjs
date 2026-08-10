@@ -30,8 +30,14 @@ export const SAFE_FOREIGN_ATTRIBUTES = [
   'http.status_code',
   'url.scheme',
   'http.route',
+  // ⚠️ Обе формы имени: инструментации в переходе со старого semconv на новый, и держать только одну
+  // означало бы либо потерять полезное, либо (что хуже) пропустить утечку под новым именем. Ревью
+  // показало это на живом захвате: `instrumentation-pg` в запиннённой версии НЕ выставляет
+  // `db.statement` вовсе — SQL приезжает в `db.query.text`, и наш тест проверял имя, которого нет.
   'db.system',
+  'db.system.name',
   'db.operation',
+  'db.operation.name',
   'messaging.system'
 ]
 // ⚠️ ДУБЛЬ `OWN_ATTRIBUTE_PREFIXES` из src/obs/redact-span.ts — сверяется тестом.
@@ -48,6 +54,27 @@ const isOwn = (key) =>
  * Оба обхода показало ревью, и оба оставляли тесты зелёными.
  */
 export const isAttributeKept = (key) => allowed.has(key) || isOwn(key)
+
+/**
+ * Пропагатор, который НИЧЕГО не извлекает и ничего не внедряет.
+ *
+ * Публичные маршруты (`/s/:key`, `/api/b24/*`) принимает **неаутентифицированный респондент**, и
+ * дефолтный `tracecontext,baggage` доверяет его заголовкам целиком. Ревью показало на живом экспорте
+ * три следствия, и все три — мимо белого списка атрибутов:
+ *  - `tracestate: leak=ivanov.i.i@acme.by+375291234567:otvet` уезжал **дословно** (до 32 записей по
+ *    256 символов, полностью управляемых отправителем);
+ *  - `traceparent` с флагом `00` глушил трассировку: три запроса — ноль спанов, то есть любой абьюз
+ *    делается невидимым одним заголовком;
+ *  - `baggage` анонима **переинъектировался в исходящие** запросы — а исходящие у нас идут к порталу
+ *    заказчика.
+ * Своей распределённой трассировки у нас нет (сервис один), поэтому извлекать чужой контекст незачем
+ * вовсе. Это структурный запрет, а не фильтр: нечего фильтровать, если ничего не извлекается.
+ */
+class NoopPropagator {
+  inject() {}
+  extract(context) { return context }
+  fields() { return [] }
+}
 
 /**
  * Процессор вычистки. Стоит ПЕРЕД экспортирующим: `MultiSpanProcessor` вызывает `onEnd` по порядку,
@@ -73,6 +100,12 @@ export class RedactingSpanProcessor {
       if (span.status && typeof span.status === 'object' && span.status.message) {
         delete span.status.message
       }
+      // `traceState` приходит от отправителя и в белый список атрибутов не попадает вовсе — это
+      // отдельное поле спана. Чистим здесь на случай, если пропагатор когда-нибудь включат обратно.
+      if (span.spanContext && typeof span.spanContext === 'function') {
+        const ctx = span.spanContext()
+        if (ctx && ctx.traceState) ctx.traceState = undefined
+      }
     } catch {
       // Вычистка сломалась на полпути — спан НЕ выпускаем полузачищенным. Пустой спан плох для
       // диагностики; нередактированный плох для людей, чьи данные в нём лежат.
@@ -87,6 +120,41 @@ export class RedactingSpanProcessor {
 
   shutdown() { return Promise.resolve() }
   forceFlush() { return Promise.resolve() }
+}
+
+/**
+ * Обёртка экспортёра — ПОСЛЕДНЯЯ линия, и единственная, где отказ действительно возможен.
+ *
+ * ⚠️ `onEnd` не умеет наложить вето: `MultiSpanProcessor` зовёт его у всех процессоров независимо от
+ * исхода предыдущего, поэтому «сломалась вычистка — не выпускаем» там неисполнимо. Ревью показало это
+ * на настоящем `SpanImpl`: если атрибуты заморожены, `delete` бросает, аварийная ветка бросает на том
+ * же ключе — и спан уезжает ПОЛНОСТЬЮ нередактированным, с путём-ключом опроса, адресом респондента и
+ * текстом SQL.
+ *
+ * Здесь отказ возможен: спан, у которого после вычистки остался хоть один неразрешённый атрибут,
+ * **не отправляется**. Потерять спан хуже для диагностики; отправить чужие данные хуже для людей.
+ */
+export function redactingExporter(inner) {
+  return {
+    export(spans, resultCallback) {
+      let safe
+      try {
+        safe = spans.filter((span) => {
+          const attrs = span?.attributes ?? {}
+          return Object.keys(attrs).every((key) => isAttributeKept(key))
+            && !(Array.isArray(span?.events) && span.events.length > 0)
+            && !span?.status?.message
+        })
+      } catch {
+        // Не смогли даже проверить — не отправляем ничего. Это и есть fail-closed.
+        safe = []
+      }
+      if (safe.length === 0) return resultCallback({ code: 0 })
+      return inner.export(safe, resultCallback)
+    },
+    shutdown() { return inner.shutdown() },
+    forceFlush() { return inner.forceFlush ? inner.forceFlush() : Promise.resolve() }
+  }
 }
 
 /**
@@ -105,9 +173,12 @@ export function buildSdkConfig(deps, endpoint) {
     // подключения) — то есть топология нашей инфраструктуры в общий приёмник. Ревью показало это на
     // перехваченном OTLP-трафике; до правки JSDoc и карта утверждали, что вычистка есть, а её не было.
     resourceDetectors: [],
+    // Чужой контекст не извлекаем и свой не внедряем — см. `NoopPropagator`.
+    textMapPropagator: new NoopPropagator(),
     spanProcessors: [
       new RedactingSpanProcessor(),
-      new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces` }))
+      // Экспортёр обёрнут: см. `redactingExporter` — вето возможно только здесь.
+      new BatchSpanProcessor(redactingExporter(new OTLPTraceExporter({ url: `${normalizeEndpoint(endpoint)}/v1/traces` })))
     ],
     // ⚠️ Авто-инструментирование НЕ подключено, и это осознанно, а не забыто. Точка входа рантайма —
     // `.output/server/index.mjs`, то есть ESM: патчить модули без хука `import-in-the-middle` OTel не
@@ -120,6 +191,9 @@ export function buildSdkConfig(deps, endpoint) {
     instrumentations: []
   }
 }
+
+/** Убрать хвостовые слэши: иначе `${endpoint}/v1/traces` даёт `//v1/traces`. */
+export const normalizeEndpoint = (raw) => String(raw ?? '').trim().replace(/\/+$/, '')
 
 const endpoint = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '').trim()
 if (endpoint) {

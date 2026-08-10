@@ -25,6 +25,8 @@ type Boot = {
     resourceDetectors: unknown[]
   }
   isAttributeKept: (key: string) => boolean
+  redactingExporter: (inner: unknown) => { export: (spans: unknown[], cb: (r: unknown) => void) => void }
+  normalizeEndpoint: (raw: unknown) => string
   SAFE_FOREIGN_ATTRIBUTES: string[]
   OWN_ATTRIBUTE_PREFIXES: string[]
 }
@@ -165,6 +167,23 @@ describe('buildSdkConfig — конвейер собирается правил�
     expect(cfg.spanProcessors[1]).toBeInstanceOf(deps.BatchSpanProcessor)
   })
 
+  it('экспортёр в конвейере ОБЁРНУТ вычисткой', () => {
+    // ⚠️ Мутация «убрать `redactingExporter(...)` из конвейера» проходила мимо тестов: сам механизм был
+    // покрыт, а его ПОДКЛЮЧЕНИЕ — нет. Это ровно тот класс дыры, из-за которого в этом PR уже дважды
+    // переделывались гарды.
+    const cfg = boot.buildSdkConfig(deps, 'http://c:4318')
+    const exporter = (cfg.spanProcessors[1] as { exporter: unknown }).exporter
+    expect(exporter, 'в BatchSpanProcessor уехал сырой OTLP-экспортёр без вычистки')
+      .not.toBeInstanceOf(deps.OTLPTraceExporter)
+    // И это действительно наша обёртка: она фильтрует.
+    const sent: unknown[][] = []
+    const wrapped = boot.redactingExporter({
+      export: (spans: unknown[], cb: (r: unknown) => void) => { sent.push(spans); cb({ code: 0 }) },
+      shutdown: () => Promise.resolve()
+    })
+    expect(Object.keys(exporter as object).sort()).toEqual(Object.keys(wrapped).sort())
+  })
+
   it('детекторы ресурса ОТКЛЮЧЕНЫ', () => {
     // По умолчанию NodeSDK включает host/process-детекторы, и в каждый спан уезжают `host.name`,
     // `process.owner`, `process.command_args` (там бывает строка подключения) — топология нашей
@@ -178,10 +197,16 @@ describe('buildSdkConfig — конвейер собирается правил�
     expect(boot.buildSdkConfig(deps, 'http://c:4318').instrumentations).toEqual([])
   })
 
-  it('адрес коллектора подставляется в путь OTLP', () => {
-    const cfg = boot.buildSdkConfig(deps, 'http://collector:4318')
-    const exporter = (cfg.spanProcessors[1] as { exporter: { opts: { url: string } } }).exporter
-    expect(exporter.opts.url).toBe('http://collector:4318/v1/traces')
+  it('адрес коллектора подставляется в путь OTLP и нормализуется', () => {
+    // Экспортёр обёрнут `redactingExporter`, поэтому URL ловим на конструкторе, а не через обёртку.
+    const urls: string[] = []
+    const spy = {
+      ...deps,
+      OTLPTraceExporter: class { constructor(opts: { url: string }) { urls.push(opts.url) } }
+    }
+    boot.buildSdkConfig(spy, 'http://collector:4318')
+    boot.buildSdkConfig(spy, 'http://collector:4318/')
+    expect(urls).toEqual(['http://collector:4318/v1/traces', 'http://collector:4318/v1/traces'])
   })
 })
 
@@ -223,6 +248,106 @@ describe('образ и зависимости бутстрапа', () => {
     const preload = JSON.parse(read('../otel-preload-package.json')) as { dependencies: Record<string, string> }
     for (const [name, version] of Object.entries(preload.dependencies)) {
       expect(version, `${name}: диапазон вместо точной версии`).toMatch(/^\d+\.\d+\.\d+$/)
+    }
+  })
+})
+
+describe('экспортёр — ПОСЛЕДНЯЯ линия, и единственная, где вето возможно', () => {
+  const collect = () => {
+    const sent: unknown[][] = []
+    const inner = {
+      export: (spans: unknown[], cb: (r: unknown) => void) => { sent.push(spans); cb({ code: 0 }) },
+      shutdown: () => Promise.resolve(),
+      forceFlush: () => Promise.resolve()
+    }
+    return { sent, exporter: boot.redactingExporter(inner) }
+  }
+
+  it('спан с уцелевшей утечкой НЕ отправляется', () => {
+    // ⚠️ Это не дубль процессора. `onEnd` не умеет наложить вето: `MultiSpanProcessor` зовёт его у
+    // всех процессоров независимо от исхода предыдущего. Ревью показало на настоящем `SpanImpl`: при
+    // замороженных атрибутах `delete` бросает, аварийная ветка бросает на том же ключе — и спан
+    // уезжает ПОЛНОСТЬЮ нередактированным. Здесь отказ возможен, и он происходит.
+    const { sent, exporter } = collect()
+    const frozen = Object.freeze({
+      'http.route': '/s/:key',
+      'url.path': '/s/СЕКРЕТНЫЙ-КЛЮЧ',
+      'db.query.text': "INSERT INTO response_answer (text) VALUES ('всё ужасно')"
+    })
+    const span = { attributes: frozen, events: [], status: { code: 2 } }
+    // Процессор на замороженном объекте бессилен — проверяем, что это ловит экспортёр.
+    new boot.RedactingSpanProcessor().onEnd(span)
+    exporter.export([span], () => {})
+    expect(sent.flat(), 'спан с утечкой уехал в коллектор').toEqual([])
+  })
+
+  it('спан с уцелевшим событием или текстом статуса НЕ отправляется', () => {
+    const { sent, exporter } = collect()
+    exporter.export([
+      { attributes: { 'http.route': '/s/:key' }, events: [{ name: 'exception' }], status: { code: 2 } },
+      { attributes: { 'http.route': '/s/:key' }, events: [], status: { code: 2, message: 'DSN' } }
+    ], () => {})
+    expect(sent.flat()).toEqual([])
+  })
+
+  it('чистый спан отправляется', () => {
+    const { sent, exporter } = collect()
+    const clean = { attributes: { 'b24.method': 'crm.deal.get', 'portal.hash': 'deadbeefdeadbeef' }, events: [], status: { code: 1 } }
+    exporter.export([clean], () => {})
+    expect(sent.flat()).toEqual([clean])
+  })
+
+  it('сбой самой проверки → не отправляем ничего', () => {
+    const { sent, exporter } = collect()
+    const nasty = { get attributes(): never { throw new Error('спан сломан') } }
+    exporter.export([nasty], () => {})
+    expect(sent.flat()).toEqual([])
+  })
+})
+
+describe('чужой контекст не извлекается', () => {
+  const deps = {
+    resourceFromAttributes: (a: unknown) => ({ resource: a }),
+    BatchSpanProcessor: class { constructor(readonly exporter: unknown) {} },
+    OTLPTraceExporter: class { constructor(readonly opts: { url: string }) {} }
+  }
+
+  it('пропагатор ничего не извлекает и ничего не внедряет', () => {
+    // Публичные маршруты принимает неаутентифицированный респондент. Ревью показало на живом экспорте:
+    // `tracestate` уезжал дословно (до 32 записей по 256 символов от отправителя), `traceparent` с
+    // флагом `00` глушил трассировку целиком, а `baggage` переинъектировался в исходящие к порталу.
+    const cfg = boot.buildSdkConfig(deps, 'http://c:4318') as unknown as {
+      textMapPropagator: { extract: (c: unknown) => unknown, fields: () => string[], inject: () => void }
+    }
+    const p = cfg.textMapPropagator
+    expect(p.fields()).toEqual([])
+    const ctx = { исходный: true }
+    expect(p.extract(ctx), 'чужой контекст просочился').toBe(ctx)
+    expect(() => p.inject()).not.toThrow()
+  })
+})
+
+describe('адрес коллектора нормализуется', () => {
+  it('хвостовой слэш не даёт //v1/traces', () => {
+    expect(boot.normalizeEndpoint('http://c:4318/')).toBe('http://c:4318')
+    expect(boot.normalizeEndpoint('http://c:4318///')).toBe('http://c:4318')
+    expect(boot.normalizeEndpoint('  http://c:4318  ')).toBe('http://c:4318')
+  })
+})
+
+describe('имена атрибутов соответствуют запиннённым версиям semconv', () => {
+  it('обе формы имени — старая и новая', () => {
+    // Инструментации в переходе со старого semconv на новый. Ревью показало цену однобокости:
+    // `instrumentation-pg` в запиннённой версии НЕ выставляет `db.statement` вовсе — SQL приезжает в
+    // `db.query.text`, и тест на `db.statement` проверял имя, которого не бывает.
+    for (const key of ['db.system', 'db.system.name', 'db.operation', 'db.operation.name']) {
+      expect(boot.isAttributeKept(key), key).toBe(true)
+    }
+    // Новые имена носителей данных — по-прежнему не проходят.
+    for (const key of ['db.query.text', 'db.query.parameter.0', 'db.namespace',
+      'network.peer.address', 'network.peer.port', 'server.port', 'url.template',
+      'http.request.header.x-forwarded-for', 'user_agent.synthetic.type']) {
+      expect(boot.isAttributeKept(key), `${key} остался бы в спане`).toBe(false)
     }
   })
 })
