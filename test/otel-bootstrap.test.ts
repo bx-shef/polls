@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -23,8 +24,12 @@ type Boot = {
     spanProcessors: unknown[]
     instrumentations: unknown[]
     resourceDetectors: unknown[]
+    metricReaders: unknown[]
+    logRecordProcessors: unknown[]
   }
   isAttributeKept: (key: string) => boolean
+  isValueKept: (value: unknown) => boolean
+  isEntryKept: (key: string, value: unknown) => boolean
   redactingExporter: (inner: unknown) => { export: (spans: unknown[], cb: (r: unknown) => void) => void }
   normalizeEndpoint: (raw: unknown) => string
   SAFE_FOREIGN_ATTRIBUTES: string[]
@@ -191,6 +196,17 @@ describe('buildSdkConfig — конвейер собирается правил�
     expect(boot.buildSdkConfig(deps, 'http://c:4318').resourceDetectors).toEqual([])
   })
 
+  it('каналы метрик и логов ОТКЛЮЧЕНЫ явно, пустым списком', () => {
+    // ⚠️ Не косметика. `NodeSDK`, не получив `metricReaders`/`logRecordProcessors`, берёт их из
+    // окружения и при пустом наборе экспортёров дописывает `otlp` САМ — на тот же адрес. Ревью
+    // показало на живом приёмнике POST'ы `/v1/metrics` и `/v1/logs` с `db.statement`, `url.path` с
+    // ключом опроса и телом лог-записи со строкой подключения: мимо процессора И мимо вето экспортёра.
+    // Провайдеры регистрируются глобально, поэтому «мы этим не пользуемся» защитой не является.
+    const cfg = boot.buildSdkConfig(deps, 'http://c:4318')
+    expect(cfg.metricReaders, 'канал метрик поднимется из env и уедет мимо вычистки').toEqual([])
+    expect(cfg.logRecordProcessors, 'канал логов поднимется из env и уедет мимо вычистки').toEqual([])
+  })
+
   it('авто-инструментирование не подключается', () => {
     // Осознанно: точка входа рантайма — ESM, а патчить модули без хука `import-in-the-middle` OTel не
     // умеет; `pg` вдобавок вбандлен в `.output`. Подключение стоило бы 80 МБ ради нуля спанов.
@@ -249,6 +265,46 @@ describe('образ и зависимости бутстрапа', () => {
     for (const [name, version] of Object.entries(preload.dependencies)) {
       expect(version, `${name}: диапазон вместо точной версии`).toMatch(/^\d+\.\d+\.\d+$/)
     }
+  })
+
+  /**
+   * Лок-файл preload — это supply-chain-граница, и она строже, чем у бандла приложения: этот код
+   * грузится через `--import` ДО приложения, в том же процессе и с теми же правами. Прямых
+   * зависимостей четыре, а приезжает 71 пакет — без лока 67 транзитивных резолвились бы заново на
+   * каждой сборке образа. Тот же довод, по которому сторонние GitHub-actions запиннены на commit-SHA.
+   */
+  describe('лок-файл preload', () => {
+    const lock = JSON.parse(read('../otel-preload-package-lock.json')) as {
+      lockfileVersion: number
+      packages: Record<string, { version?: string, resolved?: string, integrity?: string, link?: boolean }>
+    }
+
+    it('у каждого пакета есть integrity и resolved', () => {
+      const entries = Object.entries(lock.packages).filter(([path, meta]) => path && !meta.link)
+      expect(entries.length, 'лок-файл пуст — сборка резолвила бы дерево заново').toBeGreaterThan(50)
+      for (const [path, meta] of entries) {
+        expect(meta.integrity, `${path}: без integrity подмена содержимого не заметна`).toBeTruthy()
+        expect(meta.resolved, `${path}: без resolved источник не зафиксирован`).toBeTruthy()
+      }
+    })
+
+    it('версии прямых зависимостей совпадают с манифестом', () => {
+      // Расхождение молчаливо: `npm ci` поставил бы версию из лока, а сверка версии `@opentelemetry/api`
+      // с бандлом приложения смотрит в манифест — и «совпадает» превратилось бы в неправду.
+      const preload = JSON.parse(read('../otel-preload-package.json')) as { dependencies: Record<string, string> }
+      for (const [name, version] of Object.entries(preload.dependencies)) {
+        expect(lock.packages[`node_modules/${name}`]?.version, `${name}: лок и манифест разошлись`).toBe(version)
+      }
+    })
+
+    it('образ ставит preload по локу и БЕЗ install-скриптов', () => {
+      // `protobufjs` в дереве несёт `postinstall`, и он выполнялся бы прямо в сборке образа — ради
+      // gRPC/proto-экспортёров, которых бутстрап не импортирует вовсе.
+      expect(dockerfile).toMatch(/npm ci --omit=dev --ignore-scripts/)
+      expect(dockerfile, 'npm install резолвил бы транзитивные заново на каждой сборке')
+        .not.toMatch(/cd \/otel && npm install/)
+      expect(dockerfile).toMatch(/COPY otel-preload-package-lock\.json \/otel\/package-lock\.json/)
+    })
   })
 })
 
@@ -333,6 +389,151 @@ describe('адрес коллектора нормализуется', () => {
     expect(boot.normalizeEndpoint('http://c:4318///')).toBe('http://c:4318')
     expect(boot.normalizeEndpoint('  http://c:4318  ')).toBe('http://c:4318')
   })
+
+  it('уже приписанный сигнальный суффикс не удваивается', () => {
+    // В доках OTel сигнальная переменная идёт С путём (`..._TRACES_ENDPOINT=…/v1/traces`) — копипаста
+    // в общую `OTEL_EXPORTER_OTLP_ENDPOINT` давала `/v1/traces/v1/traces` и тихо теряла всю телеметрию.
+    expect(boot.normalizeEndpoint('https://collector:4318/v1/traces')).toBe('https://collector:4318')
+    expect(boot.normalizeEndpoint('https://collector:4318/v1/metrics/')).toBe('https://collector:4318')
+  })
+
+  it('query и фрагмент отбрасываются', () => {
+    expect(boot.normalizeEndpoint('http://c:4318?x=1')).toBe('http://c:4318')
+    expect(boot.normalizeEndpoint('http://host/#')).toBe('http://host')
+  })
+
+  it('префикс пути СОХРАНЯЕТСЯ — коллектор за подпутём это рабочая раскладка', () => {
+    expect(boot.normalizeEndpoint('https://obs.example/otel/')).toBe('https://obs.example/otel')
+    expect(boot.normalizeEndpoint('https://obs.example/otel/v1/traces')).toBe('https://obs.example/otel')
+  })
+
+  it('невалидный адрес не бросает — бутстрап не имеет права падать', () => {
+    expect(() => boot.normalizeEndpoint('не-адрес')).not.toThrow()
+    expect(boot.normalizeEndpoint(undefined)).toBe('')
+  })
+
+  it('адрес без схемы не превращается в «collector://4318»', () => {
+    // ⚠️ `new URL('collector:4318')` разбирается УСПЕШНО, с протоколом `collector:` — и наивная сборка
+    // из частей давала `collector://4318/v1/traces`, то есть молча мёртвый конвейер. Отдаём строку как
+    // есть: экспортёр упадёт на неверном URL, это поймает fail-open и назовёт проблему в логе.
+    expect(boot.normalizeEndpoint('collector:4318')).toBe('collector:4318')
+    expect(boot.normalizeEndpoint('file:///etc/passwd')).toBe('file:///etc/passwd')
+  })
+})
+
+/**
+ * Вторая половина решения — ФОРМА ЗНАЧЕНИЯ. Проверка одного имени пропускала носителей данных под
+ * разрешёнными именами; ревью показало это на живом OTLP-захвате.
+ */
+describe('значение атрибута проверяется, а не только имя', () => {
+  it('массив под разрешённым именем не проходит', () => {
+    // Дословный захват ревью: `http.route: ['/s/SECRETKEY-IN-ARRAY', '+375291234567']` уехал массивом.
+    expect(boot.isValueKept(['/s/SECRETKEY-IN-ARRAY', '+375291234567'])).toBe(false)
+    expect(boot.isEntryKept('http.route', ['/s/SECRETKEY-IN-ARRAY'])).toBe(false)
+    expect(boot.isEntryKept('http.route', '/s/:key')).toBe(true)
+  })
+
+  it('наш собственный префикс не даёт свободного текста', () => {
+    // `portal.hash`/`b24.method` заполняет `pickSafeAttributes` (имя И форма), но ЧУЖОЙ спан может
+    // поставить те же имена — на них у бутстрапа своей проверки формы не было вовсе.
+    expect(boot.isEntryKept('portal.hash', 'PORTALLEAK-акме.bitrix24.by')).toBe(false)
+    expect(boot.isEntryKept('b24.method', 'LEAK:ивановcompany')).toBe(false)
+    expect(boot.isEntryKept('portal.hash', 'deadbeefdeadbeef')).toBe(true)
+    expect(boot.isEntryKept('b24.method', 'crm.deal.get')).toBe(true)
+  })
+
+  it('кириллица, управляющие/bidi-символы и длинные строки выбрасываются', () => {
+    expect(boot.isValueKept('всё ужасно')).toBe(false)
+    expect(boot.isValueKept('ok\u0000drop')).toBe(false)
+    expect(boot.isValueKept('ok\u202edrop')).toBe(false)
+    expect(boot.isValueKept('x'.repeat(129))).toBe(false)
+    expect(boot.isValueKept('x'.repeat(128))).toBe(true)
+  })
+
+  it('скаляры проходят, объекты и не-числа — нет', () => {
+    expect(boot.isValueKept(200)).toBe(true)
+    expect(boot.isValueKept(false)).toBe(true)
+    expect(boot.isValueKept('')).toBe(true)
+    expect(boot.isValueKept(Number.NaN)).toBe(false)
+    expect(boot.isValueKept(Infinity)).toBe(false)
+    expect(boot.isValueKept({ вложенный: 'объект' })).toBe(false)
+    expect(boot.isValueKept(null)).toBe(false)
+    expect(boot.isValueKept(undefined)).toBe(false)
+  })
+
+  it('процессор и вето экспортёра выбрасывают значение, а не только имя', () => {
+    const span = {
+      attributes: { 'http.route': ['/s/КЛЮЧ-В-МАССИВЕ'], 'db.system': 'postgresql' },
+      events: [], status: { code: 1 }
+    }
+    new boot.RedactingSpanProcessor().onEnd(span)
+    expect(Object.keys(span.attributes)).toEqual(['db.system'])
+
+    const sent: unknown[][] = []
+    const exporter = boot.redactingExporter({
+      export: (spans: unknown[], cb: (r: unknown) => void) => { sent.push(spans); cb({ code: 0 }) },
+      shutdown: () => Promise.resolve()
+    })
+    const frozen = Object.freeze({ 'http.route': ['/s/КЛЮЧ-В-МАССИВЕ'] })
+    exporter.export([{ attributes: frozen, events: [], status: { code: 1 } }], () => {})
+    expect(sent.flat(), 'значение-массив под разрешённым именем уехало в коллектор').toEqual([])
+  })
+})
+
+/**
+ * Связи (`links`) — третий носитель, который до правки шёл мимо ОБОИХ слоёв: у каждой связи свои
+ * `attributes`, а `otlp-transformer` дополнительно сериализует `link.context.traceState`. Ревью
+ * показало на настоящем SDK, что `url.full` с токеном и текст SQL внутри `links[]` доезжают до
+ * приёмника дословно.
+ */
+describe('связи спана (links)', () => {
+  const linky = () => ({
+    attributes: { 'http.route': '/s/:key' },
+    events: [],
+    links: [{
+      context: { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), traceState: { serialize: () => 'leak=x' } },
+      attributes: { 'url.full': 'https://acme.bitrix24.by/rest/?auth=ТОКЕН', 'db.statement': 'SELECT LINKLEAK' }
+    }],
+    status: { code: 1 }
+  })
+
+  it('процессор сносит связи целиком', () => {
+    const span = linky()
+    new boot.RedactingSpanProcessor().onEnd(span)
+    expect(span.links).toHaveLength(0)
+    expect(JSON.stringify(span)).not.toContain('LINKLEAK')
+  })
+
+  it('уцелевшая связь — вето экспортёра', () => {
+    const sent: unknown[][] = []
+    const exporter = boot.redactingExporter({
+      export: (spans: unknown[], cb: (r: unknown) => void) => { sent.push(spans); cb({ code: 0 }) },
+      shutdown: () => Promise.resolve()
+    })
+    const span = linky()
+    Object.freeze(span.links)
+    exporter.export([span], () => {})
+    expect(sent.flat(), 'связь с токеном и SQL уехала в коллектор').toEqual([])
+  })
+})
+
+describe('события проверяются по length, а не по Array.isArray', () => {
+  it('массивоподобные события не пролезают', () => {
+    // Сериализатор OTLP ходит через `.map`, поэтому массивоподобный объект он выгрузит, а
+    // `Array.isArray` его пропустит — ревью довело такой `exception.message` до приёмника.
+    const arrayLike = { 0: { name: 'exception', attributes: { 'exception.message': 'OBJEVENTLEAK' } }, length: 1 }
+    const span = { attributes: { 'db.system': 'postgresql' }, events: arrayLike, status: { code: 1 } }
+    new boot.RedactingSpanProcessor().onEnd(span)
+    expect(span.events.length).toBe(0)
+
+    const sent: unknown[][] = []
+    const exporter = boot.redactingExporter({
+      export: (spans: unknown[], cb: (r: unknown) => void) => { sent.push(spans); cb({ code: 0 }) },
+      shutdown: () => Promise.resolve()
+    })
+    exporter.export([{ attributes: {}, events: { length: 1 }, status: { code: 1 } }], () => {})
+    expect(sent.flat()).toEqual([])
+  })
 })
 
 describe('имена атрибутов соответствуют запиннённым версиям semconv', () => {
@@ -349,5 +550,142 @@ describe('имена атрибутов соответствуют запинн�
       'http.request.header.x-forwarded-for', 'user_agent.synthetic.type']) {
       expect(boot.isAttributeKept(key), `${key} остался бы в спане`).toBe(false)
     }
+  })
+})
+
+/**
+ * Закрытие класса «список расширили незаметно».
+ *
+ * Проверки через `isAttributeKept` по именам — это ПЕРЕЧИСЛЕНИЕ известных утечек, то есть денилист:
+ * любое имя вне перечисления проходит. Ревью показало это тремя мутантами, все зелёные: добавление
+ * `net.sock.peer.addr` (старое имя IP пира) в разрешённые, карв-аут внутри `onEnd` и лишний префикс
+ * `survey.` в списке «наших». Поэтому пиннем САМИ СПИСКИ, а не выборку имён.
+ */
+describe('белый список не расширяется незаметно', () => {
+  it('состав списков запиннен дословно', () => {
+    expect([...boot.SAFE_FOREIGN_ATTRIBUTES]).toEqual([
+      'http.request.method', 'http.method', 'http.response.status_code', 'http.status_code',
+      'url.scheme', 'http.route', 'db.system', 'db.system.name', 'db.operation', 'db.operation.name',
+      'messaging.system'
+    ])
+    expect([...boot.OWN_ATTRIBUTE_PREFIXES]).toEqual(['portal.', 'b24.', 'error_kind', 'stage'])
+  })
+
+  it('процессор решает ТЕМ ЖЕ предикатом, что и экспортёр', () => {
+    // Иначе их можно рассогласовать: карв-аут внутри `onEnd` (`&& key !== 'db.query.text'`) не ловился
+    // ничем, потому что фикстура таких ключей не содержала, а экспортёр ходил через нетронутый предикат.
+    const keys = [
+      ...boot.SAFE_FOREIGN_ATTRIBUTES, 'portal.hash', 'b24.method', 'error_kind', 'stage',
+      'db.query.text', 'db.query.parameter.0', 'db.namespace', 'net.sock.peer.addr',
+      'url.path', 'url.full', 'client.address', 'user_agent.original', 'survey.key', 'anything.else'
+    ]
+    const span = { attributes: Object.fromEntries(keys.map((k) => [k, 'x'])), events: [], status: { code: 1 } }
+    new boot.RedactingSpanProcessor().onEnd(span)
+    for (const key of Object.keys(span.attributes)) {
+      expect(boot.isAttributeKept(key), `${key} оставлен процессором, но не разрешён предикатом`).toBe(true)
+    }
+    for (const key of keys.filter((k) => boot.isAttributeKept(k))) {
+      expect(Object.keys(span.attributes), `${key} разрешён, но выброшен процессором`).toContain(key)
+    }
+  })
+})
+
+describe('обёртка экспортёра проверяется ПОВЕДЕНИЕМ, а не формой', () => {
+  it('сквозная обёртка с теми же методами не проходит', () => {
+    // Прежний гард сравнивал набор ключей объекта — любой объект с export/shutdown/forceFlush его
+    // удовлетворял, включая прозрачную обёртку без фильтрации.
+    const sent: unknown[][] = []
+    const deps = {
+      resourceFromAttributes: (a: unknown) => ({ resource: a }),
+      BatchSpanProcessor: class { constructor(readonly exporter: unknown) {} },
+      OTLPTraceExporter: class {
+        export(spans: unknown[], cb: (r: unknown) => void) { sent.push(spans); cb({ code: 0 }) }
+        shutdown() { return Promise.resolve() }
+        forceFlush() { return Promise.resolve() }
+      }
+    }
+    const cfg = boot.buildSdkConfig(deps, 'http://c:4318')
+    const exporter = (cfg.spanProcessors[1] as { exporter: { export: (s: unknown[], cb: (r: unknown) => void) => void } }).exporter
+    const dirty = { attributes: { 'url.path': '/s/СЕКРЕТНЫЙ-КЛЮЧ' }, events: [], status: { code: 2 } }
+    exporter.export([dirty], () => {})
+    expect(sent.flat(), 'грязный спан дошёл до настоящего экспортёра').toEqual([])
+  })
+})
+
+describe('контракт экспортёра перед BatchSpanProcessor', () => {
+  const wrap = () => {
+    const sent: unknown[][] = []
+    const inner = {
+      export: (spans: unknown[], cb: (r: unknown) => void) => { sent.push(spans); cb({ code: 0 }) },
+      shutdown: () => Promise.resolve()
+    }
+    return { sent, exporter: boot.redactingExporter(inner) }
+  }
+
+  it('колбэк вызывается РОВНО раз с успехом даже при пустой выборке', () => {
+    // Иначе `BatchSpanProcessor` подвиснет на флаше, а код ошибки заставит его считать экспорт
+    // провалившимся и копить спаны.
+    const { sent, exporter } = wrap()
+    const results: unknown[] = []
+    exporter.export([{ attributes: { 'url.path': '/s/ключ' }, events: [], status: {} }], (r) => results.push(r))
+    expect(results).toEqual([{ code: 0 }])
+    expect(sent.flat()).toEqual([])
+  })
+
+  it('forceFlush работает, даже если у внутреннего экспортёра его нет', async () => {
+    const { exporter } = wrap()
+    await expect((exporter as unknown as { forceFlush: () => Promise<void> }).forceFlush()).resolves.toBeUndefined()
+    await expect((exporter as unknown as { shutdown: () => Promise<void> }).shutdown()).resolves.toBeUndefined()
+  })
+})
+
+describe('ресурс спана', () => {
+  const deps = {
+    resourceFromAttributes: (a: unknown) => ({ attrs: a }),
+    BatchSpanProcessor: class { constructor(readonly exporter: unknown) {} },
+    OTLPTraceExporter: class { constructor(readonly opts: { url: string }) {} }
+  }
+
+  it('в ресурс идёт ТОЛЬКО имя сервиса', () => {
+    // Мутанты «подставить HOSTNAME в service.name» и «убрать resource целиком» проходили незамеченными,
+    // а ресурс уезжает в КАЖДОМ батче.
+    delete process.env.OTEL_SERVICE_NAME
+    const cfg = boot.buildSdkConfig(deps, 'http://c:4318') as unknown as { resource: { attrs: Record<string, unknown> } }
+    expect(cfg.resource.attrs).toEqual({ 'service.name': 'polls' })
+    process.env.OTEL_SERVICE_NAME = 'опросы'
+    const named = boot.buildSdkConfig(deps, 'http://c:4318') as unknown as { resource: { attrs: Record<string, unknown> } }
+    expect(named.resource.attrs).toEqual({ 'service.name': 'опросы' })
+    delete process.env.OTEL_SERVICE_NAME
+  })
+})
+
+/**
+ * Верхний уровень бутстрапа — гейт «по умолчанию выключено» и fail-open — исполняется настоящим Node.
+ *
+ * Ни один тест выше его не трогает: импорт модуля в vitest идёт с СНЯТОЙ переменной окружения, то есть
+ * ветка `if (endpoint)` не выполняется вовсе. А это два заголовочных инварианта файла: без адреса
+ * коллектора не делаем ничего, и любой сбой телеметрии НЕ роняет процесс — падение было бы в preload,
+ * до нашего логгера, и в журнале остался бы только чужой стектрейс.
+ */
+describe('бутстрап под --import: выключен по умолчанию и fail-open', () => {
+  const run = (env: Record<string, string>) => spawnSync(
+    process.execPath,
+    ['--import', './otel.instrument.mjs', '-e', 'console.log("ЖИВ")'],
+    { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', env: { ...process.env, ...env } }
+  )
+
+  it('без адреса коллектора процесс работает штатно', () => {
+    const r = run({ OTEL_EXPORTER_OTLP_ENDPOINT: '' })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('ЖИВ')
+  })
+
+  it('с адресом, но БЕЗ установленного SDK процесс всё равно работает', () => {
+    // Ровно тот сценарий, что ревью нашло запуском в раскладке образа: без fail-open переменная
+    // окружения выключала не телеметрию, а СЕРВИС — и выставить её можно без PR, без CI и без ревью.
+    const r = run({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' })
+    expect(r.status, `процесс упал: ${r.stderr}`).toBe(0)
+    expect(r.stdout).toContain('ЖИВ')
+    expect(r.stderr, 'сбой телеметрии должен быть назван в логе').toContain('[otel]')
   })
 })

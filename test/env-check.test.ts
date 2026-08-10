@@ -414,20 +414,26 @@ describe('checkEnv — анти-абьюз за прокси', () => {
 describe('телеметрия: форма адреса коллектора', () => {
   // Блок был не покрыт ничем: удаление его целиком оставляло все 52 теста зелёными — то есть по
   // критерию #31 это был мёртвый код, на который сам же модуль ссылается.
+  const mentions = (r: ReturnType<typeof checkEnv>) =>
+    [...r.errors, ...r.warnings].some((x) => x.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')
+
   it('адрес не задан → замечаний нет', () => {
-    expect(checkEnv({}).warnings.some((w) => w.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')).toBe(false)
+    expect(mentions(checkEnv({}))).toBe(false)
   })
 
   it('нормальный адрес → замечаний нет', () => {
-    expect(checkEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' })
-      .warnings.some((w) => w.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')).toBe(false)
+    expect(mentions(checkEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318' }))).toBe(false)
   })
 
-  it('адрес без схемы → предупреждение с ИМЕНЕМ и без значения', () => {
+  it('адрес без схемы → ОШИБКА с ИМЕНЕМ и без значения', () => {
+    // ⚠️ Именно ошибка, а не предупреждение: `collector:4318` разбирается парсером URL как протокол
+    // `collector:` — опечатка не всплывает нигде, сервис поднимается, трейсы не уходят никогда.
+    // Предупреждение оставляло нулевой код возврата, то есть предполётную проверку не проваливало.
     // Правило проекта: печатаем имена проблемных переменных, никогда значения.
-    const w = checkEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'collector:4318' })
-      .warnings.find((x) => x.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')
-    expect(w).toBeDefined()
-    expect(w?.message).not.toContain('collector:4318')
+    const r = checkEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: 'collector:4318' })
+    const e = r.errors.find((x) => x.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(e, 'форма адреса должна проваливать предполётную проверку').toBeDefined()
+    expect(e?.message).not.toContain('collector:4318')
+    expect(r.warnings.some((x) => x.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')).toBe(false)
   })
 })

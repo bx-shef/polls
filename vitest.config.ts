@@ -13,7 +13,10 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/domain/**', 'src/store/**', 'src/api/**', 'src/server/**', 'src/bitrix24/**', 'src/obs/**', 'src/client/**'],
+      include: ['src/domain/**', 'src/store/**', 'src/api/**', 'src/server/**', 'src/bitrix24/**', 'src/obs/**', 'src/client/**',
+        // Бутстрап телеметрии — прод-путь, и порог покрытия обязан его видеть: он лежит в корне,
+        // а не в src/, и без явного включения выпадал из отчёта целиком.
+        'otel.instrument.mjs'],
       exclude: ['src/demo/**', 'src/index.ts', 'src/store/types.ts'],
       reporter: ['text', 'html'],
       thresholds: {

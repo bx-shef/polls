@@ -1,16 +1,17 @@
 /**
- * Бутстрап OpenTelemetry. Грузится через `NODE_OPTIONS=--import ./otel.instrument.mjs` — то есть
- * ДО приложения, и это не стилистика: авто-инструментирование подменяет `require`/`import` библиотек
- * (`http`, `pg`, `undici`), а подменить их можно только до того, как их загрузит кто-то другой.
- * Импортированный после приложения бутстрап зарегистрируется и не перехватит ничего — молча.
+ * Бутстрап OpenTelemetry. Грузится через `NODE_OPTIONS=--import /app/otel/instrument.mjs` — то есть
+ * ДО приложения. Причина: глобальный провайдер трассировки должен быть зарегистрирован раньше, чем
+ * приложение возьмёт трейсер (`src/obs/span.ts` мемоизирует его на уровне модуля), и раньше, чем
+ * пойдёт первый запрос.
  *
  * **Без `OTEL_EXPORTER_OTLP_ENDPOINT` файл не делает НИЧЕГО** и выходит на первой строке. Это
  * заявленное состояние по умолчанию: адрес коллектора — единственный рычаг.
  *
- * ⚠️ Этот файл — обычный `.mjs`, он грузится раньше сборки и наш TypeScript импортировать не может.
- * Поэтому список безопасных атрибутов здесь **продублирован** из `src/obs/redact-span.ts`, и
- * расхождение ловит тест `test/redact-span.test.ts` (он читает этот файл и сверяет списки). Дубль
- * осознанный: альтернатива — собирать бутстрап отдельным шагом сборки ради одного массива строк.
+ * ⚠️ Правило вычистки живёт ЗДЕСЬ и только здесь. TS-версия (`src/obs/redact-span.ts`) удалена: она не
+ * импортировалась ни одним прод-файлом, дублировала правило с другой семантикой, а её стопроцентное
+ * покрытие создавало ложную уверенность. Исполняемая проверка — `test/otel-bootstrap.test.ts`: он
+ * импортирует этот модуль и проверяет РЕШЕНИЕ (`isAttributeKept`) и собранный конвейер, а не текст
+ * файла. Грепом такие вещи не проверяются — в этом проекте это выяснялось трижды.
  */
 
 /**
@@ -22,7 +23,7 @@
  * платить временем старта — модулей может не быть в образе вовсе.
  */
 
-// ⚠️ ДУБЛЬ `SAFE_FOREIGN_ATTRIBUTES` из src/obs/redact-span.ts — сверяется тестом.
+// Чужие атрибуты, которые разрешено оставить: глаголы, коды и имена систем — содержимым не бывают.
 export const SAFE_FOREIGN_ATTRIBUTES = [
   'http.request.method',
   'http.method',
@@ -40,7 +41,7 @@ export const SAFE_FOREIGN_ATTRIBUTES = [
   'db.operation.name',
   'messaging.system'
 ]
-// ⚠️ ДУБЛЬ `OWN_ATTRIBUTE_PREFIXES` из src/obs/redact-span.ts — сверяется тестом.
+// Наши собственные атрибуты — их уже проверил белый список `src/obs/telemetry.ts` (имя И форма).
 export const OWN_ATTRIBUTE_PREFIXES = ['portal.', 'b24.', 'error_kind', 'stage']
 
 const allowed = new Set(SAFE_FOREIGN_ATTRIBUTES)
@@ -54,6 +55,30 @@ const isOwn = (key) =>
  * Оба обхода показало ревью, и оба оставляли тесты зелёными.
  */
 export const isAttributeKept = (key) => allowed.has(key) || isOwn(key)
+
+/**
+ * Форма ЗНАЧЕНИЯ. Одного имени мало, и это показало ревью на живом OTLP-захвате: при разрешённом
+ * `http.route` значение `['/s/SECRETKEY-IN-ARRAY', '+375291234567']` уехало массивом дословно, а
+ * `portal.hash: 'PORTALLEAK-acme.bitrix24.by'` — под нашим же префиксом. Со стороны нашего кода это
+ * закрыто `pickSafeAttributes` (там имя И форма), но бутстрап — защита от ЧУЖИХ спанов, и половина
+ * проверки в нём отсутствовала.
+ *
+ * Оставляем только скаляры: строку из печатаемого ASCII не длиннее 128 (это отсекает и управляющие/
+ * bidi-символы, и кириллицу — то есть текст ответа респондента), конечное число, булево. Массивы и
+ * объекты выбрасываем целиком: среди разрешённых имён носителей-массивов нет.
+ *
+ * ⚠️ Это ужесточение формы, а не оракул содержимого: `/s/abcd1234` в `http.route` под шаблон ASCII
+ * подходит. Полную защиту даёт то, что маршруты приезжают шаблонами (`/s/:key`), а не тем, что здесь
+ * распознаётся секрет.
+ */
+const SAFE_VALUE = /^[\x20-\x7E]{0,128}$/
+export const isValueKept = (value) =>
+  (typeof value === 'string' && SAFE_VALUE.test(value))
+  || (typeof value === 'number' && Number.isFinite(value))
+  || typeof value === 'boolean'
+
+/** Решение по паре имя+значение — то, чем пользуются и процессор, и вето экспортёра. */
+export const isEntryKept = (key, value) => isAttributeKept(key) && isValueKept(value)
 
 /**
  * Пропагатор, который НИЧЕГО не извлекает и ничего не внедряет.
@@ -91,11 +116,19 @@ export class RedactingSpanProcessor {
     try {
       const attrs = span.attributes ?? {}
       for (const key of Object.keys(attrs)) {
-        if (!allowed.has(key) && !isOwn(key)) delete attrs[key]
+        if (!isEntryKept(key, attrs[key])) delete attrs[key]
       }
       // События несут `exception.message` и `exception.stacktrace` — тот же свободный текст, из-за
       // которого у себя мы запретили `recordException`. Наш запрет покрывает НАШ код, не чужой.
-      if (Array.isArray(span.events) && span.events.length) span.events.length = 0
+      // ⚠️ Проверяем `length`, а не `Array.isArray`: сериализатор OTLP ходит через `.map`, поэтому
+      // массивоподобный объект он выгрузит, а `Array.isArray` его пропустит (показано ревью на
+      // подставном спане — `exception.message` доехал до приёмника).
+      if (span.events?.length) span.events.length = 0
+      // Связи (`links`) — третий носитель, мимо ОБОИХ слоёв: у каждой связи свои `attributes`, а
+      // `otlp-transformer` дополнительно сериализует `link.context.traceState`. Ревью показало на
+      // живом захвате `url.full` с токеном и текст SQL внутри `links[].attributes`. Своих связей мы не
+      // ставим (распределённой трассировки нет — см. `NoopPropagator`), поэтому сносим целиком.
+      if (span.links?.length) span.links.length = 0
       // Сообщение статуса — ещё одно поле для свободной строки.
       if (span.status && typeof span.status === 'object' && span.status.message) {
         delete span.status.message
@@ -112,7 +145,8 @@ export class RedactingSpanProcessor {
       try {
         const attrs = span.attributes ?? {}
         for (const key of Object.keys(attrs)) delete attrs[key]
-        if (Array.isArray(span.events)) span.events.length = 0
+        if (span.events?.length) span.events.length = 0
+        if (span.links?.length) span.links.length = 0
         if (span.status && typeof span.status === 'object') delete span.status.message
       } catch { /* уже ничего не поделать */ }
     }
@@ -125,14 +159,22 @@ export class RedactingSpanProcessor {
 /**
  * Обёртка экспортёра — ПОСЛЕДНЯЯ линия, и единственная, где отказ действительно возможен.
  *
- * ⚠️ `onEnd` не умеет наложить вето: `MultiSpanProcessor` зовёт его у всех процессоров независимо от
- * исхода предыдущего, поэтому «сломалась вычистка — не выпускаем» там неисполнимо. Ревью показало это
- * на настоящем `SpanImpl`: если атрибуты заморожены, `delete` бросает, аварийная ветка бросает на том
- * же ключе — и спан уезжает ПОЛНОСТЬЮ нередактированным, с путём-ключом опроса, адресом респондента и
- * текстом SQL.
+ * ⚠️ `onEnd` не умеет наложить вето — но не потому, что `MultiSpanProcessor` игнорирует исход (ревью
+ * поправило: его `onEnd` — обычный цикл без `try/catch`, брошенное исключение цепочку как раз рвёт, и
+ * летит оно внутрь `span.end()`, то есть в прикладной код). Настоящая причина проще и жёстче: **наш**
+ * процессор гасит всё внутри себя — иначе сбой телеметрии ронял бы обработку запроса, — и «спан
+ * зачищен» от «зачистка провалилась» после `onEnd` уже неотличимо. Ревью показало цену на настоящем
+ * `SpanImpl`: при замороженных атрибутах `delete` бросает, аварийная ветка бросает на том же ключе, и
+ * спан уезжает ПОЛНОСТЬЮ нередактированным — с путём-ключом опроса, адресом респондента и текстом SQL.
  *
  * Здесь отказ возможен: спан, у которого после вычистки остался хоть один неразрешённый атрибут,
  * **не отправляется**. Потерять спан хуже для диагностики; отправить чужие данные хуже для людей.
+ *
+ * ⚠️ Вето смотрит атрибуты, события, связи и текст статуса, но НЕ имя спана: имя сериализуется всегда,
+ * а закрыто оно на входе (`safeSpanName` в `src/obs/telemetry.ts`) — наши имена из закрытого набора,
+ * чужих спанов сейчас не бывает. В день подключения авто-инструментирования это надо перепроверить:
+ * `instrumentation-pg` строит имя как `pg.query:<КОМАНДА> <база>`, то есть low-cardinality by
+ * construction, но это свойство чужой библиотеки, а не наш инвариант.
  */
 export function redactingExporter(inner) {
   return {
@@ -141,14 +183,18 @@ export function redactingExporter(inner) {
       try {
         safe = spans.filter((span) => {
           const attrs = span?.attributes ?? {}
-          return Object.keys(attrs).every((key) => isAttributeKept(key))
-            && !(Array.isArray(span?.events) && span.events.length > 0)
+          return Object.keys(attrs).every((key) => isEntryKept(key, attrs[key]))
+            && !span?.events?.length
+            && !span?.links?.length
             && !span?.status?.message
         })
       } catch {
         // Не смогли даже проверить — не отправляем ничего. Это и есть fail-closed.
         safe = []
       }
+      // `{ code: 0 }` — это `ExportResultCode.SUCCESS` запиннённого `@opentelemetry/core`; литерал, а
+      // не импорт, чтобы не тянуть ради константы ещё один модуль в preload. Значение запиннено
+      // тестом: с кодом ошибки `BatchSpanProcessor` счёл бы экспорт провалившимся и копил бы спаны.
       if (safe.length === 0) return resultCallback({ code: 0 })
       return inner.export(safe, resultCallback)
     },
@@ -175,6 +221,17 @@ export function buildSdkConfig(deps, endpoint) {
     resourceDetectors: [],
     // Чужой контекст не извлекаем и свой не внедряем — см. `NoopPropagator`.
     textMapPropagator: new NoopPropagator(),
+    // ⚠️ Метрики и логи ОТКЛЮЧЕНЫ явно, пустым списком. Это не «мы их просто не настраивали»:
+    // `NodeSDK`, не получив `metricReaders`/`logRecordProcessors`, берёт их из окружения и при пустом
+    // списке экспортёров **дописывает `otlp` сам** — на тот же `OTEL_EXPORTER_OTLP_ENDPOINT`. Ревью
+    // показало это на живом приёмнике: POST'ы на `/v1/metrics` и `/v1/logs` уходили мимо
+    // `RedactingSpanProcessor` И мимо `redactingExporter` — в них дословно приехали `db.statement`,
+    // `url.path` с ключом опроса и тело лог-записи со строкой подключения. Своих метрик и логов у нас
+    // сейчас нет, но провайдеры регистрируются ГЛОБАЛЬНО, то есть первая же запись — своя или из
+    // зависимости — уехала бы в обход всей вычистки, и ни один тест спанов этого бы не увидел.
+    // Пустые списки дают no-op-провайдеры: каналов наружу ровно один, и он обёрнут.
+    metricReaders: [],
+    logRecordProcessors: [],
     spanProcessors: [
       new RedactingSpanProcessor(),
       // Экспортёр обёрнут: см. `redactingExporter` — вето возможно только здесь.
@@ -192,8 +249,33 @@ export function buildSdkConfig(deps, endpoint) {
   }
 }
 
-/** Убрать хвостовые слэши: иначе `${endpoint}/v1/traces` даёт `//v1/traces`. */
-export const normalizeEndpoint = (raw) => String(raw ?? '').trim().replace(/\/+$/, '')
+/**
+ * Привести адрес коллектора к базе, к которой можно дописать `/v1/traces`.
+ *
+ * Снятия хвостовых слэшей мало — ревью показало три тихих способа потерять телеметрию целиком:
+ * `https://collector:4318/v1/traces` (в доках OTel сигнальная переменная идёт С путём — частая
+ * копипаста) давало `/v1/traces/v1/traces`, `http://c:4318?x=1` → `/?x=1/v1/traces`, а `http://host/#`
+ * фрагментом съедало путь. Поэтому разбираем URL: отбрасываем query и фрагмент, снимаем уже
+ * приписанный сигнальный суффикс — и СОХРАНЯЕМ префикс пути (коллектор за `https://host/otel` — рабочая
+ * раскладка, `origin` её бы сломал). Невалидный URL до этого места не доходит (`pnpm env:check`), но
+ * на всякий случай деградируем к прежнему поведению, а не бросаем: бутстрап не имеет права падать.
+ */
+export const normalizeEndpoint = (raw) => {
+  const value = String(raw ?? '').trim()
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return value.replace(/[?#].*$/, '').replace(/\/+$/, '')
+  }
+  // ⚠️ Схему проверяем ЯВНО. `new URL('collector:4318')` разбирается успешно, с протоколом
+  // `collector:` — и без этой строки адрес без схемы превращался в `collector://4318/v1/traces`,
+  // то есть в молча мёртвый конвейер. Возвращаем строку как есть: экспортёр упадёт на неверном URL,
+  // это поймает fail-open и НАЗОВЁТ проблему в логе. Громкий отказ лучше тихого.
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return value.replace(/\/+$/, '')
+  const path = url.pathname.replace(/\/+$/, '').replace(/\/v1\/(traces|metrics|logs)$/, '')
+  return `${url.protocol}//${url.host}${path}`
+}
 
 const endpoint = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '').trim()
 if (endpoint) {
@@ -224,8 +306,19 @@ async function start() {
 
   sdk.start()
 
-  // Аккуратное завершение: недоотправленные спаны при остановке контейнера теряются молча.
+  // Дослать накопленный батч при остановке контейнера — иначе последние спаны теряются молча.
+  //
+  // ⚠️ Обработчик сигнала ОТМЕНЯЕТ поведение Node по умолчанию (завершиться), и это ревью показало
+  // запуском: процесс, у которого этот обработчик единственный, жив через 3 с после `SIGTERM`. Сегодня
+  // контейнер всё же останавливается только потому, что до нас `process.exit(0)` делает graceful-
+  // shutdown Nitro — то есть чужая страховка, которой может не быть. Телеметрия не имеет права держать
+  // процесс, который наблюдает. Поэтому: если после нас обработчиков не осталось — снимаем свой и
+  // пере-посылаем сигнал, восстанавливая штатное завершение.
   for (const signal of ['SIGTERM', 'SIGINT']) {
-    process.once(signal, () => { void sdk.shutdown().catch(() => {}) })
+    process.once(signal, () => {
+      void sdk.shutdown().catch(() => {}).finally(() => {
+        if (process.listenerCount(signal) === 0) process.kill(process.pid, signal)
+      })
+    })
   }
 }
