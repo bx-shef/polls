@@ -364,7 +364,12 @@ export function checkEnv(env: Record<string, string | undefined>, opts: EnvCheck
   if (telemetryEnabled(env)) {
     const endpoint = val('OTEL_EXPORTER_OTLP_ENDPOINT')
     if (!/^https?:\/\//i.test(endpoint)) {
-      warnings.push({
+      // ⚠️ Это ОШИБКА, а не предупреждение. Ревью показало, что адрес без схемы (`collector:4318`)
+      // разбирается парсером URL как протокол `collector:` — то есть опечатка не всплывает нигде:
+      // сервис поднимается, телеметрия не уходит никогда, а предупреждение с нулевым кодом возврата
+      // предполётную проверку не проваливало. Форма адреса — единственное, что здесь вообще можно
+      // проверить (доступность коллектора не проверяем намеренно), и раз проверяем — гейтим.
+      errors.push({
         name: 'OTEL_EXPORTER_OTLP_ENDPOINT',
         message: 'задан, но не похож на адрес (ожидается http:// или https://) — трейсы уходить не будут'
       })
