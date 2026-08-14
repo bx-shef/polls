@@ -352,10 +352,16 @@ function stripComments(code: string): string {
  * только `.ts`. В `app/` таких файлов большинство, и они идут в SSR-рендер.
  */
 function listFiles(dir: string): string[] {
+      // ⚠️ Пробы линт-гейта (`__lint-probe.*`) исключаем: `test/lint-gate.test.ts` пишет их в
+      // боевые каталоги и удаляет сразу же. Между сбором списка и чтением файла есть окно, в
+      // которое проба успевает исчезнуть — тогда чтение падало бы `ENOENT` в ЧУЖОМ тесте, с
+      // сообщением, по которому причину не найти. Ревью воспроизвело это детерминированно.
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory()
       ? listFiles(join(dir, e.name))
-      : e.name.endsWith('.ts') || e.name.endsWith('.vue') ? [join(dir, e.name)] : []
+      : (e.name.endsWith('.ts') || e.name.endsWith('.vue')) && !e.name.startsWith('__lint-probe')
+        ? [join(dir, e.name)]
+        : []
   )
 }
 
@@ -500,8 +506,9 @@ describe('сбой телеметрии не подменяет результа
     // невыполненной и звал её второй раз, а первая, осиротевшая, давала unhandledRejection. Под
     // обёрткой лежат неидемпотентные вызовы: второй POST рефреша ротирует токен и выбивает портал.
     let calls = 0
-    // Промис намеренно осиротевший — в этом и состоит имитируемый сбой трейсера.
-    hook = (_n, _o, fn) => { const _orphan = fn(noopSpan); throw new Error('контекст сломался') }
+    // Промис намеренно осиротевший — в этом и состоит имитируемый сбой трейсера. Гасим через
+    // `void`, а не через `const _x =`: второе — обход гейта, который мы сами назвали незакрытым.
+    hook = (_n, _o, fn) => { void fn(noopSpan); throw new Error('контекст сломался') }
     const out = await withSpan('t', { stage: 'other' }, async () => { calls++; return 'ЗНАЧЕНИЕ' })
     expect(calls, 'операция выполнена больше одного раза').toBe(1)
     expect(out).toBe('ЗНАЧЕНИЕ')

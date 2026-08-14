@@ -28,8 +28,15 @@ import vueParser from 'vue-eslint-parser'
  *  - `no-unnecessary-condition` — около десятка находок: часть про оборонительные проверки от `null`
  *    там, где значение приходит из недоверенного ввода и типам не подчиняется, часть про сужения,
  *    которые типы считают избыточными. Включить значило бы снимать защиту на границе. Ценой остаётся
- *    незакрытая форма `found === undefined` — единственная из #165, которую не ловит ни одно
- *    включённое правило.
+ *    незакрытая форма `found === undefined`.
+ *
+ * **Что остаётся незакрытым — названо, а не умолчано:**
+ *  - `found === undefined` (сравнение вместо истинности);
+ *  - `const _x = store.save(v)` — присвоение в неиспользуемую переменную с префиксом `_`, который мы
+ *    сами разрешили конвенцией. Однознаковый обход; штатный способ погасить промис — `void`;
+ *  - выражения в **шаблоне** `.vue` (`@click="save()"`): `vue-eslint-parser` их отдаёт, но
+ *    `parserServices` для template-AST нет, поэтому типовые правила туда не доходят. Формы уже есть
+ *    в коде (`FeedbackWidget.vue`, экраны `/admin/*`).
  *  - `strictTypeChecked` и `stylistic` — вне набора.
  *
  * ⚠️ Точных счётчиков находок здесь намеренно НЕТ. Они уже устаревали дважды: этот же PR расширил
@@ -52,16 +59,20 @@ import vueParser from 'vue-eslint-parser'
  * списков — не читая этот массив.
  */
 const AREAS = [
-  { files: ['src/**/*.{ts,mts,cts}', 'test/**/*.{ts,mts,cts}', 'scripts/**/*.{ts,mts,cts}'], project: './tsconfig.json' },
+  { files: ['src/**', 'test/**', 'scripts/**'], project: './tsconfig.json' },
   // Приманка гейта: исключена из корневого tsconfig, поэтому проект у неё свой.
-  { files: ['test/fixtures/**/*.{ts,mts,cts}'], project: './test/fixtures/tsconfig.json' },
-  { files: ['server/**/*.{ts,mts,cts}'], project: './.nuxt/tsconfig.server.json' },
-  { files: ['app/**/*.{ts,mts,cts}'], project: './.nuxt/tsconfig.app.json' },
+  { files: ['test/fixtures/**'], project: './test/fixtures/tsconfig.json' },
+  { files: ['server/**'], project: './.nuxt/tsconfig.server.json' },
+  { files: ['app/**'], project: './.nuxt/tsconfig.app.json' },
   // Общий слой Nuxt 4 (`shared/`): каталога пока нет, но `nuxt prepare` уже генерирует под него
-  // конфиг, а `typecheck:app` его типизирует. Без строки код, положенный туда завтра, выпал бы из
-  // линта беззвучно — гард покрытия ниже это ловит, но лучше не доводить.
-  { files: ['shared/**/*.{ts,mts,cts}'], project: './.nuxt/tsconfig.shared.json' },
-  // Корневые конфиги и бутстрап телеметрии — см. `tsconfig.tooling.json`.
+  // конфиг, а `typecheck:app` его типизирует. Без строки код, положенный туда завтра, линтовался бы
+  // без типов — то есть громко, но зря.
+  { files: ['shared/**'], project: './.nuxt/tsconfig.shared.json' },
+  // ⚠️ `nuxt.config.ts` — отдельно: ядровой tsconfig framework-agnostic и `defineNuxtConfig` в нём не
+  // резолвится, отчего весь файл деградировал бы в `any`, а типовые правила по нему молчали бы, не
+  // сказав ни слова. У Nuxt для этого случая есть свой сгенерированный проект.
+  { files: ['nuxt.config.ts'], project: './.nuxt/tsconfig.node.json' },
+  // Остальные корневые конфиги и бутстрап телеметрии — см. `tsconfig.tooling.json`.
   { files: ['*.config.ts', '*.config.mjs', 'otel.instrument.mjs', 'scripts/**/*.mjs'], project: './tsconfig.tooling.json' }
 ]
 
@@ -105,26 +116,30 @@ export default tseslint.config(
       'test/fixtures/**'
     ]
   },
-  ...AREAS.map(({ files, project }) => ({
-    files,
-    extends: [tseslint.configs.recommended],
-    languageOptions: { parserOptions: { project, tsconfigRootDir: import.meta.dirname } },
-    rules
-  })),
   {
-    // `.vue` разбирает vue-eslint-parser, а `<script>` внутри — парсер TypeScript; без этого
-    // типовые правила до содержимого компонентов не добираются вовсе.
-    files: ['app/**/*.vue'],
+    // ⚠️ Правила — ОДНИМ слоем на всё дерево, а области ниже задают только привязку к проекту
+    // TypeScript. Это и есть починка тихого пропуска: раньше правила висели внутри областей, и файл,
+    // не совпавший ни с одной, проходил БЕЗ СЛОВА и с кодом 0, даже с висячим промисом. Теперь такой
+    // файл получает правила, но не получает типов — и линт падает с кодом 2, называя файл поимённо.
+    // Гард `test/lint-gate.test.ts` остаётся, но как бэкстоп, а не единственная линия обороны.
+    files: ['**/*.{ts,mts,cts,tsx,mjs,cjs,js,jsx,vue}'],
     extends: [tseslint.configs.recommended],
+    languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } },
+    rules
+  },
+  {
+    // `.vue` разбирает vue-eslint-parser, а `<script>` внутри — парсер TypeScript; без этого типовые
+    // правила до содержимого компонентов не добираются вовсе.
+    // ⚠️ До ВЫРАЖЕНИЙ В ШАБЛОНЕ они не добираются и так: `parserServices` для template-AST нет, то
+    // есть `@click="save()"` с висячим промисом не ловится. Это названо в шапке среди незакрытых форм.
+    files: ['**/*.vue'],
     languageOptions: {
       parser: vueParser,
-      parserOptions: {
-        parser: tseslint.parser,
-        project: './.nuxt/tsconfig.app.json',
-        tsconfigRootDir: import.meta.dirname,
-        extraFileExtensions: ['.vue']
-      }
-    },
-    rules
-  }
+      parserOptions: { parser: tseslint.parser, extraFileExtensions: ['.vue'] }
+    }
+  },
+  ...AREAS.map(({ files, project }) => ({
+    files,
+    languageOptions: { parserOptions: { project, tsconfigRootDir: import.meta.dirname } }
+  }))
 )

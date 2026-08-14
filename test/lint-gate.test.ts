@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { writeFileSync, rmSync, readdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -80,6 +80,14 @@ describe('линт-гейт забытого await (#165)', () => {
  * Проба пишется в саму область (иначе не попадёт под её glob) и удаляется в `finally`.
  */
 describe('правила доходят до кода, а не только резолвятся', () => {
+  const PROBES = ['server/utils/__lint-probe.ts', 'app/components/__lint-probe.vue']
+  // Проба намеренно НЕ в `.gitignore`: остаток должен быть виден в `git status`, а не тихо лежать
+  // при красном линте. Цена — прерванный прогон (SIGINT, таймаут, OOM) оставляет файл; поэтому
+  // подчищаем остатки на входе, чтобы это самозаживало, а не требовало ручной уборки.
+  beforeAll(() => {
+    for (const rel of PROBES) rmSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), { force: true })
+  })
+
   it('server/ — висячий промис пойман настоящим прогоном', () => {
     const rel = 'server/utils/__lint-probe.ts'
     const abs = fileURLToPath(new URL(`../${rel}`, import.meta.url))
@@ -184,7 +192,15 @@ describe('ни один исходник не выпадает из линта �
     // по базовому имени, так что одно слово гасило и `server/api`, и `src/api`).
     const KNOWN_UNCOVERED = new Set(['test/fixtures/floating-promise.fixture.ts'])
 
-    expect(SKIP_DIRS.size, 'список пропускаемых каталогов расширен — это снимает защиту').toBe(9)
+    // ⚠️ Пиннем РЕЗУЛЬТАТ обхода, а не размер списка. Размер от подмены не защищает: ревью заменило
+    // `'dist'` (такого каталога в дереве нет) на `'obs'` — размер прежний, а из обхода ушло
+    // телеметрическое ядро, то самое, ради висячего промиса в котором правился `span.ts`.
+    for (const must of ['src/obs/span.ts', 'src/api/invitation.ts', 'src/store/pg.ts',
+      'server/api/b24/install.post.ts', 'server/utils/portal.ts', 'app/app.vue',
+      'app/utils/landing.ts', 'test/api.test.ts', 'scripts/verify.ts', 'otel.instrument.mjs']) {
+      expect(sources, `обход потерял ${must} — защита снята подменой в списке пропускаемых каталогов`)
+        .toContain(must)
+    }
     expect(KNOWN_UNCOVERED.size, 'список известных исключений расширен').toBe(1)
 
     const uncovered: string[] = []
@@ -218,6 +234,10 @@ describe('ни один исходник не выпадает из линта �
       // Без типов правила промисов не работают вовсе — а конфиг при этом выглядит настроенным.
       expect(config?.languageOptions?.parserOptions?.project, `${file}: нет привязки к проекту TypeScript`)
         .toBeTruthy()
+      // Мёртвое подавление обязано быть ошибкой: это симптом правила, отключённого выше по цепочке.
+      // Под обоснование этого в конфиге написан абзац, а сам флаг не был запиннен ничем.
+      expect(isError(config?.linterOptions?.reportUnusedDisableDirectives),
+        `${file}: мёртвое подавление перестало быть ошибкой`).toBe(true)
       for (const rule of NO_OPTIONS) {
         const entry = config?.rules?.[rule]
         expect(isError(entry), `${file}: ${rule} не в состоянии error`).toBe(true)
@@ -236,6 +256,12 @@ describe('ни один исходник не выпадает из линта �
 describe('гейт действительно подключён, а не просто настроен', () => {
   const read = (p: string) => readFileSync(fileURLToPath(new URL(`../${p}`, import.meta.url)), 'utf8')
 
+  /**
+   * ⚠️ Мало проверить, что линт ЗОВУТ, — надо проверить, что его отказ что-то значит. Ревью показало
+   * три однострочные правки, каждая из которых оставляла все проверки зелёными: `|| true` в скрипте,
+   * `continue-on-error: true` у шага CI и `|| true` в `check.sh`. Линт при этом печатает ошибку и
+   * возвращает 0. Поэтому ищем не только вызов, но и глушители кода возврата рядом с ним.
+   */
   it('pnpm check и CI зовут линт, и линт смотрит на весь проект', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> }
     expect(pkg.scripts.check, '`pnpm check` не зовёт линт').toContain('pnpm lint')
@@ -243,9 +269,25 @@ describe('гейт действительно подключён, а не про
     expect(pkg.scripts.lint, 'линт смотрит не на весь проект').toMatch(/eslint \.(\s|$)/)
     // Без `--max-warnings=0` любое предупреждение (в т.ч. мёртвое подавление) не роняет CI.
     expect(pkg.scripts.lint, 'предупреждения не гейтятся').toContain('--max-warnings=0')
-    expect(read('.github/workflows/ci.yml'), 'в CI нет шага линта').toMatch(/run:\s*pnpm lint/)
-    expect(read('scripts/check.sh'), 'локальная проверка расходится с гейтом мержа').toMatch(/pnpm -s lint/)
-    expect(read('scripts/check.ps1'), 'локальная проверка расходится с гейтом мержа').toMatch(/pnpm -s lint/)
+    // Глушители кода возврата: `pnpm lint || true` печатает ошибку и завершается успехом.
+    expect(pkg.scripts.lint, 'код возврата линта заглушён').not.toMatch(/\|\||;\s*(true|exit 0)/)
+    expect(pkg.scripts.check, 'код возврата линта заглушён в check').not.toMatch(/pnpm lint\s*(\|\||;)/)
+
+    const ci = read('.github/workflows/ci.yml')
+    expect(ci, 'в CI нет шага линта').toMatch(/run:\s*pnpm lint/)
+    // `continue-on-error: true` у шага делает его отказ безвредным — шаг есть, гейта нет.
+    const lintStep = ci.slice(ci.indexOf('run: pnpm lint') - 400, ci.indexOf('run: pnpm lint') + 200)
+    expect(lintStep, 'шагу линта разрешено падать').not.toMatch(/continue-on-error:\s*true/)
+
+    for (const script of ['scripts/check.sh', 'scripts/check.ps1']) {
+      const text = read(script)
+      expect(text, `${script}: локальная проверка расходится с гейтом мержа`).toMatch(/pnpm -s lint/)
+      expect(text, `${script}: код возврата линта заглушён`).not.toMatch(/pnpm -s lint\s*(\|\||;)/)
+    }
+    // В PowerShell отказ не прерывает скрипт сам — нужен явный разбор кода возврата после линта.
+    const ps1 = read('scripts/check.ps1')
+    expect(ps1.slice(ps1.indexOf('pnpm -s lint'), ps1.indexOf('pnpm -s lint') + 120),
+      'check.ps1: после линта нет проверки кода возврата').toMatch(/LASTEXITCODE/)
   })
 
   it('в исходниках нет подавления линта целым файлом', () => {

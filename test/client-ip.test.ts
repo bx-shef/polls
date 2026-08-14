@@ -182,8 +182,13 @@ describe('parseIp — один хост даёт один ключ', () => {
  */
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 function listRoutes(dir: string): string[] {
+  // Пробы линт-гейта (`__lint-probe.*`) исключаем: они появляются и исчезают в боевых каталогах
+  // во время прогона, и попадание такой пробы в список даёт `ENOENT` при чтении — в чужом тесте
+  // и с сообщением, по которому причину не найти. Сегодня пересечения нет, но правило дешевле.
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory() ? listRoutes(join(dir, e.name)) : e.name.endsWith('.ts') ? [join(dir, e.name)] : []
+    e.isDirectory()
+      ? listRoutes(join(dir, e.name))
+      : e.name.endsWith('.ts') && !e.name.startsWith('__lint-probe') ? [join(dir, e.name)] : []
   )
 }
 

@@ -226,7 +226,13 @@ function routeCaps(): RouteCap[] {
 }
 
 function listFiles(dir: string): string[] {
+      // ⚠️ Пробы линт-гейта (`__lint-probe.*`) исключаем: `test/lint-gate.test.ts` пишет их в
+      // боевые каталоги и удаляет сразу же. Между сбором списка и чтением файла есть окно, в
+      // которое проба успевает исчезнуть — тогда чтение падало бы `ENOENT` в ЧУЖОМ тесте, с
+      // сообщением, по которому причину не найти. Ревью воспроизвело это детерминированно.
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory() ? listFiles(join(dir, e.name)) : e.name.endsWith('.ts') ? [join(dir, e.name)] : []
+    e.isDirectory()
+      ? listFiles(join(dir, e.name))
+      : e.name.endsWith('.ts') && !e.name.startsWith('__lint-probe') ? [join(dir, e.name)] : []
   )
 }
