@@ -66,7 +66,7 @@ export async function handleDealTrigger(deps: {
   for (const surveyKey of surveyKeys) {
     const version = await deps.store.currentVersion(surveyKey)
     if (!version) continue // опрос без опубликованной версии — пропускаем
-    const inv = deps.invitations.create(
+    const inv = await deps.invitations.create(
       { surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
       now
     )
@@ -104,7 +104,7 @@ export async function createSurveyInvitation(deps: {
 }): Promise<TriggerResult | null> {
   const version = await deps.store.currentVersion(deps.surveyKey)
   if (!version) return null
-  const inv = deps.invitations.create(
+  const inv = await deps.invitations.create(
     { surveyKey: deps.surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
     deps.now ?? new Date()
   )

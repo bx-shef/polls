@@ -39,7 +39,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
     expect(res[0]).toMatchObject({ surveyKey: 'csat_postdeal', versionNo: 2 })
     expect(res[0]!.token).toBeTruthy()
     // приглашение реально создано: peek по токену отдаёт снимок контекста
-    const inv = invitations.peek(res[0]!.token, new Date())
+    const inv = await invitations.peek(res[0]!.token, new Date())
     expect(inv?.context.dealId).toBe(759)
     expect(inv?.surveyKey).toBe('csat_postdeal')
   })
@@ -92,7 +92,7 @@ describe('createSurveyInvitation — ручной запуск по сделке
       context: ctx()
     })
     expect(res).toMatchObject({ surveyKey: 'csat_postdeal', versionNo: 2 })
-    expect(invitations.peek(res!.token, new Date())?.context.dealId).toBe(759)
+    expect((await invitations.peek(res!.token, new Date()))?.context.dealId).toBe(759)
   })
   it('нет опубликованной версии → null', async () => {
     const res = await createSurveyInvitation({
@@ -116,7 +116,7 @@ describe('срок доступности ссылки → ttl приглаше�
       context: ctx(),
       now
     })
-    expect(windowMs(invitations.peek(res[0]!.token, now)!)).toBe(300_000)
+    expect(windowMs((await invitations.peek(res[0]!.token, now))!)).toBe(300_000)
   })
 
   it('createSurveyInvitation: linkTtlSeconds=432000 → окно ссылки ровно 5 дней', async () => {
@@ -128,7 +128,7 @@ describe('срок доступности ссылки → ttl приглаше�
       context: ctx(),
       now
     })
-    expect(windowMs(invitations.peek(res!.token, now)!)).toBe(432_000_000)
+    expect(windowMs((await invitations.peek(res!.token, now))!)).toBe(432_000_000)
   })
 
   it('политика без linkTtlSeconds → дефолт стора приглашений (back-compat)', async () => {
@@ -140,7 +140,7 @@ describe('срок доступности ссылки → ttl приглаше�
       context: ctx(),
       now
     })
-    expect(windowMs(invitations.peek(res!.token, now)!)).toBe(7_000)
+    expect(windowMs((await invitations.peek(res!.token, now))!)).toBe(7_000)
   })
 
   it('версия вообще без invitationPolicy → тоже дефолт стора', async () => {
@@ -152,7 +152,7 @@ describe('срок доступности ссылки → ttl приглаше�
       context: ctx(),
       now
     })
-    expect(windowMs(invitations.peek(res!.token, now)!)).toBe(7_000)
+    expect(windowMs((await invitations.peek(res!.token, now))!)).toBe(7_000)
   })
 
   it('linkTtlSeconds=300 → после 301с ссылка недоступна (peek undefined, consume unknown = 403 на submit)', async () => {
@@ -167,8 +167,8 @@ describe('срок доступности ссылки → ttl приглаше�
       now
     })
     const after = new Date(now.getTime() + 301_000)
-    expect(invitations.peek(res!.token, after)).toBeUndefined()
-    expect(invitations.consume(res!.token, { surveyKey: 's', versionNo: 1 }, after)).toEqual({ status: 'unknown' })
+    expect(await invitations.peek(res!.token, after)).toBeUndefined()
+    expect(await invitations.consume(res!.token, { surveyKey: 's', versionNo: 1 }, after)).toEqual({ status: 'unknown' })
   })
 })
 

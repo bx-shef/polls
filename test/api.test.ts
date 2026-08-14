@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
 import { nullLogger } from '../src/obs/logger'
 import { MemoryNonceStore } from '../src/api/nonce'
-import { MemoryInvitationStore } from '../src/api/invitation'
+import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { MemoryStore } from '../src/store/memory'
 import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
@@ -316,7 +316,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('валидный токен → 200; context записи = снимок из приглашения', async () => {
     const { api, store, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(200)
@@ -335,7 +335,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('повторное использование приглашения → 409 (идемпотентность #4)', async () => {
     const { api, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
     expect((await api.submit({ ip: 'a', body: { ...validPayload(n1), invitation: inv.token } })).status).toBe(200)
     const n2 = await issueNonce(api)
@@ -352,7 +352,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
   it('приглашение от другого опроса/версии → 409 (несоответствие пина)', async () => {
     const { api, invitations, now } = await withInvitation()
     // версия приглашения 1, а payload идёт на версию 2
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 1, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 1, context: snapshot }, now())
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(409)
@@ -360,7 +360,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('422 по ответам НЕ сжигает приглашение — можно дослать корректные', async () => {
     const { api, store, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
     const bad = { ...validPayload(n1), invitation: inv.token, answers: { q_nps: { values: ['n9'] } } }
     expect((await api.submit({ ip: 'a', body: bad })).status).toBe(422)
@@ -372,7 +372,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('приглашение от другого ОПРОСА → 409 (сверка surveyKey, не только версии)', async () => {
     const { api, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(409)
@@ -380,7 +380,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('гонка: два параллельных submit с одним приглашением → ровно один 200 и один 409', async () => {
     const { api, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
     const n2 = await issueNonce(api)
     const [a, b] = await Promise.all([
@@ -388,6 +388,42 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
       api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })
     ])
     expect([a.status, b.status].sort()).toEqual([200, 409])
+  })
+
+  /**
+   * Шов, ради которого порт и сделан асинхронным.
+   *
+   * ⚠️ Тест на гонку выше через него НЕ проходит: `MemoryInvitationStore` разрешается синхронно, то
+   * есть точки прерывания внутри `consume` не возникает вовсе, и «работает с async-стором» он не
+   * доказывает. Реализация на БД ждёт по-настоящему — между входом в `consume` и его результатом
+   * успевает выполниться чужой код. Здесь это воспроизводится стором, который **намеренно
+   * откладывает** каждый ответ.
+   *
+   * Он же ловит пропущенный `await`: `typecheck` его не видит там, где результат не разыменовывают
+   * (`void store.create(...)`), а без ожидания `inv.status === 'replay'` станет ложным на Promise —
+   * и одноразовое приглашение перестанет быть одноразовым.
+   */
+  it('стор, который РЕАЛЬНО ждёт, не ломает ни расход приглашения, ни его одноразовость', async () => {
+    const yieldTurn = () => new Promise<void>((r) => setImmediate(r))
+    const inner = new MemoryInvitationStore({ idGen: () => 'inv-slow-1' })
+    let deferrals = 0
+    const slow: InvitationStore = {
+      async create(input, at) { deferrals++; await yieldTurn(); return inner.create(input, at) },
+      async peek(token, at) { deferrals++; await yieldTurn(); return inner.peek(token, at) },
+      async consume(token, pin, at) { deferrals++; await yieldTurn(); return inner.consume(token, pin, at) }
+    }
+    const base = await freshApi({ invitations: slow })
+    const inv = await slow.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, base.now())
+
+    const [n1, n2] = [await issueNonce(base.api), await issueNonce(base.api)]
+    const [a, b] = await Promise.all([
+      base.api.submit({ ip: 'a', body: { ...validPayload(n1), invitation: inv.token } }),
+      base.api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })
+    ])
+    expect([a.status, b.status].sort(), 'ссылка сработала дважды').toEqual([200, 409])
+    // снимок из приглашения доехал до записи — значит ждали результат, а не Promise
+    expect((await base.store.listResponses()).at(-1)!.context).toEqual(snapshot)
+    expect(deferrals, 'фейк-стор ни разу не вызван — тест ничего не проверяет').toBeGreaterThan(2)
   })
 })
 
