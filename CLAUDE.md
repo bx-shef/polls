@@ -29,9 +29,9 @@ pnpm test         # vitest;  pnpm test:cov — с покрытием (порог
                   # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 pnpm check:boundary  # гард границы ~core (#36): клиент app/** не тянет server-only ядро (отд. шаг CI)
-pnpm lint         # ESLint (recommended + типовые правила): забытый await (#165). tsc ловит его лишь
-                  # при разыменовании и при положительной проверке истинности; `if (!promise)`,
-                  # отброшенный промис и `await` не-промиса — мимо. Сам зовёт `nuxt prepare`.
+pnpm lint         # Линт-политика: `recommended` + типовые правила про промисы. Поводом был забытый
+                  # await (#165) — tsc ловит его лишь в двух формах, остальное мимо (детали и что
+                  # НЕ включено — карта проекта). Сам зовёт `nuxt prepare`.
 pnpm typecheck:app   # vue-tsc app/+server/ (Nuxt; отд. шаг CI). Перед — pnpm nuxt:prepare
 pnpm env:check    # предполётная проверка окружения: читает .env.prod (или указанный файл) по
                   # прод-правилам, печатает ИМЕНА проблемных переменных (не значения), exit 1 на ошибках
@@ -110,7 +110,7 @@ pnpm test:visual  # визуальный гейт: скриншот-регрес
 ## Среда (web-сессии)
 
 - **SessionStart-хук** `.claude/hooks/session-start.sh` (в `.claude/settings.json`) ставит зависимости
-  (`pnpm install --frozen-lockfile`) при старте веб-сессии — чтобы typecheck/test/verify работали сразу.
+  (`pnpm install --frozen-lockfile`) при старте веб-сессии — чтобы typecheck/lint/test/verify работали сразу.
   Синхронно, только в удалённой среде (гард `CLAUDE_CODE_REMOTE`); локально — мгновенный выход.
 - **Stop-хук визуального гейта** `.claude/hooks/visual-gate.sh` — на завершении сессии, если тронуты
   UI-поверхности, прогоняет `pnpm test:visual` и блокирует остановку при расхождении. Узкий триггер

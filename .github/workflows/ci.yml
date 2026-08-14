@@ -39,19 +39,20 @@ jobs:
       - name: Граница ~core (клиент не тянет server-only ядро, #36)
         run: pnpm check:boundary
 
-      # vue-tsc-typecheck клиента И сервера (app/+server/). Отдельно от ядрового `pnpm typecheck`
-      # (ядро framework-agnostic). `nuxt prepare` явно — .npmrc ignore-scripts отключает postinstall.
-      # typecheck:app берёт tsconfig.json (app/shared), typecheck:server — tsconfig.server.json:
-      # без второго серверные файлы (server/**) типами не гейтились бы.
-      - name: Typecheck app/ + server/ (vue-tsc, #36)
-        run: pnpm nuxt:prepare && pnpm typecheck:app && pnpm typecheck:server
-
-      # Забытый `await` (#165). Типовые правила по server/ и app/ читают сгенерированные
-      # `.nuxt/tsconfig.*`, поэтому `pnpm lint` сам зовёт `nuxt prepare` — на чистом клоне без него
-      # линт падал 41 ошибкой разбора. (Тихий режим отказа у ESLint другой: файл, не совпавший ни с
-      # одним `files`, пропускается без слова и с кодом 0 — это ловит гард `test/lint-gate.test.ts`.)
-      - name: Lint (забытый await, типовые правила)
+      # Забытый `await` (#165) + `recommended`. Типовые правила по server/ и app/ читают
+      # сгенерированные `.nuxt/tsconfig.*`, поэтому `pnpm lint` сам зовёт `nuxt prepare` — на чистом
+      # клоне без него линт падает 41 ошибкой разбора. Он же готовит `.nuxt` для шага ниже, поэтому
+      # отдельного `nuxt:prepare` там больше нет. (Тихий режим отказа у ESLint другой: файл, не
+      # совпавший ни с одним `files`, пропускается без слова и с кодом 0 — это ловит
+      # `test/lint-gate.test.ts` сверкой списков.)
+      - name: Lint (забытый await + recommended)
         run: pnpm lint
+
+      # vue-tsc-typecheck клиента И сервера (app/+server/). Отдельно от ядрового `pnpm typecheck`
+      # (ядро framework-agnostic). typecheck:app берёт tsconfig.json (app/shared), typecheck:server —
+      # tsconfig.server.json: без второго серверные файлы (server/**) типами не гейтились бы.
+      - name: Typecheck app/ + server/ (vue-tsc, #36)
+        run: pnpm typecheck:app && pnpm typecheck:server
 
       - name: Test (+ покрытие, пороги в vitest.config.ts)
         run: pnpm test:cov
