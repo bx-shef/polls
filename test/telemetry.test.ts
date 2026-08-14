@@ -507,6 +507,26 @@ describe('сбой телеметрии не подменяет результа
     expect(out).toBe('ЗНАЧЕНИЕ')
   })
 
+  it('трейсер вернул ПРОИЗВОДНЫЙ промис — чужой реджект не остаётся без обработчика', async () => {
+    // Шапка файла числит «трейсер подменил возврат» среди защищаемых сценариев, и для промиса это не
+    // безобидно: ответ мы берём из своего `pending`, а возвращённый трейсером промис остаётся ничей —
+    // при реджекте это `unhandledRejection`, то есть в Node падение процесса. Наблюдение не имеет
+    // права ронять наблюдаемое. Ловим настоящие unhandled-события, а не рассуждаем о них.
+    const unhandled: unknown[] = []
+    const onUnhandled = (e: unknown): void => { unhandled.push(e) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      // Производный промис: тождества с `pending` нет, и он отклоняется своей ошибкой.
+      hook = (_n, _o, fn) => Promise.resolve(fn(noopSpan)).then(() => { throw new Error('чужой реджект') })
+      await expect(withSpan('t', { stage: 'other' }, async () => 'ЗНАЧЕНИЕ')).resolves.toBe('ЗНАЧЕНИЕ')
+      // Микрозадачи должны отработать: unhandledRejection всплывает не мгновенно.
+      await new Promise((r) => setTimeout(r, 20))
+      expect(unhandled, 'чужой промис остался без обработчика').toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('трейсер не вызвал колбэк → операция всё равно выполняется ровно раз', async () => {
     // Иначе наружу уходил `undefined`, типизированный как `T`, а операция не выполнялась вовсе.
     let calls = 0

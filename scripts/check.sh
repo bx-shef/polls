@@ -15,13 +15,12 @@ pnpm -s typecheck
 echo "▶ check:boundary (граница ~core)"
 pnpm -s check:boundary
 
+echo "▶ lint (забытый await + recommended — #165; сам зовёт nuxt prepare)"
+pnpm -s lint
+
 echo "▶ typecheck:app + typecheck:server (vue-tsc app/ + server/)"
-pnpm -s nuxt:prepare
 pnpm -s typecheck:app
 pnpm -s typecheck:server
-
-echo "▶ lint (забытый await, типовые правила — #165)"
-pnpm -s lint
 
 echo "▶ test (+покрытие, пороги в vitest.config.ts)"
 pnpm -s test:cov

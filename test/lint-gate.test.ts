@@ -67,46 +67,35 @@ describe('линт-гейт забытого await (#165)', () => {
 })
 
 /**
- * Покрытие КАЖДОЙ области — отдельно и пробой.
+ * Две пробы НАСТОЯЩИМ файлом — там, где сверка резолва конфигурации (ниже) недостаточна.
  *
- * ⚠️ Без этого блока гард был уже, чем обещал, и ревью показало это исполнением: если убрать из
- * `eslint.config.mjs` область `server/**`, то `pnpm lint` печатает пустой вывод и возвращает 0 даже
- * при настоящем висячем промисе в `server/` — файл просто не попадает ни под одну конфигурацию
- * («ignored because no matching configuration was supplied»). Тесты выше при этом оставались
- * зелёными: они линтуют приманку и один файл из `src/`. То есть «половина серверного кода не
- * проверяется» — сценарий, названный в доках закрытым, — не ловился ничем.
+ * ⚠️ Проб именно две, а не по одной на каждую область. Раньше их было шесть, и они стоили 22 секунды
+ * из 30 при том, что покрывали пять областей из семи — то есть самый дорогой слой защищал хуже
+ * самого дешёвого. Сверка `calculateConfigForFile` по всему дереву (0,9 с) покрывает ВСЕ области
+ * включая будущие, поэтому здесь остались только два случая, которые она доказать не может:
+ *  - `server/` — резолв конфигурации не доказывает, что типы РЕАЛЬНО подгружаются: `project` может
+ *    указывать в несуществующий файл. (Такое падает громко, но проба дешевле рассуждения.)
+ *  - `.vue` — другой парсер; резолв правил ничего не говорит о том, добрались ли они до `<script>`.
  *
- * Проба пишется в саму область (иначе она не попадёт под её glob), линтуется и удаляется в `finally`.
- * Имя внесено в `.gitignore` на случай, если прогон упадёт между записью и удалением.
+ * Проба пишется в саму область (иначе не попадёт под её glob) и удаляется в `finally`.
  */
-describe('типовые правила работают в КАЖДОЙ области, а не только в src/', () => {
-  const PROBE = `
+describe('правила доходят до кода, а не только резолвятся', () => {
+  it('server/ — висячий промис пойман настоящим прогоном', () => {
+    const rel = 'server/utils/__lint-probe.ts'
+    const abs = fileURLToPath(new URL(`../${rel}`, import.meta.url))
+    try {
+      writeFileSync(abs, `
 interface Probe { save(v: string): Promise<void> }
 export function probe(p: Probe): void {
   p.save('проба')
 }
-`
-  const areas: Array<[name: string, dir: string]> = [
-    ['src/', 'src'],
-    ['server/', 'server/utils'],
-    ['app/', 'app/utils'],
-    ['test/', 'test'],
-    ['scripts/', 'scripts']
-  ]
-
-  it.each(areas)('%s — висячий промис пойман', (_name, dir) => {
-    const rel = `${dir}/__lint-probe.ts`
-    const abs = fileURLToPath(new URL(`../${rel}`, import.meta.url))
-    try {
-      writeFileSync(abs, PROBE)
+`)
       const r = runEslint(rel)
-      // status 2 — сбой самого ESLint (например, `project` указывает в несуществующий файл);
-      // status 0 — область выпала из конфигурации, и это ТИХИЙ пропуск, ради которого блок и написан.
       expect(r.error, `ESLint не запустился: ${String(r.error)}`).toBeUndefined()
       expect(r.status, `ESLint сломался на ${rel}:\n${r.stderr}`).not.toBe(2)
       const rules = JSON.parse(r.stdout || '[]')
         .flatMap((f: EslintResult) => f.messages.map((m) => m.ruleId))
-      expect(rules, `область ${dir} не покрыта типовыми правилами (вывод: ${r.stdout || '(пусто)'})`)
+      expect(rules, `типы не подгружаются (вывод: ${r.stdout || '(пусто)'})`)
         .toContain('@typescript-eslint/no-floating-promises')
     } finally {
       rmSync(abs, { force: true })
@@ -114,8 +103,6 @@ export function probe(p: Probe): void {
   })
 
   it('.vue — висячий промис пойман', () => {
-    // Отдельно от `.ts`: у `.vue` свой блок конфигурации со своим парсером, и его удаление тестами
-    // выше не ловится. Ревью показало исполнением: без него все 13 компонентов выпадают беззвучно.
     const rel = 'app/components/__lint-probe.vue'
     const abs = fileURLToPath(new URL(`../${rel}`, import.meta.url))
     try {
