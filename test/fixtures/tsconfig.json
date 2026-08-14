@@ -1,0 +1,8 @@
+{
+  // Отдельный проект ТОЛЬКО ради типовых правил ESLint: приманка исключена из корневого tsconfig
+  // (часть её форм ловит сам `tsc`), но вне проекта TypeScript правила `no-floating-promises` и
+  // `await-thenable` не работают вовсе — и гард показывал бы «0 problems» на заведомо битом коде.
+  "extends": "../../tsconfig.json",
+  "include": ["."],
+  "exclude": []
+}

@@ -46,6 +46,11 @@ jobs:
       - name: Typecheck app/ + server/ (vue-tsc, #36)
         run: pnpm nuxt:prepare && pnpm typecheck:app && pnpm typecheck:server
 
+      # Забытый `await` (#165). ПОСЛЕ nuxt:prepare — типовые правила по server/ и app/ читают
+      # сгенерированные tsconfig; без них линт молча вырождается в «0 problems».
+      - name: Lint (забытый await, типовые правила)
+        run: pnpm lint
+
       - name: Test (+ покрытие, пороги в vitest.config.ts)
         run: pnpm test:cov
 

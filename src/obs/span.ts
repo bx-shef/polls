@@ -75,7 +75,11 @@ export async function withSpan<T>(
   // Держа промис, мы возвращаем результат ИМЕННО операции, чем бы ни ответил трейсер.
   let pending: Promise<T> | undefined
   try {
-    tracer.startActiveSpan(spanName, { kind, attributes }, (span: Span): Promise<T> => {
+    // `void` здесь не «заглушить линт», а точное описание происходящего: возврат `startActiveSpan` —
+    // ТОТ ЖЕ промис, что уже лежит в `pending`, и ожидается он ниже (строка с `await (pending ?? …)`).
+    // Ждать его дважды нечего, а бросить без пометки нельзя: без неё непонятно, потерян промис или
+    // удержан. Ровно это и проверяет `no-floating-promises` (#165).
+    void tracer.startActiveSpan(spanName, { kind, attributes }, (span: Span): Promise<T> => {
       pending = (async () => {
         try {
           const result = await fn()
