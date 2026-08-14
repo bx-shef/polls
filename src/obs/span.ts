@@ -73,42 +73,46 @@ export async function withSpan<T>(
   //    не выполнялась вовсе;
   //  — трейсер подменил возврат → вызывающий получал чужое значение.
   // Держа промис, мы возвращаем результат ИМЕННО операции, чем бы ни ответил трейсер.
-  let pending: Promise<T> | undefined
+  // ⚠️ Промис, который получает трейсер, НИКОГДА не отклоняется: исход операции едет **конвертом**.
+  // Это не стиль, а способ закрыть целый класс отказов. Трейсер волен построить от нашего промиса
+  // производный (`fn(span).then(…)`) и тут же бросить — тогда производный остаётся ничей, и его
+  // реджект даёт `unhandledRejection`, то есть в Node падение процесса. Дотянуться до него мы не
+  // можем: он нам не возвращался. Зато можем сделать так, чтобы отклоняться было нечему — от
+  // неотклоняющегося промиса производный тоже не отклоняется. Ревью нашло эту склейку («подменил
+  // возврат» + «бросил после входа в колбэк») прогоном; сравнением возвратов она не лечится.
+  let settled: Promise<{ ok: true, value: T } | { ok: false, error: unknown }> | undefined
   try {
-    // Возврат `startActiveSpan` у соответствующего спецификации трейсера — ТОТ ЖЕ промис, что лежит
-    // в `pending`, и ожидается он ниже (`await (pending ?? …)`). Но шапка этого файла числит
-    // «трейсер подменил возврат» среди сценариев, от которых мы защищаемся, — значит нельзя писать
-    // просто `void` и объявлять тождество фактом: подменённый и отклонённый промис остался бы без
-    // обработчика, то есть дал бы `unhandledRejection` и падение процесса. Ревью показало это
-    // прогоном на трейсере, возвращающем производный промис. Поэтому сверяем и гасим чужой.
-    const returned: unknown = tracer.startActiveSpan(spanName, { kind, attributes }, (span: Span): Promise<T> => {
-      pending = (async () => {
+    const returned: unknown = tracer.startActiveSpan(spanName, { kind, attributes }, (span: Span) => {
+      settled = (async () => {
         try {
-          const result = await fn()
+          const value = await fn()
           quiet(() => span.setStatus({ code: SpanStatusCode.OK }))
-          return result
-        } catch (e) {
+          return { ok: true as const, value }
+        } catch (error) {
           // Вид ошибки, а НЕ её текст и НЕ recordException: см. шапку файла. Через белый список, а не
           // напрямую: иначе утверждение «атрибуты идут ТОЛЬКО через pickSafeAttributes» неверно уже в
           // этом же файле, и инвариант держится на типе возврата, а не на коде.
-          quiet(() => span.setAttributes(pickSafeAttributes({ error_kind: errorKind(e) })))
+          quiet(() => span.setAttributes(pickSafeAttributes({ error_kind: errorKind(error) })))
           // Без `message`: статус спана — тоже поле для свободной строки.
           quiet(() => span.setStatus({ code: SpanStatusCode.ERROR }))
-          throw e
+          return { ok: false as const, error }
         } finally {
           quiet(() => span.end())
         }
       })()
-      return pending
+      return settled
     })
-    // Вернули не наш промис — гасим его отдельно: ответ мы всё равно возьмём из `pending`, но чужой
-    // реджект не должен остаться без обработчика.
-    if (returned !== pending) void Promise.resolve(returned).catch(() => {})
+    // Трейсер мог вернуть и СВОЙ отклонённый промис, не производный от нашего, — конверт от этого не
+    // спасает. Гасим что угодно: наш конверт не отклоняется, так что лишним это не будет.
+    void Promise.resolve(returned).catch(() => {})
   } catch {
-    // Трейсер сломался. Если операция уже запущена — её промис и есть ответ; если нет — выполняем
+    // Трейсер сломался. Если операция уже запущена — её исход и есть ответ; если нет — выполняем
     // без спана. Наблюдение не имеет права ни отменять наблюдаемое, ни повторять его.
   }
-  return await (pending ?? fn())
+  if (!settled) return await fn()
+  const outcome = await settled
+  if (!outcome.ok) throw outcome.error
+  return outcome.value
 }
 
 /**

@@ -132,38 +132,74 @@ export function probe(p: Probe): void {
  * известных исключений держим здесь же — он обязан быть коротким и видимым, а не растворяться в
  * `ignores`.
  */
+/**
+ * ⚠️ Список расширений ШИРЕ, чем `files` в конфиге, и это намеренно. Совпадай он — новое расширение
+ * выпадало бы из линта и одновременно из этой проверки, то есть молча. Nitro и Nuxt принимают `.js`
+ * и `.tsx` без единой настройки, так что сценарий не гипотетический.
+ */
+const SOURCE_EXT = /\.(ts|mts|cts|tsx|js|mjs|cjs|jsx|vue)$/
+
+const REQUIRED = ['@typescript-eslint/no-floating-promises', '@typescript-eslint/await-thenable',
+  '@typescript-eslint/no-misused-promises', 'no-control-regex']
+
+/** Уровень `error` — числом (2) или строкой; всё остальное, включая `off`/`warn`, не годится. */
+const isError = (entry: unknown): boolean => {
+  const level = Array.isArray(entry) ? entry[0] : entry
+  return level === 2 || level === 'error'
+}
+
+/**
+ * Обход исходников — ОДИН на все проверки ниже. Раздельные обходы уже подвели: проверка подавлений
+ * знала пять каталогов и не видела корень.
+ */
+const SKIP_DIRS = new Set(['node_modules', '.nuxt', '.output', '.git', 'coverage',
+  'dist', 'test-results', 'reporting-kit', '__screenshots__'])
+
+const walkSources = (): string[] => {
+  const found: string[] = []
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') && entry.name !== '.github') continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(full)
+      } else if (SOURCE_EXT.test(entry.name)) found.push(relative(ROOT, full))
+    }
+  }
+  walk(ROOT)
+  return found
+}
+
 describe('ни один исходник не выпадает из линта молча', () => {
   it('для каждого файла ESLint резолвит наши правила', async () => {
     const { ESLint } = await import('eslint')
     const eslint = new ESLint({ cwd: ROOT })
 
-    const SKIP_DIRS = new Set(['node_modules', '.nuxt', '.output', '.git', 'coverage',
-      'dist', 'test-results', 'reporting-kit', '__screenshots__'])
-    const sources: string[] = []
-    const walk = (dir: string): void => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.') && entry.name !== '.github') continue
-        const full = join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (!SKIP_DIRS.has(entry.name)) walk(full)
-        } else if (/\.(ts|mts|cts|vue|mjs)$/.test(entry.name)) {
-          sources.push(relative(ROOT, full))
-        }
-      }
-    }
-    walk(ROOT)
+    const sources = walkSources()
     expect(sources.length, 'обход не нашёл исходников — проверка выродилась').toBeGreaterThan(100)
 
     // Приманка нарушает правила намеренно и живёт в `ignores`; остального в списке быть не должно.
+    // ⚠️ Размеры аллоу-листов запиннены: расширить их — значит поправить утверждение, а не дописать
+    // слово в список. Ревью сняло защиту, добавив `'api'` в пропускаемые каталоги (сопоставление идёт
+    // по базовому имени, так что одно слово гасило и `server/api`, и `src/api`).
     const KNOWN_UNCOVERED = new Set(['test/fixtures/floating-promise.fixture.ts'])
+
+    expect(SKIP_DIRS.size, 'список пропускаемых каталогов расширен — это снимает защиту').toBe(9)
+    expect(KNOWN_UNCOVERED.size, 'список известных исключений расширен').toBe(1)
 
     const uncovered: string[] = []
     for (const file of sources) {
       if (KNOWN_UNCOVERED.has(file)) continue
       const config = await eslint.calculateConfigForFile(file)
-      if (!config?.rules?.['@typescript-eslint/no-floating-promises']) uncovered.push(file)
+      // ⚠️ Проверяем УРОВЕНЬ, а не наличие. Выключенное правило резолвится как `[0]`, и проверка на
+      // истинность его пропускала — ревью показало это блоком из четырёх строк, который гасил правила
+      // для всего `server/api/**` (весь HTTP-периметр: установка, удаление, вебхуки событий), оставляя
+      // все три слоя гарда зелёными. Уровень пиннится для КАЖДОГО файла, а не для представителей.
+      for (const rule of REQUIRED) {
+        if (!isError(config?.rules?.[rule])) uncovered.push(`${file} — ${rule}`)
+      }
     }
-    expect(uncovered, `эти файлы линт пропускает МОЛЧА:\n${uncovered.join('\n')}`).toEqual([])
+    expect(uncovered, `правила не в состоянии error:\n${uncovered.join('\n')}`).toEqual([])
   })
 
   /**
@@ -173,29 +209,27 @@ describe('ни один исходник не выпадает из линта �
    * синхронный. То же для `ignoreVoid`/`ignoreIIFE` у `no-floating-promises`. Поэтому пиннем
    * СОСТОЯНИЕ каждого правила у представителя каждой области, а не факт упоминания.
    */
-  it('у представителя каждой области все правила в состоянии error и без ослабляющих опций', async () => {
+  it('у трёх правил про промисы НЕТ опций — любые опции их только ослабляют', async () => {
+    // ⚠️ Прежняя проверка искала опции со значением `false` — и была неверна дважды. У `ignoreVoid` и
+    // `ignoreIIFE` ослабление это `true`, а не `false`; а `checksVoidReturn` штатно принимает ОБЪЕКТ
+    // под-флагов, который под сравнение с `false` не подпадал вовсе. Ревью сняло обе защиты одной
+    // правкой, оставив гард зелёным. Поэтому здесь запрет простой и неинвертируемый: у этих трёх
+    // правил опций быть не должно — строгое состояние и есть состояние по умолчанию.
     const { ESLint } = await import('eslint')
     const eslint = new ESLint({ cwd: ROOT })
-    const REQUIRED = ['@typescript-eslint/no-floating-promises', '@typescript-eslint/await-thenable',
-      '@typescript-eslint/no-misused-promises', 'no-control-regex']
-    const WEAKENING = new Set(['checksVoidReturn', 'checksConditionals', 'checksSpreads',
-      'ignoreVoid', 'ignoreIIFE'])
+    const NO_OPTIONS = REQUIRED.filter((r) => r !== 'no-control-regex')
 
-    for (const file of ['src/api/invitation.ts', 'server/utils/portal.ts', 'app/utils/landing.ts',
-      'app/app.vue', 'test/api.test.ts', 'scripts/verify.ts', 'otel.instrument.mjs']) {
+    for (const file of ['src/api/invitation.ts', 'server/utils/portal.ts', 'server/api/b24/install.post.ts',
+      'app/utils/landing.ts', 'app/app.vue', 'test/api.test.ts', 'scripts/verify.ts', 'otel.instrument.mjs']) {
       const config = await eslint.calculateConfigForFile(file)
       // Без типов правила промисов не работают вовсе — а конфиг при этом выглядит настроенным.
       expect(config?.languageOptions?.parserOptions?.project, `${file}: нет привязки к проекту TypeScript`)
         .toBeTruthy()
-      for (const rule of REQUIRED) {
-        // `calculateConfigForFile` отдаёт уровень числом (2 = error), а не строкой.
-        const entry = config?.rules?.[rule] as [number | string, Record<string, unknown>?] | undefined
-        expect([2, 'error'], `${file}: правило ${rule} не в состоянии error (${String(entry?.[0])})`)
-          .toContain(entry?.[0])
-        for (const opt of Object.keys(entry?.[1] ?? {})) {
-          expect(WEAKENING.has(opt) && entry?.[1]?.[opt] === false,
-            `${file}: ${rule} ослаблено опцией ${opt}: false`).toBe(false)
-        }
+      for (const rule of NO_OPTIONS) {
+        const entry = config?.rules?.[rule]
+        expect(isError(entry), `${file}: ${rule} не в состоянии error`).toBe(true)
+        expect(Array.isArray(entry) ? entry.length : 1, `${file}: у ${rule} появились опции — они его ослабляют`)
+          .toBe(1)
       }
     }
   })
@@ -222,25 +256,16 @@ describe('гейт действительно подключён, а не про
   })
 
   it('в исходниках нет подавления линта целым файлом', () => {
-    // `/* eslint-disable */` без имён правил глушит файл целиком и не даёт даже предупреждения —
-    // штатный способ «починить» красный линт одной строкой. Точечные подавления с именем правила
-    // остаются разрешёнными: они видны в диффе и объясняются рядом.
+    // ⚠️ Запрещена ЛЮБАЯ блочная директива `/* eslint-disable … */` — в том числе с именами правил.
+    // Ревью показало обе дыры прежней проверки: она искала только безымянную форму (а `/* eslint-disable
+    // @typescript-eslint/no-floating-promises */` глушит файл целиком ничуть не хуже) и обходила пять
+    // каталогов, мимо корня — то есть мимо `otel.instrument.mjs`, прод-бутстрапа, ради которого
+    // заводился `tsconfig.tooling.json` со словами «он весь про промисы».
+    // Точечные `eslint-disable-next-line` остаются разрешёнными: они видны в диффе и объясняются рядом.
     const offenders: string[] = []
-    const walk = (dir: string): void => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
-        const full = join(dir, entry.name)
-        if (entry.isDirectory()) walk(full)
-        else if (/\.(ts|mts|cts|vue|mjs)$/.test(entry.name)) {
-          // Себя пропускаем: сам шаблон поиска — литерал в этом файле, иначе гард ловит собственный текст.
-          if (full === fileURLToPath(import.meta.url)) continue
-          const text = readFileSync(full, 'utf8')
-          if (/\/\*\s*eslint-disable\s*\*\//.test(text)) offenders.push(relative(ROOT, full))
-        }
-      }
-    }
-    for (const dir of ['src', 'server', 'app', 'test', 'scripts']) {
-      walk(fileURLToPath(new URL(`../${dir}`, import.meta.url)))
+    for (const file of walkSources()) {
+      if (file === relative(ROOT, fileURLToPath(import.meta.url))) continue // сам шаблон — литерал здесь
+      if (/\/\*\s*eslint-disable(\s|\*)/.test(readFileSync(join(ROOT, file), 'utf8'))) offenders.push(file)
     }
     expect(offenders, `линт заглушён целиком в:\n${offenders.join('\n')}`).toEqual([])
   })

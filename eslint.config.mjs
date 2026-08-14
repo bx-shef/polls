@@ -57,6 +57,7 @@ const AREAS = [
   { files: ['*.config.ts', '*.config.mjs', 'otel.instrument.mjs', 'scripts/**/*.mjs'], project: './tsconfig.tooling.json' }
 ]
 
+/** @type {import('typescript-eslint').ConfigWithExtends['rules']} */
 const rules = {
   // Обещание, за которым никто не следит: результат отброшен, ошибка не поймана.
   '@typescript-eslint/no-floating-promises': 'error',

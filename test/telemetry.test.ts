@@ -516,12 +516,23 @@ describe('сбой телеметрии не подменяет результа
     const onUnhandled = (e: unknown): void => { unhandled.push(e) }
     process.on('unhandledRejection', onUnhandled)
     try {
-      // Производный промис: тождества с `pending` нет, и он отклоняется своей ошибкой.
+      // 1. Производный промис, отклоняющийся своей ошибкой.
       hook = (_n, _o, fn) => Promise.resolve(fn(noopSpan)).then(() => { throw new Error('чужой реджект') })
       await expect(withSpan('t', { stage: 'other' }, async () => 'ЗНАЧЕНИЕ')).resolves.toBe('ЗНАЧЕНИЕ')
+
+      // 2. Свой отклонённый промис, к нашему отношения не имеющий.
+      hook = (_n, _o, fn) => { void fn(noopSpan); return Promise.reject(new Error('свой реджект')) }
+      await expect(withSpan('t', { stage: 'other' }, async () => 'ЗНАЧЕНИЕ')).resolves.toBe('ЗНАЧЕНИЕ')
+
+      // 3. САМОЕ ЗЛОЕ: построил производный и тут же бросил. Возврата нет — дотянуться до
+      //    производного мы не можем; спасает только то, что нашему промису нечем отклоняться.
+      hook = (_n, _o, fn) => { void Promise.resolve(fn(noopSpan)).then((v) => v); throw new Error('контекст сломался') }
+      await expect(withSpan('t', { stage: 'other' }, async () => { throw new Error('операция упала') }))
+        .rejects.toThrow('операция упала')
+
       // Микрозадачи должны отработать: unhandledRejection всплывает не мгновенно.
-      await new Promise((r) => setTimeout(r, 20))
-      expect(unhandled, 'чужой промис остался без обработчика').toEqual([])
+      await new Promise((r) => setTimeout(r, 30))
+      expect(unhandled, `промис остался без обработчика: ${unhandled.map(String).join(', ')}`).toEqual([])
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
