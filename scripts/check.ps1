@@ -26,6 +26,10 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 pnpm -s typecheck:server
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
+Write-Host '> lint (забытый await, типовые правила - #165)'
+pnpm -s lint
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
 Write-Host '> test (+покрытие, пороги в vitest.config.ts)'
 pnpm -s test:cov
 if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -34,4 +38,4 @@ Write-Host '> verify (итог на 4 уровнях)'
 pnpm -s verify
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-Write-Host 'OK: типы + тесты + итог посчитаны.'
+Write-Host 'OK: типы + линт + тесты + итог посчитаны.'

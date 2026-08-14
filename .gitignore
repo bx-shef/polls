@@ -14,3 +14,4 @@ blob-report/
 !.env.example
 !.env.prod.example
 .DS_Store
+**/__lint-probe.ts

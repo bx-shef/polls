@@ -20,10 +20,13 @@ pnpm -s nuxt:prepare
 pnpm -s typecheck:app
 pnpm -s typecheck:server
 
+echo "▶ lint (забытый await, типовые правила — #165)"
+pnpm -s lint
+
 echo "▶ test (+покрытие, пороги в vitest.config.ts)"
 pnpm -s test:cov
 
 echo "▶ verify (итог на 4 уровнях)"
 pnpm -s verify
 
-echo "✅ Готово: типы (ядро+граница+app) + тесты + итог посчитаны."
+echo "✅ Готово: типы (ядро+граница+app) + линт + тесты + итог посчитаны."

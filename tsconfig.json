@@ -22,5 +22,6 @@
   // Приманка линт-гейта нарушает правила НАМЕРЕННО, и часть её форм ловит сам `tsc` (TS2801).
   // У неё свой `test/fixtures/tsconfig.json` — он нужен, чтобы типовые правила ESLint до неё
   // добирались: без проекта TypeScript они молча вырождаются, и гард стал бы декоративным.
-  "exclude": ["test/fixtures"]
+  // `node_modules` выписан явно: свой `exclude` ЗАМЕЩАЕТ дефолтный список TypeScript.
+  "exclude": ["node_modules", "test/fixtures"]
 }

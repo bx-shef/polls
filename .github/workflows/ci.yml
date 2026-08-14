@@ -46,8 +46,10 @@ jobs:
       - name: Typecheck app/ + server/ (vue-tsc, #36)
         run: pnpm nuxt:prepare && pnpm typecheck:app && pnpm typecheck:server
 
-      # Забытый `await` (#165). ПОСЛЕ nuxt:prepare — типовые правила по server/ и app/ читают
-      # сгенерированные tsconfig; без них линт молча вырождается в «0 problems».
+      # Забытый `await` (#165). Типовые правила по server/ и app/ читают сгенерированные
+      # `.nuxt/tsconfig.*`, поэтому `pnpm lint` сам зовёт `nuxt prepare` — на чистом клоне без него
+      # линт падал 41 ошибкой разбора. (Тихий режим отказа у ESLint другой: файл, не совпавший ни с
+      # одним `files`, пропускается без слова и с кодом 0 — это ловит гард `test/lint-gate.test.ts`.)
       - name: Lint (забытый await, типовые правила)
         run: pnpm lint
 

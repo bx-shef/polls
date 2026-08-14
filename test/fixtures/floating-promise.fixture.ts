@@ -39,3 +39,10 @@ export function truthy(store: Store): string {
 export async function awaitOnPlainValue(): Promise<number> {
   return await 42
 }
+
+/**
+ * Четвёртое правило набора (`no-control-regex`) приманкой не щупалось вовсе, и его выключение
+ * оставляло гард зелёным. Регулярка с управляющим символом — ровно его предмет; в проекте это не
+ * абстракция: `src/domain/text.ts` вычищает такие символы из пользовательского текста.
+ */
+export const CONTROL_REGEX = /[\x00-\x08]/

@@ -500,7 +500,8 @@ describe('сбой телеметрии не подменяет результа
     // невыполненной и звал её второй раз, а первая, осиротевшая, давала unhandledRejection. Под
     // обёрткой лежат неидемпотентные вызовы: второй POST рефреша ротирует токен и выбивает портал.
     let calls = 0
-    hook = (_n, _o, fn) => { const p = fn(noopSpan); throw new Error('контекст сломался'); }
+    // Промис намеренно осиротевший — в этом и состоит имитируемый сбой трейсера.
+    hook = (_n, _o, fn) => { const _orphan = fn(noopSpan); throw new Error('контекст сломался') }
     const out = await withSpan('t', { stage: 'other' }, async () => { calls++; return 'ЗНАЧЕНИЕ' })
     expect(calls, 'операция выполнена больше одного раза').toBe(1)
     expect(out).toBe('ЗНАЧЕНИЕ')

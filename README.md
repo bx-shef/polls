@@ -6,7 +6,7 @@
 
 ```bash
 pnpm install
-pnpm check       # типы + тесты + расчёт итога одной командой
+pnpm check       # типы + линт + тесты + расчёт итога одной командой
 pnpm verify      # только печать итога на 4 уровнях
 pnpm test        # юнит-тесты (vitest)
 pnpm typecheck   # проверка типов
