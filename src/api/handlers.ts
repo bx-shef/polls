@@ -203,7 +203,7 @@ export function createApi(deps: ApiDeps): Api {
         if (p.invitation != null) {
           // pin-aware consume: чужой опрос/версия → 409 БЕЗ расхода токена (не сжигаем
           // приглашение при несовпадении пина — анти-DoS на утёкший токен).
-          const inv = invitations.consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
+          const inv = await invitations.consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
           if (inv.status === 'replay') return err(409, 'Эта ссылка уже использована — опрос пройден. Спасибо!')
           if (inv.status === 'mismatch') return err(409, 'Ссылка не подходит к этому опросу. Откройте опрос по правильной ссылке.')
           if (inv.status === 'unknown') return err(403, 'Срок ссылки истёк или она недействительна. Попросите новую ссылку у менеджера.')

@@ -4,7 +4,7 @@ import { createApi, type Api } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
-import { MemoryInvitationStore } from '~core/api/invitation'
+import { MemoryInvitationStore, type InvitationStore } from '~core/api/invitation'
 import { surveyRoutingFromEnv } from '~core/bitrix24/survey-routing'
 import { PgStore, queryableFromPool } from '~core/store/pg'
 import { applyMigrations, upSql } from '~core/store/migrate'
@@ -105,8 +105,11 @@ export function useApi(): Promise<Api> {
  * расходует `submit` — поэтому createApi получает ИМЕННО этот инстанс, а не создаёт свой.
  * In-memory (один инстанс); durable-стор приглашений в БД — #4.
  */
-let invitationStore: MemoryInvitationStore | undefined
-export function useInvitations(): MemoryInvitationStore {
+// ⚠️ Тип возврата — ПОРТ `InvitationStore`, а не класс. Пока здесь стоял `MemoryInvitationStore`,
+// все четыре вызывающих роута были прибиты к конкретной реализации, и подмена на durable-стор (#4)
+// требовала бы правки каждого из них — при том что сам порт существовал.
+let invitationStore: InvitationStore | undefined
+export function useInvitations(): InvitationStore {
   if (!invitationStore) invitationStore = new MemoryInvitationStore()
   return invitationStore
 }

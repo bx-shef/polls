@@ -180,8 +180,8 @@ describe('runRobotTrigger — робот автоматизации «Запус
     if (r.kind !== 'ok' || e.kind !== 'ok') throw new Error('unreachable')
     const tokens = new Set([r.results[0]!.token, e.results[0]!.token])
     expect(tokens.size).toBe(2) // ← упадёт, когда появится дедуп по переходу: это и есть цель теста
-    expect(invitations.peek(r.results[0]!.token, now)?.context.dealId).toBe(759)
-    expect(invitations.peek(e.results[0]!.token, now)?.context.dealId).toBe(759)
+    expect((await invitations.peek(r.results[0]!.token, now))?.context.dealId).toBe(759)
+    expect((await invitations.peek(e.results[0]!.token, now))?.context.dealId).toBe(759)
   })
 
   it('паритет с событийным путём: одна сделка → тот же опрос/версия и тот же снимок контекста', async () => {
@@ -204,7 +204,7 @@ describe('runRobotTrigger — робот автоматизации «Запус
       expect(r.results.map(({ surveyKey, versionNo }) => ({ surveyKey, versionNo }))).toEqual(
         e.results.map(({ surveyKey, versionNo }) => ({ surveyKey, versionNo }))
       )
-      expect(invR.peek(r.results[0]!.token, now)?.context).toEqual(invE.peek(e.results[0]!.token, now)?.context)
+      expect((await invR.peek(r.results[0]!.token, now))?.context).toEqual((await invE.peek(e.results[0]!.token, now))?.context)
     }
   })
 })

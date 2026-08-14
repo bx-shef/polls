@@ -83,77 +83,77 @@ describe('api/invitation: MemoryInvitationStore', () => {
   const ctx: CrmContext = { dealId: 5994, companyId: 3986 }
   const pin = { surveyKey: 'svc', versionNo: 2 }
 
-  it('create → pending со снимком; peek читает; consume по верному пину расходует (single-use)', () => {
+  it('create → pending со снимком; peek читает; consume по верному пину расходует (single-use)', async () => {
     const c = clock()
     const s = new MemoryInvitationStore({ idGen: () => 'tok' })
-    const inv = s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
+    const inv = await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
     expect(inv).toMatchObject({ token: 'tok', surveyKey: 'svc', versionNo: 2, status: 'pending', context: ctx })
-    expect(s.peek('tok', c.now())?.status).toBe('pending')
-    const first = s.consume('tok', pin, c.now())
+    expect((await s.peek('tok', c.now()))?.status).toBe('pending')
+    const first = await s.consume('tok', pin, c.now())
     expect(first.status).toBe('ok')
     if (first.status === 'ok') expect(first.invitation.context).toEqual(ctx)
-    expect(s.consume('tok', pin, c.now())).toEqual({ status: 'replay' })
+    expect(await s.consume('tok', pin, c.now())).toEqual({ status: 'replay' })
   })
 
-  it('peek после consume → undefined (использованное приглашение наружу не отдаём)', () => {
+  it('peek после consume → undefined (использованное приглашение наружу не отдаём)', async () => {
     const c = clock()
     const s = new MemoryInvitationStore({ idGen: () => 'tok' })
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
-    s.consume('tok', pin, c.now())
-    expect(s.peek('tok', c.now())).toBeUndefined()
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
+    await s.consume('tok', pin, c.now())
+    expect(await s.peek('tok', c.now())).toBeUndefined()
   })
 
-  it('чужой пин → mismatch БЕЗ расхода токена (верный пин затем проходит)', () => {
+  it('чужой пин → mismatch БЕЗ расхода токена (верный пин затем проходит)', async () => {
     const c = clock()
     const s = new MemoryInvitationStore({ idGen: () => 'tok' })
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
-    expect(s.consume('tok', { surveyKey: 'svc', versionNo: 9 }, c.now())).toEqual({ status: 'mismatch' }) // чужая версия
-    expect(s.consume('tok', { surveyKey: 'other', versionNo: 2 }, c.now())).toEqual({ status: 'mismatch' }) // чужой опрос
-    expect(s.consume('tok', pin, c.now()).status).toBe('ok') // не сожжён
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
+    expect(await s.consume('tok', { surveyKey: 'svc', versionNo: 9 }, c.now())).toEqual({ status: 'mismatch' }) // чужая версия
+    expect(await s.consume('tok', { surveyKey: 'other', versionNo: 2 }, c.now())).toEqual({ status: 'mismatch' }) // чужой опрос
+    expect((await s.consume('tok', pin, c.now())).status).toBe('ok') // не сожжён
   })
 
-  it('неизвестный токен → unknown; peek → undefined', () => {
+  it('неизвестный токен → unknown; peek → undefined', async () => {
     const c = clock()
     const s = new MemoryInvitationStore()
-    expect(s.consume('нет', pin, c.now())).toEqual({ status: 'unknown' })
-    expect(s.peek('нет', c.now())).toBeUndefined()
+    expect(await s.consume('нет', pin, c.now())).toEqual({ status: 'unknown' })
+    expect(await s.peek('нет', c.now())).toBeUndefined()
   })
 
-  it('TTL: replay различим до истечения, после — unknown (окно как у nonce)', () => {
+  it('TTL: replay различим до истечения, после — unknown (окно как у nonce)', async () => {
     const c = clock()
     const s = new MemoryInvitationStore({ ttlMs: 1000, idGen: () => 'tok' })
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
-    expect(s.consume('tok', pin, c.now()).status).toBe('ok')
-    expect(s.consume('tok', pin, c.now())).toEqual({ status: 'replay' }) // в окне TTL
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
+    expect((await s.consume('tok', pin, c.now())).status).toBe('ok')
+    expect(await s.consume('tok', pin, c.now())).toEqual({ status: 'replay' }) // в окне TTL
     c.advance(1001)
-    expect(s.consume('tok', pin, c.now())).toEqual({ status: 'unknown' }) // окно истекло
+    expect(await s.consume('tok', pin, c.now())).toEqual({ status: 'unknown' }) // окно истекло
   })
 
-  it('протухшее НЕиспользованное приглашение → unknown (peek и consume)', () => {
+  it('протухшее НЕиспользованное приглашение → unknown (peek и consume)', async () => {
     const c = clock()
     const s = new MemoryInvitationStore({ ttlMs: 1000, idGen: () => 'tok' })
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
     c.advance(1001)
-    expect(s.peek('tok', c.now())).toBeUndefined()
-    expect(s.consume('tok', pin, c.now())).toEqual({ status: 'unknown' })
+    expect(await s.peek('tok', c.now())).toBeUndefined()
+    expect(await s.consume('tok', pin, c.now())).toEqual({ status: 'unknown' })
   })
 
-  it('per-invitation ttlMs переопределяет дефолт стора (peek и consume)', () => {
+  it('per-invitation ttlMs переопределяет дефолт стора (peek и consume)', async () => {
     const c = clock()
     const s = new MemoryInvitationStore({ ttlMs: 10_000, idGen: () => 'tok' })
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx, ttlMs: 500 }, c.now())
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx, ttlMs: 500 }, c.now())
     c.advance(501)
-    expect(s.peek('tok', c.now())).toBeUndefined()
-    expect(s.consume('tok', pin, c.now())).toEqual({ status: 'unknown' })
+    expect(await s.peek('tok', c.now())).toBeUndefined()
+    expect(await s.consume('tok', pin, c.now())).toEqual({ status: 'unknown' })
   })
 
-  it('maxPending: вытесняется самое старое приглашение (потолок памяти)', () => {
+  it('maxPending: вытесняется самое старое приглашение (потолок памяти)', async () => {
     const c = clock()
     let i = 0
     const s = new MemoryInvitationStore({ maxPending: 1, idGen: () => `tok${i++}` })
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
-    s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now()) // вытеснит tok0
-    expect(s.peek('tok0', c.now())).toBeUndefined()
-    expect(s.peek('tok1', c.now())?.token).toBe('tok1')
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now())
+    await s.create({ surveyKey: 'svc', versionNo: 2, context: ctx }, c.now()) // вытеснит tok0
+    expect(await s.peek('tok0', c.now())).toBeUndefined()
+    expect((await s.peek('tok1', c.now()))?.token).toBe('tok1')
   })
 })

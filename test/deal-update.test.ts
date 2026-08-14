@@ -100,7 +100,7 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
     // догрузка вызвана с id сделки из события и authoritative member_id (не из body напрямую в trigger)
     expect(fetchDeal).toHaveBeenCalledWith(759, 'member-id-fake-0000000000000000')
     // приглашение реально несёт снимок контекста догруженной сделки
-    const inv = invitations.peek(res.results[0]!.token, new Date())
+    const inv = await invitations.peek(res.results[0]!.token, new Date())
     expect(inv?.context.dealId).toBe(759)
     expect(inv?.context.companyId).toBe(101)
   })
@@ -126,7 +126,7 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
       })
     )
     if (res.kind !== 'ok') throw new Error('unreachable')
-    const inv = invitations.peek(res.results[0]!.token, new Date())
+    const inv = await invitations.peek(res.results[0]!.token, new Date())
     expect(inv?.context.products).toEqual([{ productId: 42, productName: 'Внедрение' }])
   })
 })

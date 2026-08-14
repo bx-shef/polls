@@ -316,7 +316,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('валидный токен → 200; context записи = снимок из приглашения', async () => {
     const { api, store, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(200)
@@ -335,7 +335,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('повторное использование приглашения → 409 (идемпотентность #4)', async () => {
     const { api, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
     expect((await api.submit({ ip: 'a', body: { ...validPayload(n1), invitation: inv.token } })).status).toBe(200)
     const n2 = await issueNonce(api)
@@ -352,7 +352,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
   it('приглашение от другого опроса/версии → 409 (несоответствие пина)', async () => {
     const { api, invitations, now } = await withInvitation()
     // версия приглашения 1, а payload идёт на версию 2
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 1, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 1, context: snapshot }, now())
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(409)
@@ -360,7 +360,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('422 по ответам НЕ сжигает приглашение — можно дослать корректные', async () => {
     const { api, store, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
     const bad = { ...validPayload(n1), invitation: inv.token, answers: { q_nps: { values: ['n9'] } } }
     expect((await api.submit({ ip: 'a', body: bad })).status).toBe(422)
@@ -372,7 +372,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('приглашение от другого ОПРОСА → 409 (сверка surveyKey, не только версии)', async () => {
     const { api, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
     expect(r.status).toBe(409)
@@ -380,7 +380,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
 
   it('гонка: два параллельных submit с одним приглашением → ровно один 200 и один 409', async () => {
     const { api, invitations, now } = await withInvitation()
-    const inv = invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
     const n2 = await issueNonce(api)
     const [a, b] = await Promise.all([
@@ -461,14 +461,14 @@ describe('анти-абьюз: примитивы', () => {
     expect(s.issue(c.now())).toBeTruthy()
   })
 
-  it('MemoryNonceStore: replay различим, пока не истёк TTL использованного', () => {
+  it('MemoryNonceStore: replay различим, пока не истёк TTL использованного', async () => {
     const c = clock()
     const s = new MemoryNonceStore({ ttlMs: 100 })
     const n = s.issue(c.now())!
-    expect(s.consume(n, c.now())).toBe('ok')
-    expect(s.consume(n, c.now())).toBe('replay')
+    expect(await s.consume(n, c.now())).toBe('ok')
+    expect(await s.consume(n, c.now())).toBe('replay')
     c.advance(101)
-    expect(s.consume(n, c.now())).toBe('unknown') // после TTL запись о использовании вычищена
+    expect(await s.consume(n, c.now())).toBe('unknown') // после TTL запись о использовании вычищена
   })
 
   it('SlidingWindowLimiter: окно скользит', () => {

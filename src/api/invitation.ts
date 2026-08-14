@@ -29,21 +29,37 @@ export type InvitationConsume =
   | { status: 'mismatch' }
   | { status: 'unknown' }
 
+/**
+ * ⚠️ Методы порта **асинхронные**, хотя in-memory реализация ничего не ждёт.
+ *
+ * Это ровно тот приём, который у стора опросов применён осознанно (`IStore`, `src/store/types.ts`:
+ * «методы async, чтобы in-memory и PgStore были взаимозаменяемы»), а здесь был упущен. Синхронная
+ * сигнатура — не деталь стиля: она делает вторую реализацию невозможной в принципе, потому что
+ * запрос к БД синхронным не бывает. Порт был, подставить за него было нечего.
+ *
+ * Цена — `await` на пяти вызовах; выигрыш — durable-стор приглашений (#4) перестаёт требовать правки
+ * ядра триггеров, робота и обработчика отправки.
+ */
 export interface InvitationStore {
   /** Создаёт приглашение со снимком контекста; возвращает запись с токеном. */
-  create(input: InvitationCreate, now: Date): Invitation
+  create(input: InvitationCreate, now: Date): Promise<Invitation>
   /**
    * Чтение без расходования (предпросмотр анкеты по ссылке). Возвращает только
    * ЖИВЫЕ pending-приглашения; использованные/протухшие → `undefined` (приватность:
    * CRM-снимок израсходованного токена наружу не отдаём).
    */
-  peek(token: string, now: Date): Invitation | undefined
+  peek(token: string, now: Date): Promise<Invitation | undefined>
   /**
    * Атомарно: при совпадении пина помечает использованным и возвращает приглашение
    * (single-use). `replay` — уже использован, `mismatch` — чужой опрос/версия (токен
    * НЕ сжигается, клиент может дослать на верный опрос), `unknown` — нет/протух.
+   *
+   * ⚠️ «Атомарно» в in-memory держится однопоточностью Node: между проверкой и пометкой нет точки
+   * прерывания. У реализации на БД такой гарантии нет даром — там это обязано быть одним запросом
+   * (`UPDATE … WHERE used_at IS NULL … RETURNING`), иначе одноразовость ломается двумя
+   * одновременными отправками. Записано здесь, потому что проверить это можно только в реализации.
    */
-  consume(token: string, pin: InvitationPin, now: Date): InvitationConsume
+  consume(token: string, pin: InvitationPin, now: Date): Promise<InvitationConsume>
 }
 
 export interface MemoryInvitationStoreOptions {
@@ -69,7 +85,7 @@ export class MemoryInvitationStore implements InvitationStore {
     this.idGen = opts.idGen ?? randomUUID
   }
 
-  create(input: InvitationCreate, now: Date): Invitation {
+  async create(input: InvitationCreate, now: Date): Promise<Invitation> {
     const t = now.getTime()
     this.prune(t)
     // потолок памяти: FIFO-вытеснение самого старого по ВСТАВКЕ pending (не по сроку);
@@ -96,12 +112,12 @@ export class MemoryInvitationStore implements InvitationStore {
     return invitation
   }
 
-  peek(token: string, now: Date): Invitation | undefined {
+  async peek(token: string, now: Date): Promise<Invitation | undefined> {
     this.prune(now.getTime())
     return this.pending.get(token)?.inv
   }
 
-  consume(token: string, pin: InvitationPin, now: Date): InvitationConsume {
+  async consume(token: string, pin: InvitationPin, now: Date): Promise<InvitationConsume> {
     const t = now.getTime()
     this.prune(t)
     if (this.used.has(token)) return { status: 'replay' }
