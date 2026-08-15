@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { INVITATION_TOKEN_PARAM, readInvitationToken, surveyPath } from '../src/client/invitation-link'
+import { crmContextSchema } from '../src/domain/schema'
+import { DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2 } from '../src/demo/seed'
 
 /**
  * Форма ссылки-приглашения — одна на две стороны: сервер её собирает, клиент читает. Пока читателя
@@ -63,5 +65,31 @@ describe('ссылка-приглашение: чтение', () => {
     const token = 'тк-1/особый&знак'
     const url = new URL(surveyPath('csat_postdeal', token), 'https://polls.example')
     expect(readInvitationToken(url.searchParams.get(INVITATION_TOKEN_PARAM))).toBe(token)
+  })
+})
+
+describe('демо-приглашения показывают то, ради чего заведены', () => {
+  it('контекст РАЗБИРАЕТСЯ схемой — поле-призрак не проедет молча', () => {
+    // ⚠️ Это не формальность. Первая редакция несла `dealTitle`, которого в `CrmContext` нет вовсе, и
+    // typecheck её пропустил: spread в литерал не включает проверку лишних свойств, а zod молча
+    // срезает неизвестные ключи. Демо при этом «работало», просто показывало не то.
+    for (const context of [DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2]) {
+      const parsed = crmContextSchema.safeParse(context)
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true)
+      expect(parsed.data, 'схема срезала поля — значит их в контексте не существует').toEqual(context)
+    }
+  })
+
+  it('несут ДЕНОРМАЛИЗОВАННЫЕ ИМЕНА — иначе срезы дашборда падают на голые ID', () => {
+    for (const context of [DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2]) {
+      expect(context.companyName, 'срез «клиент» показал бы ID').toBeTruthy()
+      expect(context.dealCategoryName, 'срез «направление» показал бы ID').toBeTruthy()
+      expect(context.responsibleName, 'срез «ответственный» показал бы ID').toBeTruthy()
+    }
+  })
+
+  it('две демо-сделки РАЗНЫЕ — иначе правило «две ссылки = две сделки» не показать', () => {
+    expect(DEMO_INVITATION_CONTEXT.dealId).not.toBe(DEMO_INVITATION_CONTEXT_2.dealId)
+    expect(DEMO_INVITATION_CONTEXT.companyName).not.toBe(DEMO_INVITATION_CONTEXT_2.companyName)
   })
 })

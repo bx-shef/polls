@@ -31,19 +31,30 @@ export const DEMO_INVITATION_TOKEN_2 = 'demo-invitation-2'
 /** Снимок «сделки», под которым демо-приглашение привязывает ответ. Данные вымышленные. */
 export const DEMO_INVITATION_CONTEXT = {
   dealId: 1001,
-  dealTitle: 'Демо-сделка',
-  companyId: 501,
   dealStageId: 'WON',
-  responsibleId: 7
+  companyId: 501,
+  responsibleId: 7,
+  dealCategoryId: 1,
+  dealAmount: 120_000,
+  // ⚠️ Денормализованные ИМЕНА обязательны, а не украшение: срезы дашборда (клиент / направление /
+  // ответственный) читают именно их, и без них демо показало бы срезы по голым ID — то есть не
+  // показало бы того, ради чего заведено.
+  companyName: 'ООО «Ромашка»',
+  dealCategoryName: 'Продажи',
+  responsibleName: 'Иванов Иван'
 } as const
 
 /** Снимок второй «сделки» — другой клиент и другой ответственный, чтобы разница была видна. */
 export const DEMO_INVITATION_CONTEXT_2 = {
   dealId: 1002,
-  dealTitle: 'Демо-сделка №2',
-  companyId: 502,
   dealStageId: 'WON',
-  responsibleId: 8
+  companyId: 502,
+  responsibleId: 8,
+  dealCategoryId: 2,
+  dealAmount: 45_000,
+  companyName: 'ЗАО «Василёк»',
+  dealCategoryName: 'Сервис',
+  responsibleName: 'Петрова Мария'
 } as const
 
 /**
