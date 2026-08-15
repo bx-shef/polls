@@ -163,8 +163,8 @@ export function useSurvey() {
    * Клиентская гидратация (вызвать в onMounted страницы): resume из localStorage и/или
    * deep-link `?q=N`. Срабатывает только из исходной фазы intro (SSR-рендер).
    */
-  function hydrate(deepLinkIndex?: number, token?: string) {
-    if (phase.value !== 'intro' || !version.value) return
+  function hydrate(deepLinkIndex?: number, token?: string): string | undefined {
+    if (phase.value !== 'intro' || !version.value) return undefined
     // Порядок обязателен: сперва решение о токене, и только потом чтение черновика — решение
     // вправе его стереть (чужое приглашение / протухшая привязка), а прочитанный до того снимок
     // пережил бы удаление в переменной и восстановился бы как ни в чём не бывало.
@@ -174,10 +174,16 @@ export function useSurvey() {
       // Resume важнее deep-link: у вернувшегося пользователя сохранённая позиция приоритетнее
       // ?q из ссылки (не теряем прогресс, не создаём гибрид). current берётся из снимка (initState).
       startFill(snap)
-      return
+    } else if (deepLinkIndex !== undefined) {
+      startFill(undefined, deepLinkIndex)
     }
-    if (deepLinkIndex !== undefined) startFill(undefined, deepLinkIndex)
     // иначе — остаёмся на интро (свежий старт по кнопке)
+    //
+    // ⚠️ Возвращаем ЭФФЕКТИВНЫЙ токен — тот, с которым реально уйдёт ответ. Он может отличаться от
+    // токена в адресе (если унаследован из браузера), а годность на SSR проверяется именно по
+    // адресу. Страница по этому значению досверяет ссылку, иначе обещание «узнать до заполнения»
+    // не выполнялось бы ровно там, где человек вернулся по закладке.
+    return invitationToken.value
   }
 
   /**

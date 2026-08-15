@@ -524,6 +524,40 @@ describe('GET /api/survey/:key/invitation — годность ссылки ДО
     expect(String(r.body.error)).toContain('обновился')
   })
 
+  it('кривой адрес опроса → 400 (до похода в стор)', async () => {
+    // Три ветки — 400/404/500 — были единственными непокрытыми в файле: у соседних `survey`/`submit`
+    // аналогичные закрыты, и новый хендлер отставал от стандарта собственного файла.
+    // Пустой ключ — реальный вход: роут берёт `getRouterParam(event, 'key') ?? ''`.
+    const { api } = await withInvitation()
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: '', token: 'x' })).status).toBe(400)
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: 'k'.repeat(201), token: 'x' })).status).toBe(400)
+  })
+
+  it('приглашение живо, а опубликованной версии опроса нет → 404', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: 'ghost', versionNo: 1, context: snapshot }, now())
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: 'ghost', token: inv.token })
+    expect(r.status).toBe(404)
+    expect(String(r.body.error)).toContain('Опрос не найден')
+  })
+
+  it('стор упал → 500 и НИ СЛОВА о причине наружу', async () => {
+    // Текст ошибки стора может нести DSN и снимок сделки. Наружу уходит только наш литерал.
+    const boom = new Error('DSN=postgres://user:PASSWORD@db/polls, dealId=5994')
+    const failing: InvitationStore = {
+      create: () => Promise.reject(boom),
+      peek: () => Promise.reject(boom),
+      consume: () => Promise.reject(boom)
+    }
+    const { api } = await freshApi({ invitations: failing, onError: () => {} })
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'x' })
+    expect(r.status).toBe(500)
+    const dump = JSON.stringify(r.body)
+    for (const leak of ['PASSWORD', 'postgres://', '5994']) {
+      expect(dump, `${leak} уехал респонденту`).not.toContain(leak)
+    }
+  })
+
   it('свой бюджет лимитера: перебор токенов не съедает лимит чтения опроса', async () => {
     const { api, invitations, now } = await withInvitation()
     const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())

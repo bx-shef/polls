@@ -115,6 +115,67 @@ test('другая ссылка на тот же опрос сбрасывает
   // сделки): мокать нельзя, годность проверяется на SSR, куда клиентский перехват не достаёт.
   await page.goto(`/s/${SURVEY_KEY}?token=${DEMO_INVITATION_TOKEN_2}`, { waitUntil: 'networkidle' })
   await expect(page.getByRole('button', { name: 'Начать', exact: true })).toBeVisible()
+
+  // ⚠️ И ГЛАВНОЕ — какой токен уедет в submit. Показ интро сам по себе ничего не доказывает:
+  // мутант, оставляющий старый токен, проходил проверку «черновик сброшен» зелёным, а ответ при
+  // этом привязывался бы к ЧУЖОЙ сделке — то есть худший исход из всех, что тут возможны.
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  let sentInvitation: unknown = 'запрос не дошёл'
+  await page.route('**/api/submit', (route) => {
+    sentInvitation = (route.request().postDataJSON() as Record<string, unknown>)['invitation']
+    return route.fulfill({ status: 200, json: { ok: true } })
+  })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await answerHappyPath(page)
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  expect(sentInvitation, 'после смены ссылки ответ ушёл со старым токеном').toBe(DEMO_INVITATION_TOKEN_2)
+})
+
+test('годность решается на SSR — иначе интро мигает перед отказом', async ({ request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'проводка не зависит от темы и ширины')
+  // ⚠️ Гард ровно на `{ server: false }`. Скриншот-тест этого не ловит: он смотрит уже
+  // гидратированную страницу, где отказ появится в любом случае — просто позже, после мигания
+  // интро, за которое человек успевает нажать «Начать». Здесь мы читаем СЫРОЙ SSR-ответ, до
+  // всякого JS: отказ обязан быть уже в нём.
+  const html = await (await request.get(`/s/${SURVEY_KEY}?token=протухший`)).text()
+  expect(html, 'отказ появляется только после гидратации — значит интро мигнёт').toContain('По этой ссылке опрос не открыть')
+})
+
+test('роут проверки ссылки: свои решения живы (массив токенов, no-store)', async ({ request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'проводка не зависит от темы и ширины')
+  // ⚠️ Единственное покрытие роута: vitest `server/api/**` не импортирует, а браузерные сценарии
+  // ходят только штатным путём. Оба решения роута снимаются молча — и оба важны: гард «массив не
+  // токен» (иначе `?token=a&token=b` позволил бы отправителю ссылки подсунуть второй токен) и
+  // `no-store` (кэшированный вердикт годности — это ЧУЖОЙ вердикт из промежуточного кэша).
+  const dup = await request.get(`/api/survey/${SURVEY_KEY}/invitation?token=a&token=b`)
+  expect(dup.status(), 'массив токенов принят как токен').toBe(400)
+  expect(dup.headers()['cache-control'], 'ранняя ветка ушла без директивы кэша').toBe('no-store')
+
+  const ok = await request.get(`/api/survey/${SURVEY_KEY}/invitation?token=${DEMO_INVITATION_TOKEN}`)
+  expect(ok.status()).toBe(200)
+  expect(ok.headers()['cache-control'], 'вердикт годности кэшируется').toBe('no-store')
+  expect(await ok.json(), 'наружу уехало больше, чем годность').toEqual({ ok: true })
+})
+
+test('унаследованный из браузера токен тоже проверяется — ДО заполнения', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'проводка не зависит от темы и ширины')
+  // ⚠️ Сценарий из ревью: человек вернулся по закладке (в адресе токена нет), привязка подхватилась
+  // из браузера вместе с черновиком, а ссылку тем временем погасили. Проверка годности идёт по
+  // АДРЕСУ, то есть этот токен через неё не проходил — и человек узнавал бы об отказе на
+  // «Отправить», после того как заполнил всё. Ровно то, ради устранения чего заведён роут.
+  // Привязку кладём руками: гасить настоящее демо-приглашение значило бы ломать соседние сценарии.
+  await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await page.evaluate(([key, token]) => {
+    // Черновик нужен любой: привязка наследуется только вместе с ним (сам снимок ядро отбракует и
+    // начнёт проход заново — здесь важен факт его наличия, а не содержимое).
+    localStorage.setItem(String(key), '{"это":"не снимок"}')
+    localStorage.setItem(`${String(key)}:token`, JSON.stringify({ token, savedAt: Date.now() }))
+  }, [`survey:${SURVEY_KEY}`, 'протухший'])
+
+  await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await expect(page.getByText('По этой ссылке опрос не открыть')).toBeVisible()
 })
 
 test('на голом адресе чужая привязка НЕ наследуется — общий компьютер', async ({ page }, testInfo) => {

@@ -28,12 +28,6 @@ useSeoMeta({ robots: 'noindex, nofollow' })
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
-// Ключ per-опрос: при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом.
-const { data, error } = await useAsyncData(
-  `survey:${surveyKey.value}`,
-  () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`)
-)
-
 // Токен приглашения из ссылки (`?token=…`). Имя параметра и правило разбора — в общем модуле:
 // собирает ссылку сервер, читает клиент, и разъехаться этим двоим нельзя.
 const invitationToken = computed(() => readInvitationToken(route.query[INVITATION_TOKEN_PARAM]))
@@ -43,24 +37,37 @@ const brokenToken = computed(() =>
   !invitationToken.value && hasInvitationTokenAttempt(route.query[INVITATION_TOKEN_PARAM]))
 
 /**
- * Годность ссылки проверяем ОТДЕЛЬНЫМ запросом и ДО заполнения.
+ * Два чтения: сам опрос и годность ссылки. Оба стартуют СРАЗУ и ждутся вместе.
  *
- * ⚠️ Проверка идёт и на SSR — намеренно. Сделай её только в `onMounted`, и человек с мёртвой
- * ссылкой сначала увидел бы интро, а потом отказ: мигание, за которое он успевает нажать «Начать».
- * Токен в payload при этом не «утекает» — он и так в адресной строке этой же страницы.
+ * ⚠️ Порядок здесь не стилистика. Два `await useAsyncData` подряд на верхнем уровне `setup`
+ * сериализуются, то есть время до первого байта = чтение опроса ПЛЮС чтение приглашения, а не
+ * максимум из двух. На памяти разницы не видно, на PostgreSQL это лишний round-trip в критическом
+ * пути каждого открытия страницы с токеном.
  *
- * Ключ БЕЗ токена: иначе он попал бы в разметку отдельным полем, а пользы от этого ноль — на
- * странице всегда ровно один токен.
+ * ⚠️ Годность проверяем ОТДЕЛЬНЫМ запросом и ДО заполнения, в том числе на SSR — намеренно. Сделай
+ * её только в `onMounted`, и человек с мёртвой ссылкой сначала увидел бы интро, а потом отказ:
+ * мигание, за которое он успевает нажать «Начать». Токен в payload при этом не «утекает» — он и так
+ * в адресной строке этой же страницы.
+ *
+ * Ключи: per-опрос (при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом) и БЕЗ
+ * токена — иначе он попал бы в разметку отдельным полем, а пользы ноль: на странице всегда ровно
+ * один токен.
  */
-// Тело ответа не нужно: годность выражается кодом, а всё остальное сервер наружу не отдаёт.
-const { error: linkError } = await useAsyncData(
-  `invitation:${surveyKey.value}`,
-  () => invitationToken.value
-    ? $fetch<{ ok: boolean }>(`/api/survey/${surveyKey.value}/invitation`, {
-      query: { [INVITATION_TOKEN_PARAM]: invitationToken.value }
-    })
-    : Promise.resolve(null)
-)
+const [{ data, error }, { error: linkError }] = await Promise.all([
+  useAsyncData(
+    `survey:${surveyKey.value}`,
+    () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`)
+  ),
+  // Тело ответа не нужно: годность выражается кодом, а всё остальное сервер наружу не отдаёт.
+  useAsyncData(
+    `invitation:${surveyKey.value}`,
+    () => invitationToken.value
+      ? $fetch<{ ok: boolean }>(`/api/survey/${surveyKey.value}/invitation`, {
+        query: { [INVITATION_TOKEN_PARAM]: invitationToken.value }
+      })
+      : Promise.resolve(null)
+  )
+])
 
 const { phase, version, view, errorMsg, submitting, reset, start, hydrate, rejectLink, selectOption, setOther, setText, back, next } =
   useSurvey()
@@ -95,11 +102,31 @@ watch([linkError, () => phase.value, brokenToken], () => {
 
 // Клиентская гидратация (после SSR, по факту монтирования): resume из localStorage +
 // deep-link `?q=N` (1-based в URL → 0-based goTo). Зависит от порядка: watch выше уже отработал.
-onMounted(() => {
+onMounted(async () => {
   const q = route.query.q
   const idx = typeof q === 'string' && /^\d+$/.test(q) ? Math.max(0, parseInt(q, 10) - 1) : undefined
-  hydrate(idx, invitationToken.value)
+  const effective = hydrate(idx, invitationToken.value)
+  // ⚠️ Токен, унаследованный из браузера, SSR-проверку не проходил: там проверяется адрес, а в
+  // адресе его нет. Без этой досверки обещание «узнать до заполнения» не работало бы именно в том
+  // случае, ради которого persist и сделан, — человек вернулся по закладке, дозаполнил и получил
+  // отказ на «Отправить». Проверяем только расхождение: совпавший токен уже проверен на SSR.
+  if (!effective || effective === invitationToken.value) return
+  await checkStoredToken(effective)
 })
+
+/** Досверка унаследованного токена (только клиент). Молчит на всём, кроме определённого отказа. */
+async function checkStoredToken(token: string): Promise<void> {
+  try {
+    await $fetch<{ ok: boolean }>(`/api/survey/${surveyKey.value}/invitation`, {
+      query: { [INVITATION_TOKEN_PARAM]: token }
+    })
+  } catch (e) {
+    // Тот же принцип, что и у SSR-ветки: транзиентный сбой опрос не закрывает.
+    const status = (e as { statusCode?: number } | null)?.statusCode
+    if (status === undefined || !DEFINITIVE_REJECTIONS.includes(status)) return
+    rejectLink(serverMessage(e) ?? 'Попросите новую ссылку у менеджера.')
+  }
+}
 </script>
 
 <template>
