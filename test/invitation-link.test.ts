@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { INVITATION_TOKEN_PARAM, readInvitationToken, surveyPath } from '../src/client/invitation-link'
+import { INVITATION_TOKEN_PARAM, hasInvitationTokenAttempt, readInvitationToken, surveyPath } from '../src/client/invitation-link'
 import { crmContextSchema } from '../src/domain/schema'
 import { DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2 } from '../src/demo/seed'
 
@@ -91,5 +91,27 @@ describe('демо-приглашения показывают то, ради ч
   it('две демо-сделки РАЗНЫЕ — иначе правило «две ссылки = две сделки» не показать', () => {
     expect(DEMO_INVITATION_CONTEXT.dealId).not.toBe(DEMO_INVITATION_CONTEXT_2.dealId)
     expect(DEMO_INVITATION_CONTEXT.companyName).not.toBe(DEMO_INVITATION_CONTEXT_2.companyName)
+  })
+})
+
+describe('испорченный токен отличается от отсутствующего', () => {
+  it('дублированный параметр — это ПОПЫТКА передать токен, а не его отсутствие', () => {
+    // Ревью показало последствие смешения: на `?token=a&token=b` клиент решал «токена нет»,
+    // предпросмотр не делал и отправлял ответ БЕЗ привязки к сделке — молча. Сервер на тот же
+    // запрос отвечает 400, то есть стороны понимали ссылку по-разному.
+    expect(readInvitationToken(['a', 'b']), 'прочитать нельзя').toBeUndefined()
+    expect(hasInvitationTokenAttempt(['a', 'b']), 'но попытка была').toBe(true)
+  })
+
+  it('токена нет вовсе — попытки тоже нет', () => {
+    expect(hasInvitationTokenAttempt(undefined)).toBe(false)
+    expect(hasInvitationTokenAttempt('')).toBe(false)
+    expect(hasInvitationTokenAttempt('   ')).toBe(false)
+    expect(hasInvitationTokenAttempt([])).toBe(false)
+  })
+
+  it('нормальный токен — и читается, и считается попыткой', () => {
+    expect(readInvitationToken('tok-1')).toBe('tok-1')
+    expect(hasInvitationTokenAttempt('tok-1')).toBe(true)
   })
 })

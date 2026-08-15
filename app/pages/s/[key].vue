@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PublicVersion } from '~core/domain/schema'
-import { INVITATION_TOKEN_PARAM, readInvitationToken } from '~core/client/invitation-link'
+import { INVITATION_TOKEN_PARAM, hasInvitationTokenAttempt, readInvitationToken } from '~core/client/invitation-link'
 import { serverMessage } from '~core/client/server-message'
 
 // Маршрут прохождения опроса контура A: /s/:key. Оркеструет фазы (intro→survey→thanks)
@@ -30,6 +30,10 @@ const { data, error } = await useAsyncData(
 // Токен приглашения из ссылки (`?token=…`). Имя параметра и правило разбора — в общем модуле:
 // собирает ссылку сервер, читает клиент, и разъехаться этим двоим нельзя.
 const invitationToken = computed(() => readInvitationToken(route.query[INVITATION_TOKEN_PARAM]))
+// Токен в ссылке есть, но прочитать его нельзя (например `?token=a&token=b`). Молча продолжать
+// нельзя: ответ ушёл бы без привязки к сделке и никто бы не узнал.
+const brokenToken = computed(() =>
+  !invitationToken.value && hasInvitationTokenAttempt(route.query[INVITATION_TOKEN_PARAM]))
 
 /**
  * Годность ссылки проверяем ОТДЕЛЬНЫМ запросом и ДО заполнения.
@@ -58,10 +62,27 @@ const { phase, version, view, errorMsg, submitting, reset, start, hydrate, rejec
 // (до onMounted) → к моменту onMounted phase='intro', version заполнен.
 watch([data, error], () => reset(data.value?.version ?? null, error.value ?? undefined), { immediate: true })
 
-// Негодная ссылка перебивает интро — но только если сам опрос открылся: «опрос не найден» важнее
-// и точнее, чем «ссылка не действует».
-watch([linkError, () => phase.value], () => {
-  if (!linkError.value || phase.value === 'error') return
+/**
+ * Негодная ссылка перебивает интро — но только если сам опрос открылся: «опрос не найден» важнее и
+ * точнее, чем «ссылка не действует».
+ *
+ * ⚠️ **Транзиентный отказ проверки НЕ закрывает опрос.** Предпросмотр — это удобство, а не гейт:
+ * настоящую проверку делает `consume` на отправке, и обойти её отсюда нельзя. Значит икота БД (500)
+ * или обрыв сети не должны отнимать у человека возможность ответить: он проходит опрос, а вердикт
+ * по ссылке всё равно вынесет сервер на «Отправить». Блокируем только на ОПРЕДЁЛЕННОМ отказе —
+ * 403 (нет/протух/использована) и 409 (чужой опрос / опрос переиздан).
+ */
+const DEFINITIVE_REJECTIONS = [403, 409]
+
+watch([linkError, () => phase.value, brokenToken], () => {
+  if (phase.value === 'error') return
+  if (brokenToken.value) {
+    rejectLink('Ссылка повреждена — код приглашения в ней прочитать не удалось. Попросите новую ссылку у менеджера.')
+    return
+  }
+  const status = (linkError.value as { statusCode?: number } | null)?.statusCode
+  if (!linkError.value) return
+  if (status === undefined || !DEFINITIVE_REJECTIONS.includes(status)) return
   rejectLink(serverMessage(linkError.value) ?? 'Попросите новую ссылку у менеджера.')
 }, { immediate: true })
 

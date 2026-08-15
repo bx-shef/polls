@@ -39,3 +39,17 @@ export function readInvitationToken(raw: unknown): string | undefined {
   const token = raw.trim()
   return token.length > 0 ? token : undefined
 }
+
+/**
+ * Есть ли в query ПОПЫТКА передать токен — даже негодная.
+ *
+ * ⚠️ Нужна потому, что «токена нет» и «токен испорчен» ведут себя по-разному, а `readInvitationToken`
+ * их не различает. Ревью показало последствие: на `?token=a&token=b` клиент решал «токена нет»,
+ * предпросмотр не делал и отправлял ответ **без привязки к сделке — молча**, то есть ровно то, ради
+ * устранения чего вся эта работа. Сервер на тот же запрос отвечает 400. Теперь и клиент видит, что
+ * ссылка испорчена, и говорит об этом человеку.
+ */
+export function hasInvitationTokenAttempt(raw: unknown): boolean {
+  if (Array.isArray(raw)) return raw.length > 0
+  return typeof raw === 'string' && raw.trim().length > 0
+}

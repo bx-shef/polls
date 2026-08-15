@@ -1,6 +1,6 @@
 # Карта проекта — polls
 
-> Обновлено: 2026-08-14
+> Обновлено: 2026-08-15
 >
 > Этот файл — **карта проекта**: из каких частей он состоит, что каждая делает и в каком она состоянии.
 > Как всё работает по шагам — в [`process.md`](./process.md). Что ещё в планах — в [`roadmap.md`](./roadmap.md).
@@ -81,7 +81,7 @@
 
 ### Привязка — `server/` (Nitro)
 
-Тонкие обёртки над ядром: `/api/session`, `/api/submit`, `/api/survey/<ключ>/current`, `/api/health`,
+Тонкие обёртки над ядром: `/api/session`, `/api/submit`, `/api/survey/<ключ>/current`, `/api/survey/<ключ>/invitation`, `/api/health`,
 `/api/dashboard/<ключ>`, `/api/admin/surveys*`, `/api/b24/session` (handshake), `/api/b24/install`
 (+ удаление приложения), `/api/b24/deal-invite` (ручной запуск), `/api/b24/deal-update` (авто-триггер по
 событию), `/api/b24/robot` (авто-триггер роботом автоматизации), `/api/feedback` (отзывы 👍/👎: GET —
