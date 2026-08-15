@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { SURVEY_KEY } from '../../src/demo/seed'
+import { DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2, SURVEY_KEY } from '../../src/demo/seed'
 
 /**
  * Визуально проверяемые «поверхности» контура A (issue #13/#39/#34) — ЖИВЫЕ маршруты
@@ -64,6 +64,57 @@ test('экран «error» (опрос не найден) совпадает с 
   await page.goto('/s/nonexistent-survey', { waitUntil: 'networkidle' })
   await expect(page.getByText('Опрос не найден. Возможно, ссылка устарела — попросите новую.')).toBeVisible()
   await expect(page).toHaveScreenshot('error.png', { fullPage: true })
+})
+
+test('экран «ссылка не действует» совпадает с эталоном', async ({ page }) => {
+  // Отдельный экран, а не «ошибка»: опрос жив, обновление страницы ничего не изменит, и
+  // единственное осмысленное действие — попросить новую ссылку. Показывается ВМЕСТО интро, до
+  // заполнения: раньше о негодной ссылке узнавали на «Отправить», когда работа уже сделана.
+  // Демо-сид приглашений не содержит, поэтому вердикт мокаем — предмет снимка тут вёрстка отказа.
+  await page.route('**/api/survey/*/invitation*', (route) =>
+    route.fulfill({
+      status: 403,
+      json: { ok: false, error: 'Срок ссылки истёк, или опрос по ней уже пройден. Попросите новую ссылку у менеджера.' }
+    })
+  )
+  await page.goto(`/s/${SURVEY_KEY}?token=протухший`, { waitUntil: 'networkidle' })
+  await expect(page.getByText('По этой ссылке опрос не открыть')).toBeVisible()
+  await expect(page).toHaveScreenshot('link-invalid.png', { fullPage: true })
+})
+
+test('токен из ссылки доезжает до submit — иначе ответ пишется без привязки к сделке', async ({ page }) => {
+  // Без скриншота: это проверка ПРОВОДКИ. Она же — единственное место, где ловится молчаливый
+  // регресс «ответ принят, но контекст пуст»: сервер такой ответ примет и ничем не пожалуется.
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  let sentInvitation: unknown
+  await page.route('**/api/submit', (route) => {
+    sentInvitation = (route.request().postDataJSON() as Record<string, unknown>)['invitation']
+    return route.fulfill({ status: 200, json: { ok: true } })
+  })
+
+  await page.goto(`/s/${SURVEY_KEY}?token=${DEMO_INVITATION_TOKEN}`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await answerHappyPath(page)
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  expect(sentInvitation, 'токен не доехал до тела запроса').toBe(DEMO_INVITATION_TOKEN)
+})
+
+test('другая ссылка на тот же опрос сбрасывает черновик — ответы не уедут к чужой сделке', async ({ page }) => {
+  // Два приглашения — это две РАЗНЫЕ сделки. Перенести ответы из одного в другое значит привязать
+  // оценку не к той сделке, а аналитика и есть продукт. Поэтому «потерять черновик» здесь дешевле.
+  await page.goto(`/s/${SURVEY_KEY}?token=${DEMO_INVITATION_TOKEN}`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await page.getByRole('radio').first().click()
+  // Прогресс сохранён: возврат по той же ссылке продолжает с места остановки.
+  await page.goto(`/s/${SURVEY_KEY}?token=${DEMO_INVITATION_TOKEN}`, { waitUntil: 'networkidle' })
+  await expect(page.getByRole('radio').first()).toBeVisible()
+
+  // А по ДРУГОЙ ссылке — начинаем с интро. Токен настоящий (демо заводит два приглашения на разные
+  // сделки): мокать нельзя, годность проверяется на SSR, куда клиентский перехват не достаёт.
+  await page.goto(`/s/${SURVEY_KEY}?token=${DEMO_INVITATION_TOKEN_2}`, { waitUntil: 'networkidle' })
+  await expect(page.getByRole('button', { name: 'Начать', exact: true })).toBeVisible()
 })
 
 test('причина отказа сервера доходит до респондента, ответы не пропадают', async ({ page }) => {

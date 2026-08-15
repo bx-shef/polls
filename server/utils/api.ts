@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createApi, type Api } from '~core/api/handlers'
@@ -5,6 +6,10 @@ import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { MemoryInvitationStore, type InvitationStore } from '~core/api/invitation'
+import {
+  DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2,
+  DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2, SURVEY_KEY
+} from '~core/demo/seed'
 import { surveyRoutingFromEnv } from '~core/bitrix24/survey-routing'
 import { PgStore, queryableFromPool } from '~core/store/pg'
 import { applyMigrations, upSql } from '~core/store/migrate'
@@ -110,8 +115,25 @@ export function useApi(): Promise<Api> {
 // требовала бы правки каждого из них — при том что сам порт существовал.
 let invitationStore: InvitationStore | undefined
 export function useInvitations(): InvitationStore {
-  if (!invitationStore) invitationStore = new MemoryInvitationStore()
+  if (!invitationStore) invitationStore = new MemoryInvitationStore({ idGen: demoAwareIdGen() })
   return invitationStore
+}
+
+/**
+ * Генератор токенов. В демо-режиме ПЕРВЫЙ выданный токен — фиксированный `DEMO_INVITATION_TOKEN`,
+ * дальше обычные случайные.
+ *
+ * ⚠️ Выглядит хитро, поэтому причина: демо-приглашение должно быть открываемо по заранее известной
+ * ссылке (иначе его некому передать — ни человеку, ни визуальному гейту), а порт создания токен
+ * извне не принимает и принимать не должен: возможность назначить токен снаружи — это возможность
+ * назначить ЧУЖОЙ токен. Поэтому исключение живёт здесь, в демо-ветке сборки, и ровно на один вызов.
+ * При заданном `DATABASE_URL` ветки нет вовсе.
+ */
+function demoAwareIdGen(): () => string {
+  if (process.env.DATABASE_URL) return randomUUID
+  const reserved = [DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2]
+  let issued = 0
+  return () => (issued < reserved.length ? reserved[issued++]! : randomUUID())
 }
 
 /**
@@ -125,6 +147,35 @@ export function useSurveyRouting(): ReturnType<typeof surveyRoutingFromEnv> {
   return surveyRouting
 }
 
+/**
+ * Демо-приглашение: в режиме без БД заводим одно, с фиксированным токеном.
+ *
+ * ⚠️ Иначе демо не умеет показать главный путь продукта — ссылку из CRM. Открыв `/s/:key`, человек
+ * видит опрос без привязки к сделке, то есть ровно то состояние, из-за которого аналитика и не
+ * работает. Плюс визуальный гейт: без живого приглашения он проверял бы клиентский мок вместо
+ * настоящего пути.
+ *
+ * Токен не секрет: он существует только там, где нет боевых данных. В прод-режиме (`DATABASE_URL`
+ * задан) приглашения выписывает только связка с порталом, и этой ветки нет вовсе.
+ */
+async function seedDemoInvitation(invitations: InvitationStore): Promise<void> {
+  if (process.env.DATABASE_URL) return
+  const store = await useStore()
+  const version = await store.currentVersion(SURVEY_KEY)
+  if (!version) return
+  const year = 365 * 24 * 60 * 60_000
+  // Два приглашения на ОДИН опрос, но на разные сделки — иначе не показать (и не проверить) главное
+  // правило привязки: черновик по одной ссылке не переносится на другую.
+  for (const context of [DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2]) {
+    await invitations.create({
+      surveyKey: SURVEY_KEY,
+      versionNo: version.versionNo,
+      context: { ...context },
+      ttlMs: year
+    }, new Date())
+  }
+}
+
 async function buildApi(): Promise<Api> {
   const store = await useStore()
   // Щедрый лимитер для dev/gate-сервера: SSR-рендер сам дёргает /api/survey/:key/current
@@ -133,7 +184,9 @@ async function buildApi(): Promise<Api> {
   // (она по IP за доверенным прокси + общий стор — #4/#6); здесь высокий потолок убирает
   // ложные 429, оставляя ceiling от примитивного флуда.
   const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
-  return createApi({ store, logger, limiter, invitations: useInvitations() })
+  const invitations = useInvitations()
+  await seedDemoInvitation(invitations)
+  return createApi({ store, logger, limiter, invitations })
 }
 
 /**

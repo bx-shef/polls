@@ -105,6 +105,12 @@ function toPublicVersion(v: CompiledVersion): PublicVersion {
   return pub
 }
 
+export interface InvitationCheckInput {
+  ip: string
+  surveyKey: string
+  token: string
+}
+
 export interface SubmitInput {
   ip: string
   /** Разобранный JSON тела запроса (парсит адаптер). */
@@ -115,6 +121,11 @@ export interface Api {
   session(input: SessionInput): Promise<ApiResult>
   /** Текущая версия опроса для рендера (контур A): презентация + вопросы, без invitationPolicy. */
   survey(input: SurveyInput): Promise<ApiResult>
+  /**
+   * Годна ли ссылка-приглашение (контур A, до заполнения). Отдаёт ТОЛЬКО годность — снимок CRM
+   * наружу не уходит. Ничего не расходует: `peek`, не `consume`.
+   */
+  invitationCheck(input: InvitationCheckInput): Promise<ApiResult>
   submit(input: SubmitInput): Promise<ApiResult>
   /** Публичный health-check (#5): 200 при живой БД, 503 при её недоступности. */
   health(): Promise<ApiResult>
@@ -162,6 +173,49 @@ export function createApi(deps: ApiDeps): Api {
       } catch (e) {
         onError(e)
         return err(500, 'Не удалось загрузить опрос. Обновите страницу или попробуйте позже.')
+      }
+    },
+
+    /**
+     * Годна ли ссылка-приглашение — ДО того, как человек заполнил анкету.
+     *
+     * ⚠️ Смысл роута ровно в моменте. Без него негодная ссылка обнаруживается на «Отправить», то
+     * есть после того, как человек прошёл весь опрос: работа сделана, ответ не принят. Здесь та же
+     * проверка выполняется на открытии страницы и ничего не расходует.
+     *
+     * ⚠️ Наружу уходит ТОЛЬКО годность. `peek` отдаёт `Invitation` со снимком CRM (`responsibleName`
+     * помечен PII в схеме) — по этому роуту ходит неаутентифицированный респондент, и снимок ему не
+     * положен. Отсюда же отдельный роут вместо параметра к `survey`: у того ответ кэшируется по ETag,
+     * посчитанному БЕЗ токена, и токен-зависимое тело отравило бы общий кэш.
+     *
+     * Свой бюджет лимитера: роут позволяет проверять токены перебором, не оставляя следов в данных.
+     */
+    async invitationCheck({ ip, surveyKey, token }: InvitationCheckInput): Promise<ApiResult> {
+      if (!limiter.allow(`i:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
+      const key = surveyKeySchema.safeParse(surveyKey)
+      if (!key.success) return err(400, 'Неверный адрес опроса. Проверьте ссылку.')
+      try {
+        const invitation = await invitations.peek(token, now())
+        // `peek` не различает «использована» и «протухла» (оба → `undefined`), и различать их здесь
+        // нечем. Поэтому текст покрывает оба случая честно, а не выбирает один наугад.
+        if (!invitation) {
+          return err(403, 'Срок ссылки истёк, или опрос по ней уже пройден. Попросите новую ссылку у менеджера.')
+        }
+        if (invitation.surveyKey !== key.data) {
+          return err(409, 'Ссылка не подходит к этому опросу. Откройте опрос по правильной ссылке.')
+        }
+        // Приглашение пинится на версию, и `submit` отвергает чужую (`mismatch`). Значит опрос,
+        // переизданный после выписки ссылки, делает её негодной — и узнать об этом человек обязан
+        // ЗДЕСЬ, а не после заполнения.
+        const version = await store.currentVersion(key.data)
+        if (!version) return err(404, 'Опрос не найден. Возможно, ссылка устарела — попросите новую.')
+        if (version.versionNo !== invitation.versionNo) {
+          return err(409, 'Опрос обновился с тех пор, как выписали ссылку. Попросите новую ссылку у менеджера.')
+        }
+        return { status: 200, body: { ok: true } }
+      } catch (e) {
+        onError(e)
+        return err(500, 'Не удалось проверить ссылку. Обновите страницу или попробуйте позже.')
       }
     },
 

@@ -24,7 +24,13 @@ import type { QuestionAnswer } from '~core/client/survey-fill'
  * (localStorage нет на SSR), restore — в `onMounted` страницы (без hydration-mismatch).
  * Снимок недоверенный → `SurveyFill` валидирует его на границе (safeParse + сверка версии).
  */
-export type SurveyPhase = 'loading' | 'error' | 'intro' | 'survey' | 'thanks'
+/**
+ * `link-invalid` — отдельная фаза, а не разновидность `error`. Разница для человека принципиальная:
+ * при `error` опрос не открылся (можно обновить страницу), а здесь опрос жив, но именно ЭТА ссылка
+ * больше не годится, и обновление ничего не изменит. Показывается ДО заполнения — иначе человек
+ * узнаёт об этом на «Отправить», когда работа уже сделана.
+ */
+export type SurveyPhase = 'loading' | 'error' | 'link-invalid' | 'intro' | 'survey' | 'thanks'
 
 export interface SurveyView {
   question: Question
@@ -46,10 +52,25 @@ export function useSurvey() {
   const tick = ref(0)
   const bump = () => { tick.value++ }
 
+  /**
+   * Токен приглашения из ссылки. Держим отдельным ref, а не в `SurveyFill`: заполнение опроса о
+   * приглашении ничего не знает, и подмешивать туда транспортную деталь значило бы менять схему
+   * снимка, которую валидирует ядро.
+   */
+  const invitationToken = ref<string | undefined>(undefined)
+
   // Гард пустого ключа: без surveyKey не трогаем localStorage (иначе мина "survey:" на всех опросах).
   const persistKey = () => {
     const k = version.value?.surveyKey
     return k ? `survey:${k}` : null
+  }
+  /**
+   * Токен хранится ПОД ОТДЕЛЬНЫМ ключом, а не внутри снимка заполнения. Иначе пришлось бы менять
+   * схему снимка в ядре ради транспортной детали, а старые снимки переставали бы разбираться.
+   */
+  const tokenKey = () => {
+    const k = persistKey()
+    return k ? `${k}:token` : null
   }
 
   function saveSnapshot() {
@@ -61,8 +82,26 @@ export function useSurvey() {
   }
   function clearSnapshot() {
     const key = persistKey()
+    const tKey = tokenKey()
     if (!import.meta.client || !key) return
-    try { localStorage.removeItem(key) } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(key)
+      if (tKey) localStorage.removeItem(tKey)
+    } catch { /* ignore */ }
+  }
+
+  function readStoredToken(): string | undefined {
+    const key = tokenKey()
+    if (!import.meta.client || !key) return undefined
+    try { return localStorage.getItem(key) ?? undefined } catch { return undefined }
+  }
+  function saveToken(token: string | undefined): void {
+    const key = tokenKey()
+    if (!import.meta.client || !key) return
+    try {
+      if (token) localStorage.setItem(key, token)
+      else localStorage.removeItem(key)
+    } catch { /* приватный режим/квота — persist необязателен */ }
   }
   function readSnapshot(): unknown {
     const key = persistKey()
@@ -115,8 +154,9 @@ export function useSurvey() {
    * Клиентская гидратация (вызвать в onMounted страницы): resume из localStorage и/или
    * deep-link `?q=N`. Срабатывает только из исходной фазы intro (SSR-рендер).
    */
-  function hydrate(deepLinkIndex?: number) {
+  function hydrate(deepLinkIndex?: number, token?: string) {
     if (phase.value !== 'intro' || !version.value) return
+    applyToken(token)
     const snap = readSnapshot()
     if (snap !== undefined) {
       // Resume важнее deep-link: у вернувшегося пользователя сохранённая позиция приоритетнее
@@ -126,6 +166,29 @@ export function useSurvey() {
     }
     if (deepLinkIndex !== undefined) startFill(undefined, deepLinkIndex)
     // иначе — остаёмся на интро (свежий старт по кнопке)
+  }
+
+  /**
+   * Правило старшинства токена. Токен из АДРЕСНОЙ СТРОКИ всегда старше сохранённого.
+   *
+   * ⚠️ И при расхождении сохранённый прогресс сбрасывается — это не перестраховка. Два разных
+   * приглашения относятся к двум разным сделкам, и перенести ответы из одного в другое значит
+   * привязать оценку к чужой сделке. Аналитика и есть продукт, поэтому «потерять черновик» здесь
+   * дешевле, чем «отнести ответ не туда».
+   *
+   * Открытие БЕЗ токена сохранённый не стирает: человек мог вернуться на `/s/:key` по истории
+   * браузера, и молча отправить ответ без привязки было бы хуже, чем доиграть по старой ссылке.
+   */
+  function applyToken(token?: string) {
+    const stored = readStoredToken()
+    if (token && stored && token !== stored) {
+      clearSnapshot()
+      invitationToken.value = token
+      saveToken(token)
+      return
+    }
+    invitationToken.value = token ?? stored
+    if (token) saveToken(token)
   }
 
   const view = computed<SurveyView | null>(() => {
@@ -175,7 +238,11 @@ export function useSurvey() {
           hp: '',
           surveyKey: sub.surveyKey,
           versionNo: sub.versionNo,
-          answers: sub.answers
+          answers: sub.answers,
+          // Токен приглашения — то, чем ответ привязывается к сделке. Без него сервер примет ответ,
+          // но запишет с пустым контекстом: аналитика по услуге/клиенту/ответственному потеряется
+          // МОЛЧА. Отсюда же и `invitationToken` в записи — durable-якорь идемпотентности.
+          ...(invitationToken.value ? { invitation: invitationToken.value } : {})
         }
       })
       clearSnapshot() // опрос завершён — прогресс больше не восстанавливаем
@@ -192,8 +259,19 @@ export function useSurvey() {
     }
   }
 
+  /**
+   * Ссылка негодна — показать это ВМЕСТО опроса. Зовёт страница по ответу предпросмотра.
+   * Черновик при этом не трогаем: ссылка мертва, а ответы человека — нет, и они могут пригодиться,
+   * если менеджер выпишет новую ссылку на тот же опрос.
+   */
+  function rejectLink(message: string) {
+    errorMsg.value = message
+    phase.value = 'link-invalid'
+    bump()
+  }
+
   return {
-    version, phase, errorMsg, submitting, view,
-    reset, start, hydrate, selectOption, setOther, setText, back, next, submit
+    version, phase, errorMsg, submitting, view, invitationToken,
+    reset, start, hydrate, rejectLink, selectOption, setOther, setText, back, next, submit
   }
 }
