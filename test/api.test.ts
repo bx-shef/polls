@@ -478,14 +478,40 @@ describe('GET /api/survey/:key/invitation — годность ссылки ДО
     expect((await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'нет-такого' })).status).toBe(403)
   })
 
-  it('ссылка от другого опроса → 409, а не «недействительна»', async () => {
-    // Разница для человека принципиальная: «откройте правильную ссылку» действие, а
-    // «попросите новую» — нет.
+  it('ссылка от другого опроса неотличима от мёртвой — иначе это бит существования токена', async () => {
+    // ⚠️ Ответ «ссылка не подходит к ЭТОМУ опросу» сообщает, что токен существует. Сказать это
+    // человеку по нашей ссылке невозможно: `deal-invite` собирает ключ и токен из одной записи
+    // через `surveyPath`, и разойтись им негде. Значит текст адресован никому, а бит отдаёт всем.
     const { api, invitations, now } = await withInvitation()
     const inv = await invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
-    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })
-    expect(r.status).toBe(409)
-    expect(String(r.body.error)).toContain('не подходит')
+    const alive = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })
+    const dead = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'нет-такого' })
+    expect(alive.status).toBe(403)
+    expect(alive, 'существующий и несуществующий токены различимы по ответу').toEqual(dead)
+    // При этом сам токен НЕ сожжён: слияние текстов ничего не расходует.
+    expect(await invitations.peek(inv.token, now()), 'проверка убила чужое приглашение').toBeDefined()
+  })
+
+  it('токен длиннее 200 символов → 400 «ссылка повреждена», и стор не тревожим', async () => {
+    // Форма токена — одна на оба входа. Пока границы было две (у `submit` — есть, у проверки —
+    // нет), один и тот же вход получал два разных диагноза, а токен любого размера доезжал до
+    // стора: сегодня это Map, завтра — параметр SQL-запроса (#4).
+    const backing = new MemoryInvitationStore()
+    let peeked = 0
+    const spy: InvitationStore = {
+      create: (i, n) => backing.create(i, n),
+      peek: (t, n) => { peeked++; return backing.peek(t, n) },
+      consume: (t, p, n) => backing.consume(t, p, n)
+    }
+    const { api, now } = await freshApi({ invitations: spy })
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'x'.repeat(201) })
+    expect(r.status).toBe(400)
+    expect(String(r.body.error)).toContain('повреждена')
+    expect(peeked, 'негодный по форме токен доехал до стора').toBe(0)
+    // Ровно 200 символов — ещё годная форма (граница та же, что у submit): дошло до стора.
+    await spy.create({ token: 'y'.repeat(200), surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'y'.repeat(200) })).status).toBe(200)
+    expect(peeked).toBe(1)
   })
 
   it('опрос переиздан после выписки ссылки → 409 ЗДЕСЬ, а не после заполнения', async () => {

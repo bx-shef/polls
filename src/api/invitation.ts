@@ -20,6 +20,23 @@ export interface InvitationCreate {
   context: CrmContext
   /** TTL приглашения в мс (по умолчанию — из стора). */
   ttlMs?: number
+  /**
+   * Задать токен явно — ТОЛЬКО для демо-засева (`seedDemoInvitation`), где ссылку надо знать
+   * заранее. Боевые вызывающие поле не ставят, и токен им генерирует стор.
+   *
+   * ⚠️ Первая попытка сделать это через `idGen` стора («первые два выданных токена фиксированы»)
+   * оказалась дефектом: генератор висит на СТОРЕ, а `useInvitations()` зовут напрямую и
+   * `deal-invite`/`deal-update`/`robot`, минуя засев. На холодном процессе без БД первые два
+   * БОЕВЫХ приглашения получали опубликованные в репозитории токены — то есть чужой ответ можно
+   * было вписать в реальную сделку. Здесь резерв привязан к своему единственному владельцу.
+   *
+   * ⚠️ Почему это НЕ «возможность назначить чужой токен» снаружи: ни одна HTTP-схема токен на
+   * запись не принимает, а единственный боевой строитель `InvitationCreate`
+   * (`bitrix24/trigger.ts:createSurveyInvitation`) собирает объект из фиксированного набора полей
+   * и до тела запроса не дотягивается — это держит `test/trigger.test.ts` (исполняемый гард, не
+   * grep) и typecheck.
+   */
+  token?: string
 }
 
 /** Пин опроса/версии, к которому привязан токен (сверяется при расходе). */
@@ -140,7 +157,8 @@ export class MemoryInvitationStore implements InvitationStore {
         break
       }
     }
-    const token = this.idGen()
+    // Явный токен — только у демо-засева (см. JSDoc `InvitationCreate.token`); боевым генерируем.
+    const token = input.token ?? this.idGen()
     const exp = t + (input.ttlMs ?? this.ttlMs)
     const invitation: Invitation = {
       token,

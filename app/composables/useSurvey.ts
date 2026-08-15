@@ -1,4 +1,5 @@
 import { SurveyFill, surveyFillSnapshotSchema } from '~core/client/survey-fill'
+import { decideInvitationToken, parseStoredInvitation, type StoredInvitation } from '~core/client/invitation-link'
 import { serverMessage } from '~core/client/server-message'
 import type { PublicVersion, Question } from '~core/domain/schema'
 import type { QuestionAnswer } from '~core/client/survey-fill'
@@ -90,18 +91,26 @@ export function useSurvey() {
     } catch { /* ignore */ }
   }
 
-  function readStoredToken(): string | undefined {
+  function readStoredToken(): StoredInvitation | undefined {
     const key = tokenKey()
     if (!import.meta.client || !key) return undefined
-    try { return localStorage.getItem(key) ?? undefined } catch { return undefined }
+    try {
+      const raw = localStorage.getItem(key)
+      return raw ? parseStoredInvitation(JSON.parse(raw)) : undefined
+    } catch { return undefined }
   }
-  function saveToken(token: string | undefined): void {
+  /** Запись пересохраняется целиком — `savedAt` и есть отсчёт TTL от последнего визита по ссылке. */
+  function saveToken(token: string): void {
     const key = tokenKey()
     if (!import.meta.client || !key) return
     try {
-      if (token) localStorage.setItem(key, token)
-      else localStorage.removeItem(key)
+      localStorage.setItem(key, JSON.stringify({ token, savedAt: Date.now() } satisfies StoredInvitation))
     } catch { /* приватный режим/квота — persist необязателен */ }
+  }
+  function hasDraft(): boolean {
+    const key = persistKey()
+    if (!import.meta.client || !key) return false
+    try { return localStorage.getItem(key) !== null } catch { return false }
   }
   function readSnapshot(): unknown {
     const key = persistKey()
@@ -156,8 +165,11 @@ export function useSurvey() {
    */
   function hydrate(deepLinkIndex?: number, token?: string) {
     if (phase.value !== 'intro' || !version.value) return
-    applyToken(token)
-    const snap = readSnapshot()
+    // Порядок обязателен: сперва решение о токене, и только потом чтение черновика — решение
+    // вправе его стереть (чужое приглашение / протухшая привязка), а прочитанный до того снимок
+    // пережил бы удаление в переменной и восстановился бы как ни в чём не бывало.
+    const kept = applyToken(token)
+    const snap = kept ? readSnapshot() : undefined
     if (snap !== undefined) {
       // Resume важнее deep-link: у вернувшегося пользователя сохранённая позиция приоритетнее
       // ?q из ссылки (не теряем прогресс, не создаём гибрид). current берётся из снимка (initState).
@@ -169,26 +181,23 @@ export function useSurvey() {
   }
 
   /**
-   * Правило старшинства токена. Токен из АДРЕСНОЙ СТРОКИ всегда старше сохранённого.
+   * Применить правило старшинства токена (само правило — чистое, в `~core/client`).
    *
-   * ⚠️ И при расхождении сохранённый прогресс сбрасывается — это не перестраховка. Два разных
-   * приглашения относятся к двум разным сделкам, и перенести ответы из одного в другое значит
-   * привязать оценку к чужой сделке. Аналитика и есть продукт, поэтому «потерять черновик» здесь
-   * дешевле, чем «отнести ответ не туда».
-   *
-   * Открытие БЕЗ токена сохранённый не стирает: человек мог вернуться на `/s/:key` по истории
-   * браузера, и молча отправить ответ без привязки было бы хуже, чем доиграть по старой ссылке.
+   * Возвращает, ПЕРЕЖИЛ ли сохранённый черновик эту сверку: `false` — его только что стёрли, и
+   * восстанавливать из него нечего.
    */
-  function applyToken(token?: string) {
-    const stored = readStoredToken()
-    if (token && stored && token !== stored) {
-      clearSnapshot()
-      invitationToken.value = token
-      saveToken(token)
-      return
-    }
-    invitationToken.value = token ?? stored
-    if (token) saveToken(token)
+  function applyToken(token?: string): boolean {
+    const d = decideInvitationToken({
+      urlToken: token,
+      stored: readStoredToken(),
+      hasDraft: hasDraft(),
+      nowMs: Date.now()
+    })
+    // Порядок: сначала сброс (он уносит и черновик, и запись о токене), потом запись нового.
+    if (d.clearDraft) clearSnapshot()
+    invitationToken.value = d.token
+    if (d.save && d.token) saveToken(d.token)
+    return !d.clearDraft
   }
 
   const view = computed<SurveyView | null>(() => {
@@ -270,8 +279,11 @@ export function useSurvey() {
     bump()
   }
 
+  // ⚠️ `invitationToken` наружу НЕ отдаём. Он внутренний: страница знает свой токен из адресной
+  // строки, а здешний — эффективный (может отличаться, если в адресе токена нет). Одно имя на две
+  // разные величины уже путало на ревью, а потребителей у экспорта не было ни одного.
   return {
-    version, phase, errorMsg, submitting, view, invitationToken,
+    version, phase, errorMsg, submitting, view,
     reset, start, hydrate, rejectLink, selectOption, setOther, setText, back, next, submit
   }
 }

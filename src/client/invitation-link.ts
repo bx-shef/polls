@@ -53,3 +53,94 @@ export function hasInvitationTokenAttempt(raw: unknown): boolean {
   if (Array.isArray(raw)) return raw.length > 0
   return typeof raw === 'string' && raw.trim().length > 0
 }
+
+/**
+ * Сколько живёт СОХРАНЁННЫЙ токен без нового визита по ссылке (24 часа).
+ *
+ * ⚠️ Это не дубликат серверного TTL приглашения (30 дней по умолчанию) и не его замена: сервер
+ * решает, годна ли ссылка, а здесь решается другое — сколько браузер вправе помнить, что человек
+ * пришёл по ней. Срок короткий намеренно: запись лежит в `localStorage` общего компьютера, логаута
+ * у контура A нет, и «помнить вечно» значит отдать следующему человеку привязку к чужой сделке.
+ * Сутки покрывают реальный сценарий «отвлёкся, вернулся дозаполнить», всё остальное — новая ссылка.
+ */
+export const STORED_TOKEN_TTL_MS = 24 * 60 * 60_000
+
+/** Запись о токене в браузере: сам токен и когда он туда попал (для {@link STORED_TOKEN_TTL_MS}). */
+export interface StoredInvitation {
+  token: string
+  savedAt: number
+}
+
+/**
+ * Разобрать запись из `localStorage`. Всё, что не полная и не осмысленная запись, — «записи нет».
+ *
+ * Данные недоверенные (их правит кто угодно через консоль), поэтому форма проверяется целиком, а не
+ * приводится: подсунутый `savedAt: "вчера"` не должен давать бессрочную запись.
+ */
+export function parseStoredInvitation(raw: unknown): StoredInvitation | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const r = raw as Record<string, unknown>
+  const token = typeof r['token'] === 'string' ? r['token'].trim() : ''
+  const savedAt = r['savedAt']
+  if (token.length === 0 || typeof savedAt !== 'number' || !Number.isFinite(savedAt)) return undefined
+  return { token, savedAt }
+}
+
+export interface InvitationTokenInput {
+  /** Токен из адресной строки (уже через {@link readInvitationToken}). */
+  urlToken?: string | undefined
+  /** Запись из `localStorage` (уже через {@link parseStoredInvitation}). */
+  stored?: StoredInvitation | undefined
+  /** Есть ли сохранённый черновик заполнения этого опроса. */
+  hasDraft: boolean
+  nowMs: number
+}
+
+export interface InvitationTokenDecision {
+  /** С каким токеном уйдёт ответ (`undefined` — без привязки к сделке). */
+  token: string | undefined
+  /** Сбросить сохранённый прогресс вместе с записью о токене. */
+  clearDraft: boolean
+  /** Перезаписать запись о токене (заодно обновляет отсчёт TTL). */
+  save: boolean
+}
+
+/**
+ * С каким токеном человек проходит опрос — единственное правило, одно на все случаи.
+ *
+ * Логика живёт здесь, а не в композабле, по итогам ревью: это самая рискованная часть работы, а
+ * `app/**` не покрывается ни `pnpm test`, ни порогом покрытия — единственной проверкой правила был
+ * один Playwright-сценарий из пяти возможных, да и тот вне `pnpm check`. Чистая функция ставит все
+ * пять под обычный тест.
+ *
+ * Правила, по убыванию старшинства:
+ *  1. **Токен из адресной строки старше сохранённого.** При расхождении сохранённый прогресс
+ *     сбрасывается: два приглашения — это две разные сделки, и перенести ответы из одного в другое
+ *     значит привязать оценку к чужой сделке. Аналитика и есть продукт, поэтому «потерять черновик»
+ *     здесь дешевле, чем «отнести ответ не туда».
+ *  2. **Токена в адресе нет → сохранённый подхватывается только как часть незаконченного
+ *     черновика** и только в пределах {@link STORED_TOKEN_TTL_MS}. Иначе он забывается вместе с
+ *     черновиком.
+ *
+ * ⚠️ Второе правило — правка по ревью, и вот что оно чинит. Раньше открытие голого `/s/:key` молча
+ * брало сохранённый токен, а обоснование ссылалось на «вернулся по истории браузера» — но история
+ * хранит адрес ВМЕСТЕ с `?token=`, то есть тот случай сюда не попадает вовсе. Зато попадал другой:
+ * общий компьютер, один открыл ссылку и бросил, следующий заходит на голый `/s/:key` — и его ответ
+ * уезжал в чужую сделку, сжигая чужое приглашение. До подключения токена такая отправка давала
+ * просто неатрибутированный ответ; с ним — подлог атрибуции, то есть цена ошибки выросла.
+ *
+ * Отличить одного человека от другого в браузере нечем, поэтому это не полное решение, а граница:
+ * без черновика привязки не остаётся вовсе, с черновиком она живёт сутки, а не вечно.
+ */
+export function decideInvitationToken(input: InvitationTokenInput): InvitationTokenDecision {
+  const { urlToken, stored, hasDraft, nowMs } = input
+  if (urlToken !== undefined) {
+    return { token: urlToken, clearDraft: stored !== undefined && stored.token !== urlToken, save: true }
+  }
+  if (stored === undefined) return { token: undefined, clearDraft: false, save: false }
+  // Сравнение через «НЕ моложе TTL»: у `NaN` (испорченные часы, подменённая запись) ложны обе
+  // формы сравнения, и запись обязана считаться протухшей, а не вечной.
+  const fresh = nowMs - stored.savedAt < STORED_TOKEN_TTL_MS
+  if (!fresh || !hasDraft) return { token: undefined, clearDraft: true, save: false }
+  return { token: stored.token, clearDraft: false, save: false }
+}

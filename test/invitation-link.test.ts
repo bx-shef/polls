@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { INVITATION_TOKEN_PARAM, hasInvitationTokenAttempt, readInvitationToken, surveyPath } from '../src/client/invitation-link'
+import {
+  INVITATION_TOKEN_PARAM,
+  STORED_TOKEN_TTL_MS,
+  decideInvitationToken,
+  hasInvitationTokenAttempt,
+  parseStoredInvitation,
+  readInvitationToken,
+  surveyPath
+} from '../src/client/invitation-link'
 import { crmContextSchema } from '../src/domain/schema'
 import { DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2 } from '../src/demo/seed'
 
@@ -113,5 +121,93 @@ describe('испорченный токен отличается от отсут
   it('нормальный токен — и читается, и считается попыткой', () => {
     expect(readInvitationToken('tok-1')).toBe('tok-1')
     expect(hasInvitationTokenAttempt('tok-1')).toBe(true)
+  })
+})
+
+describe('какой токен уходит с ответом (правило старшинства)', () => {
+  const NOW = 1_800_000_000_000
+  const stored = (token: string, ageMs = 0) => ({ token, savedAt: NOW - ageMs })
+  const decide = (over: Partial<Parameters<typeof decideInvitationToken>[0]>) =>
+    decideInvitationToken({ hasDraft: false, nowMs: NOW, ...over })
+
+  // Пять комбинаций «токен в адресе × сохранённая привязка» — вся матрица целиком. До выноса
+  // правила в ядро под гейтом была ОДНА из них (сценарий визуального теста), потому что `app/**`
+  // не покрывается ни `pnpm test`, ни порогом покрытия.
+  it('адреса нет, привязки нет → ответ уходит без привязки', () => {
+    expect(decide({})).toEqual({ token: undefined, clearDraft: false, save: false })
+  })
+
+  it('токен из адреса, привязки не было → берём и запоминаем', () => {
+    expect(decide({ urlToken: 'A' })).toEqual({ token: 'A', clearDraft: false, save: true })
+  })
+
+  it('токен из адреса совпал с сохранённым → черновик цел, отсчёт TTL обновляется', () => {
+    // `save: true` и на совпадении — это не лишняя запись, а продление: человек ПРИШЁЛ по ссылке
+    // снова, значит сутки считаются от этого визита, а не от первого.
+    expect(decide({ urlToken: 'A', stored: stored('A'), hasDraft: true }))
+      .toEqual({ token: 'A', clearDraft: false, save: true })
+  })
+
+  it('токен из адреса ДРУГОЙ → он старше, а чужой черновик сбрасывается', () => {
+    // Два приглашения — две разные сделки. Перенести ответы значит привязать оценку к чужой сделке.
+    expect(decide({ urlToken: 'B', stored: stored('A'), hasDraft: true }))
+      .toEqual({ token: 'B', clearDraft: true, save: true })
+  })
+
+  it('токена в адресе нет, но есть свежая привязка с черновиком → доигрываем по ней', () => {
+    expect(decide({ stored: stored('A', 60_000), hasDraft: true }))
+      .toEqual({ token: 'A', clearDraft: false, save: false })
+  })
+
+  it('токена в адресе нет и черновика нет → привязка забывается, а не наследуется', () => {
+    // Общий компьютер: один открыл ссылку и ушёл, следующий заходит на голый /s/:key. Раньше он
+    // молча наследовал чужой токен — ответ уезжал в чужую сделку, а чужое приглашение сгорало.
+    expect(decide({ stored: stored('A'), hasDraft: false }))
+      .toEqual({ token: undefined, clearDraft: true, save: false })
+  })
+
+  it('привязка старше суток → забывается вместе с черновиком', () => {
+    expect(decide({ stored: stored('A', STORED_TOKEN_TTL_MS), hasDraft: true }))
+      .toEqual({ token: undefined, clearDraft: true, save: false })
+    // Ровно на границе — уже протухла; за миллисекунду до неё — ещё жива.
+    expect(decide({ stored: stored('A', STORED_TOKEN_TTL_MS - 1), hasDraft: true }).token).toBe('A')
+  })
+
+  it('часы уехали вперёд (savedAt в будущем) → привязка живёт, а не умирает', () => {
+    // Отрицательный возраст — это сдвиг часов, а не подделка: наказывать за него человека нечем.
+    expect(decide({ stored: stored('A', -60_000), hasDraft: true }).token).toBe('A')
+  })
+})
+
+describe('запись о токене в браузере: разбор', () => {
+  it('полная запись читается', () => {
+    expect(parseStoredInvitation({ token: 'A', savedAt: 17 })).toEqual({ token: 'A', savedAt: 17 })
+  })
+
+  it('пробелы вокруг токена срезаются', () => {
+    expect(parseStoredInvitation({ token: ' A ', savedAt: 17 })?.token).toBe('A')
+  })
+
+  it('всё неполное и бессмысленное → «записи нет»', () => {
+    // Данные недоверенные: их правит кто угодно через консоль браузера. Подсунутый `savedAt` не
+    // числом дал бы вечную привязку (сравнение с ним ложно в обе стороны), поэтому форма
+    // проверяется целиком, а не приводится.
+    for (const raw of [
+      undefined, null, 42, 'A', [], { token: 'A' }, { savedAt: 17 },
+      { token: '', savedAt: 17 }, { token: '   ', savedAt: 17 },
+      { token: 'A', savedAt: 'вчера' }, { token: 'A', savedAt: NaN }, { token: 'A', savedAt: Infinity }
+    ]) {
+      expect(parseStoredInvitation(raw), JSON.stringify(raw) ?? 'undefined').toBeUndefined()
+    }
+  })
+
+  it('испорченная запись = записи нет: привязка не наследуется', () => {
+    const d = decideInvitationToken({
+      urlToken: undefined,
+      stored: parseStoredInvitation({ token: 'A', savedAt: 'вчера' }),
+      hasDraft: true,
+      nowMs: 1
+    })
+    expect(d.token).toBeUndefined()
   })
 })

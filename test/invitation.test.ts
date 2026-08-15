@@ -157,3 +157,26 @@ describe('api/invitation: MemoryInvitationStore', () => {
     expect((await s.peek('tok1', c.now()))?.token).toBe('tok1')
   })
 })
+
+describe('api/invitation: явный токен (только для демо-засева)', () => {
+  const ctx: CrmContext = { dealId: 1 }
+
+  it('заданный токен ставится как есть — по нему приглашение и открывается', async () => {
+    const s = new MemoryInvitationStore()
+    const c = clock()
+    const inv = await s.create({ token: 'demo-invitation', surveyKey: 'k', versionNo: 1, context: ctx }, c.now())
+    expect(inv.token).toBe('demo-invitation')
+    expect((await s.peek('demo-invitation', c.now()))?.context.dealId).toBe(1)
+  })
+
+  it('без поля токен генерирует стор — резерв не «протекает» на следующие вызовы', async () => {
+    // ⚠️ Ровно это и было дефектом первой редакции: резерв висел на `idGen` СТОРА, а засев — сбоку,
+    // и первые два БОЕВЫХ приглашения получали опубликованные в репозитории токены. Здесь резерв
+    // привязан к своему вызову и на соседей не распространяется.
+    const s = new MemoryInvitationStore({ idGen: () => 'сгенерировано' })
+    const c = clock()
+    await s.create({ token: 'demo-invitation', surveyKey: 'k', versionNo: 1, context: ctx }, c.now())
+    const next = await s.create({ surveyKey: 'k', versionNo: 1, context: ctx }, c.now())
+    expect(next.token).toBe('сгенерировано')
+  })
+})

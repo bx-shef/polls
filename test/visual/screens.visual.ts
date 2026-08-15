@@ -117,6 +117,33 @@ test('другая ссылка на тот же опрос сбрасывает
   await expect(page.getByRole('button', { name: 'Начать', exact: true })).toBeVisible()
 })
 
+test('на голом адресе чужая привязка НЕ наследуется — общий компьютер', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'проводка не зависит от темы и ширины')
+  // Сценарий из ревью: один человек открыл ссылку и ушёл, второй за тем же компьютером заходит на
+  // голый `/s/:key`. Раньше он молча наследовал чужой токен — его ответ уезжал в ЧУЖУЮ сделку, а
+  // чужое приглашение при этом сгорало. Проверяем проводку целиком: правило чистое и покрыто
+  // юнитами, но связывает его композабл, и связать он мог бы неправильно.
+  await page.route('**/api/session', (route) =>
+    route.fulfill({ status: 200, json: { nonce: 'test-nonce', schema_version: 1 } })
+  )
+  let sentInvitation: unknown = 'запрос не дошёл'
+  await page.route('**/api/submit', (route) => {
+    sentInvitation = (route.request().postDataJSON() as Record<string, unknown>)['invitation']
+    return route.fulfill({ status: 200, json: { ok: true } })
+  })
+
+  // Человек А открыл ссылку, но заполнять не начал (черновика нет).
+  await page.goto(`/s/${SURVEY_KEY}?token=${DEMO_INVITATION_TOKEN}`, { waitUntil: 'networkidle' })
+  await expect(page.getByRole('button', { name: 'Начать', exact: true })).toBeVisible()
+
+  // Человек Б заходит на адрес без токена и проходит опрос.
+  await page.goto(`/s/${SURVEY_KEY}`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Начать', exact: true }).click()
+  await answerHappyPath(page)
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  expect(sentInvitation, 'ответ ушёл с чужим токеном').toBeUndefined()
+})
+
 test('причина отказа сервера доходит до респондента, ответы не пропадают', async ({ page }) => {
   // Без скриншота: это проверка ПРОВОДКИ, а не вёрстки (алерт уже под эталоном submit-error).
   // Сценарий достижимый именно из этого клиента: nonce не пережил перезапуск сервера → 403

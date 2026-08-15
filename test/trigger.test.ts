@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { handleDealTrigger, createSurveyInvitation, dealIdFromDocumentId, type TriggerStore } from '../src/bitrix24/trigger'
-import { MemoryInvitationStore } from '../src/api/invitation'
+import { MemoryInvitationStore, type InvitationCreate, type InvitationStore } from '../src/api/invitation'
 import type { CompiledVersion, CrmContext, InvitationPolicy } from '../src/domain/schema'
 
 const ctx = (over: Partial<CrmContext> = {}): CrmContext => ({ dealId: 759, dealStageId: 'C1:WON', ...over })
@@ -94,6 +94,31 @@ describe('createSurveyInvitation — ручной запуск по сделке
     expect(res).toMatchObject({ surveyKey: 'csat_postdeal', versionNo: 2 })
     expect((await invitations.peek(res!.token, new Date()))?.context.dealId).toBe(759)
   })
+  it('боевой путь НЕ назначает токен сам — его генерирует стор', async () => {
+    // ⚠️ Гард к полю `InvitationCreate.token` (оно заведено ради демо-засева с известной ссылкой).
+    // Ровно это поле и есть «возможность назначить чужой токен», если её однажды дотянут до тела
+    // запроса. Проверяем ИСПОЛНЕНИЕМ обоих боевых строителей: поля в аргументе быть не должно.
+    const seen: InvitationCreate[] = []
+    const spy: InvitationStore = {
+      create: async (input, now) => {
+        seen.push(input)
+        return new MemoryInvitationStore().create(input, now)
+      },
+      peek: async () => undefined,
+      consume: async () => ({ status: 'unknown' })
+    }
+    await createSurveyInvitation({ store: store({}, { csat_postdeal: 2 }), invitations: spy, surveyKey: 'csat_postdeal', context: ctx() })
+    await handleDealTrigger({
+      store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
+      invitations: spy,
+      context: ctx()
+    })
+    expect(seen.length, 'ни один строитель не позван — гард ничего не проверяет').toBe(2)
+    for (const input of seen) {
+      expect(Object.keys(input), 'боевой вызов задал токен явно').not.toContain('token')
+    }
+  })
+
   it('нет опубликованной версии → null', async () => {
     const res = await createSurveyInvitation({
       store: store({}, {}),

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createApi, type Api } from '~core/api/handlers'
@@ -115,25 +114,27 @@ export function useApi(): Promise<Api> {
 // требовала бы правки каждого из них — при том что сам порт существовал.
 let invitationStore: InvitationStore | undefined
 export function useInvitations(): InvitationStore {
-  if (!invitationStore) invitationStore = new MemoryInvitationStore({ idGen: demoAwareIdGen() })
+  if (!invitationStore) invitationStore = new MemoryInvitationStore()
   return invitationStore
 }
 
 /**
- * Генератор токенов. В демо-режиме ПЕРВЫЙ выданный токен — фиксированный `DEMO_INVITATION_TOKEN`,
- * дальше обычные случайные.
+ * Демо-режим — ровно то же условие, по которому выбирается стор: `DATABASE_URL` не задан.
  *
- * ⚠️ Выглядит хитро, поэтому причина: демо-приглашение должно быть открываемо по заранее известной
- * ссылке (иначе его некому передать — ни человеку, ни визуальному гейту), а порт создания токен
- * извне не принимает и принимать не должен: возможность назначить токен снаружи — это возможность
- * назначить ЧУЖОЙ токен. Поэтому исключение живёт здесь, в демо-ветке сборки, и ровно на один вызов.
- * При заданном `DATABASE_URL` ветки нет вовсе.
+ * ⚠️ Ревью предлагало второй замок `NODE_ENV !== 'production'`, и его тут НЕТ намеренно: у нас
+ * собранный сервер бежит как production ВСЕГДА — им же поднимается визуальный гейт
+ * (`playwright.config.ts`, `node .output/server/index.mjs`), и демо-стенд тоже. То есть `NODE_ENV`
+ * у нас не различает «боевой запуск» и «демо-запуск», и такой замок молча выключил бы демо-данные
+ * там, где они и нужны. Плюс он гасил бы только приглашения: демо-ОПРОСЫ приходят из `useStore()`
+ * по тому же `DATABASE_URL`, и расхождение двух условий — это как раз тот класс ошибок, из-за
+ * которого демо «работает», но показывает не то.
+ *
+ * Реальная граница остаётся снаружи процесса: `pnpm env:check` считает отсутствие `DATABASE_URL`
+ * ошибкой деплоя. Отдельная явная переменная демо-режима — это уже разговор про то, чтобы и стор
+ * выбирался ею же; заведено отдельной задачей, а не полумерой здесь.
  */
-function demoAwareIdGen(): () => string {
-  if (process.env.DATABASE_URL) return randomUUID
-  const reserved = [DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2]
-  let issued = 0
-  return () => (issued < reserved.length ? reserved[issued++]! : randomUUID())
+function isDemoMode(): boolean {
+  return !process.env.DATABASE_URL
 }
 
 /**
@@ -148,26 +149,35 @@ export function useSurveyRouting(): ReturnType<typeof surveyRoutingFromEnv> {
 }
 
 /**
- * Демо-приглашение: в режиме без БД заводим одно, с фиксированным токеном.
+ * Демо-приглашения: в режиме без БД заводим ДВА, с фиксированными токенами — на разные сделки.
  *
  * ⚠️ Иначе демо не умеет показать главный путь продукта — ссылку из CRM. Открыв `/s/:key`, человек
  * видит опрос без привязки к сделке, то есть ровно то состояние, из-за которого аналитика и не
  * работает. Плюс визуальный гейт: без живого приглашения он проверял бы клиентский мок вместо
  * настоящего пути.
  *
- * Токен не секрет: он существует только там, где нет боевых данных. В прод-режиме (`DATABASE_URL`
- * задан) приглашения выписывает только связка с порталом, и этой ветки нет вовсе.
+ * Токен не секрет: он существует только там, где нет боевых данных. В боевом режиме
+ * ({@link isDemoMode} ложен) приглашения выписывает только связка с порталом, и этой ветки нет вовсе.
+ *
+ * ⚠️ Токен задаётся ЗДЕСЬ, параметром `create`, а не генератором стора. Генератор висит на сторе, а
+ * `useInvitations()` зовут напрямую и роуты `deal-invite`/`deal-update`/`robot` — то есть резерв
+ * «первые два токена фиксированы» доставался тому, кто позвал первым, включая реальную сделку.
  */
 async function seedDemoInvitation(invitations: InvitationStore): Promise<void> {
-  if (process.env.DATABASE_URL) return
+  if (!isDemoMode()) return
   const store = await useStore()
   const version = await store.currentVersion(SURVEY_KEY)
   if (!version) return
   const year = 365 * 24 * 60 * 60_000
   // Два приглашения на ОДИН опрос, но на разные сделки — иначе не показать (и не проверить) главное
   // правило привязки: черновик по одной ссылке не переносится на другую.
-  for (const context of [DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2]) {
+  const demo = [
+    { token: DEMO_INVITATION_TOKEN, context: DEMO_INVITATION_CONTEXT },
+    { token: DEMO_INVITATION_TOKEN_2, context: DEMO_INVITATION_CONTEXT_2 }
+  ]
+  for (const { token, context } of demo) {
     await invitations.create({
+      token,
       surveyKey: SURVEY_KEY,
       versionNo: version.versionNo,
       context: { ...context },
