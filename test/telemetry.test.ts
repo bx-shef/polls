@@ -352,10 +352,16 @@ function stripComments(code: string): string {
  * только `.ts`. В `app/` таких файлов большинство, и они идут в SSR-рендер.
  */
 function listFiles(dir: string): string[] {
+      // ⚠️ Пробы линт-гейта (`__lint-probe.*`) исключаем: `test/lint-gate.test.ts` пишет их в
+      // боевые каталоги и удаляет сразу же. Между сбором списка и чтением файла есть окно, в
+      // которое проба успевает исчезнуть — тогда чтение падало бы `ENOENT` в ЧУЖОМ тесте, с
+      // сообщением, по которому причину не найти. Ревью воспроизвело это детерминированно.
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory()
       ? listFiles(join(dir, e.name))
-      : e.name.endsWith('.ts') || e.name.endsWith('.vue') ? [join(dir, e.name)] : []
+      : (e.name.endsWith('.ts') || e.name.endsWith('.vue')) && !e.name.startsWith('__lint-probe')
+        ? [join(dir, e.name)]
+        : []
   )
 }
 
@@ -500,10 +506,43 @@ describe('сбой телеметрии не подменяет результа
     // невыполненной и звал её второй раз, а первая, осиротевшая, давала unhandledRejection. Под
     // обёрткой лежат неидемпотентные вызовы: второй POST рефреша ротирует токен и выбивает портал.
     let calls = 0
-    hook = (_n, _o, fn) => { const p = fn(noopSpan); throw new Error('контекст сломался'); }
+    // Промис намеренно осиротевший — в этом и состоит имитируемый сбой трейсера. Гасим через
+    // `void`, а не через `const _x =`: второе — обход гейта, который мы сами назвали незакрытым.
+    hook = (_n, _o, fn) => { void fn(noopSpan); throw new Error('контекст сломался') }
     const out = await withSpan('t', { stage: 'other' }, async () => { calls++; return 'ЗНАЧЕНИЕ' })
     expect(calls, 'операция выполнена больше одного раза').toBe(1)
     expect(out).toBe('ЗНАЧЕНИЕ')
+  })
+
+  it('трейсер вернул ПРОИЗВОДНЫЙ промис — чужой реджект не остаётся без обработчика', async () => {
+    // Шапка файла числит «трейсер подменил возврат» среди защищаемых сценариев, и для промиса это не
+    // безобидно: ответ мы берём из своего `pending`, а возвращённый трейсером промис остаётся ничей —
+    // при реджекте это `unhandledRejection`, то есть в Node падение процесса. Наблюдение не имеет
+    // права ронять наблюдаемое. Ловим настоящие unhandled-события, а не рассуждаем о них.
+    const unhandled: unknown[] = []
+    const onUnhandled = (e: unknown): void => { unhandled.push(e) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      // 1. Производный промис, отклоняющийся своей ошибкой.
+      hook = (_n, _o, fn) => Promise.resolve(fn(noopSpan)).then(() => { throw new Error('чужой реджект') })
+      await expect(withSpan('t', { stage: 'other' }, async () => 'ЗНАЧЕНИЕ')).resolves.toBe('ЗНАЧЕНИЕ')
+
+      // 2. Свой отклонённый промис, к нашему отношения не имеющий.
+      hook = (_n, _o, fn) => { void fn(noopSpan); return Promise.reject(new Error('свой реджект')) }
+      await expect(withSpan('t', { stage: 'other' }, async () => 'ЗНАЧЕНИЕ')).resolves.toBe('ЗНАЧЕНИЕ')
+
+      // 3. САМОЕ ЗЛОЕ: построил производный и тут же бросил. Возврата нет — дотянуться до
+      //    производного мы не можем; спасает только то, что нашему промису нечем отклоняться.
+      hook = (_n, _o, fn) => { void Promise.resolve(fn(noopSpan)).then((v) => v); throw new Error('контекст сломался') }
+      await expect(withSpan('t', { stage: 'other' }, async () => { throw new Error('операция упала') }))
+        .rejects.toThrow('операция упала')
+
+      // Микрозадачи должны отработать: unhandledRejection всплывает не мгновенно.
+      await new Promise((r) => setTimeout(r, 30))
+      expect(unhandled, `промис остался без обработчика: ${unhandled.map(String).join(', ')}`).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('трейсер не вызвал колбэк → операция всё равно выполняется ровно раз', async () => {

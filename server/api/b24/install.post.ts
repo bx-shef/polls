@@ -10,6 +10,7 @@
 // ⚠️ Общий бэкстоп размера тела (`server/middleware/body-limit.ts`) отвечает раньше этого обработчика
 // и отдаёт JSON, а не HTML, — форма ответа тут разойдётся с контрактом (issue #156). Недостижимо на
 // легальной установке: её тело — единицы килобайт при потолке 128 КБ.
+import type { H3Event } from 'h3'
 import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitrix24/install'
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
@@ -25,7 +26,7 @@ import { logger } from '../../utils/api'
 // `timeoutFetch` (общий, server/utils/b24-fetch) ограничивает его: зависший OAuth-сервер иначе держал бы
 // install-соединение до дефолта undici. Reject → OAuthError без статуса → 503 (транзиент, ретрай).
 
-function html(event: any, status: number, body: string): string {
+function html(event: H3Event, status: number, body: string): string {
   setResponseStatus(event, status)
   setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
   return body

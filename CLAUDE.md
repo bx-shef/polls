@@ -21,7 +21,7 @@
 ## Команды
 
 ```bash
-pnpm check        # всё разом: typecheck(ядро) + граница ~core + typecheck:app + typecheck:server + test (покрытие) + verify
+pnpm check        # всё разом: typecheck(ядро) + граница ~core + lint + typecheck:app + typecheck:server + test (покрытие) + verify
 bash scripts/check.sh                                   # то же, Linux/macOS, с pnpm install
 powershell -ExecutionPolicy Bypass -File scripts\check.ps1   # то же, Windows
 pnpm typecheck    # tsc --noEmit (ядро)
@@ -29,6 +29,9 @@ pnpm test         # vitest;  pnpm test:cov — с покрытием (порог
                   # pg-тесты на pglite (WASM-Postgres) — небыстрые (~10–30с), это норма
 pnpm verify       # печатает И сверяет assert'ами итог на 4 уровнях (src/demo/seed.ts)
 pnpm check:boundary  # гард границы ~core (#36): клиент app/** не тянет server-only ядро (отд. шаг CI)
+pnpm lint         # Линт-политика: `recommended` + типовые правила про промисы. Поводом был забытый
+                  # await (#165) — tsc ловит его лишь в двух формах, остальное мимо (детали и что
+                  # НЕ включено — карта проекта). Сам зовёт `nuxt prepare`.
 pnpm typecheck:app   # vue-tsc app/+server/ (Nuxt; отд. шаг CI). Перед — pnpm nuxt:prepare
 pnpm env:check    # предполётная проверка окружения: читает .env.prod (или указанный файл) по
                   # прод-правилам, печатает ИМЕНА проблемных переменных (не значения), exit 1 на ошибках
@@ -79,14 +82,14 @@ pnpm test:visual  # визуальный гейт: скриншот-регрес
 - **Ревью-ритуал:** 5 агентов в фоне (документалист / программист / тестировщик / security / CTO;
   каждый держится **диффа** — проект большой, иначе таймаут) + сводный отчёт с severity
   **blocker / major / minor / nit**. Правки — в тот же PR, после них снова `pnpm check`.
-- **Гейт мержа:** `pnpm check` зелёный (typecheck ядра + граница `~core` + `typecheck:app`/`:server` +
+- **Гейт мержа:** `pnpm check` зелёный (typecheck ядра + граница `~core` + `lint` + `typecheck:app`/`:server` +
   тесты с покрытием ≥85%, по факту ~100% + `verify`), CI success, clean working tree, 0 отставания от `main` (иначе sync).
 - **Мерж:** squash + курированное тело + штампы → удалить ветку. Roadmap-issue остаётся открытым
   (закрывается, когда закрыт весь скоуп фазы).
 
 ## Definition of Done (по слоям)
 
-- **Ядро (`src/`):** `pnpm typecheck` + тесты с покрытием ≥85% (по факту ~100%) + `pnpm verify`
+- **Ядро (`src/`):** `pnpm typecheck` + `pnpm lint` + тесты с покрытием ≥85% (по факту ~100%) + `pnpm verify`
   (агрегаты на 4 уровнях); нетривиальные решения записаны в карту проекта.
 - **UI (контуры A/B):** визуальная верификация (рендер → скриншот → сверка с макетом → починка
   состояний/брейкпоинтов); детерминированный гейт — ниже.
@@ -107,7 +110,7 @@ pnpm test:visual  # визуальный гейт: скриншот-регрес
 ## Среда (web-сессии)
 
 - **SessionStart-хук** `.claude/hooks/session-start.sh` (в `.claude/settings.json`) ставит зависимости
-  (`pnpm install --frozen-lockfile`) при старте веб-сессии — чтобы typecheck/test/verify работали сразу.
+  (`pnpm install --frozen-lockfile`) при старте веб-сессии — чтобы typecheck/lint/test/verify работали сразу.
   Синхронно, только в удалённой среде (гард `CLAUDE_CODE_REMOTE`); локально — мгновенный выход.
 - **Stop-хук визуального гейта** `.claude/hooks/visual-gate.sh` — на завершении сессии, если тронуты
   UI-поверхности, прогоняет `pnpm test:visual` и блокирует остановку при расхождении. Узкий триггер
@@ -115,8 +118,8 @@ pnpm test:visual  # визуальный гейт: скриншот-регрес
 
 ## CI и зависимости
 
-GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typecheck:app` vue-tsc + тесты с покрытием
-+ verify), `docker-build.yml` (сборка прод-образа на PR — **без публикации**, гейт от поломки образа до
+GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `lint` + `typecheck:app` vue-tsc + тесты
+с покрытием + verify), `docker-build.yml` (сборка прод-образа на PR — **без публикации**, гейт от поломки образа до
 мержа), `docker-publish.yml` (публикация в GHCR на push в `main`/теги). `.github/dependabot.yml` —
 авто-обновления npm/actions/docker с группировкой (мажор `nuxt`/`@bitrix24/*` — отдельным PR; major
 `node` заигнорен под corepack). Авто-мерж Dependabot НЕ включён (мержит владелец). Сторонние actions
@@ -140,4 +143,4 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `typeche
 `@bitrix24/b24ui-nuxt ^2.9`. Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
-*Обновлено: 2026-08-07. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
+*Обновлено: 2026-08-14. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*

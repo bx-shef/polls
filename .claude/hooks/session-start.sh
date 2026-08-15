@@ -1,6 +1,6 @@
 #!/bin/bash
 # SessionStart-хук: прогрев среды для веб-сессий Claude Code.
-# Ставит зависимости (pnpm), чтобы typecheck/test/verify работали сразу.
+# Ставит зависимости (pnpm), чтобы typecheck/lint/test/verify работали сразу.
 # Идемпотентен и неинтерактивен.
 set -euo pipefail
 

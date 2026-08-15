@@ -18,9 +18,11 @@ Write-Host '> check:boundary (граница ~core)'
 pnpm -s check:boundary
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-Write-Host '> typecheck:app + typecheck:server (vue-tsc app/ + server/)'
-pnpm -s nuxt:prepare
+Write-Host '> lint (забытый await + recommended - #165; сам зовёт nuxt prepare)'
+pnpm -s lint
 if ($LASTEXITCODE -ne 0) { exit 1 }
+
+Write-Host '> typecheck:app + typecheck:server (vue-tsc app/ + server/)'
 pnpm -s typecheck:app
 if ($LASTEXITCODE -ne 0) { exit 1 }
 pnpm -s typecheck:server
@@ -34,4 +36,4 @@ Write-Host '> verify (итог на 4 уровнях)'
 pnpm -s verify
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-Write-Host 'OK: типы + тесты + итог посчитаны.'
+Write-Host 'OK: типы + линт + тесты + итог посчитаны.'
