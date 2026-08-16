@@ -23,5 +23,19 @@
   // У неё свой `test/fixtures/tsconfig.json` — он нужен, чтобы типовые правила ESLint до неё
   // добирались: без проекта TypeScript они молча вырождаются, и гард стал бы декоративным.
   // `node_modules` выписан явно: свой `exclude` ЗАМЕЩАЕТ дефолтный список TypeScript.
-  "exclude": ["node_modules", "test/fixtures"]
+  //
+  // ⚠️ Два теста проводки приглашений исключены НЕ потому, что «не типизируются», а потому, что они
+  // загружают модули Nitro, живущие на авто-импортах Nuxt (`defineNitroPlugin`, `getRequestIP`,
+  // `import.meta.prerender`). Ядровой проект framework-agnostic и этих имён не знает по определению —
+  // затащив их сюда, мы получили бы либо красный `tsc` на здоровом коде, либо рукописный слепок
+  // контракта Nuxt, который разъедется с ним молча. Сами модули типы НЕ теряют: их гейтит
+  // `pnpm typecheck:server` (vue-tsc с nuxt-генерированным конфигом), а поведение — эти же тесты
+  // в `pnpm test`. Ср. `test/body-limit.test.ts`: он тоже импортирует `server/`, но тот модуль
+  // авто-импортов не использует, поэтому и исключать его не нужно.
+  "exclude": [
+    "node_modules",
+    "test/fixtures",
+    "test/invitation-retention.test.ts",
+    "test/invitation-wiring.test.ts"
+  ]
 }

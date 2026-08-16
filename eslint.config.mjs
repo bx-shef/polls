@@ -63,6 +63,12 @@ const AREAS = [
   // Приманка гейта: исключена из корневого tsconfig, поэтому проект у неё свой.
   { files: ['test/fixtures/**'], project: './test/fixtures/tsconfig.json' },
   { files: ['server/**'], project: './.nuxt/tsconfig.server.json' },
+  // Тесты проводки приглашений загружают модули Nitro (авто-импорты Nuxt), поэтому исключены из
+  // ядрового проекта — и им нужен свой, иначе типовые правила по ним молча выключатся.
+  {
+    files: ['test/invitation-retention.test.ts', 'test/invitation-wiring.test.ts'],
+    project: './test/nitro-tsconfig.json'
+  },
   { files: ['app/**'], project: './.nuxt/tsconfig.app.json' },
   // Общий слой Nuxt 4 (`shared/`): каталога пока нет, но `nuxt prepare` уже генерирует под него
   // конфиг, а `typecheck:app` его типизирует. Без строки код, положенный туда завтра, линтовался бы

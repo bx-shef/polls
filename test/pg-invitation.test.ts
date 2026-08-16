@@ -79,6 +79,25 @@ describe('PgInvitationStore: создание и чтение', () => {
     expect(r.rows[0]!.token_hash).not.toBe(inv.token)
   })
 
+  it('алгоритм хеша ЗАПИННЕН литералом, а не сверяется сам с собой', () => {
+    // ⚠️ Без этой строки все остальные ожидания выражены через саму `hashToken`, то есть подошла бы
+    // ЛЮБАЯ хеш-функция: подмена sha256 на md5 проходила весь набор незамеченной. А смена алгоритма
+    // — это не рефакторинг: все выписанные ссылки перестают находиться в базе разом.
+    expect(hashToken('demo-invitation')).toBe('ceb57d9c0eb61e675051e5b7f9ee20706c47f05ffc6c572dc83cc0c5707f771e')
+    expect(hashToken('x'), 'длина не как у sha256').toHaveLength(64)
+  })
+
+  it('дубль токена в одном портале отвергается уникальным индексом', async () => {
+    // Индекс `uq_invitation_token_hash` — не украшение: без него два приглашения с одним токеном
+    // жили бы рядом, и `consume` погасил бы одно, оставив второе с тем же контекстом.
+    const s = await store()
+    await issue(s, { token: 'дубль' })
+    await expect(issue(s, { token: 'дубль' }), 'уникальность хеша не форсится').rejects.toThrow()
+    // ⚠️ Ошибка при этом СЫРАЯ, без `on conflict` — и это осознанно до #138: идемпотентность
+    // `create` там всё равно проектируется, и глушить конфликт раньше времени значило бы спрятать
+    // сигнал о том, что кто-то выписывает приглашения повторно.
+  })
+
   it('неизвестный токен → undefined', async () => {
     const s = await store()
     await issue(s)
@@ -105,10 +124,27 @@ describe('PgInvitationStore: создание и чтение', () => {
     const s = await store()
     const inv = await s.create({ surveyKey: 'k', versionNo: 1, context: {} }, NOW)
     expect((await s.peek(inv.token, NOW))?.context).toEqual({})
-    const r = await db.query<{ deal_id: number | null; deal_amount: string | null }>(
-      'select deal_id, deal_amount from invitation where token_hash = $1', [hashToken(inv.token)]
+    const r = await db.query<Record<string, unknown>>(
+      `select deal_id, deal_category_id, deal_stage_id, company_id, contact_id, responsible_id, deal_amount
+         from invitation where token_hash = $1`, [hashToken(inv.token)]
     )
-    expect(r.rows[0]).toEqual({ deal_id: null, deal_amount: null })
+    expect(Object.values(r.rows[0]!).every((v) => v === null), 'что-то придумалось из пустого контекста').toBe(true)
+  })
+
+  it('денормализованные колонки ЗАПОЛНЯЮТСЯ — по ним построены индексы админских выборок', async () => {
+    // Их можно было обнулить все семь, и весь набор оставался зелёным: данные лежали бы в `context`,
+    // а выборки, которые ходят по колонкам, их не видели бы. Молчаливое «есть, но невидимо».
+    const s = await store()
+    const inv = await issue(s)
+    const r = await db.query<Record<string, unknown>>(
+      `select deal_id, deal_category_id, deal_stage_id, company_id, responsible_id, deal_amount
+         from invitation where token_hash = $1`, [hashToken(inv.token)]
+    )
+    // pglite отдаёт bigint числом, боевой драйвер `pg` — строкой; сверяем по значению, а не по типу.
+    expect(Object.fromEntries(Object.entries(r.rows[0]!).map(([k, v]) => [k, String(v)]))).toEqual({
+      deal_id: '5994', deal_category_id: '1', deal_stage_id: 'C1:WON',
+      company_id: '3986', responsible_id: '11', deal_amount: '120000'
+    })
   })
 
   it('строка, записанная НЕ нами, читается без падения', async () => {
@@ -147,6 +183,24 @@ describe('PgInvitationStore: создание и чтение', () => {
     expect(await b.consume(inv.token, PIN, NOW)).toEqual({ status: 'unknown' })
     // И у владельца ссылка при этом жива — чужая попытка её не сожгла.
     expect((await a.consume(inv.token, PIN, NOW)).status).toBe('ok')
+  })
+})
+
+describe('PgInvitationStore: данные переживают процесс', () => {
+  it('СВЕЖИЙ инстанс стора на том же портале видит ссылку, выписанную прежним', async () => {
+    // ⚠️ Ровно то обещание, ради которого затевался переезд, и до ревью его не пиннуло ничего: все
+    // тесты работали с ОДНИМ инстансом стора, то есть проверяли БД как хранилище, но не как
+    // переживание процесса. Инстанс здесь — самое близкое к «перезапуску», что доступно юниту;
+    // полный прогон с убийством процесса делается отдельно, руками, на настоящем PostgreSQL.
+    const portalId = await freshPortal()
+    const before = new PgInvitationStore(db, { portalId })
+    const inv = await before.create({ ...PIN, context: ctx }, NOW)
+
+    const after = new PgInvitationStore(db, { portalId })
+    expect(await after.peek(inv.token, NOW), 'ссылка не пережила смену инстанса').toBeDefined()
+    const used = await after.consume(inv.token, PIN, NOW)
+    expect(used.status).toBe('ok')
+    expect(used.status === 'ok' && used.invitation.context).toEqual(ctx)
   })
 })
 
@@ -204,6 +258,51 @@ describe('PgInvitationStore: расход (одноразовость)', () => {
   it('неизвестный токен → unknown', async () => {
     const s = await store()
     expect(await s.consume('нет-такого', PIN, NOW)).toEqual({ status: 'unknown' })
+  })
+})
+
+describe('PgInvitationStore: колонки жизненного цикла', () => {
+  const lifecycle = async (portalId: number) =>
+    (await db.query<{ status: string; completed_at: Date | null; used_at: Date | null; sent_at: Date }>(
+      'select status, completed_at, used_at, sent_at from invitation where portal_id = $1', [portalId]
+    )).rows[0]!
+
+  it('создание → sent, расход → completed + отметки времени', async () => {
+    // На `status` стоит `idx_invitation_portal_status` из 0001, и по нему же читают админские
+    // выборки. Приглашение, рождённое сразу «completed», для них было бы невидимо-неправильным.
+    const portalId = await freshPortal()
+    const s = new PgInvitationStore(db, { portalId })
+    const inv = await s.create({ ...PIN, context: ctx }, NOW)
+    const born = await lifecycle(portalId)
+    expect(born.status).toBe('sent')
+    expect(born.used_at).toBeNull()
+    expect(born.completed_at).toBeNull()
+    expect(new Date(born.sent_at).toISOString()).toBe(NOW.toISOString())
+
+    const at = later(1000)
+    await s.consume(inv.token, PIN, at)
+    const dead = await lifecycle(portalId)
+    expect(dead.status).toBe('completed')
+    expect(new Date(dead.used_at!).toISOString()).toBe(at.toISOString())
+    expect(new Date(dead.completed_at!).toISOString()).toBe(at.toISOString())
+  })
+
+  it('create отдаёт pending и время создания, а не срок', async () => {
+    const s = await store()
+    const inv = await issue(s, { ttlMs: 60_000 })
+    expect(inv.status).toBe('pending')
+    expect(inv.createdAt).toBe(NOW.toISOString())
+    expect(inv.expiresAt).toBe(later(60_000).toISOString())
+  })
+
+  it('границы срока: ровно в момент истечения ссылка уже мертва', async () => {
+    // `>` против `>=` — разница в одну миллисекунду и в один симптом: ссылка, живущая «ещё чуть-чуть
+    // после срока», ломает обещание `linkTtlSeconds`, а тест на «+1 мс» этого не видит.
+    const s = await store()
+    const inv = await issue(s, { ttlMs: 60_000 })
+    expect(await s.peek(inv.token, later(59_999)), 'до срока — жива').toBeDefined()
+    expect(await s.peek(inv.token, later(60_000)), 'ровно в срок — уже мертва').toBeUndefined()
+    expect((await s.consume(inv.token, PIN, later(60_000))).status).toBe('unknown')
   })
 })
 
