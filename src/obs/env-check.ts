@@ -7,6 +7,9 @@ import { LOG_LEVELS } from './logger'
 import { telemetryEnabled } from './telemetry'
 import { resolveTrustedProxies, MAX_TRUSTED_PROXIES } from '../api/client-ip'
 import { DEFAULT_TOMBSTONE_DAYS, MAX_TOMBSTONE_DAYS, MIN_TOMBSTONE_DAYS } from '../bitrix24/portal'
+import {
+  DEFAULT_INVITATION_KEEP_DAYS, MAX_INVITATION_KEEP_DAYS, MIN_INVITATION_KEEP_DAYS
+} from '../store/pg-invitation'
 
 /**
  * Проверка окружения при старте.
@@ -317,6 +320,17 @@ export function checkEnv(env: Record<string, string | undefined>, opts: EnvCheck
     min: MIN_TOMBSTONE_DAYS,
     max: MAX_TOMBSTONE_DAYS,
     fallback: DEFAULT_TOMBSTONE_DAYS,
+    unit: 'суток'
+  })
+
+  // Ручка удержания ПДн: приглашение несёт снимок сделки с ФИО ответственного. Молчаливая
+  // деградация опечатки в дефолт здесь особенно неприятна — оператор считает, что задал срок.
+  addRangeNotice(warnings, {
+    name: 'INVITATION_KEEP_DAYS',
+    raw: val('INVITATION_KEEP_DAYS'),
+    min: MIN_INVITATION_KEEP_DAYS,
+    max: MAX_INVITATION_KEEP_DAYS,
+    fallback: DEFAULT_INVITATION_KEEP_DAYS,
     unit: 'суток'
   })
 

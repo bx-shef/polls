@@ -4,13 +4,17 @@ import { createApi, type Api } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
-import { MemoryInvitationStore, type InvitationStore } from '~core/api/invitation'
+import {
+  MemoryInvitationStore,
+  type InvitationCreate, type InvitationPin, type InvitationStore
+} from '~core/api/invitation'
 import {
   DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2,
   DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2, SURVEY_KEY
 } from '~core/demo/seed'
 import { surveyRoutingFromEnv } from '~core/bitrix24/survey-routing'
 import { PgStore, queryableFromPool } from '~core/store/pg'
+import { PgInvitationStore } from '~core/store/pg-invitation'
 import { applyMigrations, upSql } from '~core/store/migrate'
 import { ensureDefaultPortal, seedDemoIfEmpty } from '~core/store/bootstrap'
 import { resolveMemberIdByDomain } from '~core/bitrix24/portal'
@@ -33,6 +37,8 @@ let storePromise: Promise<IStore> | undefined
 let apiPromise: Promise<Api> | undefined
 /** pg-Queryable активного PgStore (для PortalTokenStore установки, #17); undefined на MemoryStore. */
 let pgDb: Queryable | undefined
+/** portalId активного PgStore — нужен приглашениям (tenant-скоуп задаётся конструктором). */
+let pgPortalId: number | undefined
 
 export const logger: Logger = createJsonLogger({ base: { svc: 'polls' } })
 
@@ -83,6 +89,7 @@ async function buildStore(): Promise<IStore> {
   pgDb = db // доступен для PortalTokenStore (установка #17)
   await applyMigrations(db, readMigrationSqls())
   const portalId = await ensureDefaultPortal(db)
+  pgPortalId = portalId
   const store = new PgStore(db, { portalId })
   if (await seedDemoIfEmpty(store)) {
     logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД (single-tenant MVP, #6)' })
@@ -107,15 +114,66 @@ export function useApi(): Promise<Api> {
 /**
  * ОБЩИЙ стор приглашений на процесс: его пишет триггер/виджет (создаёт приглашение по сделке) и
  * расходует `submit` — поэтому createApi получает ИМЕННО этот инстанс, а не создаёт свой.
- * In-memory (один инстанс); durable-стор приглашений в БД — #4.
+ * Реализация выбирается по `DATABASE_URL`: PostgreSQL (#4, переживает перезапуск) либо память.
  */
 // ⚠️ Тип возврата — ПОРТ `InvitationStore`, а не класс. Пока здесь стоял `MemoryInvitationStore`,
 // все четыре вызывающих роута были прибиты к конкретной реализации, и подмена на durable-стор (#4)
 // требовала бы правки каждого из них — при том что сам порт существовал.
 let invitationStore: InvitationStore | undefined
 export function useInvitations(): InvitationStore {
-  if (!invitationStore) invitationStore = new MemoryInvitationStore()
+  if (!invitationStore) invitationStore = new LazyInvitationStore()
   return invitationStore
+}
+
+/**
+ * Стор приглашений с ЛЕНИВЫМ выбором реализации.
+ *
+ * ⚠️ Обёртка нужна из-за раскладки, а не из любви к слоям: `useInvitations()` синхронна и зовётся из
+ * четырёх мест, а пул БД и `portalId` доступны только через `await useStore()`. Сделать фабрику
+ * асинхронной значило бы править все вызывающие — ровно то, чего избегали, разводя порт. Поэтому
+ * реализация резолвится внутри уже асинхронных методов порта, один раз на процесс.
+ *
+ * Без `DATABASE_URL` — память (демо/dev): там и данных нет, и переживать перезапуск нечему.
+ */
+class LazyInvitationStore implements InvitationStore {
+  private resolved: Promise<InvitationStore> | undefined
+
+  private real(): Promise<InvitationStore> {
+    if (!this.resolved) {
+      this.resolved = (async () => {
+        await useStore() // поднимает пул и заполняет pgDb/pgPortalId
+        if (pgDb && pgPortalId !== undefined) {
+          logger.info('invitations_pg', { msg: 'Приглашения в PostgreSQL — переживают перезапуск (#4)' })
+          return new PgInvitationStore(pgDb, { portalId: pgPortalId })
+        }
+        return new MemoryInvitationStore()
+      })().catch((e) => {
+        // Проваленный резолв НЕ кэшируем: иначе одна неудача на старте выключила бы приглашения до
+        // рестарта. Следующий вызов попробует снова.
+        this.resolved = undefined
+        throw e
+      })
+    }
+    return this.resolved
+  }
+
+  async create(input: InvitationCreate, now: Date) {
+    return (await this.real()).create(input, now)
+  }
+
+  async peek(token: string, now: Date) {
+    return (await this.real()).peek(token, now)
+  }
+
+  async consume(token: string, pin: InvitationPin, now: Date) {
+    return (await this.real()).consume(token, pin, now)
+  }
+}
+
+/** Активный стор приглашений на PostgreSQL — для чистки по сроку (крон). `undefined` в памяти. */
+export async function usePgInvitations(): Promise<PgInvitationStore | undefined> {
+  await useStore()
+  return pgDb && pgPortalId !== undefined ? new PgInvitationStore(pgDb, { portalId: pgPortalId }) : undefined
 }
 
 /**
