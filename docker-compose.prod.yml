@@ -51,6 +51,9 @@ services:
       SURVEY_KEY_DEFAULT: ${SURVEY_KEY_DEFAULT:-}
       # Как часто освежать OAuth-токены, часы (дефолт 24, диапазон 1–168).
       TOKEN_KEEPALIVE_HOURS: ${TOKEN_KEEPALIVE_HOURS:-}
+      # Сколько суток держать МЁРТВОЕ приглашение до удаления (дефолт 30, диапазон 1–365).
+      # Ручка удержания ПДн: в приглашении лежит снимок сделки с ФИО ответственного.
+      INVITATION_KEEP_DAYS: ${INVITATION_KEEP_DAYS:-}
       # Уровень логов: debug|info|warn|error (невалидное молча падает на info).
       NUXT_LOG_LEVEL: ${NUXT_LOG_LEVEL:-}
       # Кому ещё можно встраивать приложение в iframe (self-hosted/box-порталы); зоны Bitrix24 уже разрешены.

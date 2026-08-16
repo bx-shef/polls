@@ -38,6 +38,18 @@ alter table invitation alter column token drop not null;
 create unique index if not exists uq_invitation_token_hash
   on invitation (portal_id, token_hash) where token_hash is not null;
 
--- Под чистку по сроку и под `peek`/`consume`: оба ходят по живым приглашениям.
-create index if not exists idx_invitation_live
-  on invitation (portal_id, expires_at) where used_at is null;
+-- ⚠️ Индекс НА РОДИТЕЛЬСКОЙ СТОРОНЕ FK `response.invitation_id`. Он не про наши запросы, а про
+-- удаление: без него каждая удаляемая строка `invitation` заставляет Postgres проверять ссылку
+-- полным сканом `response`. Замерено на PostgreSQL 16 (30 000 приглашений, 12 000 мёртвых,
+-- 50 000 ответов): суточная чистка — 43 секунды на один DELETE против 126 мс с индексом, и растёт
+-- квадратично от `response`, то есть от таблицы, которая и должна расти. Колонка всё равно
+-- заявлена в `0003` как будущий ключ дедупа, так что индекс нужен и без чистки.
+create index if not exists idx_response_invitation on response (invitation_id);
+
+-- ⚠️ Индекса под `peek`/`consume` НЕ заводим намеренно: оба ищут по `(portal_id, token_hash)` и
+-- обслуживаются уникальным индексом выше — проверено планами на 200 000 строк (`Index Scan using
+-- uq_invitation_token_hash`, 0.04–0.24 мс). Первая редакция несла здесь `idx_invitation_live`
+-- (частичный, `where used_at is null`); замер показал `idx_scan = 0` — он не подходил ни чтениям
+-- (у них уже есть точный индекс), ни чистке (та ищет ровно `used_at is not null`, то есть строки,
+-- которые этот индекс исключает по определению). Индекс, который ничем не пользуются, — это только
+-- запись на каждый INSERT и мегабайты на диске.

@@ -4,6 +4,7 @@ import {
   DEFAULT_INVITATION_KEEP_DAYS, MAX_INVITATION_KEEP_DAYS,
   PgInvitationStore, hashToken, resolveInvitationKeepDays
 } from '../src/store/pg-invitation'
+import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import type { Queryable } from '../src/store/types'
 import type { CrmContext } from '../src/domain/schema'
 import { applySchema } from './helpers/schema'
@@ -98,6 +99,44 @@ describe('PgInvitationStore: создание и чтение', () => {
     expect((await s.peek('demo-invitation', NOW))?.context.dealId).toBe(5994)
   })
 
+  it('пустой контекст пишется и читается — денормализованные колонки становятся NULL', async () => {
+    // `create` раскладывает поля контекста по колонкам через `?? null`. Ветка «поля нет» — не
+    // экзотика: `CrmContext` весь опционален, а виджет ручного запуска шлёт то, что есть у сделки.
+    const s = await store()
+    const inv = await s.create({ surveyKey: 'k', versionNo: 1, context: {} }, NOW)
+    expect((await s.peek(inv.token, NOW))?.context).toEqual({})
+    const r = await db.query<{ deal_id: number | null; deal_amount: string | null }>(
+      'select deal_id, deal_amount from invitation where token_hash = $1', [hashToken(inv.token)]
+    )
+    expect(r.rows[0]).toEqual({ deal_id: null, deal_amount: null })
+  })
+
+  it('строка, записанная НЕ нами, читается без падения', async () => {
+    // Колонки `survey_key`/`version_no`/`context` в схеме nullable (0005 только добавляет, ничего
+    // не требует). Значит строку без них может завести кто угодно — старый образ, ручной SQL,
+    // будущая миграция. Чтение обязано деградировать, а не бросать: иначе одна кривая строка
+    // роняет отправку ответа у всех.
+    const portalId = await freshPortal()
+    const bare = new PgInvitationStore(db, { portalId })
+    await db.query(
+      `insert into invitation (portal_id, token_hash, status, sent_at, expires_at)
+       values ($1, $2, 'sent', $3, $4)`,
+      [portalId, hashToken('голая'), NOW, later(60_000)]
+    )
+    const found = await bare.peek('голая', NOW)
+    expect(found).toEqual({
+      token: 'голая',
+      surveyKey: '',
+      versionNo: 0,
+      context: {},
+      status: 'pending',
+      createdAt: NOW.toISOString(),
+      expiresAt: later(60_000).toISOString()
+    })
+    // И расходу она не поддаётся: пин не сойдётся ни с чем осмысленным.
+    expect((await bare.consume('голая', PIN, NOW)).status).toBe('mismatch')
+  })
+
   it('чужой портал не видит приглашение — tenant-изоляция', async () => {
     // `portalId` задаётся конструктором, как у PgStore: реализация без скоупа молча выпала бы и из
     // удаления данных портала, и из редакции ПДн (#31).
@@ -127,7 +166,14 @@ describe('PgInvitationStore: расход (одноразовость)', () => {
   it('ДВЕ ОДНОВРЕМЕННЫЕ отправки по одной ссылке → ровно одна проходит', async () => {
     // ⚠️ Главное свойство этой реализации. In-memory получал его от однопоточности Node даром;
     // здесь оно держится на условии `used_at is null` ВНУТРИ одного UPDATE. Разложи это на
-    // «прочитать → проверить → пометить», и обе отправки увидели бы живую строку.
+    // «прочитать → проверить → пометить», и обе отправки увидели бы живую строку (мутация проверена
+    // — тест падает с «ссылка сработала дважды»).
+    //
+    // ⚠️ Оговорка про среду: pglite — ОДНО соединение, то есть запросы здесь сериализуются, а
+    // настоящей многосоединённой гонки этот тест не воспроизводит. Он ловит именно check-then-act
+    // (между чтением и записью есть точка прерывания). Поведение под реальным пулом проверено
+    // отдельно, вручную: 5 раундов по 20 параллельных `consume` через пул из 25 соединений на
+    // PostgreSQL 16 — каждый раз ровно один `ok` и 19 `replay`.
     const s = await store()
     const inv = await issue(s)
     const results = await Promise.all([
@@ -164,38 +210,67 @@ describe('PgInvitationStore: расход (одноразовость)', () => {
 describe('PgInvitationStore: чистка по сроку', () => {
   it('сносит мёртвое старше срока, живое не трогает', async () => {
     const s = await store()
-    const live = await issue(s)                                  // жива: истечёт через 30 дней
+    const live = await issue(s)                                  // истечёт через 30 суток
     const used = await issue(s)
     await s.consume(used.token, PIN, NOW)                        // израсходована сегодня
     const day = 24 * 60 * 60_000
 
     // Через 10 дней при keepDays=30 не подметается ничего: мёртвое ещё «отлёживается».
     expect(await s.sweepExpired(later(10 * day), 30)).toBe(0)
-    // Через 40 дней израсходованная уходит, живая остаётся (её срок ещё не настал… но настал бы
-    // через 30 дней — поэтому проверяем именно по факту чтения ниже).
+    // Через 40 дней израсходованная уходит. Живая остаётся: её собственный срок (30 суток от
+    // выписки) на 40-й день уже прошёл, но отсчёт хранения идёт от смерти, а не от выписки —
+    // поэтому она ещё «отлёживается». Проверяем это чтением, а не счётчиком.
     expect(await s.sweepExpired(later(40 * day), 30)).toBe(1)
     expect(await s.peek(live.token, later(10 * day)), 'подмели живую ссылку').toBeDefined()
   })
 
-  it('срок хранения клампится, мусорное значение → дефолт', async () => {
-    // Гард от `INVITATION_KEEP_DAYS=0` (снесло бы только что выписанные ссылки) и от `=99999`.
+  it('срок хранения резолвится ТЕМ ЖЕ правилом, что читает переменную окружения', async () => {
+    // ⚠️ Раньше здесь был свой, ДРУГОЙ кламп: `0` внутри метода превращался в 1 день, а
+    // `resolveInvitationKeepDays('0')` — в 30. Два разных ответа на один вход у публичного метода и
+    // у его единственного вызывающего — расхождение, которое замечают на проде, а не в ревью.
     const s = await store()
     const inv = await issue(s, { ttlMs: 60_000 })
     const day = 24 * 60 * 60_000
-    // keepDays=0 клампится до 1 → через 12 часов после смерти ещё рано.
-    expect(await s.sweepExpired(later(12 * 60 * 60_000), 0)).toBe(0)
-    expect(await s.sweepExpired(later(2 * day), 0), 'клампа нет: 0 дней снесло бы всё мёртвое сразу').toBe(1)
-    expect(await s.peek(inv.token, later(2 * day))).toBeUndefined()
+    // `0` — мусор, а не «чистить сразу»: деградирует в дефолт 30 суток, как и в env-резолвере.
+    expect(await s.sweepExpired(later(2 * day), 0)).toBe(0)
+    expect(await s.sweepExpired(later(31 * day), 0)).toBe(1)
+    expect(await s.peek(inv.token, later(31 * day))).toBeUndefined()
+  })
+
+  it('строка БЕЗ срока не бессмертна — иначе её не видит никто', async () => {
+    // Схема 0005 разрешает `expires_at is null` (ослабление старых колонок), наш писатель так не
+    // пишет. Без отдельной ветки такая строка вечна: `peek` её не отдаёт, `consume` не расходует,
+    // чистка не видит — то есть ПДн лежат, а инструмента убрать их нет.
+    const s = await store()
+    const portal = await db.query<{ id: number }>(
+      `insert into invitation (portal_id, token_hash, survey_key, version_no, status, sent_at, context)
+       values ((select id from portal order by id desc limit 1), 'сирота', 'k', 1, 'sent', $1, '{}'::jsonb)
+       returning portal_id as id`, [NOW]
+    )
+    const orphanStore = new PgInvitationStore(db, { portalId: portal.rows[0]!.id })
+    const day = 24 * 60 * 60_000
+    expect(await orphanStore.sweepExpired(later(2 * day), 30), 'сирота подметена слишком рано').toBe(0)
+    expect(await orphanStore.sweepExpired(later(40 * day), 30), 'строка без срока осталась вечной').toBe(1)
+    void s
+  })
+
+  it('батч ограничен — один DELETE не держит соединение на всём хвосте', async () => {
+    const s = await store()
+    const day = 24 * 60 * 60_000
+    for (let i = 0; i < 5; i++) await issue(s, { ttlMs: 60_000 })
+    expect(await s.sweepExpired(later(40 * day), 30, 2), 'кап батча не соблюдён').toBe(2)
+    expect(await s.sweepExpired(later(40 * day), 30, 2)).toBe(2)
+    expect(await s.sweepExpired(later(40 * day), 30, 2)).toBe(1)
+    expect(await s.sweepExpired(later(40 * day), 30, 2), 'хвост не кончился').toBe(0)
   })
 
   it('чужой портал не подметает наши приглашения', async () => {
     const a = await store()
     const b = await store()
-    const inv = await issue(a, { ttlMs: 60_000 })
+    await issue(a, { ttlMs: 60_000 })
     const day = 24 * 60 * 60_000
     expect(await b.sweepExpired(later(40 * day), 30), 'подмели чужой портал').toBe(0)
-    expect(await a.sweepExpired(later(40 * day), 30)).toBe(1)
-    void inv
+    expect(await a.sweepExpired(later(40 * day), 30), 'своё не подмели').toBe(1)
   })
 })
 
@@ -213,4 +288,79 @@ describe('срок хранения из окружения', () => {
     expect(resolveInvitationKeepDays('1.9')).toBe(1)
     expect(resolveInvitationKeepDays('99999')).toBe(MAX_INVITATION_KEEP_DAYS)
   })
+})
+
+/**
+ * ПАРИТЕТ двух реализаций одного порта.
+ *
+ * ⚠️ Заведён по итогам ревью, и не «на всякий случай»: расхождение уже было. `MemoryInvitationStore`
+ * проверял «использована» раньше «протухла», а PostgreSQL-реализация — наоборот, и человек,
+ * вернувшийся по письму через час после прохождения опроса, читал «срок ссылки истёк, попросите
+ * новую» вместо «спасибо, опрос пройден» — то есть шёл зря дёргать менеджера. Поймали это глазами;
+ * гейта, который поймал бы следующее такое, не было.
+ *
+ * Поэтому сценарии перечислены ОДИН раз и прогоняются через обе реализации, а сверяется не
+ * «ожидание из теста», а совпадение реализаций между собой.
+ */
+describe('паритет: память и PostgreSQL отвечают одинаково', () => {
+  const PIN2 = { surveyKey: 'k-parity', versionNo: 3 }
+  const TTL = 5 * 60_000
+  const hour = 60 * 60_000
+
+  /** Каждый сценарий получает чистый стор и возвращает наблюдаемый результат. */
+  const SCENARIOS: Record<string, (s: InvitationStore) => Promise<unknown>> = {
+    'живая ссылка расходуется': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      return (await s.consume(inv.token, PIN2, NOW)).status
+    },
+    'повтор по израсходованной': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      await s.consume(inv.token, PIN2, NOW)
+      return (await s.consume(inv.token, PIN2, NOW)).status
+    },
+    'ИЗРАСХОДОВАННАЯ, а потом ещё и протухшая': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx, ttlMs: TTL }, NOW)
+      await s.consume(inv.token, PIN2, NOW)
+      return (await s.consume(inv.token, PIN2, later(hour))).status
+    },
+    'протухшая, но не использованная': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx, ttlMs: TTL }, NOW)
+      return (await s.consume(inv.token, PIN2, later(hour))).status
+    },
+    'чужой опрос': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      return (await s.consume(inv.token, { surveyKey: 'чужой', versionNo: 3 }, NOW)).status
+    },
+    'чужая версия': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      return (await s.consume(inv.token, { surveyKey: PIN2.surveyKey, versionNo: 99 }, NOW)).status
+    },
+    'после чужого пина ссылка ещё жива': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      await s.consume(inv.token, { surveyKey: 'чужой', versionNo: 3 }, NOW)
+      return (await s.consume(inv.token, PIN2, NOW)).status
+    },
+    'неизвестный токен': async (s) => (await s.consume('нет-такого', PIN2, NOW)).status,
+    'предпросмотр живой': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      return (await s.peek(inv.token, NOW))?.context
+    },
+    'предпросмотр израсходованной': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx }, NOW)
+      await s.consume(inv.token, PIN2, NOW)
+      return await s.peek(inv.token, NOW)
+    },
+    'предпросмотр протухшей': async (s) => {
+      const inv = await s.create({ ...PIN2, context: ctx, ttlMs: TTL }, NOW)
+      return await s.peek(inv.token, later(hour))
+    }
+  }
+
+  for (const [name, run] of Object.entries(SCENARIOS)) {
+    it(name, async () => {
+      const inMemory = await run(new MemoryInvitationStore())
+      const inPg = await run(new PgInvitationStore(db, { portalId: await freshPortal() }))
+      expect(inPg, 'реализации одного порта разошлись').toEqual(inMemory)
+    })
+  }
 })

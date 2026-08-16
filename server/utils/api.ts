@@ -4,7 +4,10 @@ import { createApi, type Api } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
-import { MemoryInvitationStore, type InvitationStore } from '~core/api/invitation'
+import {
+  MemoryInvitationStore,
+  type InvitationCreate, type InvitationPin, type InvitationStore
+} from '~core/api/invitation'
 import {
   DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2,
   DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2, SURVEY_KEY
@@ -111,7 +114,7 @@ export function useApi(): Promise<Api> {
 /**
  * ОБЩИЙ стор приглашений на процесс: его пишет триггер/виджет (создаёт приглашение по сделке) и
  * расходует `submit` — поэтому createApi получает ИМЕННО этот инстанс, а не создаёт свой.
- * In-memory (один инстанс); durable-стор приглашений в БД — #4.
+ * Реализация выбирается по `DATABASE_URL`: PostgreSQL (#4, переживает перезапуск) либо память.
  */
 // ⚠️ Тип возврата — ПОРТ `InvitationStore`, а не класс. Пока здесь стоял `MemoryInvitationStore`,
 // все четыре вызывающих роута были прибиты к конкретной реализации, и подмена на durable-стор (#4)
@@ -154,7 +157,7 @@ class LazyInvitationStore implements InvitationStore {
     return this.resolved
   }
 
-  async create(input: Parameters<InvitationStore['create']>[0], now: Date) {
+  async create(input: InvitationCreate, now: Date) {
     return (await this.real()).create(input, now)
   }
 
@@ -162,7 +165,7 @@ class LazyInvitationStore implements InvitationStore {
     return (await this.real()).peek(token, now)
   }
 
-  async consume(token: string, pin: Parameters<InvitationStore['consume']>[1], now: Date) {
+  async consume(token: string, pin: InvitationPin, now: Date) {
     return (await this.real()).consume(token, pin, now)
   }
 }

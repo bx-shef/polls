@@ -57,6 +57,8 @@ export function hashToken(token: string): string {
 export const DEFAULT_INVITATION_KEEP_DAYS = 30
 export const MIN_INVITATION_KEEP_DAYS = 1
 export const MAX_INVITATION_KEEP_DAYS = 365
+/** Потолок строк на один прогон чистки — чтобы DELETE не держал соединение пула на всём хвосте. */
+export const SWEEP_BATCH = 5_000
 export function resolveInvitationKeepDays(raw: string | undefined): number {
   const n = Number(raw)
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_INVITATION_KEEP_DAYS
@@ -149,14 +151,23 @@ export class PgInvitationStore implements InvitationStore {
 
     // Ноль строк — разбираемся ПОЧЕМУ, отдельным чтением. Диагноз нужен только для кода ответа:
     // решение уже принято выше и от этого чтения не зависит, поэтому гонка здесь безопасна.
-    const diag = await this.db.query<{ used: boolean; expired: boolean; survey_key: string | null; version_no: number | null }>(
-      `select (used_at is not null) as used, (expires_at <= $3) as expired, survey_key, version_no
+    const diag = await this.db.query<{ used: boolean; expired: boolean | null }>(
+      `select (used_at is not null) as used, (expires_at <= $3) as expired
          from invitation where portal_id = $1 and token_hash = $2`,
       [this.opts.portalId, hash, now]
     )
     const d = diag.rows[0]
-    if (!d || d.expired) return { status: 'unknown' }
+    if (!d) return { status: 'unknown' }
+    // ⚠️ Порядок проверок: `used` СТРОГО ПЕРЕД `expired`. Ссылка, по которой человек уже прошёл
+    // опрос, со временем ещё и протухает — и если сначала спросить про срок, то через час после
+    // прохождения он прочитает «срок истёк, попросите новую» вместо «спасибо, опрос пройден» и
+    // пойдёт зря дёргать менеджера. In-memory реализация проверяет `used` первой, так что обратный
+    // порядок здесь был ещё и расхождением двух реализаций ОДНОГО порта — его держит тест паритета.
     if (d.used) return { status: 'replay' }
+    // `expired` — трёхзначное: `null` означает строку БЕЗ срока (схема это разрешает, наш писатель
+    // так не пишет). `UPDATE` для неё не сработает никогда, значит и живой считать её нельзя —
+    // иначе она вечно отвечала бы «не тот опрос» на любой пин.
+    if (d.expired !== false) return { status: 'unknown' }
     // Строка жива и не использована — значит не сошёлся пин. Токен НЕ сожжён: клиент может дослать
     // на верный опрос (анти-DoS на утёкший токен — контракт порта).
     return { status: 'mismatch' }
@@ -170,15 +181,32 @@ export class PgInvitationStore implements InvitationStore {
    * ⚠️ Считаем по `rows.length` от `RETURNING`, а не по `rowCount`: контракт `Queryable` минимален и
    * `rowCount` в нём не объявлен (тот же приём, что в `sweepTombstones`).
    */
-  async sweepExpired(now: Date, keepDays: number): Promise<number> {
-    const days = Number.isFinite(keepDays) ? Math.min(365, Math.max(1, Math.trunc(keepDays))) : 30
+  async sweepExpired(now: Date, keepDays: number, batch = SWEEP_BATCH): Promise<number> {
+    // Тот же резолвер, что читает переменную окружения: два разных ответа на один вход у публичного
+    // метода и у его вызывающего — это расхождение, которое однажды заметят на проде.
+    const days = resolveInvitationKeepDays(String(keepDays))
     const cutoff = new Date(now.getTime() - days * 24 * 60 * 60_000)
+    // ⚠️ Кап батча. Один незакапанный DELETE держит соединение из пула столько, сколько занимает
+    // весь накопленный хвост, — а первый прогон на давно живущей базе это как раз весь хвост.
+    // Остаток подметётся следующим прогоном: чистка суточная, спешить ей некуда.
+    //
+    // ⚠️ Третья ветка условия — про строки БЕЗ срока. Схема `0005` разрешает `expires_at is null`
+    // (иначе не прошло бы ослабление старых колонок), а наш писатель срок ставит всегда. Значит
+    // строка без срока — либо чужая, либо испорченная; без этой ветки она была бы ВЕЧНОЙ: `peek`
+    // её не отдаёт, `consume` не расходует, чистка не видит. Считаем такую мёртвой по построению и
+    // меряем возраст от `sent_at`.
     const r = await this.db.query<{ id: number }>(
       `delete from invitation
-        where portal_id = $1
-          and ((used_at is not null and used_at < $2) or (expires_at is not null and expires_at < $2))
+        where id in (
+          select id from invitation
+           where portal_id = $1
+             and ((used_at is not null and used_at < $2)
+               or (expires_at is not null and expires_at < $2)
+               or (used_at is null and expires_at is null and sent_at < $2))
+           limit $3
+        )
       returning id`,
-      [this.opts.portalId, cutoff]
+      [this.opts.portalId, cutoff, batch]
     )
     return r.rows.length
   }
