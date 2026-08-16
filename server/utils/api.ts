@@ -5,6 +5,10 @@ import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { MemoryInvitationStore, type InvitationStore } from '~core/api/invitation'
+import {
+  DEMO_INVITATION_CONTEXT, DEMO_INVITATION_CONTEXT_2,
+  DEMO_INVITATION_TOKEN, DEMO_INVITATION_TOKEN_2, SURVEY_KEY
+} from '~core/demo/seed'
 import { surveyRoutingFromEnv } from '~core/bitrix24/survey-routing'
 import { PgStore, queryableFromPool } from '~core/store/pg'
 import { applyMigrations, upSql } from '~core/store/migrate'
@@ -115,6 +119,25 @@ export function useInvitations(): InvitationStore {
 }
 
 /**
+ * Демо-режим — ровно то же условие, по которому выбирается стор: `DATABASE_URL` не задан.
+ *
+ * ⚠️ Ревью предлагало второй замок `NODE_ENV !== 'production'`, и его тут НЕТ намеренно: у нас
+ * собранный сервер бежит как production ВСЕГДА — им же поднимается визуальный гейт
+ * (`playwright.config.ts`, `node .output/server/index.mjs`), и демо-стенд тоже. То есть `NODE_ENV`
+ * у нас не различает «боевой запуск» и «демо-запуск», и такой замок молча выключил бы демо-данные
+ * там, где они и нужны. Плюс он гасил бы только приглашения: демо-ОПРОСЫ приходят из `useStore()`
+ * по тому же `DATABASE_URL`, и расхождение двух условий — это как раз тот класс ошибок, из-за
+ * которого демо «работает», но показывает не то.
+ *
+ * Реальная граница остаётся снаружи процесса: `pnpm env:check` считает отсутствие `DATABASE_URL`
+ * ошибкой деплоя. Отдельная явная переменная демо-режима — это уже разговор про то, чтобы и стор
+ * выбирался ею же; заведено отдельной задачей, а не полумерой здесь.
+ */
+function isDemoMode(): boolean {
+  return !process.env.DATABASE_URL
+}
+
+/**
  * Маршрутизация опросов по сущности (`SURVEY_KEY_<ENTITY>`/`SURVEY_KEY_DEFAULT`) — собирается ОДИН РАЗ
  * на процесс (конфиг статичен на время жизни инстанса), как `useStore`/`useInvitations`. Виджет
  * deal-invite зовёт `surveyKeyForEntity(entity, useSurveyRouting().routing, .fallback)`.
@@ -125,6 +148,44 @@ export function useSurveyRouting(): ReturnType<typeof surveyRoutingFromEnv> {
   return surveyRouting
 }
 
+/**
+ * Демо-приглашения: в режиме без БД заводим ДВА, с фиксированными токенами — на разные сделки.
+ *
+ * ⚠️ Иначе демо не умеет показать главный путь продукта — ссылку из CRM. Открыв `/s/:key`, человек
+ * видит опрос без привязки к сделке, то есть ровно то состояние, из-за которого аналитика и не
+ * работает. Плюс визуальный гейт: без живого приглашения он проверял бы клиентский мок вместо
+ * настоящего пути.
+ *
+ * Токен не секрет: он существует только там, где нет боевых данных. В боевом режиме
+ * ({@link isDemoMode} ложен) приглашения выписывает только связка с порталом, и этой ветки нет вовсе.
+ *
+ * ⚠️ Токен задаётся ЗДЕСЬ, параметром `create`, а не генератором стора. Генератор висит на сторе, а
+ * `useInvitations()` зовут напрямую и роуты `deal-invite`/`deal-update`/`robot` — то есть резерв
+ * «первые два токена фиксированы» доставался тому, кто позвал первым, включая реальную сделку.
+ */
+async function seedDemoInvitation(invitations: InvitationStore): Promise<void> {
+  if (!isDemoMode()) return
+  const store = await useStore()
+  const version = await store.currentVersion(SURVEY_KEY)
+  if (!version) return
+  const year = 365 * 24 * 60 * 60_000
+  // Два приглашения на ОДИН опрос, но на разные сделки — иначе не показать (и не проверить) главное
+  // правило привязки: черновик по одной ссылке не переносится на другую.
+  const demo = [
+    { token: DEMO_INVITATION_TOKEN, context: DEMO_INVITATION_CONTEXT },
+    { token: DEMO_INVITATION_TOKEN_2, context: DEMO_INVITATION_CONTEXT_2 }
+  ]
+  for (const { token, context } of demo) {
+    await invitations.create({
+      token,
+      surveyKey: SURVEY_KEY,
+      versionNo: version.versionNo,
+      context: { ...context },
+      ttlMs: year
+    }, new Date())
+  }
+}
+
 async function buildApi(): Promise<Api> {
   const store = await useStore()
   // Щедрый лимитер для dev/gate-сервера: SSR-рендер сам дёргает /api/survey/:key/current
@@ -133,7 +194,9 @@ async function buildApi(): Promise<Api> {
   // (она по IP за доверенным прокси + общий стор — #4/#6); здесь высокий потолок убирает
   // ложные 429, оставляя ceiling от примитивного флуда.
   const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
-  return createApi({ store, logger, limiter, invitations: useInvitations() })
+  const invitations = useInvitations()
+  await seedDemoInvitation(invitations)
+  return createApi({ store, logger, limiter, invitations })
 }
 
 /**

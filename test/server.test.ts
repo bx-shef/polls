@@ -188,6 +188,7 @@ describe('node-адаптер: живой HTTP', () => {
     const broken: Api = {
       session: () => Promise.reject(new Error('boom')),
       survey: () => Promise.reject(new Error('boom')),
+      invitationCheck: () => Promise.reject(new Error('boom')),
       submit: () => Promise.reject(new Error('boom')),
       health: () => Promise.reject(new Error('boom'))
     }

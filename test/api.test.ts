@@ -427,6 +427,147 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
   })
 })
 
+describe('GET /api/survey/:key/invitation — годность ссылки ДО заполнения', () => {
+  const snapshot = { dealId: 5994, companyId: 3986, dealStageId: 'WON' }
+
+  async function withInvitation(): Promise<{ api: Api, invitations: MemoryInvitationStore, now: () => Date }> {
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-check-1' })
+    const base = await freshApi({ invitations })
+    return { api: base.api, invitations, now: base.now }
+  }
+
+  it('живая ссылка → 200 и НИ ОДНОГО поля снимка наружу', async () => {
+    // Главное свойство роута: по нему ходит неаутентифицированный респондент, а `peek` отдаёт
+    // приглашение вместе с CRM-снимком (`responsibleName` помечен PII). Наружу — только годность.
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true })
+    const dump = JSON.stringify(r.body)
+    for (const leak of ['5994', '3986', 'WON', 'inv-check-1']) {
+      expect(dump, `${leak} уехал респонденту`).not.toContain(leak)
+    }
+  })
+
+  it('проверка НЕ расходует приглашение — иначе она же его и убивала бы', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })).status).toBe(200)
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })).status).toBe(200)
+    // И после двух проверок ссылка по-прежнему рабочая для отправки.
+    const nonce = await issueNonce(api)
+    const sent = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })
+    expect(sent.status, 'проверка сожгла приглашение').toBe(200)
+  })
+
+  it('использованная ссылка → 403 с текстом про оба случая сразу', async () => {
+    // `peek` не различает «использована» и «протухла» — оба дают `undefined`. Значит выбирать один
+    // текст наугад нельзя: он был бы неправдой в половине случаев.
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    const nonce = await issueNonce(api)
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: inv.token } })).status).toBe(200)
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })
+    expect(r.status).toBe(403)
+    expect(String(r.body.error)).toContain('уже пройден')
+  })
+
+  it('неизвестный токен → 403', async () => {
+    const { api } = await withInvitation()
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'нет-такого' })).status).toBe(403)
+  })
+
+  it('ссылка от другого опроса неотличима от мёртвой — иначе это бит существования токена', async () => {
+    // ⚠️ Ответ «ссылка не подходит к ЭТОМУ опросу» сообщает, что токен существует. Сказать это
+    // человеку по нашей ссылке невозможно: `deal-invite` собирает ключ и токен из одной записи
+    // через `surveyPath`, и разойтись им негде. Значит текст адресован никому, а бит отдаёт всем.
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: 'другой-опрос', versionNo: 2, context: snapshot }, now())
+    const alive = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })
+    const dead = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'нет-такого' })
+    expect(alive.status).toBe(403)
+    expect(alive, 'существующий и несуществующий токены различимы по ответу').toEqual(dead)
+    // При этом сам токен НЕ сожжён: слияние текстов ничего не расходует.
+    expect(await invitations.peek(inv.token, now()), 'проверка убила чужое приглашение').toBeDefined()
+  })
+
+  it('токен длиннее 200 символов → 400 «ссылка повреждена», и стор не тревожим', async () => {
+    // Форма токена — одна на оба входа. Пока границы было две (у `submit` — есть, у проверки —
+    // нет), один и тот же вход получал два разных диагноза, а токен любого размера доезжал до
+    // стора: сегодня это Map, завтра — параметр SQL-запроса (#4).
+    const backing = new MemoryInvitationStore()
+    let peeked = 0
+    const spy: InvitationStore = {
+      create: (i, n) => backing.create(i, n),
+      peek: (t, n) => { peeked++; return backing.peek(t, n) },
+      consume: (t, p, n) => backing.consume(t, p, n)
+    }
+    const { api, now } = await freshApi({ invitations: spy })
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'x'.repeat(201) })
+    expect(r.status).toBe(400)
+    expect(String(r.body.error)).toContain('повреждена')
+    expect(peeked, 'негодный по форме токен доехал до стора').toBe(0)
+    // Ровно 200 символов — ещё годная форма (граница та же, что у submit): дошло до стора.
+    await spy.create({ token: 'y'.repeat(200), surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'y'.repeat(200) })).status).toBe(200)
+    expect(peeked).toBe(1)
+  })
+
+  it('опрос переиздан после выписки ссылки → 409 ЗДЕСЬ, а не после заполнения', async () => {
+    // Приглашение пинится на версию, и `submit` отвергает чужую. Без этой ветки человек прошёл бы
+    // весь опрос и получил отказ на «Отправить» — ровно то, ради чего роут и заведён.
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 1, context: snapshot }, now())
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: inv.token })
+    expect(r.status).toBe(409)
+    expect(String(r.body.error)).toContain('обновился')
+  })
+
+  it('кривой адрес опроса → 400 (до похода в стор)', async () => {
+    // Три ветки — 400/404/500 — были единственными непокрытыми в файле: у соседних `survey`/`submit`
+    // аналогичные закрыты, и новый хендлер отставал от стандарта собственного файла.
+    // Пустой ключ — реальный вход: роут берёт `getRouterParam(event, 'key') ?? ''`.
+    const { api } = await withInvitation()
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: '', token: 'x' })).status).toBe(400)
+    expect((await api.invitationCheck({ ip: 'a', surveyKey: 'k'.repeat(201), token: 'x' })).status).toBe(400)
+  })
+
+  it('приглашение живо, а опубликованной версии опроса нет → 404', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: 'ghost', versionNo: 1, context: snapshot }, now())
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: 'ghost', token: inv.token })
+    expect(r.status).toBe(404)
+    expect(String(r.body.error)).toContain('Опрос не найден')
+  })
+
+  it('стор упал → 500 и НИ СЛОВА о причине наружу', async () => {
+    // Текст ошибки стора может нести DSN и снимок сделки. Наружу уходит только наш литерал.
+    const boom = new Error('DSN=postgres://user:PASSWORD@db/polls, dealId=5994')
+    const failing: InvitationStore = {
+      create: () => Promise.reject(boom),
+      peek: () => Promise.reject(boom),
+      consume: () => Promise.reject(boom)
+    }
+    const { api } = await freshApi({ invitations: failing, onError: () => {} })
+    const r = await api.invitationCheck({ ip: 'a', surveyKey: SURVEY_KEY, token: 'x' })
+    expect(r.status).toBe(500)
+    const dump = JSON.stringify(r.body)
+    for (const leak of ['PASSWORD', 'postgres://', '5994']) {
+      expect(dump, `${leak} уехал респонденту`).not.toContain(leak)
+    }
+  })
+
+  it('свой бюджет лимитера: перебор токенов не съедает лимит чтения опроса', async () => {
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    for (let i = 0; i < 12; i++) await api.invitationCheck({ ip: 'flood', surveyKey: SURVEY_KEY, token: 'x' })
+    expect((await api.invitationCheck({ ip: 'flood', surveyKey: SURVEY_KEY, token: inv.token })).status).toBe(429)
+    // Страница того же респондента при этом открывается: бюджеты раздельные.
+    expect((await api.survey({ ip: 'flood', surveyKey: SURVEY_KEY })).status).toBe(200)
+  })
+})
+
 describe('GET /api/health (#5)', () => {
   it('живая БД → 200 { ok, ts }', async () => {
     const { api, now } = await freshApi()

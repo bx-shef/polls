@@ -11,6 +11,7 @@ import {
   frameAncestors,
   isHttpsRequest,
   isNoFrameRoute,
+  isPrivatePage,
   parseExtraFrameAncestors,
   resolveCspMode,
   sanitizeFrameAncestors,
@@ -222,6 +223,29 @@ describe('securityHeaders — итоговый набор', () => {
   })
 })
 
+
+describe('isPrivatePage — персональная страница не идёт в общий кэш', () => {
+  it('страница прохождения опроса → no-store', () => {
+    // Тело зависит от токена в адресе, то есть принадлежит одному человеку. Без директивы общий
+    // кэш (корпоративный прокси, кнопка «назад») вправе показать её другому.
+    expect(isPrivatePage('/s/csat_postdeal')).toBe(true)
+    expect(isPrivatePage('/s/csat_postdeal?token=abc')).toBe(true)
+    expect(isPrivatePage('/s')).toBe(true)
+  })
+
+  it('лендинг — НЕ персональная, хотя запрет фрейма у них общий', () => {
+    // Признаки разные: тут «принадлежит одному человеку», там «нельзя встраивать». Совпадение
+    // маршрутов сегодняшнее, а не обязательное — потому и функции две.
+    expect(isPrivatePage('/')).toBe(false)
+    expect(isNoFrameRoute('/')).toBe(true)
+  })
+
+  it('остальное кэшируется как обычно', () => {
+    for (const p of ['/d/csat_postdeal', '/b24/dashboard', '/admin/surveys', '/settings', '/api/health']) {
+      expect(isPrivatePage(p), p).toBe(false)
+    }
+  })
+})
 
 describe('isNoFrameRoute — публичную страницу опроса фреймить нельзя вообще', () => {
   it('маршруты контура A → запрет фрейма', () => {

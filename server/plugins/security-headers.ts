@@ -3,7 +3,8 @@ import {
   parseExtraFrameAncestors,
   resolveCspMode,
   isHttpsRequest,
-  isNoFrameRoute
+  isNoFrameRoute,
+  isPrivatePage
 } from '~core/api/security-headers'
 
 /**
@@ -42,5 +43,9 @@ export default defineNitroPlugin((nitro) => {
     })
     const noFrame = isNoFrameRoute(event.path)
     setResponseHeaders(event, sets[`${https ? 'https' : 'http'}:${noFrame ? 'noframe' : 'frame'}`])
+    // Персональная страница (опрос по ссылке) — не в общий кэш. Отдельной строкой, а не пятым
+    // вариантом набора: признак другой (принадлежность одному человеку, не фрейминг), и совпадение
+    // маршрутов у них сегодняшнее, а не обязательное.
+    if (isPrivatePage(event.path)) setResponseHeader(event, 'Cache-Control', 'no-store')
   })
 })

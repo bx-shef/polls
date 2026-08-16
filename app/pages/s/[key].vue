@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { PublicVersion } from '~core/domain/schema'
+import { INVITATION_TOKEN_PARAM, hasInvitationTokenAttempt, readInvitationToken } from '~core/client/invitation-link'
+import { serverMessage } from '~core/client/server-message'
 
 // Маршрут прохождения опроса контура A: /s/:key. Оркеструет фазы (intro→survey→thanks)
 // поверх композабла useSurvey (обёртка ядрового SurveyFill).
@@ -9,7 +11,14 @@ import type { PublicVersion } from '~core/domain/schema'
 // (404/сеть) useAsyncData ловит сам — в setup исключение не всплывает (нет 500 на SSR).
 // Ремоунт при смене опроса (/s/A → /s/B): иначе Nuxt переиспользует инстанс страницы и
 // onMounted (а с ним hydrate) не отрабатывает повторно. С ремоунтом — свежий setup + onMounted.
-definePageMeta({ key: (route) => route.path })
+//
+// ⚠️ Ключ — `fullPath`, а не `path`: токен живёт в query, и при `path` смена `?token=A` на
+// `?token=B` внутри одного маршрута ремоунта не давала. Тогда залипал бы и вердикт проверки, и
+// отправляемый токен — то есть ответ уехал бы по ссылке A, пока в адресной строке B. Сегодня это
+// недостижимо (переходов между страницами опроса в приложении нет), но защита держалась бы на
+// строке, написанной под другую задачу. Цена нулевая: query здесь никто не меняет на клиенте
+// (`?q=N` читается один раз при монтировании).
+definePageMeta({ key: (route) => route.fullPath })
 
 // В индекс этой странице не надо: у контура A ссылка одноразовая, у дашборда без сессии
 // портала виден только экран отказа. `robots.txt` это уже просит — здесь дублируем на
@@ -19,26 +28,105 @@ useSeoMeta({ robots: 'noindex, nofollow' })
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
-// Ключ per-опрос: при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом.
-const { data, error } = await useAsyncData(
-  `survey:${surveyKey.value}`,
-  () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`)
-)
+// Токен приглашения из ссылки (`?token=…`). Имя параметра и правило разбора — в общем модуле:
+// собирает ссылку сервер, читает клиент, и разъехаться этим двоим нельзя.
+const invitationToken = computed(() => readInvitationToken(route.query[INVITATION_TOKEN_PARAM]))
+// Токен в ссылке есть, но прочитать его нельзя (например `?token=a&token=b`). Молча продолжать
+// нельзя: ответ ушёл бы без привязки к сделке и никто бы не узнал.
+const brokenToken = computed(() =>
+  !invitationToken.value && hasInvitationTokenAttempt(route.query[INVITATION_TOKEN_PARAM]))
 
-const { phase, version, view, errorMsg, submitting, reset, start, hydrate, selectOption, setOther, setText, back, next } =
+/**
+ * Два чтения: сам опрос и годность ссылки. Оба стартуют СРАЗУ и ждутся вместе.
+ *
+ * ⚠️ Порядок здесь не стилистика. Два `await useAsyncData` подряд на верхнем уровне `setup`
+ * сериализуются, то есть время до первого байта = чтение опроса ПЛЮС чтение приглашения, а не
+ * максимум из двух. На памяти разницы не видно, на PostgreSQL это лишний round-trip в критическом
+ * пути каждого открытия страницы с токеном.
+ *
+ * ⚠️ Годность проверяем ОТДЕЛЬНЫМ запросом и ДО заполнения, в том числе на SSR — намеренно. Сделай
+ * её только в `onMounted`, и человек с мёртвой ссылкой сначала увидел бы интро, а потом отказ:
+ * мигание, за которое он успевает нажать «Начать». Токен в payload при этом не «утекает» — он и так
+ * в адресной строке этой же страницы.
+ *
+ * Ключи: per-опрос (при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом) и БЕЗ
+ * токена — иначе он попал бы в разметку отдельным полем, а пользы ноль: на странице всегда ровно
+ * один токен.
+ */
+const [{ data, error }, { error: linkError }] = await Promise.all([
+  useAsyncData(
+    `survey:${surveyKey.value}`,
+    () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`)
+  ),
+  // Тело ответа не нужно: годность выражается кодом, а всё остальное сервер наружу не отдаёт.
+  useAsyncData(
+    `invitation:${surveyKey.value}`,
+    () => invitationToken.value
+      ? $fetch<{ ok: boolean }>(`/api/survey/${surveyKey.value}/invitation`, {
+        query: { [INVITATION_TOKEN_PARAM]: invitationToken.value }
+      })
+      : Promise.resolve(null)
+  )
+])
+
+const { phase, version, view, errorMsg, submitting, reset, start, hydrate, rejectLink, selectOption, setOther, setText, back, next } =
   useSurvey()
 
 // Прокидываем результат загрузки в композабл. watch immediate срабатывает СИНХРОННО в setup
 // (до onMounted) → к моменту onMounted phase='intro', version заполнен.
 watch([data, error], () => reset(data.value?.version ?? null, error.value ?? undefined), { immediate: true })
 
+/**
+ * Негодная ссылка перебивает интро — но только если сам опрос открылся: «опрос не найден» важнее и
+ * точнее, чем «ссылка не действует».
+ *
+ * ⚠️ **Транзиентный отказ проверки НЕ закрывает опрос.** Предпросмотр — это удобство, а не гейт:
+ * настоящую проверку делает `consume` на отправке, и обойти её отсюда нельзя. Значит икота БД (500)
+ * или обрыв сети не должны отнимать у человека возможность ответить: он проходит опрос, а вердикт
+ * по ссылке всё равно вынесет сервер на «Отправить». Блокируем только на ОПРЕДЁЛЕННОМ отказе —
+ * 403 (нет/протух/использована) и 409 (чужой опрос / опрос переиздан).
+ */
+const DEFINITIVE_REJECTIONS = [403, 409]
+
+watch([linkError, () => phase.value, brokenToken], () => {
+  if (phase.value === 'error') return
+  if (brokenToken.value) {
+    rejectLink('Ссылка повреждена — код приглашения в ней прочитать не удалось. Попросите новую ссылку у менеджера.')
+    return
+  }
+  const status = (linkError.value as { statusCode?: number } | null)?.statusCode
+  if (!linkError.value) return
+  if (status === undefined || !DEFINITIVE_REJECTIONS.includes(status)) return
+  rejectLink(serverMessage(linkError.value) ?? 'Попросите новую ссылку у менеджера.')
+}, { immediate: true })
+
 // Клиентская гидратация (после SSR, по факту монтирования): resume из localStorage +
 // deep-link `?q=N` (1-based в URL → 0-based goTo). Зависит от порядка: watch выше уже отработал.
-onMounted(() => {
+onMounted(async () => {
   const q = route.query.q
   const idx = typeof q === 'string' && /^\d+$/.test(q) ? Math.max(0, parseInt(q, 10) - 1) : undefined
-  hydrate(idx)
+  const effective = hydrate(idx, invitationToken.value)
+  // ⚠️ Токен, унаследованный из браузера, SSR-проверку не проходил: там проверяется адрес, а в
+  // адресе его нет. Без этой досверки обещание «узнать до заполнения» не работало бы именно в том
+  // случае, ради которого persist и сделан, — человек вернулся по закладке, дозаполнил и получил
+  // отказ на «Отправить». Проверяем только расхождение: совпавший токен уже проверен на SSR.
+  if (!effective || effective === invitationToken.value) return
+  await checkStoredToken(effective)
 })
+
+/** Досверка унаследованного токена (только клиент). Молчит на всём, кроме определённого отказа. */
+async function checkStoredToken(token: string): Promise<void> {
+  try {
+    await $fetch<{ ok: boolean }>(`/api/survey/${surveyKey.value}/invitation`, {
+      query: { [INVITATION_TOKEN_PARAM]: token }
+    })
+  } catch (e) {
+    // Тот же принцип, что и у SSR-ветки: транзиентный сбой опрос не закрывает.
+    const status = (e as { statusCode?: number } | null)?.statusCode
+    if (status === undefined || !DEFINITIVE_REJECTIONS.includes(status)) return
+    rejectLink(serverMessage(e) ?? 'Попросите новую ссылку у менеджера.')
+  }
+}
 </script>
 
 <template>
@@ -49,6 +137,20 @@ onMounted(() => {
       v-else-if="phase === 'error'"
       color="air-primary-alert"
       :title="errorMsg"
+      class="max-w-md"
+    />
+
+    <!--
+      Ссылка негодна. Отдельный экран, а не «ошибка»: опрос жив, обновление страницы ничего не
+      изменит. Заголовок нейтрален намеренно — «ссылка не действует» было бы неправдой для случая
+      «опрос обновился»: сама ссылка там живая. Причину и действие пишет сервер: только он знает,
+      истёк срок, переиздан опрос или ссылка от другого опроса.
+    -->
+    <B24Alert
+      v-else-if="phase === 'link-invalid'"
+      color="air-primary-warning"
+      title="По этой ссылке опрос не открыть"
+      :description="errorMsg"
       class="max-w-md"
     />
 

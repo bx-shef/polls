@@ -6,6 +6,7 @@
 // Своего кап-лимита на тело нет намеренно: его держит общий бэкстоп `server/middleware/body-limit.ts`
 // (128 КБ → 413, тело без заявленной длины → 411) — ровно для таких роутов он и сделан. Раньше `readBody`
 // здесь шёл до подтверждения фрейма вообще без ограничения.
+import { surveyPath } from '~core/client/invitation-link'
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
 import { dealToCrmContext } from '~core/bitrix24/deal-event'
@@ -74,7 +75,9 @@ export default defineEventHandler(async (event) => {
     // iframe-виджета разрешался бы на домен портала Bitrix (битая ссылка клиенту).
     const base = b24AppConfig()?.baseUrl ?? ''
     logger.info('b24_deal_invite', { msg: `Приглашение по сделке ${dealId} (портал ${portal.portalId})` })
-    return { ok: true, surveyKey: res.surveyKey, token: res.token, url: `${base}/s/${res.surveyKey}?token=${res.token}` }
+    // Путь собирает общий хелпер: его же читает страница опроса. Строкой здесь — значит имя
+    // параметра в двух несвязанных местах, и расхождение молча даёт ответ без привязки к сделке.
+    return { ok: true, surveyKey: res.surveyKey, token: res.token, url: `${base}${surveyPath(res.surveyKey, res.token)}` }
   } catch (e) {
     logger.warn('b24_deal_invite_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
     setResponseStatus(event, 502)

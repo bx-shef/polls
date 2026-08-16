@@ -39,13 +39,23 @@ import { MemoryInvitationStore, type InvitationStore } from './invitation'
  *   })
  */
 
+/**
+ * Форма токена приглашения — ОДНА на оба входа (`submit` и проверка ссылки).
+ *
+ * ⚠️ Пока границы было две (у `submit` — эта, у проверки — никакой), один и тот же вход получал два
+ * разных диагноза: токен на 5000 символов доезжал до стора и получал «срок ссылки истёк», а тот же
+ * токен в `submit` — «проверьте заполнение». Стор при этом in-memory, то есть безвредно; но
+ * durable-стор (#4) отправит это в параметр SQL-запроса.
+ */
+export const invitationTokenSchema = z.string().min(1).max(200)
+
 /** Payload POST /api/submit = brief §8 + пин опроса/версии (мультиопросное ядро). */
 const httpSubmitSchema = z
   .object({
     schema_version: z.number().int(),
     nonce: z.string().min(1).max(200),
     hp: z.string().max(200).optional(),
-    invitation: z.string().min(1).max(200).optional(),
+    invitation: invitationTokenSchema.optional(),
     surveyKey: z.string().min(1).max(200),
     versionNo: z.number().int().positive(),
     answers: z.record(z.string().max(200), rawAnswerSchema)
@@ -105,6 +115,12 @@ function toPublicVersion(v: CompiledVersion): PublicVersion {
   return pub
 }
 
+export interface InvitationCheckInput {
+  ip: string
+  surveyKey: string
+  token: string
+}
+
 export interface SubmitInput {
   ip: string
   /** Разобранный JSON тела запроса (парсит адаптер). */
@@ -115,12 +131,34 @@ export interface Api {
   session(input: SessionInput): Promise<ApiResult>
   /** Текущая версия опроса для рендера (контур A): презентация + вопросы, без invitationPolicy. */
   survey(input: SurveyInput): Promise<ApiResult>
+  /**
+   * Годна ли ссылка-приглашение (контур A, до заполнения). Отдаёт ТОЛЬКО годность — снимок CRM
+   * наружу не уходит. Ничего не расходует: `peek`, не `consume`.
+   */
+  invitationCheck(input: InvitationCheckInput): Promise<ApiResult>
   submit(input: SubmitInput): Promise<ApiResult>
   /** Публичный health-check (#5): 200 при живой БД, 503 при её недоступности. */
   health(): Promise<ApiResult>
 }
 
 const err = (status: number, error: string): ApiResult => ({ status, body: { ok: false, error } })
+
+/**
+ * Тексты отказов по приглашению — в одном месте, потому что их читают ДВА входа: проверка ссылки
+ * (до заполнения) и `submit` (после). Пока они лежали по месту употребления, одно и то же состояние
+ * стора описывалось двумя разными фразами — «срок истёк, или опрос уже пройден» против «срок истёк
+ * или она недействительна», — и человек получал разный ответ на один и тот же вопрос в зависимости
+ * от того, когда спросил.
+ */
+const INVITATION_TEXT = {
+  /** `unknown`: нет такого токена / протух / уже использован — стор эти случаи не различает. */
+  dead: 'Срок ссылки истёк, или опрос по ней уже пройден. Попросите новую ссылку у менеджера.',
+  /** `replay` (знает только `consume`): человек уже прошёл опрос — говорим спасибо, а не «просите новую». */
+  replay: 'Эта ссылка уже использована — опрос пройден. Спасибо!',
+  mismatch: 'Ссылка не подходит к этому опросу. Откройте опрос по правильной ссылке.',
+  republished: 'Опрос обновился с тех пор, как выписали ссылку. Попросите новую ссылку у менеджера.',
+  malformed: 'Ссылка повреждена — код приглашения в ней прочитать не удалось. Попросите новую ссылку у менеджера.'
+} as const
 
 /** honeypot читаем до zod: боту — generic 400 без подсказок о форме payload. */
 function honeypotTripped(body: unknown): boolean {
@@ -165,6 +203,62 @@ export function createApi(deps: ApiDeps): Api {
       }
     },
 
+    /**
+     * Годна ли ссылка-приглашение — ДО того, как человек заполнил анкету.
+     *
+     * ⚠️ Смысл роута ровно в моменте. Без него негодная ссылка обнаруживается на «Отправить», то
+     * есть после того, как человек прошёл весь опрос: работа сделана, ответ не принят. Здесь та же
+     * проверка выполняется на открытии страницы и ничего не расходует.
+     *
+     * ⚠️ Наружу уходит ТОЛЬКО годность. `peek` отдаёт `Invitation` со снимком CRM (`responsibleName`
+     * помечен PII в схеме) — по этому роуту ходит неаутентифицированный респондент, и снимок ему не
+     * положен. Отсюда же отдельный роут вместо параметра к `survey`: у того ответ кэшируется по ETag,
+     * посчитанному БЕЗ токена, и токен-зависимое тело отравило бы общий кэш.
+     *
+     * Свой бюджет лимитера: роут позволяет проверять токены перебором, не оставляя следов в данных.
+     *
+     * ⚠️ Но бюджет этот НЕ «на респондента», и обещать обратное нельзя (замерено на ревью). Страница
+     * зовёт проверку на SSR, у внутреннего вызова сокета нет, `clientIp` честно отдаёт `unknown` —
+     * значит все SSR-проверки считаются одним ключом `i:unknown`, а по своему ключу идут только
+     * прямые обращения к API. Отсюда и потолок остаётся высоким: он общий на весь сервис, и
+     * «строгий» потолок здесь означал бы кап на число открытий страницы, а не на перебор. Перебор
+     * при этом всё равно безнадёжен — токен `randomUUID` (122 бита). Пер-респондентная гранулярность
+     * на SSR-пути упирается в доверенный прокси (#6) и делается там, а не тут.
+     */
+    async invitationCheck({ ip, surveyKey, token }: InvitationCheckInput): Promise<ApiResult> {
+      if (!limiter.allow(`i:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
+      const key = surveyKeySchema.safeParse(surveyKey)
+      if (!key.success) return err(400, 'Неверный адрес опроса. Проверьте ссылку.')
+      // Форма токена — до похода в стор, и та же, что у `submit` (один вход → один диагноз).
+      if (!invitationTokenSchema.safeParse(token).success) return err(400, INVITATION_TEXT.malformed)
+      try {
+        const invitation = await invitations.peek(token, now())
+        // `peek` не различает «использована» и «протухла» (оба → `undefined`), и различать их здесь
+        // нечем. Поэтому текст покрывает оба случая честно, а не выбирает один наугад.
+        //
+        // ⚠️ Сюда же сведена ветка «токен от ДРУГОГО опроса», хотя точный текст для неё есть
+        // (`INVITATION_TEXT.mismatch`, им отвечает `submit`). Причина — ревью безопасности: отдельный
+        // ответ на этой ветке сообщает, что токен СУЩЕСТВУЕТ, просто не от этого опроса, а сказать
+        // это человеку по нашей ссылке невозможно: `deal-invite` собирает `/s/<surveyKey>?token=…`
+        // из одной записи через `surveyPath`, ключ и токен всегда согласованы. То есть текст
+        // адресован никому, а бит существования отдаёт всем.
+        if (!invitation || invitation.surveyKey !== key.data) return err(403, INVITATION_TEXT.dead)
+        // Приглашение пинится на версию, и `submit` отвергает чужую (`mismatch`). Значит опрос,
+        // переизданный после выписки ссылки, делает её негодной — и узнать об этом человек обязан
+        // ЗДЕСЬ, а не после заполнения. Эта ветка достижима штатно (переиздали опрос между выпиской
+        // и переходом), поэтому её текст остаётся отдельным.
+        const version = await store.currentVersion(key.data)
+        if (!version) return err(404, 'Опрос не найден. Возможно, ссылка устарела — попросите новую.')
+        if (version.versionNo !== invitation.versionNo) return err(409, INVITATION_TEXT.republished)
+        return { status: 200, body: { ok: true } }
+      } catch (e) {
+        onError(e)
+        // ⚠️ Клиент на 5xx опрос НЕ закрывает (предпросмотр — удобство, гейт — `consume` на
+        // отправке). Текст остаётся на случай прямого обращения к роуту.
+        return err(500, 'Не удалось проверить ссылку. Попробуйте позже.')
+      }
+    },
+
     async submit({ ip, body }: SubmitInput): Promise<ApiResult> {
       if (honeypotTripped(body)) return err(400, 'Не удалось отправить ответ.')
       if (!limiter.allow(`p:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
@@ -204,9 +298,9 @@ export function createApi(deps: ApiDeps): Api {
           // pin-aware consume: чужой опрос/версия → 409 БЕЗ расхода токена (не сжигаем
           // приглашение при несовпадении пина — анти-DoS на утёкший токен).
           const inv = await invitations.consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
-          if (inv.status === 'replay') return err(409, 'Эта ссылка уже использована — опрос пройден. Спасибо!')
-          if (inv.status === 'mismatch') return err(409, 'Ссылка не подходит к этому опросу. Откройте опрос по правильной ссылке.')
-          if (inv.status === 'unknown') return err(403, 'Срок ссылки истёк или она недействительна. Попросите новую ссылку у менеджера.')
+          if (inv.status === 'replay') return err(409, INVITATION_TEXT.replay)
+          if (inv.status === 'mismatch') return err(409, INVITATION_TEXT.mismatch)
+          if (inv.status === 'unknown') return err(403, INVITATION_TEXT.dead)
           context = inv.invitation.context
         }
 
