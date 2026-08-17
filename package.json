@@ -38,7 +38,7 @@
     "@bitrix24/b24ui-nuxt": "^2.9.0",
     "@nuxtjs/color-mode": "^4.0.1",
     "@opentelemetry/api": "^1.9.1",
-    "nuxt": "^4.4.8",
+    "nuxt": "^4.5.2",
     "pg": "^8.22.0",
     "zod": "^3.23.8"
   },
