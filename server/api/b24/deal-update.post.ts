@@ -217,7 +217,7 @@ export default defineEventHandler(async (event) => {
             const base = b24AppConfig()?.baseUrl ?? ''
             return activityConfigurableAdd(client, buildSurveyInviteActivity({
               dealId,
-              surveyTitle: args.surveyKey,
+              surveyTitle: args.title,
               surveyKey: args.surveyKey,
               token: inv.token,
               surveyUrl: `${base}${surveyPath(args.surveyKey, inv.token)}`,

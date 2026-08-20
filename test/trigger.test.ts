@@ -44,6 +44,26 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
     expect(inv?.surveyKey).toBe('csat_postdeal')
   })
 
+  it('в выписку едет ЗАГОЛОВОК версии, а не ключ опроса', async () => {
+    // Заголовок уходит в шапку дела в таймлайне — его читает сотрудник в карточке сделки. Подставив
+    // сюда ключ, мы бы показали ему служебную строку `csat_postdeal` вместо названия опроса, и
+    // никакой тест этого бы не заметил: обе строки непустые.
+    const seen: { surveyKey?: string; title?: string } = {}
+    await handleDealTrigger({
+      store: storeV({ 'C1:WON': ['csat_postdeal'] }, {
+        csat_postdeal: { versionNo: 2, title: 'Оценка после сделки' } as CompiledVersion
+      }),
+      invitations: new MemoryInvitationStore(),
+      context: ctx(),
+      issue: async (args) => {
+        seen.surveyKey = args.surveyKey
+        seen.title = args.title
+        return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: 'tok' }
+      }
+    })
+    expect(seen).toEqual({ surveyKey: 'csat_postdeal', title: 'Оценка после сделки' })
+  })
+
   it('несколько опросов на стадию → несколько приглашений', async () => {
     const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 3 }),

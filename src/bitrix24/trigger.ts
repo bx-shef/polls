@@ -52,6 +52,10 @@ export interface TriggerOutcome {
  */
 export type IssueInvitation = (args: {
   surveyKey: string
+  /** Человеческий заголовок опроса из ЭТОЙ версии — его видит сотрудник в шапке дела. Берётся
+   *  отсюда, а не отдельным чтением: версия уже загружена, а ключ (`csat_postdeal`) в карточке
+   *  сделки выглядит служебной строкой, а не названием опроса. */
+  title: string
   versionNo: number
   context: CrmContext
   /** Срок жизни ссылки из политики версии (мс); `undefined` — дефолт стора. */
@@ -107,6 +111,7 @@ export async function handleDealTrigger(deps: {
     if (!version) continue // опрос без опубликованной версии — пропускаем
     const args = {
       surveyKey,
+      title: version.title,
       versionNo: version.versionNo,
       context: deps.context,
       ttlMs: linkTtlMs(version.invitationPolicy),

@@ -2,6 +2,7 @@ import type { PortalClient } from './client'
 import { callMethod } from './client'
 import type { ResultLine } from '../domain/result-summary'
 import type { InviteMarker, MarkedActivity } from './invite-delivery'
+import { inviteActionParams } from '../client/widget-params'
 
 /**
  * Доставка приглашения на опрос через НАСТРАИВАЕМОЕ ДЕЛО таймлайна сделки
@@ -136,8 +137,10 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
               // ссылки клиенту (email/sms по channelOrder). Токен/ключ/сделка — минимально нужный контекст.
               // ⚠️ Тип действия `openRestApp` у футер-кнопки вживую НЕ сверен (сосед live-verified только
               // `redirect`) — валидность `openRestApp`/`actionParams` в чек-листе живого smoke #126.
+              // Имена параметров собирает ОБЩИЙ хелпер — их же читает виджет (иначе расхождение имён
+              // молча приведёт ко второму приглашению, см. JSDoc `inviteActionParams`).
               type: 'openRestApp',
-              actionParams: { surveyKey: input.surveyKey, token: input.token, dealId: input.dealId }
+              actionParams: inviteActionParams({ dealId: input.dealId, surveyKey: input.surveyKey, token: input.token })
             }
           }
         }

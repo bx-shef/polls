@@ -3,10 +3,21 @@
 // опроса (охват на ВСЕХ тарифах). В iframe: initializeB24Frame() → auth + ID сделки (placement
 // options) → по кнопке POST /api/b24/deal-invite → ссылка-приглашение /s/:key?token=…
 // Только клиент (iframe нет на SSR).
+//
+// ⚠️ Виджет открывается ДВУМЯ способами, и это разные ситуации:
+//  1. из карточки сделки — приглашения ещё нет, менеджер жмёт «Создать ссылку»;
+//  2. кнопкой «Отправить приглашение» на деле в таймлайне — приглашение УЖЕ выписано автотриггером,
+//     и его токен приезжает в параметрах. Тогда показываем ГОТОВУЮ ссылку, а не выписываем новую:
+//     иначе у клиента окажутся две, и первая умрёт при ответе по второй — дубль, сделанный руками
+//     менеджера ровно после того, как мы избавились от машинных (#138).
 import { initializeB24Frame } from '@bitrix24/b24jssdk'
 // Текст ошибки берёт ядровая `serverMessage` (одна на всё приложение). Своя копия здесь падала на
 // `statusMessage` — служебную АНГЛИЙСКУЮ строку h3, которую сотрудник в карточке сделки видеть не должен.
 import { serverMessage } from '~core/client/server-message'
+// Разбор параметров открытия — чистой функцией в ядре: их два способа, и перепутать их значит
+// выписать ВТОРОЕ приглашение на ту же сделку.
+import { hasIssuedInvitation, readLinkVerdict, readWidgetParams } from '~core/client/widget-params'
+import { INVITATION_TOKEN_PARAM, surveyPath } from '~core/client/invitation-link'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
 
@@ -24,10 +35,30 @@ onMounted(async () => {
     const a = b24.auth.getAuthData()
     if (!a) throw new Error('нет данных авторизации')
     auth = { domain: a.domain, member_id: a.member_id, access_token: a.access_token }
-    // ID сделки из параметров плейсмента ({ID: '759'}).
-    const opts = b24.placement.options
-    const id = Number(opts?.ID)
-    dealId.value = Number.isInteger(id) && id > 0 ? id : undefined
+    const params = readWidgetParams(b24.placement.options)
+    dealId.value = params.dealId
+    if (hasIssuedInvitation(params)) {
+      // Пришли по кнопке из таймлайна: ссылка уже есть, собираем её из токена. Домен берём свой —
+      // виджет и страница опроса живут на одном хосте.
+      const issued = `${window.location.origin}${surveyPath(params.surveyKey, params.token)}`
+      message.value = 'Проверяем ссылку…'
+      const verdict = await checkLink(params.surveyKey, params.token)
+      if (verdict.alive) {
+        link.value = issued
+        phase.value = 'done'
+        message.value = 'Приглашение уже готово. Отправьте клиенту эту ссылку:'
+        return
+      }
+      // Дело в таймлайне не исчезает, а ссылка на нём — да. Не молчим и не отправляем мёртвую:
+      // показываем причину и предлагаем выписать новую — это ровно то, зачем сотрудник сюда пришёл.
+      phase.value = 'ready'
+      const why = verdict.reason ?? 'Ссылка из этого дела больше не действует.'
+      // Без id сделки кнопка выписки всё равно не работает — не обещаем того, чего не сможем сделать.
+      message.value = dealId.value
+        ? `${why} Можно создать новую.`
+        : `${why} Откройте виджет из карточки сделки, чтобы создать новую.`
+      return
+    }
     phase.value = 'ready'
     message.value = dealId.value
       ? 'Нажмите «Создать ссылку на опрос» — получите ссылку, которую отправите клиенту.'
@@ -37,6 +68,39 @@ onMounted(async () => {
     message.value = 'Не удалось открыть виджет. Обновите страницу и откройте его заново из карточки сделки.'
   }
 })
+
+/**
+ * Жива ли уже выписанная ссылка. Спрашиваем тот же роут, что и страница опроса, — второго источника
+ * правды о годности приглашения быть не должно. Правило разбора ответа — в ядре (`readLinkVerdict`,
+ * fail-open: сбой проверки не повод объявлять ссылку мёртвой).
+ */
+async function checkLink(surveyKey: string, token: string): Promise<{ alive: boolean; reason?: string }> {
+  try {
+    const r = await $fetch.raw<unknown>(`/api/survey/${encodeURIComponent(surveyKey)}/invitation`, {
+      query: { [INVITATION_TOKEN_PARAM]: token },
+      ignoreResponseError: true
+    })
+    return readLinkVerdict(r.status, r._data)
+  } catch {
+    // Сеть недоступна — вердикта нет. Ссылку показываем: см. fail-open в `readLinkVerdict`.
+    return { alive: true }
+  }
+}
+
+/**
+ * Копирование — основное действие менеджера: ссылку он всё равно понесёт в письмо или мессенджер.
+ * Отказ буфера обмена (нет прав, старый браузер) не прячем: ссылка видна рядом и её можно выделить
+ * руками, но молчаливая кнопка выглядела бы как поломка.
+ */
+const copyLabel = ref('Скопировать ссылку')
+async function copyLink() {
+  try {
+    await navigator.clipboard.writeText(link.value)
+    copyLabel.value = 'Скопировано'
+  } catch {
+    copyLabel.value = 'Не вышло — выделите ссылку вручную'
+  }
+}
 
 async function launch() {
   if (!auth || !dealId.value) return
@@ -71,8 +135,11 @@ async function launch() {
         :disabled="!dealId"
         @click="launch"
       />
-      <div v-if="phase === 'done'" class="mt-2">
+      <div v-if="phase === 'done'" class="mt-2 flex flex-col gap-2">
         <a :href="link" target="_blank" class="break-all text-indigo-600 underline dark:text-indigo-400">{{ link }}</a>
+        <div>
+          <B24Button color="air-secondary" :label="copyLabel" @click="copyLink" />
+        </div>
       </div>
     </template>
   </main>
