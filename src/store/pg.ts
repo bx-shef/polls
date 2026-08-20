@@ -462,6 +462,24 @@ export class PgStore implements IStore {
     return this.hydrate(rows.rows)
   }
 
+  async hasResponseSince(surveyKey: string, dealId: number, since: Date): Promise<boolean> {
+    // `limit 1` и `exists`-семантика: вопрос булев, тянуть строки незачем. Фильтр по `portal_id` —
+    // как везде: ответ чужого портала не должен закрывать наш повод спросить (tenant-изоляция).
+    // `deal_id` — денормализованная колонка: в JSONB-`context` лезть не нужно. ⚠️ Отдельного индекса
+    // по ней НЕТ (проверено EXPLAIN'ом: план идёт `idx_response_portal_survey`, а `deal_id` и
+    // `submitted_at` уходят в Filter). Пока это дёшево — путь редкий: вопрос задаётся, только когда
+    // по маркеру НАШЛОСЬ закрытое дело. Станет горячим — заводить `(portal_id, deal_id, submitted_at)`.
+    const r = await this.db.query<{ one: number }>(
+      `select 1 as one
+         from response r
+         join survey s on s.id = r.survey_id
+        where r.portal_id = $1 and s.survey_key = $2 and r.deal_id = $3 and r.submitted_at >= $4
+        limit 1`,
+      [this.opts.portalId, surveyKey, dealId, since]
+    )
+    return r.rows.length > 0
+  }
+
   async listResponsesPage(opts: ResponsePageOptions = {}): Promise<ResponsePage> {
     const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE)
     const conds = ['r.portal_id = $1']

@@ -27,6 +27,51 @@ export interface TriggerResult {
   token: string
 }
 
+export interface TriggerOutcome {
+  /** Выписанные приглашения. */
+  created: TriggerResult[]
+  /**
+   * Опросы, по которым приглашение НЕ выписано, потому что по этому переходу уже приглашали (#138):
+   * дело в таймлайне сделки уже висит или цикл уже закрыт ответом. Это и есть отсечённая гроздь.
+   *
+   * Наружу отдаётся не для полноты: без этого числа в логе живой прогон не отличит «дедуп сработал»
+   * от «событие было ровно одно», а увидеть надо именно это.
+   */
+  deduped: string[]
+  /**
+   * Опросы, по которым выписка ОТКАЗАЛА (портал недоступен, лимит запросов, нет скоупа).
+   *
+   * ⚠️ Отдельно от `deduped`, и это не педантизм: «уже приглашали» — штатный исход, «не смогли» —
+   * потерянный ответ клиента. Раньше исключение по одному опросу рвало цикл, и остальные опросы той
+   * же стадии не получали ничего; Bitrix24 online-события не ретраит, поэтому такой переход терялся
+   * навсегда — а в логе это выглядело как одна общая ошибка события без указания, что именно пропало.
+   */
+  failed: string[]
+}
+
+/**
+ * Чем выписывается приглашение по ОДНОМУ опросу.
+ *
+ * Развязка нужна потому, что на разных путях это разная работа. Робот автоматизации просто создаёт
+ * приглашение. Событийный путь сначала спрашивает у портала, не висит ли уже дело по этому переходу,
+ * и только потом создаёт — приглашение вместе с делом в таймлайне (`invite-delivery.ts`). Ядро про
+ * REST ничего не знает и знать не должно, поэтому работа инжектируется.
+ *
+ * `undefined` — «уже приглашали, ничего не создано»; это штатный исход, а не ошибка.
+ */
+export type IssueInvitation = (args: {
+  surveyKey: string
+  /** Человеческий заголовок опроса из ЭТОЙ версии — его видит сотрудник в шапке дела. Берётся
+   *  отсюда, а не отдельным чтением: версия уже загружена, а ключ (`csat_postdeal`) в карточке
+   *  сделки выглядит служебной строкой, а не названием опроса. */
+  title: string
+  versionNo: number
+  context: CrmContext
+  /** Срок жизни ссылки из политики версии (мс); `undefined` — дефолт стора. */
+  ttlMs: number | undefined
+  now: Date
+}) => Promise<TriggerResult | undefined>
+
 /**
  * По стадии сделки (`context.dealStageId`) находит опросы, чья текущая версия триггерится этой
  * стадией (`surveysTriggeredBy`, GIN #22), и создаёт по приглашению на каждый со СНИМКОМ контекста.
@@ -56,23 +101,72 @@ export async function handleDealTrigger(deps: {
    * событие, да ещё и двумя независимыми снимками одного состояния.
    */
   triggeredSurveyKeys?: readonly string[]
-}): Promise<TriggerResult[]> {
+  /**
+   * Как выписывать приглашение. **Не задана** → просто `invitations.create` (путь робота: он
+   * вызывается ровно на входе в стадию, отсекать нечего). Событийный путь передаёт сюда доставку с
+   * проверкой дела в таймлайне (#126 + #138).
+   */
+  issue?: IssueInvitation
+  /**
+   * Куда сообщить об отказе по ОДНОМУ опросу. Ядро про логгер ничего не знает, но и глотать причину
+   * молча нельзя: без неё «приглашение не пришло» неотличимо от «дедуп сработал».
+   */
+  onIssueError?: (surveyKey: string, error: unknown) => void
+}): Promise<TriggerOutcome> {
   const stageId = deps.context.dealStageId
-  if (!stageId) return [] // нет стадии в контексте — триггерить нечего
+  // нет стадии в контексте — триггерить нечего
+  if (!stageId) return { created: [], deduped: [], failed: [] }
   const now = deps.now ?? new Date()
 
   const surveyKeys = deps.triggeredSurveyKeys ?? (await deps.store.surveysTriggeredBy(stageId))
-  const results: TriggerResult[] = []
+  const created: TriggerResult[] = []
+  const deduped: string[] = []
+  const failed: string[] = []
   for (const surveyKey of surveyKeys) {
     const version = await deps.store.currentVersion(surveyKey)
     if (!version) continue // опрос без опубликованной версии — пропускаем
-    const inv = await deps.invitations.create(
-      { surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
+    const args = {
+      surveyKey,
+      title: version.title,
+      versionNo: version.versionNo,
+      context: deps.context,
+      ttlMs: linkTtlMs(version.invitationPolicy),
       now
-    )
-    results.push({ surveyKey, versionNo: version.versionNo, token: inv.token })
+    }
+    // ⚠️ Отказ ИЗОЛИРОВАН одним опросом. Один переход может запускать несколько опросов, и раньше
+    // исключение на первом обрывало цикл: остальные не получали ничего, хотя с ними всё было в
+    // порядке. Событие Bitrix24 не ретраит — значит те опросы терялись навсегда.
+    try {
+      const result = deps.issue
+        ? await deps.issue(args)
+        : await issueWithoutDedup(deps.invitations, args)
+      if (!result) { deduped.push(surveyKey); continue }
+      created.push(result)
+    } catch (e) {
+      failed.push(surveyKey)
+      deps.onIssueError?.(surveyKey, e)
+    }
   }
-  return results
+  return { created, deduped, failed }
+}
+
+/**
+ * Выписка БЕЗ дедупа и БЕЗ доставки — фолбэк, когда `issue` не задан (робот, ядровые тесты).
+ *
+ * ⚠️ Имя выбрано «неудобным» намеренно. Пока фолбэк назывался `defaultIssue`, он читался как
+ * «нормальное поведение», а на деле это путь без единой проверки: ни дела в таймлайне, ни маркера,
+ * ни защиты от грозди. Новый вход (лид, смарт-процесс) молча унаследовал бы его, и тесты остались бы
+ * зелёными — поэтому выбор должен быть виден на месте вызова.
+ */
+async function issueWithoutDedup(
+  invitations: InvitationStore,
+  args: { surveyKey: string; versionNo: number; context: CrmContext; ttlMs: number | undefined; now: Date }
+): Promise<TriggerResult> {
+  const inv = await invitations.create(
+    { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
+    args.now
+  )
+  return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: inv.token }
 }
 
 /**

@@ -24,10 +24,17 @@ import type { EntityType } from '../domain/schema'
  * дублей станет больше.
  *
  * Поэтому событийный путь — «работает на любом тарифе», а НЕ «точный». Точный путь — робот автоматизации
- * (`TRIGGER_MODE=robot`): он вызывается ровно на входе в стадию, история ему не нужна. Полное лечение
- * дублей событийного пути — идемпотентность по ключу перехода: `ID` записи истории стадий уникален и
- * стабилен для одного перехода, так что «уже приглашали по переходу N» отсекает всю гроздь. Для этого
- * нужен долговечный стор приглашений (сейчас он в памяти инстанса) — вынесено в роадмап.
+ * (`TRIGGER_MODE=robot`): он вызывается ровно на входе в стадию, история ему не нужна.
+ *
+ * **Ключ перехода отсюда — основа лечения дублей** (#138). `ID` записи истории уникален и стабилен для
+ * одного перехода, поэтому ВСЯ гроздь событий вокруг него видит одно и то же значение. Признаком «по
+ * этому переходу уже приглашали» служит НЕ запись в нашей базе, а дело в таймлайне сделки на стороне
+ * портала: оно и так создаётся доставкой (#126), видно человеку и переживает что угодно на нашей стороне.
+ * Ключ едет в маркер дела (`ORIGIN_ID`), по нему же дело и ищется перед созданием. Порядок работ и
+ * оговорки — `docs/process.md`, шаг 5.
+ *
+ * Окно «только что» при этом остаётся: оно отвечает на ДРУГОЙ вопрос — «был ли переход вообще». Без него
+ * приглашение уходило бы на каждое редактирование сделки, стоящей в триггерной стадии месяцами.
  */
 
 /** `entityTypeId` для `crm.stagehistory.list` (см. контракт метода). */
@@ -131,15 +138,39 @@ export function isFreshStageEntry(records: readonly StageHistoryRecord[], check:
 export function inspectStageEntry(
   records: readonly StageHistoryRecord[],
   check: StageEntryCheck
-): { fresh: boolean; observedStageId?: string; ageSec?: number } {
+): { fresh: boolean; observedStageId?: string; ageSec?: number; transitionId?: string; transitionAt?: Date } {
   const last = latestRecord(records)
   if (!last) return { fresh: false }
   const t = last.CREATED_TIME ? new Date(last.CREATED_TIME).getTime() : NaN
   const observedStageId = last.STAGE_ID
-  if (!Number.isFinite(t)) return { fresh: false, observedStageId }
+  const transitionId = readTransitionId(last)
+  if (!Number.isFinite(t)) return { fresh: false, observedStageId, transitionId }
+  // Момент перехода отдаём наружу: по нему правило «уже приглашали?» отличает ответ, данный ПОСЛЕ
+  // этого перехода, от прошлогоднего (`IStore.hasResponseSince`). Берётся из ТОЙ ЖЕ записи, что дала
+  // ключ, — второй запрос за историей показал бы уже другую картину.
+  const transitionAt = new Date(t)
   const ageMs = check.now.getTime() - t
   const ageSec = Math.round(ageMs / 1000)
-  if (observedStageId !== check.stageId) return { fresh: false, observedStageId, ageSec }
+  if (observedStageId !== check.stageId) return { fresh: false, observedStageId, ageSec, transitionId, transitionAt }
   const windowMs = check.windowSec * 1000
-  return { fresh: ageMs <= windowMs && ageMs >= -windowMs, observedStageId, ageSec }
+  return { fresh: ageMs <= windowMs && ageMs >= -windowMs, observedStageId, ageSec, transitionId, transitionAt }
+}
+
+/**
+ * `ID` записи истории как КЛЮЧ ИДЕМПОТЕНТНОСТИ перехода (#138) — строкой, канонично.
+ *
+ * Почему именно он: запись истории заводится один раз на переход, её `ID` уникален и больше не
+ * меняется. Вся гроздь событий вокруг перехода (дозаполнение полей, автоматизация стадии) читает ту же
+ * историю и видит ту же запись — значит и ключ у них один. Ни `dealId + stageId` (сделка может вернуться
+ * в ту же стадию — это НОВЫЙ повод спросить клиента), ни время (у каждого события своё) так не умеют.
+ *
+ * Канонизация обязательна: REST отдаёт `ID` то числом, то строкой, и `'42'` против `42` — это два
+ * разных ключа, то есть дедуп, который молча не работает. Нечисловое/отсутствующее → `undefined`:
+ * выдуманный ключ хуже отсутствующего — он отсечёт чужой переход.
+ */
+function readTransitionId(record: StageHistoryRecord): string | undefined {
+  const raw = record.ID
+  if (raw == null) return undefined
+  const n = Number(raw)
+  return Number.isInteger(n) && n > 0 ? String(n) : undefined
 }

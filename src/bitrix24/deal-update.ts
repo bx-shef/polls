@@ -1,5 +1,5 @@
 import { parseDealUpdateEvent, verifyApplicationToken, dealToCrmContext } from './deal-event'
-import { handleDealTrigger, type TriggerResult, type TriggerStore } from './trigger'
+import { handleDealTrigger, type IssueInvitation, type TriggerResult, type TriggerStore } from './trigger'
 import type { InvitationStore } from '../api/invitation'
 
 /**
@@ -29,8 +29,14 @@ export type DealUpdateOutcome =
    * `application_token` — ничего не триггерим. `memberId` (заявленный, недоверенный) — для диагностики лога.
    */
   | { kind: 'forged'; reason: 'unknown_portal' | 'token_mismatch'; memberId: string }
-  /** Верифицировано: создано 0..N приглашений (0 — стадия сделки не триггерит ни один опрос). */
-  | { kind: 'ok'; results: TriggerResult[] }
+  /**
+   * Верифицировано: создано 0..N приглашений (0 — стадия сделки не триггерит ни один опрос).
+   * `deduped` — опросы, по которым приглашение НЕ выписано, потому что по этому переходу уже
+   * приглашали (#138): вся гроздь событий вокруг перехода приходит сюда же и отсекается здесь.
+   * `failed` — опросы, по которым выписка ОТКАЗАЛА. Разделены намеренно: «уже приглашали» — штатный
+   * исход, «не смогли» — потерянный ответ клиента, и в логе их путать нельзя.
+   */
+  | { kind: 'ok'; results: TriggerResult[]; deduped: string[]; failed: string[] }
   /**
    * Верифицировано, стадия триггерная, но перехода «только что» НЕ было (обычный апдейт сделки, давно
    * стоящей в этой стадии) либо историю не удалось подтвердить → приглашение не выписываем.
@@ -56,7 +62,27 @@ export interface DealUpdateDeps {
    * вызывается ровно на входе в стадию). Ошибку REST вызывающий гасит в `false` — молчание безопаснее
    * ложной рассылки клиентам.
    */
-  confirmStageEntry?: (dealId: number, stageId: string, memberId: string) => Promise<boolean>
+  confirmStageEntry?: (
+    dealId: number,
+    stageId: string,
+    memberId: string
+  ) => Promise<{ fresh: boolean; transitionId?: string; transitionAt?: Date }>
+  /**
+   * Как выписывать приглашение по одному опросу. Событийный путь передаёт сюда доставку через дело в
+   * таймлайне: она сама решает, не приглашали ли уже по этому переходу (#126 + #138). **Не задана** →
+   * приглашение выписывается без всяких проверок (ядровые тесты, обратная совместимость).
+   *
+   * Получает `transitionId`/`transitionAt` того перехода, который только что подтвердила
+   * `confirmStageEntry` (ключ маркера и точка отсчёта «ответил ли клиент после» берутся из ОДНОЙ
+   * записи истории, а не из двух разных запросов) и АВТОРИТЕТНЫЙ `member_id` события — по нему
+   * поднимается клиент нужного портала. Из POST его брать нельзя: он там недоверенный.
+   */
+  issue?: (ctx: { transition: { id?: string; at?: Date }; memberId: string }) => IssueInvitation
+  /**
+   * Куда сообщить об отказе выписки по ОДНОМУ опросу. Отказ изолирован: один переход может запускать
+   * несколько опросов, и падение на первом не должно лишать приглашения остальные.
+   */
+  onIssueError?: (surveyKey: string, error: unknown) => void
   now?: Date
 }
 
@@ -84,23 +110,28 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   // портал упёрся бы в лимит запросов — а его ошибка гасится в `false`, то есть терялись бы легитимные переходы.
   // Стадии в контексте нет — триггерить нечего (ниже `handleDealTrigger` вернёт []).
   let triggeredSurveyKeys: readonly string[] | undefined
+  let transition: { id?: string; at?: Date } = {}
   if (deps.confirmStageEntry && context.dealStageId) {
     triggeredSurveyKeys = await deps.store.surveysTriggeredBy(context.dealStageId)
     if (triggeredSurveyKeys.length > 0) {
-      const fresh = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
-      if (!fresh) {
+      const entry = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
+      if (!entry.fresh) {
         return { kind: 'skipped', reason: 'stale_stage', dealId: ev.data.FIELDS.ID, stageId: context.dealStageId }
       }
+      transition = { ...(entry.transitionId !== undefined ? { id: entry.transitionId } : {}),
+                     ...(entry.transitionAt !== undefined ? { at: entry.transitionAt } : {}) }
     }
   }
 
-  const results = await handleDealTrigger({
+  const outcome = await handleDealTrigger({
     store: deps.store,
     invitations: deps.invitations,
     context,
     now: deps.now,
     // Список уже получен гейтом выше — не спрашиваем БД повторно за одно событие.
-    triggeredSurveyKeys
+    triggeredSurveyKeys,
+    ...(deps.issue ? { issue: deps.issue({ transition, memberId: ev.auth.member_id }) } : {}),
+    ...(deps.onIssueError ? { onIssueError: deps.onIssueError } : {})
   })
-  return { kind: 'ok', results }
+  return { kind: 'ok', results: outcome.created, deduped: outcome.deduped, failed: outcome.failed }
 }

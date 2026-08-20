@@ -13,6 +13,7 @@ import { runDealUpdate } from '~core/bitrix24/deal-update'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params, stageHistoryList } from '~core/bitrix24/client'
+import { createKeySerializer } from '~core/api/serial-by-key'
 import {
   inspectStageEntry,
   resolveStageEntryWindowSec,
@@ -23,6 +24,7 @@ import { resolveTriggerMode, eventTriggerEnabled } from '~core/bitrix24/trigger-
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { useStore, useInvitations, logger } from '../../utils/api'
+import { makeInviteIssue } from '../../utils/invite-issue'
 
 // Таймаут исходящего OAuth-рефреша (accessToken портала мог протухнуть) — общий `timeoutFetch`
 // (server/utils/b24-fetch), как в install. Рефреш редок (keep-alive держит токен свежим), но защищаемся.
@@ -33,6 +35,16 @@ import { useStore, useInvitations, logger } from '../../utils/api'
 // In-memory, на инстанс (общий стор для мульти-инстанса — #4). Ключ — реальный адрес клиента
 // (`requestIp` → `~core/api/client-ip`), а не адрес прокси: иначе весь портал считался бы одним.
 const dealUpdateLimiter = new SlidingWindowLimiter({ limit: 600, windowMs: 60_000 })
+
+/**
+ * Очередь «поиск дела → создание» по ключу перехода — ОДНА на процесс (#138).
+ *
+ * ⚠️ Модульная, а не на запрос: смысл ровно в том, чтобы ДВА ОДНОВРЕМЕННЫХ события одного перехода
+ * встали друг за другом. Заведи её внутри обработчика — у каждого события была бы своя, и очередь
+ * перестала бы что-либо значить. Проверено на живом портале: два дела с одним `ORIGIN_ID` Bitrix24
+ * создаёт спокойно, уникальность маркера — не его забота, а наша.
+ */
+const inviteSerializer = createKeySerializer()
 
 export default defineEventHandler(async (event) => {
   // Режим триггера выключен для события → не обслуживаем. Штатный сценарий: режим сменили на `robot`,
@@ -120,11 +132,31 @@ export default defineEventHandler(async (event) => {
               ageSec: seen.ageSec ?? null,
               records: records.length
             })
+          } else {
+            // ⚠️ `transitionId` в логе — не украшение, а ИЗМЕРЕНИЕ дублей перед их лечением (#138).
+            // Вся гипотеза лечения стоит на том, что гроздь событий вокруг одного перехода видит в
+            // истории ОДНУ И ТУ ЖЕ запись. На живом портале это надо не предположить, а увидеть:
+            // несколько строк `b24_stage_entry_fresh` с одинаковым `transitionId` — гипотеза верна и
+            // маркер сработает; разные `transitionId` — лечить надо иначе, и хорошо, что узнали до, а
+            // не после того, как клиент получил несколько писем.
+            logger.info('b24_stage_entry_fresh', {
+              dealId,
+              stageId,
+              transitionId: seen.transitionId ?? '(ID не прочитан)',
+              ageSec: seen.ageSec ?? null
+            })
           }
-          return seen.fresh
+          // `transitionId`/`transitionAt` едут дальше: первый становится ключом маркера, второй —
+          // точкой отсчёта «ответил ли клиент после этого перехода». Оба — из ТОЙ ЖЕ записи, по
+          // которой принято решение о свежести; пересчёт вторым запросом дал бы другую картину.
+          return {
+            fresh: seen.fresh,
+            ...(seen.transitionId !== undefined ? { transitionId: seen.transitionId } : {}),
+            ...(seen.transitionAt !== undefined ? { transitionAt: seen.transitionAt } : {})
+          }
         } catch (e) {
           logger.warn('b24_stage_history_fail', { dealId, detail: (e as Error).message })
-          return false
+          return { fresh: false }
         }
       },
       fetchDeal: async (dealId, memberId) => {
@@ -139,7 +171,22 @@ export default defineEventHandler(async (event) => {
         return { deal, productRows }
       },
       store,
-      invitations: useInvitations()
+      invitations: useInvitations(),
+      // Отказ по ОДНОМУ опросу не должен лишать приглашения остальные опросы этой же стадии: событие
+      // Bitrix24 не ретраит, значит потерянный опрос теряется навсегда. Причина — сюда, поимённо.
+      onIssueError: (surveyKey, e) =>
+        logger.warn('b24_invite_fail', { surveyKey, detail: (e as Error).message }),
+      // Выписка приглашения через дело в таймлайне (#126 + #138) — отдельным модулем: там она
+      // исполняется тестами (гроздь → одно дело, отказ создания не оставляет живого токена, маркер
+      // не виден поиску), а замыкание внутри роута проверить было нечем.
+      issue: (ctx) => makeInviteIssue(ctx, {
+        portalClient,
+        invitations: useInvitations(),
+        store,
+        serializer: inviteSerializer,
+        baseUrl: b24AppConfig()?.baseUrl ?? '',
+        log: logger
+      })
     })
 
     if (outcome.kind === 'ignored') {
@@ -152,7 +199,15 @@ export default defineEventHandler(async (event) => {
       // Штатная ветка: обычное редактирование сделки, давно стоящей в триггерной стадии. info, не warn.
       logger.info('b24_deal_update_skip', { dealId: outcome.dealId, stageId: outcome.stageId })
     } else {
-      logger.info('b24_deal_update', { msg: `создано приглашений: ${outcome.results.length}` })
+      // `failed` отделён от `deduped` намеренно: «уже приглашали» — штатный исход, «не смогли» —
+      // потерянный ответ клиента. Пока они шли одной строкой, эти два случая были неразличимы.
+      const level = outcome.failed.length > 0 ? 'warn' : 'info'
+      logger[level]('b24_deal_update', {
+        msg: `создано приглашений: ${outcome.results.length}`,
+        // Отсечённая гроздь. Ноль здесь и >0 создано — событие было первым; >0 здесь — дедуп работает.
+        deduped: outcome.deduped.length,
+        failed: outcome.failed.length
+      })
     }
   } catch (e) {
     // Транзиент (REST/refresh/БД/холодный старт) — B24 online-события НЕ ретраит; лог для диагностики, ответ 200.

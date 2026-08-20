@@ -110,7 +110,7 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
       rawEvent(),
       deps({ fetchDeal: async () => ({ deal: { ...dealFields, STAGE_ID: 'C1:NEW' }, productRows: [] }) })
     )
-    expect(res).toEqual({ kind: 'ok', results: [] })
+    expect(res).toEqual({ kind: 'ok', results: [], deduped: [], failed: [] })
   })
 
   it('товарные позиции догрузки попадают в снимок (срез услуга/товар)', async () => {
@@ -133,7 +133,7 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
 
 describe('runDealUpdate — подтверждение перехода стадии (confirmStageEntry, #17)', () => {
   it('переход подтверждён → приглашение выписывается; проверка получила сделку+стадию+портал', async () => {
-    const confirmStageEntry = vi.fn(async () => true)
+    const confirmStageEntry = vi.fn(async () => ({ fresh: true }))
     const res = await runDealUpdate(rawEvent(), deps({ confirmStageEntry }))
     expect(res.kind).toBe('ok')
     if (res.kind === 'ok') expect(res.results).toHaveLength(1)
@@ -143,20 +143,20 @@ describe('runDealUpdate — подтверждение перехода стад
   it('перехода не было (обычный апдейт давно стоящей сделки) → skipped, приглашение НЕ создано', async () => {
     const invitations = new MemoryInvitationStore()
     const create = vi.spyOn(invitations, 'create')
-    const res = await runDealUpdate(rawEvent(), deps({ confirmStageEntry: async () => false, invitations }))
+    const res = await runDealUpdate(rawEvent(), deps({ confirmStageEntry: async () => ({ fresh: false }), invitations }))
     expect(res).toEqual({ kind: 'skipped', reason: 'stale_stage', dealId: 759, stageId: 'C1:WON' })
     expect(create).not.toHaveBeenCalled() // не только outcome — приглашения действительно нет
   })
 
   it('стадия не триггерит опросы → историю НЕ спрашиваем (дешёвый гейт по БД экономит REST)', async () => {
-    const confirmStageEntry = vi.fn(async () => true)
+    const confirmStageEntry = vi.fn(async () => ({ fresh: true }))
     // сделка в C1:WON, но триггер настроен на другую стадию
     const res = await runDealUpdate(
       rawEvent(),
       deps({ store: store({ 'C1:LOSE': ['x'] }, { x: 1 }), confirmStageEntry })
     )
     expect(confirmStageEntry).not.toHaveBeenCalled()
-    expect(res).toEqual({ kind: 'ok', results: [] })
+    expect(res).toEqual({ kind: 'ok', results: [], deduped: [], failed: [] })
   })
 
   it('проверка НЕ задана (путь робота) → работает как раньше, без обращения к истории', async () => {
@@ -165,17 +165,17 @@ describe('runDealUpdate — подтверждение перехода стад
   })
 
   it('нет стадии в сделке → проверку не зовём (триггерить всё равно нечего)', async () => {
-    const confirmStageEntry = vi.fn(async () => true)
+    const confirmStageEntry = vi.fn(async () => ({ fresh: true }))
     const res = await runDealUpdate(
       rawEvent(),
       deps({ fetchDeal: async () => ({ deal: { ID: '759' }, productRows: [] }), confirmStageEntry })
     )
     expect(confirmStageEntry).not.toHaveBeenCalled()
-    expect(res).toEqual({ kind: 'ok', results: [] })
+    expect(res).toEqual({ kind: 'ok', results: [], deduped: [], failed: [] })
   })
 
   it('подделка токена → до проверки перехода дело не доходит (порядок гейтов)', async () => {
-    const confirmStageEntry = vi.fn(async () => true)
+    const confirmStageEntry = vi.fn(async () => ({ fresh: true }))
     const res = await runDealUpdate(
       rawEvent(),
       deps({ storedApplicationToken: async () => 'ДРУГОЙ-токен', confirmStageEntry })
@@ -192,5 +192,67 @@ describe('surveyEventBindParams — параметры event.bind (#17)', () => 
       handler: 'https://polls.example.com/api/b24/deal-update'
     })
     expect(SURVEY_DEAL_EVENT).toBe('ONCRMDEALUPDATE')
+  })
+})
+
+describe('гроздь событий одного перехода → одно приглашение (#138)', () => {
+  /**
+   * ⚠️ Проверяется ПРОВОДКА, а не правило: правило само по себе покрыто в `invite-delivery.test.ts`.
+   * Здесь важно другое — что событийный путь действительно доводит до него ключ перехода и не
+   * выписывает приглашение сам. Без этого теста правило можно было бы вовсе не подключить, и весь
+   * набор остался бы зелёным.
+   */
+  const TRANSITION = { id: '4242', at: new Date('2026-08-20T10:00:00Z') }
+
+  function withDelivery(issued: string[], seen: { id?: string; at?: Date; memberId?: string }): DealUpdateDeps {
+    return deps({
+      confirmStageEntry: async () => ({ fresh: true, transitionId: TRANSITION.id, transitionAt: TRANSITION.at }),
+      issue: (ctx: { transition: { id?: string; at?: Date }; memberId: string }) => {
+        seen.id = ctx.transition.id
+        seen.at = ctx.transition.at
+        seen.memberId = ctx.memberId
+        // Имитация доставки: первое событие выписывает, следующие видят уже созданное дело.
+        return () => {
+          if (issued.length > 0) return Promise.resolve(undefined)
+          issued.push('выписано')
+          return Promise.resolve({ surveyKey: 'csat_postdeal', versionNo: 2, token: 'tok-1' })
+        }
+      }
+    })
+  }
+
+  it('ключ перехода, момент перехода и АВТОРИТЕТНЫЙ member_id доезжают до доставки', async () => {
+    // member_id берётся из ПРОВЕРЕННОЙ части события, а не из тела POST: иначе чужой портал получил
+    // бы приглашение в своих данных. Поэтому в недоверенную часть кладём ДРУГОЙ member_id — без него
+    // тест не мог бы упасть по заявленной причине, он лишь проверял бы, что значение доехало.
+    const seen: { id?: string; at?: Date; memberId?: string } = {}
+    await runDealUpdate(
+      rawEvent({ member_id: 'member-id-ATTACKER-000000000000', data: { FIELDS: { ID: '759', member_id: 'member-id-ATTACKER-000000000000' } } }),
+      withDelivery([], seen)
+    )
+    expect(seen.id).toBe('4242')
+    expect(seen.at?.toISOString()).toBe('2026-08-20T10:00:00.000Z')
+    expect(seen.memberId).toBe('member-id-fake-0000000000000000')
+  })
+
+  it('второе событие того же перехода → приглашение НЕ выписано, но исход штатный', async () => {
+    const issued: string[] = []
+    const seen: { id?: string } = {}
+    const d = withDelivery(issued, seen)
+    const first = await runDealUpdate(rawEvent(), d)
+    const second = await runDealUpdate(rawEvent(), d)
+    expect(first).toMatchObject({ kind: 'ok', deduped: [] })
+    expect(first.kind === 'ok' && first.results).toHaveLength(1)
+    expect(second).toMatchObject({ kind: 'ok', deduped: ['csat_postdeal'] })
+    expect(second.kind === 'ok' && second.results).toHaveLength(0)
+    expect(issued, 'по одному переходу выписано больше одного приглашения').toHaveLength(1)
+  })
+
+  it('без доставки путь работает по-старому — приглашение выписывается сразу', async () => {
+    // Обратная совместимость: ядровые тесты и путь робота `issue` не передают.
+    const out = await runDealUpdate(rawEvent(), deps({
+      confirmStageEntry: async () => ({ fresh: true, transitionId: '4242' })
+    }))
+    expect(out.kind === 'ok' && out.results).toHaveLength(1)
   })
 })

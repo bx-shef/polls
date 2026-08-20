@@ -30,7 +30,7 @@ function store(triggered: Record<string, string[]>, versions: Record<string, num
 describe('handleDealTrigger — стадия → приглашения (#17)', () => {
   it('опрос триггерится стадией → создаётся приглашение с контекстом и токеном', async () => {
     const invitations = new MemoryInvitationStore()
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
       invitations,
       context: ctx()
@@ -44,8 +44,64 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
     expect(inv?.surveyKey).toBe('csat_postdeal')
   })
 
+  it('отказ по ОДНОМУ опросу не лишает приглашения остальные', async () => {
+    // Один переход может запускать несколько опросов. Раньше исключение на первом обрывало цикл, и
+    // остальные не получали ничего — а событие Bitrix24 не ретраит, значит теряются навсегда.
+    const errors: string[] = []
+    const out = await handleDealTrigger({
+      store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 1 }),
+      invitations: new MemoryInvitationStore(),
+      context: ctx(),
+      issue: async (args) => {
+        if (args.surveyKey === 'a') throw new Error('портал недоступен')
+        return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: 'tok-b' }
+      },
+      onIssueError: (surveyKey) => errors.push(surveyKey)
+    })
+    expect(out.created.map((r) => r.surveyKey)).toEqual(['b'])
+    expect(out.failed).toEqual(['a'])
+    expect(out.deduped).toEqual([])
+    expect(errors).toEqual(['a'])
+  })
+
+  it('«не смогли» НЕ путается с «уже приглашали»', async () => {
+    // Разные исходы с разной ценой: `deduped` — штатная работа защиты, `failed` — потерянный ответ
+    // клиента. Пока они шли одной строкой лога, живой прогон не отличил бы одно от другого.
+    const out = await handleDealTrigger({
+      store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 1 }),
+      invitations: new MemoryInvitationStore(),
+      context: ctx(),
+      issue: async (args) => {
+        if (args.surveyKey === 'a') throw new Error('лимит запросов')
+        return undefined // «уже приглашали»
+      }
+    })
+    expect(out.failed).toEqual(['a'])
+    expect(out.deduped).toEqual(['b'])
+  })
+
+  it('в выписку едет ЗАГОЛОВОК версии, а не ключ опроса', async () => {
+    // Заголовок уходит в шапку дела в таймлайне — его читает сотрудник в карточке сделки. Подставив
+    // сюда ключ, мы бы показали ему служебную строку `csat_postdeal` вместо названия опроса, и
+    // никакой тест этого бы не заметил: обе строки непустые.
+    const seen: { surveyKey?: string; title?: string } = {}
+    await handleDealTrigger({
+      store: storeV({ 'C1:WON': ['csat_postdeal'] }, {
+        csat_postdeal: { versionNo: 2, title: 'Оценка после сделки' } as CompiledVersion
+      }),
+      invitations: new MemoryInvitationStore(),
+      context: ctx(),
+      issue: async (args) => {
+        seen.surveyKey = args.surveyKey
+        seen.title = args.title
+        return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: 'tok' }
+      }
+    })
+    expect(seen).toEqual({ surveyKey: 'csat_postdeal', title: 'Оценка после сделки' })
+  })
+
   it('несколько опросов на стадию → несколько приглашений', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 3 }),
       invitations: new MemoryInvitationStore(),
       context: ctx()
@@ -55,7 +111,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('нет стадии в контексте → пусто (триггерить нечего)', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a'] }, { a: 1 }),
       invitations: new MemoryInvitationStore(),
       context: ctx({ dealStageId: undefined })
@@ -64,7 +120,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('стадия не триггерит ни одного опроса → пусто', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a'] }, { a: 1 }),
       invitations: new MemoryInvitationStore(),
       context: ctx({ dealStageId: 'C1:NEW' })
@@ -73,7 +129,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('опрос без опубликованной версии → пропускается (не падает)', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['ghost'] }, {}), // currentVersion вернёт undefined
       invitations: new MemoryInvitationStore(),
       context: ctx()
@@ -135,7 +191,7 @@ describe('срок доступности ссылки → ttl приглаше�
 
   it('handleDealTrigger: linkTtlSeconds=300 → окно ссылки ровно 5 минут', async () => {
     const invitations = new MemoryInvitationStore()
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: storeV({ 'C1:WON': ['s'] }, { s: verWithPolicy(1, { linkTtlSeconds: 300 }) }),
       invitations,
       context: ctx(),

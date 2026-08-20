@@ -112,6 +112,11 @@ export const B24_METHODS = [
   'crm.item.get',
   'crm.stagehistory.list',
   'crm.activity.configurable.add',
+  // Поиск дела-приглашения по маркеру и починка маркера (#138): дело в таймлайне — признак «уже
+  // приглашали», см. `bitrix24/invite-delivery.ts`.
+  'crm.activity.list',
+  'crm.activity.get',
+  'crm.activity.update',
   'event.bind',
   'placement.bind',
   'bizproc.robot.add'

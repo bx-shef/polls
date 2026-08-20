@@ -181,8 +181,10 @@ describe('inspectStageEntry — диагностический контракт 
   })
 
   it('битая дата → стадия видна, возраст неизвестен', () => {
+    // `transitionId` при этом отдаётся: он нужен логу именно тогда, когда что-то пошло не так —
+    // видно, какую запись мы сочли последней.
     const seen = inspectStageEntry([{ ID: 5, STAGE_ID: 'C1:WON', CREATED_TIME: 'не-дата' }], check('C1:WON'))
-    expect(seen).toEqual({ fresh: false, observedStageId: 'C1:WON' })
+    expect(seen).toEqual({ fresh: false, observedStageId: 'C1:WON', transitionId: '5' })
   })
 
   it('возраст — в СЕКУНДАХ и положительный для прошлого', () => {
@@ -198,5 +200,76 @@ describe('STAGE_HISTORY_ENTITY_TYPE_ID — идентификаторы типа
   it('сделка = 2, лид = 1 (по контракту метода)', () => {
     expect(STAGE_HISTORY_ENTITY_TYPE_ID.deal).toBe(2)
     expect(STAGE_HISTORY_ENTITY_TYPE_ID.lead).toBe(1)
+  })
+})
+
+describe('ключ перехода — основа лечения дублей (#138)', () => {
+  const check = { stageId: 'C1:WON', now: new Date('2026-08-16T10:00:30Z'), windowSec: 60 }
+  const rec = (over: Partial<StageHistoryRecord> = {}): StageHistoryRecord =>
+    ({ ID: 4242, STAGE_ID: 'C1:WON', CREATED_TIME: '2026-08-16T10:00:00Z', ...over })
+
+  it('вся ГРОЗДЬ событий одного перехода видит ОДИН ключ', () => {
+    // ⚠️ На этом стоит весь замысел. Менеджер тянет сделку в стадию → портал требует дозаполнить
+    // поля → сохранение → автоматизация стадии дописывает своё. Каждое из этих событий приходит к
+    // нам отдельно и читает историю ЗАНОВО — но запись о переходе одна, значит и ключ один.
+    const history = [rec({ ID: 4240, STAGE_ID: 'C1:NEW', CREATED_TIME: '2026-08-16T09:00:00Z' }), rec()]
+    const keys = [10, 20, 30].map((offsetSec) =>
+      inspectStageEntry(history, { ...check, now: new Date(check.now.getTime() + offsetSec * 1000) }).transitionId
+    )
+    expect(new Set(keys).size, 'ключ разъехался между событиями одной грозди').toBe(1)
+    expect(keys[0]).toBe('4242')
+  })
+
+  it('НОВЫЙ переход в ту же стадию даёт ДРУГОЙ ключ', () => {
+    // Сделка может вернуться в стадию — это законный повод спросить клиента ещё раз, и дедуп не
+    // должен его съесть. Поэтому ключ строится на `ID` записи истории, а не на паре сделка+стадия.
+    const first = inspectStageEntry([rec({ ID: 4242 })], check).transitionId
+    const second = inspectStageEntry([rec({ ID: 5001 })], check).transitionId
+    expect(second).not.toBe(first)
+  })
+
+  it('число и строка от REST дают ОДИН ключ', () => {
+    // Bitrix отдаёт `ID` то числом, то строкой. `'4242'` и `4242` как разные ключи — это дедуп,
+    // который молча не работает: маркер не найдётся, и приглашение уйдёт второй раз.
+    expect(inspectStageEntry([rec({ ID: '4242' })], check).transitionId)
+      .toBe(inspectStageEntry([rec({ ID: 4242 })], check).transitionId)
+  })
+
+  it('нечитаемый ID → ключа НЕТ, а не выдуманный', () => {
+    // Выдуманный ключ хуже отсутствующего: он совпал бы с чужим переходом и съел бы законное
+    // приглашение. Отсутствие ключа означает «дедупа не будет» — это видно в логе и не молчит.
+    for (const bad of [undefined, null, '', 'abc', 0, -1, 1.5, NaN]) {
+      expect(inspectStageEntry([rec({ ID: bad as never })], check).transitionId, String(bad)).toBeUndefined()
+    }
+  })
+
+  it('момент перехода — это CREATED_TIME записи, а НЕ «сейчас»', () => {
+    // На этом стоит «ответил ли клиент ПОСЛЕ этого перехода». Подмени момент на `now` — и ответ,
+    // данный между переходом и текущим событием грозди, перестанет считаться: клиент, уже
+    // заполнивший анкету, получит повторное приглашение.
+    const at = inspectStageEntry([rec()], check).transitionAt
+    expect(at?.toISOString()).toBe('2026-08-16T10:00:00.000Z')
+    expect(at?.getTime()).not.toBe(check.now.getTime())
+  })
+
+  it('момент и ключ берутся из ОДНОЙ записи', () => {
+    // Два запроса за историей показали бы разную картину; здесь картина одна.
+    const history = [rec({ ID: 4240, CREATED_TIME: '2026-08-16T09:00:00Z' }), rec({ ID: 4242 })]
+    const r = inspectStageEntry(history, check)
+    expect(r.transitionId).toBe('4242')
+    expect(r.transitionAt?.toISOString()).toBe('2026-08-16T10:00:00.000Z')
+  })
+
+  it('нечитаемый CREATED_TIME → момента НЕТ (и перехода тоже)', () => {
+    const r = inspectStageEntry([rec({ CREATED_TIME: 'не дата' })], check)
+    expect(r.fresh).toBe(false)
+    expect(r.transitionAt).toBeUndefined()
+  })
+
+  it('ключ отдаётся и когда перехода не было — для лога', () => {
+    // Диагностика нужна именно в этом случае: видно, какую запись мы сочли последней.
+    const stale = inspectStageEntry([rec({ CREATED_TIME: '2026-08-16T08:00:00Z' })], check)
+    expect(stale.fresh).toBe(false)
+    expect(stale.transitionId).toBe('4242')
   })
 })
