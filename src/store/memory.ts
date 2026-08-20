@@ -1,7 +1,7 @@
 import { compile } from '../domain/compile'
 import { responseRecordSchema, type CompiledVersion, type ResponseRecord, type SurveyDraft } from '../domain/schema'
 import { afterKeyset, decodeCursor, encodeCursor, keysetCmp } from './cursor'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type IStore, type ResponsePage, type ResponsePageOptions, type SurveySummary } from './types'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type AddResponseResult, type IStore, type ResponsePage, type ResponsePageOptions, type SurveySummary } from './types'
 
 /**
  * In-memory реализация {@link IStore} — для локальной проверки итога и тестов.
@@ -76,7 +76,7 @@ export class MemoryStore implements IStore {
       .sort((a, b) => a.surveyKey.localeCompare(b.surveyKey))
   }
 
-  async addResponse(r: ResponseRecord): Promise<void> {
+  async addResponse(r: ResponseRecord): Promise<AddResponseResult> {
     // Валидация на границе записи: гарантирует ISO-дату и форму контекста/ответов
     // (раньше ResponseRecord был plain interface). Zod strip отбрасывает лишние поля.
     // Инвариант «versionNo существует в сторе» обеспечивает PgStore (FK); здесь не
@@ -85,10 +85,11 @@ export class MemoryStore implements IStore {
     // Идемпотентность по токену приглашения (паритет с частичным UNIQUE PgStore):
     // повтор того же invitation_token — тихий no-op. Без токена дедупа нет.
     if (rec.invitationToken != null) {
-      if (this.seenInvitationTokens.has(rec.invitationToken)) return
+      if (this.seenInvitationTokens.has(rec.invitationToken)) return { stored: false }
       this.seenInvitationTokens.add(rec.invitationToken)
     }
     this._responses.push(rec)
+    return { stored: true }
   }
 
   async listResponses(surveyKey?: string): Promise<ResponseRecord[]> {

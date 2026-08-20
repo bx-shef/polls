@@ -252,9 +252,14 @@ describe('PgStore (pglite)', () => {
     const { db, portalA, portalB } = await fresh()
     const store = new PgStore(db, { portalId: portalA })
     await store.publish(draftV1(), 1)
-    await store.addResponse(sampleResponse({ id: 'a', invitationToken: 'tok-1' }))
-    // повтор того же токена (напр. ретрай/второй инстанс) не плодит дубль
-    await store.addResponse(sampleResponse({ id: 'b', submittedAt: '2026-04-04T10:00:00.000Z', invitationToken: 'tok-1' }))
+    // ⚠️ Признак `stored` — не украшение сигнатуры: на нём держится честный 409 в `submit` (#170).
+    // Пока метод возвращал `void`, «записали» и «это повтор» были неразличимы, и порядок «погасить →
+    // записать» приходилось держать ради 409 — а он терял ответ клиента при сбое записи.
+    expect(await store.addResponse(sampleResponse({ id: 'a', invitationToken: 'tok-1' })))
+      .toEqual({ stored: true })
+    // повтор того же токена (напр. ретрай/второй инстанс) не плодит дубль и СООБЩАЕТ об этом
+    expect(await store.addResponse(sampleResponse({ id: 'b', submittedAt: '2026-04-04T10:00:00.000Z', invitationToken: 'tok-1' })))
+      .toEqual({ stored: false })
     expect(await store.listResponses()).toHaveLength(1)
     // ON CONFLICT DO NOTHING не вставил и ответы дубля (children тоже не появились)
     const ans = await db.query<{ n: number }>(
@@ -270,7 +275,7 @@ describe('PgStore (pglite)', () => {
     await storeB.publish(draftV1(), 1)
     await storeB.addResponse(sampleResponse({ id: 'd', invitationToken: 'tok-1' }))
     expect(await storeB.listResponses()).toHaveLength(1)
-    // ответы без токена дедупу не подлежат (публичная ссылка): два проходят
+    // ответы без токена дедупу не подлежат (публичная ссылка): два проходят, оба `stored: true`
     await store.addResponse(sampleResponse({ id: 'e', context: {} }))
     await store.addResponse(sampleResponse({ id: 'f', submittedAt: '2026-04-06T10:00:00.000Z', context: {} }))
     expect(await store.listResponses()).toHaveLength(4)

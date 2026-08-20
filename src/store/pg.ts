@@ -13,6 +13,7 @@ import { decodeCursor, encodeCursor } from './cursor'
 import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  type AddResponseResult,
   type IStore,
   type Queryable,
   type ResponsePage,
@@ -339,9 +340,9 @@ export class PgStore implements IStore {
     })
   }
 
-  async addResponse(r: ResponseRecord): Promise<void> {
+  async addResponse(r: ResponseRecord): Promise<AddResponseResult> {
     const rec = responseRecordSchema.parse(r)
-    await this.inTx(async (db) => {
+    return this.inTx(async (db): Promise<AddResponseResult> => {
       const surveyId = await this.surveyIdByKey(db, rec.surveyKey)
       if (surveyId == null) throw new Error(`Опрос ${rec.surveyKey} не опубликован`)
       const ver = await db.query<{ id: number }>(
@@ -353,6 +354,11 @@ export class PgStore implements IStore {
         throw new Error(`Версия ${rec.versionNo} опроса ${rec.surveyKey} не найдена`)
       }
       const c = rec.context
+      // ⚠️ SECURITY-RELEVANT: на `invitation_token` в этой строке держится ОДНОРАЗОВОСТЬ ссылки
+      // (#170) — `invitation.used_at` после того PR стал бухгалтерией, а не барьером. Значит чистка
+      // ПДн (#31/#10) и план «перевести дедуп на FK `invitation_id`» обязаны сначала восстановить
+      // барьер: иначе удаление строки/обнуление токена молча вернёт возможность ответить по ссылке
+      // второй раз и переписать оценку. Подробности — issue #181.
       // ON CONFLICT по частичному uq_response_invitation_token (см. миграцию 0003):
       // повтор того же invitation_token (даже с другого инстанса) → DO NOTHING, строка
       // не вставляется и `rows` пуст → идемпотентный no-op ниже. Токен NULL
@@ -373,10 +379,11 @@ export class PgStore implements IStore {
       )
       const responseId = resp.rows[0]?.id
       // Дубль по invitation_token: ответ уже записан (этим или соседним инстансом) —
-      // тихо выходим, не плодя ответы/товары. Это и есть durable single-use (#3/#4).
+      // выходим, не плодя ответы/товары. Это и есть durable single-use (#3/#4). Наружу отдаём
+      // `stored: false`: вызывающий по нему отвечает честным 409, а не молча принимает повтор.
       // return из колбэка inTx завершает транзакцию COMMIT'ом (не throw) — частичной
       // записи нет: response не вставлен, children тем более.
-      if (responseId == null) return
+      if (responseId == null) return { stored: false }
 
       if (rec.answers.length > 0) {
         // Один multi-VALUES INSERT вместо запроса на каждый ответ (анкета ≤ 200 вопросов).
@@ -410,6 +417,7 @@ export class PgStore implements IStore {
           params
         )
       }
+      return { stored: true }
     })
   }
 
