@@ -1,6 +1,7 @@
 import type { PortalClient } from './client'
 import { callMethod } from './client'
 import type { ResultLine } from '../domain/result-summary'
+import type { InviteMarker, MarkedActivity } from './invite-delivery'
 
 /**
  * Доставка приглашения на опрос через НАСТРАИВАЕМОЕ ДЕЛО таймлайна сделки
@@ -57,6 +58,8 @@ export interface SurveyInviteActivityInput {
   surveyUrl: string
   /** Ответственный за активность (опц.) — сотрудник, ведущий сделку. */
   responsibleId?: number
+  /** Маркер идемпотентности: по нему дело ищется перед созданием следующего (#138). */
+  marker?: InviteMarker
 }
 
 /** Параметры `crm.activity.configurable.add` (по REST-контракту Bitrix24 + live-verified сосед). */
@@ -67,6 +70,14 @@ export interface ConfigurableActivityParams {
     typeId: string
     completed: 'Y' | 'N'
     responsibleId?: number
+    /**
+     * Маркер идемпотентности (#138): по нему дело потом ищется. `crm.activity` эти поля точно имеет
+     * и фильтрует по ним (проверено на живом портале); принимает ли их `configurable.add` в своём
+     * `fields` — станет известно только на установленном приложении, поэтому после создания маркер
+     * СВЕРЯЕТСЯ и при отсутствии дописывается (`ensureActivityMarker`).
+     */
+    originatorId?: string
+    originId?: string
   }
   layout: {
     icon: { code: string }
@@ -97,7 +108,8 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
       // активности без deadline/responsibleId — в чек-лист живого smoke).
       typeId: 'CONFIGURABLE',
       completed: 'N',
-      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {})
+      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {}),
+      ...(input.marker ? { originatorId: input.marker.originatorId, originId: input.marker.originId } : {})
     },
     layout: {
       icon: { code: SURVEY_ACTIVITY_LOGO },
@@ -201,4 +213,53 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
  */
 export async function activityConfigurableAdd(client: PortalClient, params: ConfigurableActivityParams): Promise<number> {
   return Number(await callMethod<number | string>(client, 'crm.activity.configurable.add', params))
+}
+
+/**
+ * Найти НАШИ дела по маркеру. 🔎 Проверено на живом портале: `crm.activity.list` фильтрует по
+ * `ORIGIN_ID`/`ORIGINATOR_ID` точным совпадением, чужой ключ даёт ноль записей, а `COMPLETED`
+ * читается тем же запросом — то есть «есть ли открытое дело по этому переходу» стоит ОДИН вызов.
+ *
+ * ⚠️ Фильтруем по ОБОИМ полям, а не по одному `ORIGIN_ID`: `ORIGINATOR_ID` отделяет наши дела от
+ * чужих, если чей-то интегратор случайно возьмёт ту же форму ключа. Портал общий, и рассчитывать,
+ * что кроме нас туда никто не пишет, нельзя.
+ */
+export async function activityListByMarker(client: PortalClient, marker: InviteMarker): Promise<MarkedActivity[]> {
+  const rows = await callMethod<Array<{ ID?: number | string; COMPLETED?: string }>>(
+    client,
+    'crm.activity.list',
+    {
+      filter: { ORIGINATOR_ID: marker.originatorId, ORIGIN_ID: marker.originId },
+      select: ['ID', 'COMPLETED']
+    }
+  )
+  return (rows ?? [])
+    .map((r) => ({ id: Number(r.ID), completed: r.COMPLETED === 'Y' }))
+    // Строка без читаемого id бесполезна как «дело, которое можно открыть», но ВАЖНА как факт
+    // «приглашение уже есть»: выбрасывать её значило бы пригласить второй раз. Поэтому id=0, а не drop.
+    .map((a) => (Number.isFinite(a.id) ? a : { id: 0, completed: a.completed }))
+}
+
+/**
+ * Убедиться, что маркер на созданном деле стоит, и дописать его, если нет.
+ *
+ * ⚠️ Это не перестраховка, а закрытая ставка. `crm.activity.configurable.add` недоступен вебхуку
+ * (`ERROR_WRONG_CONTEXT`; его нет даже в списке методов портала), поэтому принимает ли он поля
+ * маркера — на сегодня непроверяемо. Не примет молча — поиск не найдёт дело, и следующее событие
+ * грозди создаст второе, то есть дефект вернётся именно тем путём, который мы чиним. Один лишний
+ * `crm.activity.get` на СОЗДАНИЕ (не на каждое событие) снимает вопрос, а лог показывает, какая
+ * ветка сработала: первый же живой прогон даёт ответ раз и навсегда.
+ */
+export async function ensureActivityMarker(
+  client: PortalClient,
+  activityId: number,
+  marker: InviteMarker
+): Promise<'already' | 'repaired'> {
+  const row = await callMethod<{ ORIGIN_ID?: string } | null>(client, 'crm.activity.get', { id: activityId })
+  if (row?.ORIGIN_ID === marker.originId) return 'already'
+  await callMethod(client, 'crm.activity.update', {
+    id: activityId,
+    fields: { ORIGINATOR_ID: marker.originatorId, ORIGIN_ID: marker.originId }
+  })
+  return 'repaired'
 }
