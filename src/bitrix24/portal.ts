@@ -1,4 +1,5 @@
 import type { Queryable } from '../store/types'
+import { LOCAL_PORTAL_MEMBER_ID } from '../store/bootstrap'
 import { TokenCipher, encryptedBlobSchema } from './crypto'
 import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from './oauth'
 
@@ -65,6 +66,25 @@ export interface SaveTokensOpts {
    * тестов, где гард не нужен (поведение как раньше — обычный upsert).
    */
   eventTs?: number
+  /**
+   * Присвоить плейсхолдер-порталу (`__local__`) настоящий `member_id` — ПЕРЕИМЕНОВАНИЕМ строки, а
+   * не созданием новой ([#171](https://github.com/bx-shef/polls/issues/171)).
+   *
+   * ⚠️ Зачем. До связки с Bitrix весь трафик контура A пишется под плейсхолдер (`ensureDefaultPortal`),
+   * и там же копятся ответы со снимками CRM — то есть ПДн. При установке появлялась ВТОРАЯ строка
+   * портала, с настоящим `member_id`, и удаление приложения чистило именно её: `deletePortal`
+   * находил портал без единого ответа, рапортовал об успехе, а персональные данные оставались в базе.
+   * Требование Маркета «uninstall стирает PII» при этом формально выполнялось, фактически — нет.
+   *
+   * Переименование сохраняет числовой `portal.id`, поэтому уже открытый `PgStore` (он держит
+   * `portalId`, а не `member_id`) продолжает работать без перезапуска, а все накопленные данные
+   * разом становятся данными установленного портала.
+   *
+   * ⚠️ Присваиваем ТОЛЬКО когда плейсхолдер — единственная строка портала. Иначе непонятно, чьи это
+   * данные, и присвоение отдало бы накопленное портала A порталу B. Роут установки передаёт флаг
+   * всегда; решение принимает SQL.
+   */
+  adoptLocal?: boolean
 }
 
 /**
@@ -97,10 +117,21 @@ export function resolveTombstoneDays(raw: string | undefined): number {
   return Math.min(MAX_TOMBSTONE_DAYS, Math.max(MIN_TOMBSTONE_DAYS, Math.trunc(n)))
 }
 
+/** Наблюдатели за событиями стора. Ядро про логгер не знает — событие отдаётся наружу колбэком. */
+export interface PortalTokenStoreHooks {
+  /**
+   * Плейсхолдер-портал присвоен настоящему `member_id` (см. `SaveTokensOpts.adoptLocal`).
+   * Событие разовое и важное: с этого момента накопленные данные принадлежат порталу, и удаление
+   * приложения их сотрёт. Без строки в логе оно прошло бы незаметно.
+   */
+  onAdopt?: (memberId: string) => void
+}
+
 export class PortalTokenStore {
   constructor(
     private readonly db: Queryable,
-    private readonly cipher: TokenCipher
+    private readonly cipher: TokenCipher,
+    private readonly hooks: PortalTokenStoreHooks = {}
   ) {}
 
   /** Шифрует токены в blob-строку для колонки `tokens` (единый формат для save/updateOnRefresh). */
@@ -138,6 +169,21 @@ export class PortalTokenStore {
         [tokens.memberId, opts.eventTs]
       )
       if (blocked.rows.length > 0) return false // out-of-order install после uninstall — не воскрешаем
+    }
+    if (opts.adoptLocal) {
+      // Плейсхолдер становится настоящим порталом. Условия в самом SQL, а не в коде: (1) строка
+      // плейсхолдера есть, (2) настоящего портала ещё нет, (3) плейсхолдер — ЕДИНСТВЕННЫЙ портал.
+      // Третье обязательно: при нескольких порталах непонятно, чьи данные лежат под плейсхолдером,
+      // и присвоение отдало бы накопленное одного портала другому.
+      const adopted = await db.query(
+        `update portal set member_id = $1, domain = $2, updated_at = $3
+          where member_id = $4
+            and not exists (select 1 from portal p2 where p2.member_id = $1)
+            and (select count(*) from portal) = 1
+          returning id`,
+        [tokens.memberId, tokens.domain ?? '', stampedAt, LOCAL_PORTAL_MEMBER_ID]
+      )
+      if (adopted.rows.length > 0) this.hooks.onAdopt?.(tokens.memberId)
     }
     await db.query(
       `insert into portal (member_id, domain, tokens, updated_at) values ($1, $2, $3, $4)

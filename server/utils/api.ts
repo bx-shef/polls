@@ -88,7 +88,12 @@ async function buildStore(): Promise<IStore> {
   const db: Queryable = queryableFromPool(pool)
   pgDb = db // доступен для PortalTokenStore (установка #17)
   await applyMigrations(db, readMigrationSqls())
-  const portalId = await ensureDefaultPortal(db)
+  const portalId = await ensureDefaultPortal(db, {
+    onAmbiguous: (chosen, total) =>
+      logger.warn('store_multi_portal', {
+        msg: `Порталов в базе ${total}, а инстанс обслуживает один — пишем под ${chosen}. Мультипортал — #49`
+      })
+  })
   pgPortalId = portalId
   // `requireTransaction` — не педантизм: без транзакции отказ между вставкой `response` и
   // `response_answer` оставит пустой ответ, а повтор упрётся в дедуп по токену и получит 409 «опрос

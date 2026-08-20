@@ -167,7 +167,12 @@ export default defineEventHandler(async (event) => {
       // зарегистрированы» (ложная тревога) и «установка завершена». Человек видел бы «Приложение
       // установлено» при мёртвом приложении.
       saveTokens: async (tokens) => {
-        if (!(await tokenStore.save(tokens, { eventTs: verifiedAuth.eventTs }))) {
+        // `adoptLocal` — плейсхолдер-портал становится ЭТИМ порталом переименованием строки (#171).
+        // До связки с Bitrix весь трафик контура A пишется под плейсхолдер, и там же копятся ответы
+        // со снимками CRM. Без присвоения установка заводила ВТОРУЮ строку портала, и удаление
+        // приложения чистило её — пустую: `deletePortal` рапортовал об успехе, а ПДн оставались.
+        // Решение принимает SQL: присваиваем, только если плейсхолдер — единственный портал.
+        if (!(await tokenStore.save(tokens, { eventTs: verifiedAuth.eventTs, adoptLocal: true }))) {
           throw new InstallStale(verifiedAuth.memberId)
         }
       },

@@ -16,19 +16,48 @@ import { buildDemo, SURVEY_KEY } from '../demo/seed'
 export const LOCAL_PORTAL_MEMBER_ID = '__local__'
 
 /**
- * Гарантирует строку `portal` и возвращает её числовой `id` для `PgStoreOptions.portalId`.
- * Идемпотентно (`on conflict (member_id) do nothing`). `tokens` — placeholder `{}` (настоящие
- * OAuth-токены пишет связка портала, #3/#47; до неё токенов нет, но tenant-строка нужна для FK).
+ * Возвращает числовой `id` портала, под которым работает инстанс (`PgStoreOptions.portalId`).
+ *
+ * Правило single-tenant: **портал ровно один**, поэтому
+ *  - строка портала уже есть (всё равно какая — плейсхолдер или установленный портал) → берём её;
+ *  - строк нет → заводим плейсхолдер `__local__` и берём его.
+ *
+ * ⚠️ «Берём существующую, а не ищем по `member_id`» — не мелочь ([#171](https://github.com/bx-shef/polls/issues/171)).
+ * При установке плейсхолдер ПЕРЕИМЕНОВЫВАЕТСЯ в настоящий `member_id` (`SaveTokensOpts.adoptLocal`),
+ * и если бы старт по-прежнему искал строго `__local__`, следующий же рестарт завёл бы ВТОРОЙ,
+ * пустой портал и начал писать туда. Данные снова разъехались бы с установленным порталом — то
+ * есть удаление приложения снова перестало бы стирать ПДн, но теперь ещё и после каждого рестарта.
+ *
+ * ⚠️ Порталов больше одного — состояние вне поддержки single-tenant ([#49](https://github.com/bx-shef/polls/issues/49)).
+ * Берём самый ранний (детерминированно) и сообщаем наружу через `onAmbiguous`: молчаливый выбор
+ * означал бы, что часть данных пишется не тому порталу и никто об этом не узнает.
+ *
+ * `tokens` у плейсхолдера — `{}` (настоящие OAuth-токены пишет связка портала, #3/#47; до неё
+ * токенов нет, но tenant-строка нужна для FK).
  */
 export async function ensureDefaultPortal(
   db: Queryable,
-  memberId: string = LOCAL_PORTAL_MEMBER_ID,
-  domain = 'localhost'
+  opts: {
+    /** `member_id` плейсхолдера (тесты/ручные сценарии). Default: `__local__`. */
+    memberId?: string
+    domain?: string
+    /** Порталов больше одного: сообщить, какой выбран и сколько всего. */
+    onAmbiguous?: (chosen: string, total: number) => void
+  } = {}
 ): Promise<number> {
+  const memberId = opts.memberId ?? LOCAL_PORTAL_MEMBER_ID
+  const existing = await db.query<{ id: number; member_id: string }>(
+    'select id, member_id from portal order by id asc'
+  )
+  const first = existing.rows[0]
+  if (first) {
+    if (existing.rows.length > 1) opts.onAmbiguous?.(first.member_id, existing.rows.length)
+    return first.id
+  }
   await db.query(
     `insert into portal (member_id, domain, tokens) values ($1, $2, '{}'::jsonb)
      on conflict (member_id) do nothing`,
-    [memberId, domain]
+    [memberId, opts.domain ?? 'localhost']
   )
   const r = await db.query<{ id: number }>('select id from portal where member_id = $1 limit 1', [memberId])
   const id = r.rows[0]?.id

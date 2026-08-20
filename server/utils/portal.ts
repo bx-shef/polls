@@ -64,7 +64,14 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
     logger.warn('b24_token_key_invalid', { msg: (e as Error).message })
     return null
   }
-  return new PortalTokenStore(db, cipher)
+  return new PortalTokenStore(db, cipher, {
+    // Разовое и важное событие: с этого момента накопленные данные принадлежат порталу, и удаление
+    // приложения их сотрёт (#171). Без строки в логе оно прошло бы незаметно.
+    onAdopt: (memberId) =>
+      logger.info('portal_adopted_local', {
+        msg: `Плейсхолдер-портал присвоен ${memberId}: накопленные данные теперь принадлежат ему`
+      })
+  })
 }
 
 /**
