@@ -298,14 +298,26 @@ describe('parseInstallEvent — момент события для тумбст�
     expect(src).toMatch(/parseInstallEvent\(parseBracketForm\(/)
   })
 
-  it('роут install передаёт eventTs в сохранение токенов', async () => {
-    // Гард по исходнику: `server/**` юнит-тестами не покрывается, а без этого аргумента вся защита
-    // молча выключается — save просто сделает upsert, как раньше.
+  it('роут install строит опции сохранения общей функцией и передаёт их в save', async () => {
+    // Гард по исходнику: `server/**` юнит-тестами не покрывается. САМИ опции (тумбстоун-гард `eventTs`
+    // и присвоение плейсхолдера `adoptLocal`) проверяются исполнением — `installSaveOpts` ниже;
+    // здесь остаётся только связка «роут действительно ими пользуется».
     const src = await routeSource()
-    // Проверяем и то, что отказ гарда ОСТАНАВЛИВАЕТ установку: иначе получается хуже, чем без гарда —
+    expect(src).toMatch(/installSaveOpts\(verifiedAuth\.eventTs/)
+    expect(src).toMatch(/tokenStore\.save\(tokens,\s*saveOpts\)/)
+    // И то, что отказ гарда ОСТАНАВЛИВАЕТ установку: иначе получается хуже, чем без гарда —
     // токенов нет, а встройки регистрируются и в лог идёт «установка завершена».
-    expect(src).toMatch(/tokenStore\.save\(tokens,\s*\{\s*eventTs/)
     expect(src).toMatch(/throw new InstallStale/)
+  })
+
+  it('роут сбрасывает кэш стора после clean-uninstall', async () => {
+    // Без сброса инстанс остаётся с портальным id удалённой строки: каждая запись падает на FK, а
+    // переустановка без рестарта не лечит (у новой строки НОВЫЙ id). И всё это тихо — `/api/health`
+    // остаётся зелёным.
+    const src = await routeSource()
+    // Между вызовами стоит развёрнутое объяснение — сверяем порядок, а не близость.
+    expect(src.indexOf('resetStoreCache()')).toBeGreaterThan(src.indexOf('store.deletePortal('))
+    expect(src).toMatch(/resetStoreCache\(\)/)
   })
 })
 
@@ -331,3 +343,20 @@ async function routeSource(): Promise<string> {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 }
+
+describe('опции сохранения токенов при установке (#171)', () => {
+  it('`adoptLocal` передаётся ВСЕГДА', async () => {
+    // Пропади флаг из роута — весь фикс #171 выключится, а `pnpm check` останется зелёным.
+    const { installSaveOpts } = await import('../server/utils/install-opts')
+    expect(installSaveOpts(1736405807, undefined)).toEqual({ eventTs: 1736405807, adoptLocal: true })
+  })
+
+  it('ожидаемый портал доезжает; пустая переменная считается «не задано»', async () => {
+    const { installSaveOpts } = await import('../server/utils/install-opts')
+    expect(installSaveOpts(1, ' m-1 ')).toMatchObject({ expectedMemberId: 'm-1' })
+    // Забытая в .env пустая переменная не должна тихо запретить присвоение вообще.
+    for (const raw of ['', '   ', undefined]) {
+      expect(installSaveOpts(1, raw), String(raw)).not.toHaveProperty('expectedMemberId')
+    }
+  })
+})

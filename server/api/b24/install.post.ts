@@ -20,7 +20,8 @@ import { isAllowedPortalDomain } from '~core/bitrix24/frame'
 import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations, allowB24Install } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
-import { logger } from '../../utils/api'
+import { logger, resetStoreCache } from '../../utils/api'
+import { installSaveOpts } from '../../utils/install-opts'
 
 // Верификационный рефреш — синхронный исходящий вызов на oauth.bitrix.info внутри install-запроса;
 // `timeoutFetch` (общий, server/utils/b24-fetch) ограничивает его: зависший OAuth-сервер иначе держал бы
@@ -73,7 +74,16 @@ export default defineEventHandler(async (event) => {
         logger.warn('b24_uninstall_reject', { memberId: uninstall.auth.member_id, reason: verdict.reason })
         return html(event, 200, 'ok')
       }
-      if (verdict.clean) await store.deletePortal(verdict.memberId, verdict.deletedTs)
+      if (verdict.clean) {
+        await store.deletePortal(verdict.memberId, verdict.deletedTs)
+        // ⚠️ ОБЯЗАТЕЛЬНО после удаления. С присвоением плейсхолдера (#171) `deletePortal` сносит РОВНО
+        // ту строку `portal`, на числовой id которой прибиты закэшированные на процесс `PgStore` и
+        // `PgInvitationStore`. Раньше плейсхолдер uninstall переживал, и инстанс работал дальше;
+        // теперь без сброса каждая следующая запись падала бы на FK — и тихо: install-страница при
+        // переустановке нарисует «Приложение установлено», а `/api/health` останется зелёным
+        // (`ping` — это `select 1`). Переустановка без рестарта не лечила бы: у новой строки НОВЫЙ id.
+        resetStoreCache()
+      }
       logger.info('b24_uninstall_ok', { memberId: verdict.memberId, cleaned: verdict.clean })
     } catch (e) {
       // Транзиентный сбой (БД/повреждённый blob) — B24 online-события НЕ ретраит. ERROR-лог для ручной
@@ -167,7 +177,13 @@ export default defineEventHandler(async (event) => {
       // зарегистрированы» (ложная тревога) и «установка завершена». Человек видел бы «Приложение
       // установлено» при мёртвом приложении.
       saveTokens: async (tokens) => {
-        if (!(await tokenStore.save(tokens, { eventTs: verifiedAuth.eventTs }))) {
+        // `adoptLocal` — плейсхолдер-портал становится ЭТИМ порталом переименованием строки (#171).
+        // До связки с Bitrix весь трафик контура A пишется под плейсхолдер, и там же копятся ответы
+        // со снимками CRM. Без присвоения установка заводила ВТОРУЮ строку портала, и удаление
+        // приложения чистило её — пустую: `deletePortal` рапортовал об успехе, а ПДн оставались.
+        // Решение принимает SQL: присваиваем, только если плейсхолдер — единственный портал.
+        const saveOpts = installSaveOpts(verifiedAuth.eventTs, process.env.B24_EXPECTED_MEMBER_ID)
+        if (!(await tokenStore.save(tokens, saveOpts))) {
           throw new InstallStale(verifiedAuth.memberId)
         }
       },

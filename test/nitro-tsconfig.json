@@ -1,5 +1,5 @@
 {
-  // Проект ТОЛЬКО для двух тестов проводки приглашений: они загружают модули Nitro, живущие на
+  // Проект ТОЛЬКО для тестов проводки (приглашения + присвоение портала): они загружают модули Nitro, живущие на
   // авто-импортах Nuxt (`defineNitroPlugin`, `getRequestIP`, `import.meta.prerender`). Ядровой
   // `tsconfig.json` framework-agnostic и этих имён не знает — там эти файлы исключены. Без своего
   // проекта типовые правила ESLint по ним молча выродились бы (ровно тот отказ, из-за которого у
@@ -8,6 +8,7 @@
   "include": [
     "./invitation-retention.test.ts",
     "./invitation-wiring.test.ts",
+    "./install-wiring.test.ts",
     "./helpers/schema.ts",
     "../server/**/*.ts"
   ]

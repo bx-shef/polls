@@ -24,7 +24,7 @@
   // добирались: без проекта TypeScript они молча вырождаются, и гард стал бы декоративным.
   // `node_modules` выписан явно: свой `exclude` ЗАМЕЩАЕТ дефолтный список TypeScript.
   //
-  // ⚠️ Два теста проводки приглашений исключены НЕ потому, что «не типизируются», а потому, что они
+  // ⚠️ Три теста проводки исключены НЕ потому, что «не типизируются», а потому, что они
   // загружают модули Nitro, живущие на авто-импортах Nuxt (`defineNitroPlugin`, `getRequestIP`,
   // `import.meta.prerender`). Ядровой проект framework-agnostic и этих имён не знает по определению —
   // затащив их сюда, мы получили бы либо красный `tsc` на здоровом коде, либо рукописный слепок
@@ -36,6 +36,7 @@
     "node_modules",
     "test/fixtures",
     "test/invitation-retention.test.ts",
-    "test/invitation-wiring.test.ts"
+    "test/invitation-wiring.test.ts",
+    "test/install-wiring.test.ts"
   ]
 }
