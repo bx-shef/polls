@@ -27,6 +27,38 @@ export interface TriggerResult {
   token: string
 }
 
+export interface TriggerOutcome {
+  /** Выписанные приглашения. */
+  created: TriggerResult[]
+  /**
+   * Опросы, по которым приглашение НЕ выписано, потому что по этому переходу уже приглашали (#138):
+   * дело в таймлайне сделки уже висит или цикл уже закрыт ответом. Это и есть отсечённая гроздь.
+   *
+   * Наружу отдаётся не для полноты: без этого числа в логе живой прогон не отличит «дедуп сработал»
+   * от «событие было ровно одно», а увидеть надо именно это.
+   */
+  deduped: string[]
+}
+
+/**
+ * Чем выписывается приглашение по ОДНОМУ опросу.
+ *
+ * Развязка нужна потому, что на разных путях это разная работа. Робот автоматизации просто создаёт
+ * приглашение. Событийный путь сначала спрашивает у портала, не висит ли уже дело по этому переходу,
+ * и только потом создаёт — приглашение вместе с делом в таймлайне (`invite-delivery.ts`). Ядро про
+ * REST ничего не знает и знать не должно, поэтому работа инжектируется.
+ *
+ * `undefined` — «уже приглашали, ничего не создано»; это штатный исход, а не ошибка.
+ */
+export type IssueInvitation = (args: {
+  surveyKey: string
+  versionNo: number
+  context: CrmContext
+  /** Срок жизни ссылки из политики версии (мс); `undefined` — дефолт стора. */
+  ttlMs: number | undefined
+  now: Date
+}) => Promise<TriggerResult | undefined>
+
 /**
  * По стадии сделки (`context.dealStageId`) находит опросы, чья текущая версия триггерится этой
  * стадией (`surveysTriggeredBy`, GIN #22), и создаёт по приглашению на каждый со СНИМКОМ контекста.
@@ -56,23 +88,49 @@ export async function handleDealTrigger(deps: {
    * событие, да ещё и двумя независимыми снимками одного состояния.
    */
   triggeredSurveyKeys?: readonly string[]
-}): Promise<TriggerResult[]> {
+  /**
+   * Как выписывать приглашение. **Не задана** → просто `invitations.create` (путь робота: он
+   * вызывается ровно на входе в стадию, отсекать нечего). Событийный путь передаёт сюда доставку с
+   * проверкой дела в таймлайне (#126 + #138).
+   */
+  issue?: IssueInvitation
+}): Promise<TriggerOutcome> {
   const stageId = deps.context.dealStageId
-  if (!stageId) return [] // нет стадии в контексте — триггерить нечего
+  if (!stageId) return { created: [], deduped: [] } // нет стадии в контексте — триггерить нечего
   const now = deps.now ?? new Date()
 
   const surveyKeys = deps.triggeredSurveyKeys ?? (await deps.store.surveysTriggeredBy(stageId))
-  const results: TriggerResult[] = []
+  const created: TriggerResult[] = []
+  const deduped: string[] = []
   for (const surveyKey of surveyKeys) {
     const version = await deps.store.currentVersion(surveyKey)
     if (!version) continue // опрос без опубликованной версии — пропускаем
-    const inv = await deps.invitations.create(
-      { surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
+    const args = {
+      surveyKey,
+      versionNo: version.versionNo,
+      context: deps.context,
+      ttlMs: linkTtlMs(version.invitationPolicy),
       now
-    )
-    results.push({ surveyKey, versionNo: version.versionNo, token: inv.token })
+    }
+    const result = deps.issue
+      ? await deps.issue(args)
+      : await defaultIssue(deps.invitations, args)
+    if (!result) { deduped.push(surveyKey); continue }
+    created.push(result)
   }
-  return results
+  return { created, deduped }
+}
+
+/** Выписка без всяких проверок — поведение по умолчанию (робот, ядровые тесты). */
+async function defaultIssue(
+  invitations: InvitationStore,
+  args: { surveyKey: string; versionNo: number; context: CrmContext; ttlMs: number | undefined; now: Date }
+): Promise<TriggerResult> {
+  const inv = await invitations.create(
+    { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
+    args.now
+  )
+  return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: inv.token }
 }
 
 /**

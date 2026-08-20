@@ -175,7 +175,7 @@ describe('runRobotTrigger — робот автоматизации «Запус
           application_token: 'app-token-fake-0000000000000000'
         }
       },
-      { ...deps({ invitations, now }), confirmStageEntry: async () => true }
+      { ...deps({ invitations, now }), confirmStageEntry: async () => ({ fresh: true }) }
     )
     if (r.kind !== 'ok' || e.kind !== 'ok') throw new Error('unreachable')
     const tokens = new Set([r.results[0]!.token, e.results[0]!.token])
@@ -197,7 +197,7 @@ describe('runRobotTrigger — робот автоматизации «Запус
         data: { FIELDS: { ID: '759' } },
         auth: { member_id: 'member-id-fake-0000000000000000', domain: 'acme.bitrix24.ru', application_token: 'app-token-fake-0000000000000000' }
       },
-      { ...deps({ invitations: invE, now }), confirmStageEntry: async () => true }
+      { ...deps({ invitations: invE, now }), confirmStageEntry: async () => ({ fresh: true }) }
     )
     expect(r.kind === 'ok' && e.kind === 'ok').toBe(true)
     if (r.kind === 'ok' && e.kind === 'ok') {

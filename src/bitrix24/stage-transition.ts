@@ -138,18 +138,22 @@ export function isFreshStageEntry(records: readonly StageHistoryRecord[], check:
 export function inspectStageEntry(
   records: readonly StageHistoryRecord[],
   check: StageEntryCheck
-): { fresh: boolean; observedStageId?: string; ageSec?: number; transitionId?: string } {
+): { fresh: boolean; observedStageId?: string; ageSec?: number; transitionId?: string; transitionAt?: Date } {
   const last = latestRecord(records)
   if (!last) return { fresh: false }
   const t = last.CREATED_TIME ? new Date(last.CREATED_TIME).getTime() : NaN
   const observedStageId = last.STAGE_ID
   const transitionId = readTransitionId(last)
   if (!Number.isFinite(t)) return { fresh: false, observedStageId, transitionId }
+  // Момент перехода отдаём наружу: по нему правило «уже приглашали?» отличает ответ, данный ПОСЛЕ
+  // этого перехода, от прошлогоднего (`IStore.hasResponseSince`). Берётся из ТОЙ ЖЕ записи, что дала
+  // ключ, — второй запрос за историей показал бы уже другую картину.
+  const transitionAt = new Date(t)
   const ageMs = check.now.getTime() - t
   const ageSec = Math.round(ageMs / 1000)
-  if (observedStageId !== check.stageId) return { fresh: false, observedStageId, ageSec, transitionId }
+  if (observedStageId !== check.stageId) return { fresh: false, observedStageId, ageSec, transitionId, transitionAt }
   const windowMs = check.windowSec * 1000
-  return { fresh: ageMs <= windowMs && ageMs >= -windowMs, observedStageId, ageSec, transitionId }
+  return { fresh: ageMs <= windowMs && ageMs >= -windowMs, observedStageId, ageSec, transitionId, transitionAt }
 }
 
 /**

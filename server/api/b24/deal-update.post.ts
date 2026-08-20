@@ -14,6 +14,12 @@ import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params, stageHistoryList } from '~core/bitrix24/client'
 import {
+  activityConfigurableAdd, activityListByMarker, buildSurveyInviteActivity, ensureActivityMarker
+} from '~core/bitrix24/activity'
+import { deliverInvite } from '~core/bitrix24/invite-delivery'
+import { createKeySerializer } from '~core/api/serial-by-key'
+import { surveyPath } from '~core/client/invitation-link'
+import {
   inspectStageEntry,
   resolveStageEntryWindowSec,
   STAGE_HISTORY_ENTITY_TYPE_ID
@@ -33,6 +39,16 @@ import { useStore, useInvitations, logger } from '../../utils/api'
 // In-memory, на инстанс (общий стор для мульти-инстанса — #4). Ключ — реальный адрес клиента
 // (`requestIp` → `~core/api/client-ip`), а не адрес прокси: иначе весь портал считался бы одним.
 const dealUpdateLimiter = new SlidingWindowLimiter({ limit: 600, windowMs: 60_000 })
+
+/**
+ * Очередь «поиск дела → создание» по ключу перехода — ОДНА на процесс (#138).
+ *
+ * ⚠️ Модульная, а не на запрос: смысл ровно в том, чтобы ДВА ОДНОВРЕМЕННЫХ события одного перехода
+ * встали друг за другом. Заведи её внутри обработчика — у каждого события была бы своя, и очередь
+ * перестала бы что-либо значить. Проверено на живом портале: два дела с одним `ORIGIN_ID` Bitrix24
+ * создаёт спокойно, уникальность маркера — не его забота, а наша.
+ */
+const inviteSerializer = createKeySerializer()
 
 export default defineEventHandler(async (event) => {
   // Режим триггера выключен для события → не обслуживаем. Штатный сценарий: режим сменили на `robot`,
@@ -134,10 +150,17 @@ export default defineEventHandler(async (event) => {
               ageSec: seen.ageSec ?? null
             })
           }
-          return seen.fresh
+          // `transitionId`/`transitionAt` едут дальше: первый становится ключом маркера, второй —
+          // точкой отсчёта «ответил ли клиент после этого перехода». Оба — из ТОЙ ЖЕ записи, по
+          // которой принято решение о свежести; пересчёт вторым запросом дал бы другую картину.
+          return {
+            fresh: seen.fresh,
+            ...(seen.transitionId !== undefined ? { transitionId: seen.transitionId } : {}),
+            ...(seen.transitionAt !== undefined ? { transitionAt: seen.transitionAt } : {})
+          }
         } catch (e) {
           logger.warn('b24_stage_history_fail', { dealId, detail: (e as Error).message })
-          return false
+          return { fresh: false }
         }
       },
       fetchDeal: async (dealId, memberId) => {
@@ -152,7 +175,70 @@ export default defineEventHandler(async (event) => {
         return { deal, productRows }
       },
       store,
-      invitations: useInvitations()
+      invitations: useInvitations(),
+      /**
+       * Выписка приглашения через дело в таймлайне (#126 + #138). Правило («открыто → молчим; нет →
+       * приглашаем; закрыто без ответа → зовём снова; закрыто и отвечено → молчим») живёт в ядре;
+       * здесь только I/O к порталу и к своим ответам.
+       *
+       * ⚠️ Без ключа перехода дедупить нечем — тогда старое поведение: просто выписать приглашение.
+       * Терять законный переход из-за нечитаемого `ID` в истории хуже, чем пропустить гроздь; исход
+       * при этом виден в логе.
+       */
+      issue: ({ transition, memberId }) => async (args) => {
+        const dealId = args.context.dealId
+        if (transition.id === undefined || dealId === undefined) {
+          logger.info('b24_invite_no_dedup', {
+            surveyKey: args.surveyKey,
+            reason: transition.id === undefined ? 'нет ID перехода' : 'нет сделки в контексте'
+          })
+          const inv = await useInvitations().create(
+            { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
+            args.now
+          )
+          return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: inv.token }
+        }
+
+        const client = await portalClient(memberId)
+        let issued: { token: string } | undefined
+        const out = await deliverInvite(transition.id, args.surveyKey, {
+          serializer: inviteSerializer,
+          findByMarker: (marker) => activityListByMarker(client, marker),
+          // Точка отсчёта — момент ЭТОГО перехода: прошлогодний ответ не должен закрывать новый
+          // повод спросить, если сделка прошла стадию второй раз.
+          answeredAfterTransition: () =>
+            store.hasResponseSince(args.surveyKey, dealId, transition.at ?? args.now),
+          createInvite: async (marker) => {
+            const inv = await useInvitations().create(
+              { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
+              args.now
+            )
+            issued = { token: inv.token }
+            const base = b24AppConfig()?.baseUrl ?? ''
+            return activityConfigurableAdd(client, buildSurveyInviteActivity({
+              dealId,
+              surveyTitle: args.surveyKey,
+              surveyKey: args.surveyKey,
+              token: inv.token,
+              surveyUrl: `${base}${surveyPath(args.surveyKey, inv.token)}`,
+              ...(args.context.responsibleId != null ? { responsibleId: args.context.responsibleId } : {}),
+              marker
+            }))
+          },
+          ensureMarker: (activityId, marker) => ensureActivityMarker(client, activityId, marker)
+        })
+
+        if (out.kind === 'skipped') {
+          logger.info('b24_invite_dedup', { surveyKey: args.surveyKey, dealId, reason: out.reason, marker: out.marker.originId })
+          return undefined
+        }
+        // `markerFix` — ответ на единственный незакрытый вопрос: принял ли `configurable.add` поля
+        // маркера. `repaired` значит «не принял, дописали» — увидим на первом же прогоне.
+        logger.info('b24_invite_activity', {
+          surveyKey: args.surveyKey, dealId, activityId: out.activityId, markerFix: out.markerFix
+        })
+        return issued ? { surveyKey: args.surveyKey, versionNo: args.versionNo, token: issued.token } : undefined
+      }
     })
 
     if (outcome.kind === 'ignored') {
@@ -165,7 +251,11 @@ export default defineEventHandler(async (event) => {
       // Штатная ветка: обычное редактирование сделки, давно стоящей в триггерной стадии. info, не warn.
       logger.info('b24_deal_update_skip', { dealId: outcome.dealId, stageId: outcome.stageId })
     } else {
-      logger.info('b24_deal_update', { msg: `создано приглашений: ${outcome.results.length}` })
+      logger.info('b24_deal_update', {
+        msg: `создано приглашений: ${outcome.results.length}`,
+        // Отсечённая гроздь. Ноль здесь и >0 создано — событие было первым; >0 здесь — дедуп работает.
+        deduped: outcome.deduped.length
+      })
     }
   } catch (e) {
     // Транзиент (REST/refresh/БД/холодный старт) — B24 online-события НЕ ретраит; лог для диагностики, ответ 200.

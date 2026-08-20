@@ -30,7 +30,7 @@ function store(triggered: Record<string, string[]>, versions: Record<string, num
 describe('handleDealTrigger — стадия → приглашения (#17)', () => {
   it('опрос триггерится стадией → создаётся приглашение с контекстом и токеном', async () => {
     const invitations = new MemoryInvitationStore()
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
       invitations,
       context: ctx()
@@ -45,7 +45,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('несколько опросов на стадию → несколько приглашений', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 3 }),
       invitations: new MemoryInvitationStore(),
       context: ctx()
@@ -55,7 +55,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('нет стадии в контексте → пусто (триггерить нечего)', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a'] }, { a: 1 }),
       invitations: new MemoryInvitationStore(),
       context: ctx({ dealStageId: undefined })
@@ -64,7 +64,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('стадия не триггерит ни одного опроса → пусто', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['a'] }, { a: 1 }),
       invitations: new MemoryInvitationStore(),
       context: ctx({ dealStageId: 'C1:NEW' })
@@ -73,7 +73,7 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
   })
 
   it('опрос без опубликованной версии → пропускается (не падает)', async () => {
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: store({ 'C1:WON': ['ghost'] }, {}), // currentVersion вернёт undefined
       invitations: new MemoryInvitationStore(),
       context: ctx()
@@ -135,7 +135,7 @@ describe('срок доступности ссылки → ttl приглаше�
 
   it('handleDealTrigger: linkTtlSeconds=300 → окно ссылки ровно 5 минут', async () => {
     const invitations = new MemoryInvitationStore()
-    const res = await handleDealTrigger({
+    const { created: res } = await handleDealTrigger({
       store: storeV({ 'C1:WON': ['s'] }, { s: verWithPolicy(1, { linkTtlSeconds: 300 }) }),
       invitations,
       context: ctx(),

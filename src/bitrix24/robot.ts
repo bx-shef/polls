@@ -102,12 +102,14 @@ export async function runRobotTrigger(raw: unknown, deps: RobotDeps): Promise<Ro
 
   const { deal, productRows } = await deps.fetchDeal(dealId, ev.auth.member_id)
   const context = dealToCrmContext(deal, productRows)
-  // Проверки истории стадий НЕТ намеренно: робот вызывается ровно на входе в стадию.
-  const results = await handleDealTrigger({
+  // Ни проверки истории стадий, ни отсечения дублей: робот вызывается РОВНО на входе в стадию, то
+  // есть один раз на переход. Гроздь событий рождает только событийный путь (`deal-update.ts`), где
+  // апдейт сделки прилетает на каждую правку; здесь отсекать нечего, и ключа перехода взять неоткуда.
+  const outcome = await handleDealTrigger({
     store: deps.store,
     invitations: deps.invitations,
     context,
     now: deps.now
   })
-  return { kind: 'ok', results, dealId }
+  return { kind: 'ok', results: outcome.created, dealId }
 }
