@@ -342,6 +342,66 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((await api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })).status).toBe(409)
   })
 
+  it('ОТКАЗ ЗАПИСИ оставляет ссылку живой — человек отправляет ещё раз и проходит', async () => {
+    // ⚠️ Суть #170. Раньше токен гасился ДО записи: сбой на записи убивал ссылку навсегда, а
+    // человек читал «вы уже прошли опрос» по анкете, которой нет. Переиздать её мог только менеджер.
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const store = await buildDemo(new MemoryStore())
+    let failWrite = true
+    const flaky = Object.assign(Object.create(Object.getPrototypeOf(store) as object), store, {
+      addResponse: (r: Parameters<MemoryStore['addResponse']>[0]) => {
+        if (failWrite) return Promise.reject(new Error('БД недоступна'))
+        return store.addResponse(r)
+      }
+    }) as MemoryStore
+    const c = clock()
+    const api = createApi({ store: flaky, invitations, now: c.now, logger: nullLogger })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(500)
+    expect(await invitations.peek(inv.token, c.now()), 'ссылка сгорела на неудавшейся записи').toBeDefined()
+
+    failWrite = false
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(200)
+    expect((await store.listResponses()).at(-1)!.context).toEqual(snapshot)
+  })
+
+  it('ОТКАЗ ГАШЕНИЯ после записи не теряет ответ, а повтор самозаживает в 409', async () => {
+    // Отказ на последнем шаге: ответ уже записан, поэтому 200 честен. Повторная отправка упирается
+    // в дедуп по токену и получает «опрос пройден» — что и есть правда, хотя ссылка ещё жива.
+    const inner = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const invitations: InvitationStore = {
+      create: (...a) => inner.create(...a),
+      peek: (...a) => inner.peek(...a),
+      consume: () => Promise.reject(new Error('БД недоступна'))
+    }
+    const store = await buildDemo(new MemoryStore())
+    const c = clock()
+    const api = createApi({ store, invitations, now: c.now, logger: nullLogger })
+    const inv = await inner.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(200)
+    expect((await store.listResponses()).at(-1)!.invitationToken).toBe(inv.token)
+    const again = await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })
+    expect(again.status, 'повтор по живой ссылке с уже записанным ответом должен дать 409').toBe(409)
+    expect((await store.listResponses()).filter((r) => r.invitationToken === inv.token), 'ответ задвоился')
+      .toHaveLength(1)
+  })
+
+  it('прошедший опрос слышит «спасибо», а не «попросите новую ссылку»', async () => {
+    // Тексты разные, и разница видна человеку: 409 replay говорит «опрос пройден», 403 dead —
+    // «попросите новую ссылку у менеджера». Второе прошедшему опрос — неправда.
+    const { api, invitations, now } = await withInvitation()
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
+    await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })
+    const again = await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })
+    expect(again.status).toBe(409)
+    expect((again.body as { error: string }).error).toContain('опрос пройден')
+  })
+
   it('неизвестный/протухший токен → 403', async () => {
     const { api } = await withInvitation()
     const nonce = await issueNonce(api)

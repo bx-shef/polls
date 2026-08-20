@@ -116,12 +116,16 @@ describe('MemoryStore', () => {
     const mk = (id: string, over: Partial<ResponseRecord> = {}): ResponseRecord => ({
       id, surveyKey: 'A', versionNo: 1, submittedAt: '2026-04-01T10:00:00.000Z', context: {}, answers: [], ...over
     })
-    await s.addResponse(mk('a', { invitationToken: 'tok-1' }))
-    await s.addResponse(mk('b', { invitationToken: 'tok-1' })) // повтор → no-op
+    // Признак `stored` — контракт, на котором стоит честный 409 в `submit` (#170): «записали» и
+    // «это повтор» обязаны различаться, иначе второй человек по той же ссылке получил бы 200, а его
+    // ответ молча выбросил бы дедуп.
+    expect(await s.addResponse(mk('a', { invitationToken: 'tok-1' }))).toEqual({ stored: true })
+    expect(await s.addResponse(mk('b', { invitationToken: 'tok-1' })), 'повтор выдан за запись')
+      .toEqual({ stored: false }) // повтор → no-op, и это видно вызывающему
     const after = await s.listResponses()
     expect(after).toHaveLength(1)
     expect(after[0]!.id).toBe('a') // сохранён первый, не перезаписан вторым
-    await s.addResponse(mk('c', { invitationToken: 'tok-2' })) // другой токен → пишется
+    expect(await s.addResponse(mk('c', { invitationToken: 'tok-2' }))).toEqual({ stored: true }) // другой токен
     expect(await s.listResponses()).toHaveLength(2)
     await s.addResponse(mk('d')) // без токена — дедупа нет
     await s.addResponse(mk('e'))

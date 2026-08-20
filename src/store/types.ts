@@ -37,6 +37,11 @@ export interface SurveySummary {
   triggerStages: string[]
 }
 
+/** Итог записи ответа: записали или отбросили как повтор по токену приглашения. */
+export interface AddResponseResult {
+  stored: boolean
+}
+
 export interface ResponsePageOptions {
   surveyKey?: string
   limit?: number
@@ -81,8 +86,16 @@ export interface IStore {
   /**
    * Сохраняет завершённую анкету (валидирует запись на границе). Инвариант:
    * `versionNo` записи должен существовать в сторе — в PgStore это FK на survey_version.
+   *
+   * ⚠️ **Возвращает, ЗАПИСАЛ ли ответ.** `stored: false` — не ошибка: повтор по тому же
+   * `invitationToken` отброшен дедупом (частичный UNIQUE в PgStore, множество токенов в памяти).
+   *
+   * Признак нужен, чтобы `submit` мог гасить приглашение ПОСЛЕ успешной записи, а не до неё
+   * ([#170](https://github.com/bx-shef/polls/issues/170)). Раньше метод возвращал `void`, и
+   * различить «записали» и «это повтор» было нечем: порядок «погасить → записать» приходилось
+   * держать ради честного 409, а он терял ответ клиента навсегда, если запись падала после расхода.
    */
-  addResponse(r: ResponseRecord): Promise<void>
+  addResponse(r: ResponseRecord): Promise<AddResponseResult>
   /**
    * Сохранённые ответы; опциональный фильтр по survey_key. Возвращается
    * поверхностная копия (новый массив, те же объекты) — трактуйте записи как
