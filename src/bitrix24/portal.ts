@@ -54,6 +54,27 @@ export async function resolveMemberIdByDomain(db: Queryable, domain: string): Pr
   return r.rows[0]?.member_id
 }
 
+/**
+ * `member_id` УСТАНОВЛЕННОГО портала этого инстанса — для путей, где портал ниоткуда не приходит.
+ *
+ * Такой путь один: публичный `POST /api/submit` ([#177](https://github.com/bx-shef/polls/issues/177)).
+ * Клиент отвечает по ссылке, ни фрейма, ни события портала там нет — а закрыть дело в таймлайне надо.
+ *
+ * ⚠️ Плейсхолдер (`__local__`) НЕ подходит: у него нет токенов, ходить в CRM нечем. `undefined` —
+ * приложение ещё не установлено, и это штатный исход, а не ошибка: сервис умеет работать сам по себе.
+ *
+ * ⚠️ Single-tenant-допущение ([#49](https://github.com/bx-shef/polls/issues/49)): берётся самый ранний
+ * установленный портал. При мультитенанте портал обязан приезжать из самого приглашения, а не
+ * выбираться на процесс, — и эта функция подлежит удалению.
+ */
+export async function resolveInstalledMemberId(db: Queryable): Promise<string | undefined> {
+  const r = await db.query<{ member_id: string }>(
+    'select member_id from portal where member_id <> $1 order by id asc limit 1',
+    [LOCAL_PORTAL_MEMBER_ID]
+  )
+  return r.rows[0]?.member_id
+}
+
 /** Опции сохранения токенов при установке. */
 export interface SaveTokensOpts {
   /** Часы для `updated_at` (тест фиксирует). Default: `new Date()`. */

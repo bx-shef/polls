@@ -500,6 +500,50 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((again.body as { error: string }).error).toContain('опрос пройден')
   })
 
+  it('после записи зовётся `onAnswered` со снимком CRM (закрытие дела, #177)', async () => {
+    const seen: Array<{ surveyKey: string; dealId?: number; versionNo: number }> = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({
+      invitations,
+      onAnswered: (i) => { seen.push({ surveyKey: i.surveyKey, dealId: i.context.dealId, versionNo: i.versionNo }); return Promise.resolve() }
+    })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, base.now())
+    expect((await base.api.submit({
+      ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token }
+    })).status).toBe(200)
+    expect(seen).toEqual([{ surveyKey: SURVEY_KEY, dealId: snapshot.dealId, versionNo: 2 }])
+  })
+
+  it('ОТКАЗ `onAnswered` не портит ответ клиенту (200) и не теряет диагностику', async () => {
+    // ⚠️ Ответ клиента дороже отметки в таймлайне: заставить человека заполнять анкету заново
+    // из-за недоступности портала — худшее, что тут можно сделать. Но и молчать нельзя: тогда
+    // «дело закрыто» было бы неотличимо от «не смогли».
+    const errs: unknown[] = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({
+      invitations,
+      onAnswered: () => Promise.reject(new Error('портал недоступен')),
+      onError: (e) => errs.push(e)
+    })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, base.now())
+    const r = await base.api.submit({
+      ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token }
+    })
+    expect(r.status).toBe(200)
+    expect((await base.store.listResponses()).at(-1)!.context).toEqual(snapshot)
+    expect((errs[0] as Error).message).toBe('портал недоступен')
+  })
+
+  it('повтор (409) `onAnswered` НЕ зовёт — закрывать нечего, ответ уже был', async () => {
+    const seen: string[] = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({ invitations, onAnswered: () => { seen.push('x'); return Promise.resolve() } })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, base.now())
+    await base.api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token } })
+    await base.api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token } })
+    expect(seen).toHaveLength(1)
+  })
+
   it('неизвестный токен → 403', async () => {
     const { api } = await withInvitation()
     const nonce = await issueNonce(api)

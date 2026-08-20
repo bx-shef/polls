@@ -36,6 +36,23 @@ export function inviteMarker(transitionId: string, surveyKey: string): InviteMar
   return { originatorId: INVITE_ORIGINATOR, originId: `stage:${transitionId}:${surveyKey}` }
 }
 
+/**
+ * Наше ли это дело и по ТОМУ ли опросу — по одному лишь `ORIGIN_ID`, без ключа перехода.
+ *
+ * ⚠️ Нужно закрытию дела при получении ответа ([#177](https://github.com/bx-shef/polls/issues/177)):
+ * там известны сделка и опрос, но НЕ переход — клиент отвечает по ссылке, а ключ перехода живёт
+ * только в событийном пути. Поэтому дела ищутся по владельцу и коду приложения, а «тот ли опрос»
+ * решается уже здесь, разбором маркера.
+ *
+ * Разбор, а не `endsWith(':' + surveyKey)`: ключ опроса — произвольная строка, и `csat` совпал бы
+ * хвостом с `nps_csat`. Форма маркера ровно одна (`stage:<переход>:<опрос>`), её и разбираем.
+ */
+export function markerMatchesSurvey(originId: string | undefined, surveyKey: string): boolean {
+  if (originId === undefined) return false
+  const parts = originId.split(':')
+  return parts.length === 3 && parts[0] === 'stage' && parts[2] === surveyKey
+}
+
 /** Дело, каким его отдаёт поиск по маркеру: нужен только id и признак закрытости. */
 export interface MarkedActivity {
   id: number

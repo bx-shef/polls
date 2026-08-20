@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { createApi, type Api } from '~core/api/handlers'
+import { createApi, type Api, type AnsweredInfo } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
@@ -287,7 +287,14 @@ async function buildApi(): Promise<Api> {
   const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
   const invitations = useInvitations()
   await seedDemoInvitation(invitations)
-  return createApi({ store, logger, limiter, invitations })
+  // `onAnswered` — побочные действия после записи ответа: закрыть дело-приглашение в таймлайне (#177).
+  // Динамический импорт разрывает цикл `api.ts → close-invite.ts → api.ts` (модулю нужны `usePortalDb`
+  // и `logger` отсюда же). Он же оставляет путь без БД нетронутым: модуль просто не грузится.
+  const onAnswered = async (info: AnsweredInfo): Promise<void> => {
+    const { closeInviteActivities } = await import('./close-invite')
+    await closeInviteActivities(info)
+  }
+  return createApi({ store, logger, limiter, invitations, onAnswered })
 }
 
 /**
