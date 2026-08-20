@@ -324,6 +324,11 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect(saved.context).toEqual(snapshot)
     // токен приглашения проброшен в запись — durable-якорь идемпотентности стора (#3/#4)
     expect(saved.invitationToken).toBe(inv.token)
+    // ⚠️ И сама ссылка ПОГАШЕНА. Без этой строки удаление всего блока гашения переживало новые
+    // тесты: последний шаг переставленного порядка держался бы на побочной проверке предпросмотра
+    // из другого describe. А на `used_at` стоят и приватность снимка, и чистка по сроку.
+    expect(await invitations.peek(inv.token, now()), 'ссылка осталась годной после отправки')
+      .toBeUndefined()
   })
 
   it('submit без приглашения → запись без invitationToken (дедуп не нужен)', async () => {
@@ -363,6 +368,12 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
       .toBe(500)
     expect(await invitations.peek(inv.token, c.now()), 'ссылка сгорела на неудавшейся записи').toBeDefined()
+    // Именно это отличает «отказ записи» от «записали и соврали». Считаем по НАШЕМУ токену: стор
+    // засеян демо-данными, поэтому пустым он не бывает.
+    expect(
+      (await store.listResponses()).filter((r) => r.invitationToken === inv.token),
+      'на отказе записи ответ всё же записался'
+    ).toHaveLength(0)
 
     failWrite = false
     expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
@@ -375,10 +386,16 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     // Отказ на последнем шаге: ответ уже записан, поэтому 200 честен. Повторная отправка упирается
     // в дедуп по токену и получает «опрос пройден» — что и есть правда, хотя ссылка ещё жива.
     const inner = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    // Отказ ОДНОРАЗОВЫЙ — блип БД, а не вечная поломка: только так видно, что состояние «ответ есть,
+    // ссылка жива» самозаживает, а не остаётся терминальным.
+    let burnFails = true
     const invitations: InvitationStore = {
       create: (...a) => inner.create(...a),
       peek: (...a) => inner.peek(...a),
-      consume: () => Promise.reject(new Error('БД недоступна'))
+      consume: (...a) => {
+        if (burnFails) { burnFails = false; return Promise.reject(new Error('БД недоступна')) }
+        return inner.consume(...a)
+      }
     }
     const store = await buildDemo(new MemoryStore())
     const c = clock()
@@ -390,8 +407,86 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((await store.listResponses()).at(-1)!.invitationToken).toBe(inv.token)
     const again = await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })
     expect(again.status, 'повтор по живой ссылке с уже записанным ответом должен дать 409').toBe(409)
+    // Текст — весь смысл #170: человеку говорят правду. Без этой проверки подмена `replay` на
+    // `mismatch` («Ссылка не подходит к этому опросу») проходила молча.
+    expect((again.body as { error: string }).error).toContain('опрос пройден')
     expect((await store.listResponses()).filter((r) => r.invitationToken === inv.token), 'ответ задвоился')
       .toHaveLength(1)
+    // И ссылка догашена ЭТИМ повтором: состояние «ответ есть, ссылка жива» самозаживает не только
+    // по статусу ответа, но и по самой ссылке — иначе предпросмотр бессрочно звал бы заполнять заново.
+    expect(await inner.peek(inv.token, c.now()), 'ссылка так и осталась годной').toBeUndefined()
+  })
+
+  it('НЕуспешное гашение видно в логе (иначе расхождение тонет молча)', async () => {
+    // ⚠️ Мутация «удалить `logger.warn` целиком» переживала весь набор: единственный след состояния
+    // «ответ записан, ссылка не погашена» был бы стёрт, и найти такие ссылки стало бы нечем.
+    // Берём НЕ-бросающий неуспех (`unknown` — ссылку убрал сосед/чистка): бросающий путь покрыт выше.
+    const inner = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const invitations: InvitationStore = {
+      create: (...a) => inner.create(...a),
+      peek: (...a) => inner.peek(...a),
+      consume: () => Promise.resolve({ status: 'unknown' })
+    }
+    const seen: Array<[string, Record<string, unknown>]> = []
+    const store = await buildDemo(new MemoryStore())
+    const c = clock()
+    const api = createApi({
+      store,
+      invitations,
+      now: c.now,
+      logger: { ...nullLogger, warn: (msg, fields) => seen.push([msg, fields ?? {}]) }
+    })
+    const inv = await inner.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(200)
+    const line = seen.find(([m]) => m === 'invitation_burn_failed')
+    expect(line, 'расхождение «ответ есть, ссылка жива» нигде не отмечено').toBeDefined()
+    expect(line![1]).toMatchObject({ status: 'unknown', surveyKey: SURVEY_KEY, versionNo: 2 })
+    // Токен — секрет-ссылка: в лог он не попадает ни под каким видом.
+    expect(JSON.stringify(line![1])).not.toContain(inv.token)
+  })
+
+  it('`replay` при гашении расхождением НЕ считается (ссылку погасила прошлая попытка)', async () => {
+    const inner = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const invitations: InvitationStore = {
+      create: (...a) => inner.create(...a),
+      peek: (...a) => inner.peek(...a),
+      consume: () => Promise.resolve({ status: 'replay' })
+    }
+    const seen: string[] = []
+    const c = clock()
+    const api = createApi({
+      store: await buildDemo(new MemoryStore()),
+      invitations,
+      now: c.now,
+      logger: { ...nullLogger, warn: (msg) => seen.push(msg) }
+    })
+    const inv = await inner.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+    await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })
+    expect(seen, 'штатное «уже погашено» записано как расхождение — лог зашумлён').not.toContain('invitation_burn_failed')
+  })
+
+  it('ОТКАЗ `peek` → 500, ответ не записан, ссылка цела', async () => {
+    // Третья из трёх точек отказа, перечисленных в JSDoc `submit`. Ветка держится на общем `catch`,
+    // и любая правка порядка (например, ранний расчёт контекста) сломала бы её молча.
+    const inner = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    let peekFails = true
+    const invitations: InvitationStore = {
+      create: (...a) => inner.create(...a),
+      peek: (...a) => (peekFails ? Promise.reject(new Error('БД недоступна')) : inner.peek(...a)),
+      consume: (...a) => inner.consume(...a)
+    }
+    const store = await buildDemo(new MemoryStore())
+    const c = clock()
+    const api = createApi({ store, invitations, now: c.now, logger: nullLogger })
+    const inv = await inner.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(500)
+    expect((await store.listResponses()).filter((r) => r.invitationToken === inv.token)).toHaveLength(0)
+    peekFails = false
+    expect(await inner.peek(inv.token, c.now()), 'ссылка сгорела на отказе предпросмотра').toBeDefined()
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(200)
   })
 
   it('прошедший опрос слышит «спасибо», а не «попросите новую ссылку»', async () => {
@@ -405,11 +500,46 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((again.body as { error: string }).error).toContain('опрос пройден')
   })
 
-  it('неизвестный/протухший токен → 403', async () => {
+  it('неизвестный токен → 403', async () => {
     const { api } = await withInvitation()
     const nonce = await issueNonce(api)
     const r = await api.submit({ ip: 'a', body: { ...validPayload(nonce), invitation: 'нет-такого' } })
     expect(r.status).toBe(403)
+  })
+
+  it('ПРОТУХШИЙ (и не использованный) токен → 403 «попросите новую»', async () => {
+    // Раньше эта ветка называлась «протухший», а подавала несуществующий токен — часы не двигались.
+    // Диагностика #170 различает `unknown` и `replay` именно по сроку, и обе ветки должны считаться.
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({ invitations })
+    const inv = await invitations.create(
+      { surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot, ttlMs: 60_000 }, base.now()
+    )
+    base.advance(120_000)
+    const r = await base.api.submit({
+      ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token }
+    })
+    expect(r.status).toBe(403)
+    expect((r.body as { error: string }).error).toContain('новую ссылку')
+  })
+
+  it('ИСПОЛЬЗОВАННЫЙ, а потом протухший → 409 «спасибо», а не «срок истёк»', async () => {
+    // Человек прошёл опрос месяц назад и открыл ту же ссылку снова. Ему полагается «спасибо», а не
+    // «попросите новую» — иначе менеджер выпишет вторую ссылку и по сделке появится второй ответ.
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({ invitations })
+    const inv = await invitations.create(
+      { surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot, ttlMs: 60_000 }, base.now()
+    )
+    expect((await base.api.submit({
+      ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token }
+    })).status).toBe(200)
+    base.advance(120_000)
+    const again = await base.api.submit({
+      ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token }
+    })
+    expect(again.status).toBe(409)
+    expect((again.body as { error: string }).error).toContain('опрос пройден')
   })
 
   it('приглашение от другого опроса/версии → 409 (несоответствие пина)', async () => {
@@ -442,6 +572,9 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
   })
 
   it('гонка: два параллельных submit с одним приглашением → ровно один 200 и один 409', async () => {
+    // ⚠️ После #170 одноразовость держит НЕ `consume`, а дедуп по токену в сторе ответов: оба
+    // запроса проходят `peek`, оба входят в запись, и разводит их `stored`. Тест остался тем же
+    // снаружи, но проверяет теперь другой барьер — не перепутайте при следующей правке.
     const { api, invitations, now } = await withInvitation()
     const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, now())
     const n1 = await issueNonce(api)
