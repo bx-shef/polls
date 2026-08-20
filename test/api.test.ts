@@ -534,6 +534,81 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((errs[0] as Error).message).toBe('портал недоступен')
   })
 
+  it('`onAnswered` зовётся СТРОГО ПОСЛЕ записи, и `at` — настоящие часы', async () => {
+    // ⚠️ «После записи» — центральный инвариант, и он не держится ничем, кроме порядка строк: блок
+    // стоит внутри общего `try`, перенести его при рефакторинге — одна строка. Цена перестановки:
+    // дело в таймлайне закрыто, запись упала, клиент получил 500 — и правило «уже приглашали?» на
+    // следующем переходе увидит закрытое дело без ответа, то есть ответ потерян вместе с поводом.
+    const order: string[] = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const store = await buildDemo(new MemoryStore())
+    const real = store.addResponse.bind(store)
+    const spy = vi.spyOn(store, 'addResponse').mockImplementation((r) => { order.push('store'); return real(r) })
+    const c = clock()
+    let seenAt: Date | undefined
+    const api = createApi({
+      store,
+      invitations,
+      now: c.now,
+      logger: nullLogger,
+      onAnswered: (i) => { order.push('hook'); seenAt = i.at; return Promise.resolve() }
+    })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(200)
+    expect(order).toEqual(['store', 'hook'])
+    expect(seenAt, '`at` разъехался с серверными часами').toEqual(c.now())
+    spy.mockRestore()
+  })
+
+  it('запись УПАЛА → `onAnswered` не зовётся вовсе', async () => {
+    const seen: string[] = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const store = await buildDemo(new MemoryStore())
+    const spy = vi.spyOn(store, 'addResponse').mockRejectedValue(new Error('БД недоступна'))
+    const c = clock()
+    const api = createApi({
+      store, invitations, now: c.now, logger: nullLogger,
+      onAnswered: () => { seen.push('hook'); return Promise.resolve() }
+    })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
+    expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
+      .toBe(500)
+    expect(seen, 'дело закрыли по ответу, которого нет').toEqual([])
+    spy.mockRestore()
+  })
+
+  it('ДЕДУП сказал «ответ уже есть» (409) → в портал не ходим', async () => {
+    // ⚠️ Отдельно от «повтора по погашенной ссылке» ниже: там до записи вообще не доходит. Здесь
+    // обе попытки проходят `peek`, и разводит их дедуп по токену — ветка `stored: false`.
+    const seen: string[] = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({ invitations, onAnswered: () => { seen.push('hook'); return Promise.resolve() } })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, base.now())
+    const [n1, n2] = [await issueNonce(base.api), await issueNonce(base.api)]
+    const [a, b] = await Promise.all([
+      base.api.submit({ ip: 'a', body: { ...validPayload(n1), invitation: inv.token } }),
+      base.api.submit({ ip: 'a', body: { ...validPayload(n2), invitation: inv.token } })
+    ])
+    expect([a.status, b.status].sort()).toEqual([200, 409])
+    expect(seen, 'на дедуп-повторе сходили в CRM второй раз').toEqual(['hook'])
+  })
+
+  it('хук ДОЖИДАЕТСЯ, а не пускается фоном', async () => {
+    // ⚠️ Без `await` отказ хука стал бы unhandled rejection уже после ответа, а диагностика — тихо
+    // потерянной. Проверяем настоящим откладыванием, а не порядком микротасков: `Promise.reject`
+    // отклоняется синхронно и проходит даже при fire-and-forget.
+    const seen: string[] = []
+    const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
+    const base = await freshApi({
+      invitations,
+      onAnswered: () => new Promise<void>((r) => setImmediate(() => { seen.push('hook'); r() }))
+    })
+    const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, base.now())
+    await base.api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token } })
+    expect(seen, 'хук пущен фоном — ответ ушёл раньше него').toEqual(['hook'])
+  })
+
   it('повтор (409) `onAnswered` НЕ зовёт — закрывать нечего, ответ уже был', async () => {
     const seen: string[] = []
     const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })

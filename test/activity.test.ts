@@ -320,7 +320,8 @@ describe('закрытие дела-приглашения при ответе (
         OWNER_ID: 759,
         COMPLETED: 'N'
       },
-      select: ['ID', 'ORIGIN_ID']
+      select: ['ID', 'ORIGIN_ID'],
+      start: 0
     }])
   })
 

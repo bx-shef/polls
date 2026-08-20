@@ -6,6 +6,7 @@ import { PortalTokenStore } from '../src/bitrix24/portal'
 import { PgStore } from '../src/store/pg'
 import { PgInvitationStore } from '../src/store/pg-invitation'
 import { ensureDefaultPortal, LOCAL_PORTAL_MEMBER_ID } from '../src/store/bootstrap'
+import { memberIdByPortalId } from '../src/bitrix24/portal'
 import type { Queryable } from '../src/store/types'
 import type { OAuthTokens } from '../src/bitrix24/oauth'
 import { draftV2, SURVEY_KEY } from '../src/demo/seed'
@@ -296,5 +297,31 @@ describe('удаление приложения стирает накоплен�
     // ⚠️ Ровно ОДНО присвоение. Строка `portal_adopted_local` — единственная видимость разового
     // события; печатайся она на каждой переустановке, по ней нельзя было бы судить, состоялось ли оно.
     expect(seen).toEqual(['adopted'])
+  })
+})
+
+describe('portal.id → member_id для закрытия дела (#177)', () => {
+  /**
+   * ⚠️ Спрашиваем ПО ТОМУ ЖЕ id, под которым пишет стор, а не «первый установленный». Второе правило
+   * выбора тенанта разъезжается с первым молча: ответы легли бы в один портал, а закрытие дел пошло
+   * бы в другой — с чужими токенами и чужими сделками.
+   */
+  it('отдаёт member_id ИМЕННО этого портала', async () => {
+    await db.query(`insert into portal (member_id, domain, tokens) values ('m-a', 'a.b24', '{}'::jsonb)`)
+    const b = await db.query<{ id: number }>(
+      `insert into portal (member_id, domain, tokens) values ('m-b', 'b.b24', '{}'::jsonb) returning id`
+    )
+    expect(await memberIdByPortalId(db, b.rows[0]!.id)).toBe('m-b')
+  })
+
+  it('ПЛЕЙСХОЛДЕР не годится: токенов у него нет, ходить в CRM нечем', async () => {
+    // Иначе фича умирала бы бесшумно: `tokenStore.load` пуст → тихий выход, и в логе НЕ будет ни
+    // «закрыли», ни «не смогли».
+    const id = await ensureDefaultPortal(db)
+    expect(await memberIdByPortalId(db, id)).toBeUndefined()
+  })
+
+  it('строки нет (портал удалён под нами) → undefined, без падения', async () => {
+    expect(await memberIdByPortalId(db, 99_999)).toBeUndefined()
   })
 })

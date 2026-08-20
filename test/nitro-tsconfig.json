@@ -9,6 +9,8 @@
     "./invitation-retention.test.ts",
     "./invitation-wiring.test.ts",
     "./install-wiring.test.ts",
+    "./close-invite.test.ts",
+    "./close-invite-wiring.test.ts",
     "./helpers/schema.ts",
     "../server/**/*.ts"
   ]

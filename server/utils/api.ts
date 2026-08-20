@@ -72,6 +72,17 @@ export function resetStoreCache(): void {
   pgPortalId = undefined
 }
 
+/**
+ * Числовой `portal.id`, под которым пишет стор этого инстанса; `undefined` — режим памяти.
+ *
+ * ⚠️ Нужен закрытию дела-приглашения (#177), чтобы оно ходило в ТОТ ЖЕ портал, куда пишет стор.
+ * Отдельный резолвер («первый установленный») разъезжался бы с этим выбором молча.
+ */
+export async function usePortalId(): Promise<number | undefined> {
+  await useStore()
+  return pgPortalId
+}
+
 export function useStore(): Promise<IStore> {
   if (!storePromise) {
     storePromise = buildStore().catch((e) => {
@@ -291,8 +302,8 @@ async function buildApi(): Promise<Api> {
   // Динамический импорт разрывает цикл `api.ts → close-invite.ts → api.ts` (модулю нужны `usePortalDb`
   // и `logger` отсюда же). Он же оставляет путь без БД нетронутым: модуль просто не грузится.
   const onAnswered = async (info: AnsweredInfo): Promise<void> => {
-    const { closeInviteActivities } = await import('./close-invite')
-    await closeInviteActivities(info)
+    const { closeInvite, liveCloseDeps } = await import('./close-invite')
+    await closeInvite(info, liveCloseDeps())
   }
   return createApi({ store, logger, limiter, invitations, onAnswered })
 }

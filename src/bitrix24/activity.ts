@@ -325,7 +325,11 @@ export async function openInviteActivities(
         OWNER_ID: dealId,
         COMPLETED: 'N'
       },
-      select: ['ID', 'ORIGIN_ID']
+      select: ['ID', 'ORIGIN_ID'],
+      // ⚠️ Явный кап, а не молчаливая первая страница портала. Дел на сделке единицы; сотня означает
+      // поломку (маркер не проставился — `markerFix: failed` — и каждый переход плодит новое дело).
+      // Разница в том, что явный предел видно в коде, а обрезку страницы — только на проде.
+      start: 0
     }
   )
   return (rows ?? [])
