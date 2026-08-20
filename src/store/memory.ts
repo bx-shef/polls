@@ -97,6 +97,16 @@ export class MemoryStore implements IStore {
     return [...rs]
   }
 
+  async hasResponseSince(surveyKey: string, dealId: number, since: Date): Promise<boolean> {
+    const from = since.getTime()
+    return this._responses.some((r) => {
+      if (r.surveyKey !== surveyKey || r.context.dealId !== dealId) return false
+      const at = new Date(r.submittedAt).getTime()
+      // Битую дату считаем «не после»: выдуманный ответ закрыл бы клиенту законный повод его дать.
+      return Number.isFinite(at) && at >= from
+    })
+  }
+
   async listResponsesPage(opts: ResponsePageOptions = {}): Promise<ResponsePage> {
     const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE)
     const base = opts.surveyKey == null ? this._responses : this._responses.filter((r) => r.surveyKey === opts.surveyKey)

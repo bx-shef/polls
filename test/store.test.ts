@@ -183,3 +183,54 @@ describe('MemoryStore.listResponsesPage (keyset-пагинация)', () => {
     expect((await s.listResponsesPage({ limit: 9999 })).items).toHaveLength(2)
   })
 })
+
+describe('hasResponseSince — «ответил ли клиент после перехода» (#138)', () => {
+  const at = (iso: string) => new Date(iso)
+  const resp = (over: Partial<ResponseRecord> = {}): ResponseRecord => ({
+    id: `r-${Math.random()}`,
+    surveyKey: 'csat_postdeal',
+    versionNo: 1,
+    submittedAt: '2026-08-20T12:00:00.000Z',
+    context: { dealId: 777 },
+    answers: [],
+    ...over
+  })
+
+  it('ответ ПОСЛЕ перехода → true; ДО перехода → false', async () => {
+    // ⚠️ Суть правила. Сделка может пройти стадию второй раз, и прошлогодний ответ не должен
+    // закрывать новый повод спросить: «есть ответ вообще» здесь дало бы молчание навсегда.
+    const s = new MemoryStore()
+    await s.addResponse(resp())
+    expect(await s.hasResponseSince('csat_postdeal', 777, at('2026-08-20T10:00:00Z'))).toBe(true)
+    expect(await s.hasResponseSince('csat_postdeal', 777, at('2026-08-20T13:00:00Z'))).toBe(false)
+  })
+
+  it('ответ ровно в момент перехода считается ответом', async () => {
+    const s = new MemoryStore()
+    await s.addResponse(resp({ submittedAt: '2026-08-20T12:00:00.000Z' }))
+    expect(await s.hasResponseSince('csat_postdeal', 777, at('2026-08-20T12:00:00.000Z'))).toBe(true)
+  })
+
+  it('чужая сделка и чужой опрос не считаются', async () => {
+    const s = new MemoryStore()
+    await s.addResponse(resp())
+    expect(await s.hasResponseSince('csat_postdeal', 778, at('2026-08-20T10:00:00Z'))).toBe(false)
+    expect(await s.hasResponseSince('nps_quarterly', 777, at('2026-08-20T10:00:00Z'))).toBe(false)
+  })
+
+  it('ответ без привязки к сделке не закрывает повод', async () => {
+    // Анонимный ответ по общей ссылке не должен гасить приглашение по конкретной сделке.
+    const s = new MemoryStore()
+    await s.addResponse(resp({ context: {} }))
+    expect(await s.hasResponseSince('csat_postdeal', 777, at('2026-08-20T10:00:00Z'))).toBe(false)
+  })
+
+  it('битая дата вообще не доходит до стора — её отвергает граница записи', async () => {
+    // Гард на битую дату внутри `hasResponseSince` всё равно есть (строку может завести не наш код —
+    // старый образ, ручной SQL), но ПЕРВЫЙ рубеж здесь: `addResponse` валидирует запись схемой.
+    // Проверяем именно его, иначе тест утверждал бы про недостижимое состояние.
+    const s = new MemoryStore()
+    await expect(s.addResponse(resp({ submittedAt: 'не-дата' }))).rejects.toThrow()
+    expect(await s.hasResponseSince('csat_postdeal', 777, at('2026-08-20T10:00:00Z'))).toBe(false)
+  })
+})
