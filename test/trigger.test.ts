@@ -44,6 +44,42 @@ describe('handleDealTrigger — стадия → приглашения (#17)', 
     expect(inv?.surveyKey).toBe('csat_postdeal')
   })
 
+  it('отказ по ОДНОМУ опросу не лишает приглашения остальные', async () => {
+    // Один переход может запускать несколько опросов. Раньше исключение на первом обрывало цикл, и
+    // остальные не получали ничего — а событие Bitrix24 не ретраит, значит теряются навсегда.
+    const errors: string[] = []
+    const out = await handleDealTrigger({
+      store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 1 }),
+      invitations: new MemoryInvitationStore(),
+      context: ctx(),
+      issue: async (args) => {
+        if (args.surveyKey === 'a') throw new Error('портал недоступен')
+        return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: 'tok-b' }
+      },
+      onIssueError: (surveyKey) => errors.push(surveyKey)
+    })
+    expect(out.created.map((r) => r.surveyKey)).toEqual(['b'])
+    expect(out.failed).toEqual(['a'])
+    expect(out.deduped).toEqual([])
+    expect(errors).toEqual(['a'])
+  })
+
+  it('«не смогли» НЕ путается с «уже приглашали»', async () => {
+    // Разные исходы с разной ценой: `deduped` — штатная работа защиты, `failed` — потерянный ответ
+    // клиента. Пока они шли одной строкой лога, живой прогон не отличил бы одно от другого.
+    const out = await handleDealTrigger({
+      store: store({ 'C1:WON': ['a', 'b'] }, { a: 1, b: 1 }),
+      invitations: new MemoryInvitationStore(),
+      context: ctx(),
+      issue: async (args) => {
+        if (args.surveyKey === 'a') throw new Error('лимит запросов')
+        return undefined // «уже приглашали»
+      }
+    })
+    expect(out.failed).toEqual(['a'])
+    expect(out.deduped).toEqual(['b'])
+  })
+
   it('в выписку едет ЗАГОЛОВОК версии, а не ключ опроса', async () => {
     // Заголовок уходит в шапку дела в таймлайне — его читает сотрудник в карточке сделки. Подставив
     // сюда ключ, мы бы показали ему служебную строку `csat_postdeal` вместо названия опроса, и

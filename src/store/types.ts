@@ -100,11 +100,6 @@ export interface IStore {
   listResponsesPage(opts?: ResponsePageOptions): Promise<ResponsePage>
 
   /**
-   * Health-проба соединения с хранилищем (для `GET /api/health`, #5).
-   * Резолвится при живом соединении, реджектится при недоступности БД.
-   * MemoryStore — тривиально ок; PgStore выполняет дешёвый `select 1`.
-   */
-  /**
    * Отвечал ли клиент по этой сделке и этому опросу ПОСЛЕ указанного момента.
    *
    * Нужен правилу «уже приглашали?» (#138): дело в таймлайне закрыто — значит ли это, что клиент
@@ -119,5 +114,10 @@ export interface IStore {
    */
   hasResponseSince(surveyKey: string, dealId: number, since: Date): Promise<boolean>
 
+  /**
+   * Health-проба соединения с хранилищем (для `GET /api/health`, #5).
+   * Резолвится при живом соединении, реджектится при недоступности БД.
+   * MemoryStore — тривиально ок; PgStore выполняет дешёвый `select 1`.
+   */
   ping(): Promise<void>
 }

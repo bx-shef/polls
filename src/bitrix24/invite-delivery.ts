@@ -71,9 +71,10 @@ export interface InviteDecisionInput {
  */
 export function decideInvite(input: InviteDecisionInput): InviteDecision {
   if (input.activities.some((a) => !a.completed)) return { action: 'skip', reason: 'open' }
-  // Закрытые дела есть, но ответа после перехода нет — приглашали, клиент не дошёл. Зовём снова:
-  // «закрыто» здесь значит, что менеджер снял задачу с себя, а не что клиента спросили.
+  // Дело закрыто И клиент ответил после перехода — цикл завершён, новый опрос будет новым поводом.
   if (input.activities.length > 0 && input.answeredAfterTransition) return { action: 'skip', reason: 'answered' }
+  // Сюда падают два случая: дел нет вовсе и дела есть, но все закрыты без ответа. Второй — законный
+  // повод позвать снова: «закрыто» значит, что менеджер снял задачу с себя, а не что клиента спросили.
   return { action: 'create' }
 }
 
@@ -98,13 +99,51 @@ export interface DeliverInviteDeps {
    * `crm.activity.update`. На портале, где `fields` маркер принимает, эта ветка не срабатывает ни
    * разу; какая ветка сработала — видно в логе, то есть первый же прогон даёт ответ.
    */
-  ensureMarker: (activityId: number, marker: InviteMarker) => Promise<'already' | 'repaired'>
+  ensureMarker: (activityId: number, marker: InviteMarker) => Promise<MarkerFix>
   /** Очередь по ключу: «поиск → создание» не должно идти внахлёст с самим собой. */
   serializer: KeySerializer
+  /**
+   * Префикс ключа очереди — портал (`member_id`).
+   *
+   * ⚠️ Не косметика: ID записей истории стадий у каждого портала свои и мелкие, поэтому ключи двух
+   * порталов совпадают штатно. Без префикса медленный REST одного портала держал бы очередь другого.
+   */
+  serialKeyPrefix?: string
 }
 
+/**
+ * Чем кончилась сверка маркера на созданном деле:
+ * `already` — `configurable.add` принял поля маркера сам; `repaired` — не принял, дописали и ПЕРЕЧИТАЛИ,
+ * маркер на месте; `failed` — дописали, но перечитывание маркера не показало.
+ *
+ * ⚠️ `failed` — не мелочь: такое дело поиск по маркеру не найдёт, и следующее событие грозди создаст
+ * второе приглашение. Раньше эта ветка была неотличима от `repaired` (успехом считался сам факт вызова
+ * `crm.activity.update`, а не результат), то есть провал защиты выглядел бы в логе как её работа.
+ */
+export type MarkerFix = 'already' | 'repaired' | 'failed'
+
+/**
+ * Видно ли только что созданное дело в поиске по маркеру.
+ *
+ * ⚠️ Это ЕДИНСТВЕННАЯ проверка того, что защита от дублей вообще работает. Вживую подтверждено, что
+ * `crm.activity.list` фильтрует по маркеру на ОБЫЧНОМ деле; настраиваемое дело вебхуком не создать
+ * (`ERROR_WRONG_CONTEXT`), поэтому «видит ли `list` настраиваемые дела» до установки неизвестно. Если
+ * не видит — дедуп не работает вовсе, а лог без этой проверки показывал бы ровное `markerFix: already`,
+ * то есть «всё хорошо» при 2–4 письмах клиенту.
+ *
+ * `unknown` — сам запрос не удался (портал недоступен, лимит): вердикта нет, и выдавать его за `no`
+ * нельзя.
+ */
+export type MarkerVisible = 'yes' | 'no' | 'unknown'
+
 export type DeliverOutcome =
-  | { kind: 'created'; activityId: number; marker: InviteMarker; markerFix: 'already' | 'repaired' }
+  | {
+      kind: 'created'
+      activityId: number
+      marker: InviteMarker
+      markerFix: MarkerFix
+      markerVisible: MarkerVisible
+    }
   | { kind: 'skipped'; reason: 'open' | 'answered'; marker: InviteMarker }
 
 /**
@@ -120,7 +159,8 @@ export async function deliverInvite(
   deps: DeliverInviteDeps
 ): Promise<DeliverOutcome> {
   const marker = inviteMarker(transitionId, surveyKey)
-  return deps.serializer.run(marker.originId, async () => {
+  const serialKey = deps.serialKeyPrefix !== undefined ? `${deps.serialKeyPrefix}:${marker.originId}` : marker.originId
+  return deps.serializer.run(serialKey, async () => {
     const activities = await deps.findByMarker(marker)
     // Ответы спрашиваем ТОЛЬКО когда это может изменить решение: открытое дело закрывает вопрос само.
     const answeredAfterTransition = activities.some((a) => !a.completed)
@@ -130,6 +170,13 @@ export async function deliverInvite(
     if (decision.action === 'skip') return { kind: 'skipped', reason: decision.reason, marker }
     const activityId = await deps.createInvite(marker)
     const markerFix = await deps.ensureMarker(activityId, marker)
-    return { kind: 'created', activityId, marker, markerFix }
+    // Контрольный поиск — тем же запросом, на котором стоит вся защита. Стоит один REST-вызов и только
+    // на редком пути создания; ошибку глушим намеренно: приглашение уже выписано, и ронять доставку
+    // из-за неудавшейся ПРОВЕРКИ значило бы потерять сделанную работу.
+    const markerVisible: MarkerVisible = await deps
+      .findByMarker(marker)
+      .then((found): MarkerVisible => (found.some((a) => a.id === activityId) ? 'yes' : 'no'))
+      .catch((): MarkerVisible => 'unknown')
+    return { kind: 'created', activityId, marker, markerFix, markerVisible }
   })
 }

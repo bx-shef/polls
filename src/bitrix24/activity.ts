@@ -1,7 +1,7 @@
 import type { PortalClient } from './client'
 import { callMethod } from './client'
 import type { ResultLine } from '../domain/result-summary'
-import type { InviteMarker, MarkedActivity } from './invite-delivery'
+import type { InviteMarker, MarkedActivity, MarkerFix } from './invite-delivery'
 import { inviteActionParams } from '../client/widget-params'
 
 /**
@@ -140,7 +140,14 @@ export function buildSurveyInviteActivity(input: SurveyInviteActivityInput): Con
               // Имена параметров собирает ОБЩИЙ хелпер — их же читает виджет (иначе расхождение имён
               // молча приведёт ко второму приглашению, см. JSDoc `inviteActionParams`).
               type: 'openRestApp',
-              actionParams: inviteActionParams({ dealId: input.dealId, surveyKey: input.surveyKey, token: input.token })
+              actionParams: inviteActionParams({
+                dealId: input.dealId,
+                surveyKey: input.surveyKey,
+                token: input.token,
+                // Ровно та ссылка, что записана текстом в теле дела: иначе менеджер увидит одну, а
+                // скопирует из виджета другую (домен приложения vs origin iframe).
+                url: input.surveyUrl
+              })
             }
           }
         }
@@ -226,13 +233,29 @@ export async function activityConfigurableAdd(client: PortalClient, params: Conf
  * ⚠️ Фильтруем по ОБОИМ полям, а не по одному `ORIGIN_ID`: `ORIGINATOR_ID` отделяет наши дела от
  * чужих, если чей-то интегратор случайно возьмёт ту же форму ключа. Портал общий, и рассчитывать,
  * что кроме нас туда никто не пишет, нельзя.
+ *
+ * ⚠️ И по СДЕЛКЕ, когда она известна. `ORIGIN_ID` — обычное записываемое поле `crm.activity`, а его
+ * форма угадывается: ключ опроса виден в ссылке нашего же дела, а ID записей истории стадий монотонны
+ * и читаются `crm.stagehistory.list`. Без привязки к сделке сотрудник, чей CSAT измеряют, мог бы
+ * заранее наплодить ОТКРЫТЫХ дел с нашим маркером «на пару шагов вперёд» — правило увидело бы `open`
+ * и промолчало, то есть датчик по его сделкам выключился бы незаметно. Привязка к владельцу делает
+ * такую подделку заметной: подложить дело нужно в ту самую сделку.
  */
-export async function activityListByMarker(client: PortalClient, marker: InviteMarker): Promise<MarkedActivity[]> {
+export async function activityListByMarker(
+  client: PortalClient,
+  marker: InviteMarker,
+  /** Сделка, в таймлайне которой ищем. `undefined` — поиск только по маркеру (пути без сделки). */
+  dealId?: number
+): Promise<MarkedActivity[]> {
   const rows = await callMethod<Array<{ ID?: number | string; COMPLETED?: string }>>(
     client,
     'crm.activity.list',
     {
-      filter: { ORIGINATOR_ID: marker.originatorId, ORIGIN_ID: marker.originId },
+      filter: {
+        ORIGINATOR_ID: marker.originatorId,
+        ORIGIN_ID: marker.originId,
+        ...(dealId !== undefined ? { OWNER_TYPE_ID: DEAL_OWNER_TYPE_ID, OWNER_ID: dealId } : {})
+      },
       select: ['ID', 'COMPLETED']
     }
   )
@@ -257,12 +280,24 @@ export async function ensureActivityMarker(
   client: PortalClient,
   activityId: number,
   marker: InviteMarker
-): Promise<'already' | 'repaired'> {
-  const row = await callMethod<{ ORIGIN_ID?: string } | null>(client, 'crm.activity.get', { id: activityId })
-  if (row?.ORIGIN_ID === marker.originId) return 'already'
+): Promise<MarkerFix> {
+  // ⚠️ Сверяем ОБА поля, потому что поиск фильтрует по обоим (`activityListByMarker`). Сверка одного
+  // `ORIGIN_ID` давала бы худший из исходов: `configurable.add` принял `originId`, но не `originatorId`
+  // → сверка рапортует `already`, чинить нечего, а поиск по двум полям дело не находит → второе
+  // приглашение на тот же переход. То есть страховка отчиталась об успехе ровно там, где провалилась.
+  const marked = async (): Promise<boolean> => {
+    const row = await callMethod<{ ORIGINATOR_ID?: string; ORIGIN_ID?: string } | null>(
+      client, 'crm.activity.get', { id: activityId }
+    )
+    return row?.ORIGINATOR_ID === marker.originatorId && row?.ORIGIN_ID === marker.originId
+  }
+  if (await marked()) return 'already'
   await callMethod(client, 'crm.activity.update', {
     id: activityId,
     fields: { ORIGINATOR_ID: marker.originatorId, ORIGIN_ID: marker.originId }
   })
-  return 'repaired'
+  // ⚠️ ПЕРЕЧИТЫВАЕМ, а не верим вызову. `crm.activity.update` возвращает успех и тогда, когда поле
+  // для этого типа дела не поддерживается: раньше мы объявляли `repaired` по факту вызова, и провал
+  // защиты был бы неотличим в логе от её работы.
+  return (await marked()) ? 'repaired' : 'failed'
 }

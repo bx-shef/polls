@@ -110,7 +110,7 @@ describe('runDealUpdate — авто-триггер ONCRMDEALUPDATE (#17)', () =
       rawEvent(),
       deps({ fetchDeal: async () => ({ deal: { ...dealFields, STAGE_ID: 'C1:NEW' }, productRows: [] }) })
     )
-    expect(res).toEqual({ kind: 'ok', results: [], deduped: [] })
+    expect(res).toEqual({ kind: 'ok', results: [], deduped: [], failed: [] })
   })
 
   it('товарные позиции догрузки попадают в снимок (срез услуга/товар)', async () => {
@@ -156,7 +156,7 @@ describe('runDealUpdate — подтверждение перехода стад
       deps({ store: store({ 'C1:LOSE': ['x'] }, { x: 1 }), confirmStageEntry })
     )
     expect(confirmStageEntry).not.toHaveBeenCalled()
-    expect(res).toEqual({ kind: 'ok', results: [], deduped: [] })
+    expect(res).toEqual({ kind: 'ok', results: [], deduped: [], failed: [] })
   })
 
   it('проверка НЕ задана (путь робота) → работает как раньше, без обращения к истории', async () => {
@@ -171,7 +171,7 @@ describe('runDealUpdate — подтверждение перехода стад
       deps({ fetchDeal: async () => ({ deal: { ID: '759' }, productRows: [] }), confirmStageEntry })
     )
     expect(confirmStageEntry).not.toHaveBeenCalled()
-    expect(res).toEqual({ kind: 'ok', results: [], deduped: [] })
+    expect(res).toEqual({ kind: 'ok', results: [], deduped: [], failed: [] })
   })
 
   it('подделка токена → до проверки перехода дело не доходит (порядок гейтов)', async () => {
@@ -204,11 +204,12 @@ describe('гроздь событий одного перехода → одно
    */
   const TRANSITION = { id: '4242', at: new Date('2026-08-20T10:00:00Z') }
 
-  function withDelivery(issued: string[], seen: { id?: string; memberId?: string }): DealUpdateDeps {
+  function withDelivery(issued: string[], seen: { id?: string; at?: Date; memberId?: string }): DealUpdateDeps {
     return deps({
       confirmStageEntry: async () => ({ fresh: true, transitionId: TRANSITION.id, transitionAt: TRANSITION.at }),
       issue: (ctx: { transition: { id?: string; at?: Date }; memberId: string }) => {
         seen.id = ctx.transition.id
+        seen.at = ctx.transition.at
         seen.memberId = ctx.memberId
         // Имитация доставки: первое событие выписывает, следующие видят уже созданное дело.
         return () => {
@@ -220,12 +221,17 @@ describe('гроздь событий одного перехода → одно
     })
   }
 
-  it('ключ перехода и АВТОРИТЕТНЫЙ member_id доезжают до доставки', async () => {
-    // member_id берётся из проверенного события, а не из тела POST: иначе чужой портал получил бы
-    // приглашение в своих данных.
-    const seen: { id?: string; memberId?: string } = {}
-    await runDealUpdate(rawEvent(), withDelivery([], seen))
+  it('ключ перехода, момент перехода и АВТОРИТЕТНЫЙ member_id доезжают до доставки', async () => {
+    // member_id берётся из ПРОВЕРЕННОЙ части события, а не из тела POST: иначе чужой портал получил
+    // бы приглашение в своих данных. Поэтому в недоверенную часть кладём ДРУГОЙ member_id — без него
+    // тест не мог бы упасть по заявленной причине, он лишь проверял бы, что значение доехало.
+    const seen: { id?: string; at?: Date; memberId?: string } = {}
+    await runDealUpdate(
+      rawEvent({ member_id: 'member-id-ATTACKER-000000000000', data: { FIELDS: { ID: '759', member_id: 'member-id-ATTACKER-000000000000' } } }),
+      withDelivery([], seen)
+    )
     expect(seen.id).toBe('4242')
+    expect(seen.at?.toISOString()).toBe('2026-08-20T10:00:00.000Z')
     expect(seen.memberId).toBe('member-id-fake-0000000000000000')
   })
 

@@ -33,8 +33,10 @@ export type DealUpdateOutcome =
    * Верифицировано: создано 0..N приглашений (0 — стадия сделки не триггерит ни один опрос).
    * `deduped` — опросы, по которым приглашение НЕ выписано, потому что по этому переходу уже
    * приглашали (#138): вся гроздь событий вокруг перехода приходит сюда же и отсекается здесь.
+   * `failed` — опросы, по которым выписка ОТКАЗАЛА. Разделены намеренно: «уже приглашали» — штатный
+   * исход, «не смогли» — потерянный ответ клиента, и в логе их путать нельзя.
    */
-  | { kind: 'ok'; results: TriggerResult[]; deduped: string[] }
+  | { kind: 'ok'; results: TriggerResult[]; deduped: string[]; failed: string[] }
   /**
    * Верифицировано, стадия триггерная, но перехода «только что» НЕ было (обычный апдейт сделки, давно
    * стоящей в этой стадии) либо историю не удалось подтвердить → приглашение не выписываем.
@@ -76,6 +78,11 @@ export interface DealUpdateDeps {
    * поднимается клиент нужного портала. Из POST его брать нельзя: он там недоверенный.
    */
   issue?: (ctx: { transition: { id?: string; at?: Date }; memberId: string }) => IssueInvitation
+  /**
+   * Куда сообщить об отказе выписки по ОДНОМУ опросу. Отказ изолирован: один переход может запускать
+   * несколько опросов, и падение на первом не должно лишать приглашения остальные.
+   */
+  onIssueError?: (surveyKey: string, error: unknown) => void
   now?: Date
 }
 
@@ -123,7 +130,8 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
     now: deps.now,
     // Список уже получен гейтом выше — не спрашиваем БД повторно за одно событие.
     triggeredSurveyKeys,
-    ...(deps.issue ? { issue: deps.issue({ transition, memberId: ev.auth.member_id }) } : {})
+    ...(deps.issue ? { issue: deps.issue({ transition, memberId: ev.auth.member_id }) } : {}),
+    ...(deps.onIssueError ? { onIssueError: deps.onIssueError } : {})
   })
-  return { kind: 'ok', results: outcome.created, deduped: outcome.deduped }
+  return { kind: 'ok', results: outcome.created, deduped: outcome.deduped, failed: outcome.failed }
 }

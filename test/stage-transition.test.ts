@@ -243,6 +243,29 @@ describe('ключ перехода — основа лечения дублей
     }
   })
 
+  it('момент перехода — это CREATED_TIME записи, а НЕ «сейчас»', () => {
+    // На этом стоит «ответил ли клиент ПОСЛЕ этого перехода». Подмени момент на `now` — и ответ,
+    // данный между переходом и текущим событием грозди, перестанет считаться: клиент, уже
+    // заполнивший анкету, получит повторное приглашение.
+    const at = inspectStageEntry([rec()], check).transitionAt
+    expect(at?.toISOString()).toBe('2026-08-16T10:00:00.000Z')
+    expect(at?.getTime()).not.toBe(check.now.getTime())
+  })
+
+  it('момент и ключ берутся из ОДНОЙ записи', () => {
+    // Два запроса за историей показали бы разную картину; здесь картина одна.
+    const history = [rec({ ID: 4240, CREATED_TIME: '2026-08-16T09:00:00Z' }), rec({ ID: 4242 })]
+    const r = inspectStageEntry(history, check)
+    expect(r.transitionId).toBe('4242')
+    expect(r.transitionAt?.toISOString()).toBe('2026-08-16T10:00:00.000Z')
+  })
+
+  it('нечитаемый CREATED_TIME → момента НЕТ (и перехода тоже)', () => {
+    const r = inspectStageEntry([rec({ CREATED_TIME: 'не дата' })], check)
+    expect(r.fresh).toBe(false)
+    expect(r.transitionAt).toBeUndefined()
+  })
+
   it('ключ отдаётся и когда перехода не было — для лога', () => {
     // Диагностика нужна именно в этом случае: видно, какую запись мы сочли последней.
     const stale = inspectStageEntry([rec({ CREATED_TIME: '2026-08-16T08:00:00Z' })], check)

@@ -439,6 +439,58 @@ describe('PgStore — денормализация контекста', () => {
   })
 })
 
+describe('PgStore — hasResponseSince: «ответил ли клиент ПОСЛЕ перехода» (#138)', () => {
+  /**
+   * ⚠️ Прод с `DATABASE_URL` работает именно на PgStore, а до этого метод исполнялся только у
+   * `MemoryStore`. Мутация «тело → `return true`» переживала весь набор: `true` означает «больше
+   * никогда не приглашаем», `false` — «зовём снова того, кто уже ответил». Оба исхода тихие.
+   */
+  const at = (iso: string): Date => new Date(iso)
+  const RESP_AT = '2026-04-03T10:00:00.000Z'
+
+  async function seeded(): Promise<{ store: PgStore; portalB: number; db: Queryable }> {
+    const { db, portalA, portalB } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await store.addResponse(sampleResponse())
+    return { store, portalB, db }
+  }
+
+  it('ответ ПОСЛЕ момента → true, ДО → false', async () => {
+    const { store } = await seeded()
+    expect(await store.hasResponseSince(SURVEY_KEY, 5001, at('2026-04-03T09:00:00Z'))).toBe(true)
+    expect(await store.hasResponseSince(SURVEY_KEY, 5001, at('2026-04-03T11:00:00Z'))).toBe(false)
+  })
+
+  it('ответ РОВНО в момент перехода считается ответом (граница включающая)', async () => {
+    const { store } = await seeded()
+    expect(await store.hasResponseSince(SURVEY_KEY, 5001, at(RESP_AT))).toBe(true)
+  })
+
+  it('чужая сделка и чужой опрос не считаются', async () => {
+    const { store } = await seeded()
+    expect(await store.hasResponseSince(SURVEY_KEY, 5002, at('2026-04-03T09:00:00Z'))).toBe(false)
+    expect(await store.hasResponseSince('nps_quarterly', 5001, at('2026-04-03T09:00:00Z'))).toBe(false)
+  })
+
+  it('ЧУЖОЙ ПОРТАЛ не видит ответ (tenant-изоляция)', async () => {
+    // Иначе ответ по сделке 5001 портала A закрыл бы повод спрашивать по сделке 5001 портала B —
+    // тихо и навсегда: у разных порталов id сделок совпадают штатно.
+    const { portalB, db } = await seeded()
+    const other = new PgStore(db, { portalId: portalB })
+    await other.publish(draftV1(), 1)
+    expect(await other.hasResponseSince(SURVEY_KEY, 5001, at('2026-04-03T09:00:00Z'))).toBe(false)
+  })
+
+  it('ответ без сделки в контексте повод не закрывает', async () => {
+    const { db, portalA } = await fresh()
+    const store = new PgStore(db, { portalId: portalA })
+    await store.publish(draftV1(), 1)
+    await store.addResponse(sampleResponse({ context: {} }))
+    expect(await store.hasResponseSince(SURVEY_KEY, 5001, at('2026-04-03T09:00:00Z'))).toBe(false)
+  })
+})
+
 describe('PgStore — SQL-агрегация (паритет с in-memory на демо-данных)', () => {
   let store: PgStore
   let all: Awaited<ReturnType<PgStore['listResponses']>>

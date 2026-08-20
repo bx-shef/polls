@@ -23,12 +23,28 @@ export interface WidgetParams {
   surveyKey?: string
   /** Токен УЖЕ выписанного приглашения — есть только при открытии кнопкой из таймлайна. */
   token?: string
+  /**
+   * Готовая абсолютная ссылка, какой её записал сервер в тело дела.
+   *
+   * ⚠️ Нужна, чтобы менеджер не получил ДВЕ разные ссылки на один опрос. Сервер строит URL из
+   * настроенного домена приложения (`APP_DOMAIN`/`DOMAIN`), а виджет живёт в iframe и знает только
+   * `window.location.origin` — за прокси, на алиасе домена или нестандартном порту это разные хосты.
+   * В теле дела висела бы одна ссылка, а копировалась бы другая, и расходились бы они молча.
+   */
+  url?: string
 }
 
-/** Прочитать значение по нескольким возможным именам ключа (портал именует по-разному). */
-function pick(src: Record<string, unknown>, ...names: string[]): unknown {
+/**
+ * Прочитать значение по нескольким возможным именам ключа (портал именует по-разному).
+ *
+ * ⚠️ Перебираем до первого ГОДНОГО значения, а не до первого присутствующего ключа. Разница не
+ * теоретическая: при `{ ID: '0', dealId: '759' }` вариант «первый присутствующий» вернул бы `'0'`,
+ * тот не прошёл бы проверку — и сделка потерялась бы, хотя рядом лежало верное значение.
+ */
+function pick<T>(src: Record<string, unknown>, read: (raw: unknown) => T | undefined, ...names: string[]): T | undefined {
   for (const n of names) {
-    if (src[n] != null && src[n] !== '') return src[n]
+    const v = read(src[n])
+    if (v !== undefined) return v
   }
   return undefined
 }
@@ -50,12 +66,18 @@ export function readWidgetParams(options: unknown): WidgetParams {
   if (typeof options !== 'object' || options === null) return {}
   const o = options as Record<string, unknown>
   const params: WidgetParams = {}
-  const dealId = readId(pick(o, 'ID', 'id', 'dealId', 'DEAL_ID'))
+  // ⚠️ Порядок имён сделки НЕ произволен: наше явное `dealId` (его кладёт кнопка) старше портального
+  // `ID` (его кладёт плейсмент карточки). Иначе при открытии кнопкой, если портал добавит в options
+  // свой `ID`, он перебил бы наш параметр — и приглашение ушло бы на ЧУЖУЮ сделку, а ответ клиента
+  // лёг бы не туда. Аналитика тут и есть продукт, поэтому цена промаха — не косметическая.
+  const dealId = pick(o, readId, 'dealId', 'DEAL_ID', 'ID', 'id')
   if (dealId !== undefined) params.dealId = dealId
-  const surveyKey = readText(pick(o, 'surveyKey', 'SURVEY_KEY'))
+  const surveyKey = pick(o, readText, 'surveyKey', 'SURVEY_KEY')
   if (surveyKey !== undefined) params.surveyKey = surveyKey
-  const token = readText(pick(o, 'token', 'TOKEN'))
+  const token = pick(o, readText, 'token', 'TOKEN')
   if (token !== undefined) params.token = token
+  const url = pick(o, readText, 'url', 'URL')
+  if (url !== undefined) params.url = url
   return params
 }
 
@@ -73,22 +95,19 @@ export function hasIssuedInvitation(p: WidgetParams): p is IssuedInvitation {
   return p.surveyKey !== undefined && p.token !== undefined
 }
 
-/**
- * Собрать `actionParams` кнопки «Отправить приглашение» на деле в таймлайне.
- *
- * Живёт РЯДОМ с разбором намеренно: имена параметров нужны в двух несвязанных местах — тут их пишет
- * дело (`src/bitrix24/activity.ts`), там читает виджет. Разъехавшись, они не сломают ни сборку, ни
- * тесты: кнопка просто откроет виджет без токена, тот примет это за обычное открытие и выпишет ВТОРОЕ
- * приглашение. Одна точка правды делает такое расхождение невозможным.
- */
-export function inviteActionParams(p: { dealId: number; surveyKey: string; token: string }): Record<string, string | number> {
-  return { dealId: p.dealId, surveyKey: p.surveyKey, token: p.token }
-}
-
 /** Вердикт о годности уже выписанной ссылки — что показать сотруднику в виджете. */
 export interface LinkVerdict {
-  /** Можно отдавать ссылку клиенту. */
-  alive: boolean
+  /**
+   * `alive` — сервер подтвердил годность; `dead` — сервер отказал; `unknown` — вердикта НЕТ (проверка
+   * не удалась: лимит запросов, сбой, обрыв сети).
+   *
+   * ⚠️ `unknown` отделён от `alive` намеренно. Слить их значило бы показать «ссылка готова, отправляйте»
+   * там, где мы этого не знаем: сотрудник уверенно отправил бы клиенту израсходованную ссылку и не
+   * увидел бы способа выписать новую. Слить с `dead` — тоже нельзя: сбой ПРОВЕРКИ заставил бы выписать
+   * вторую ссылку на живое приглашение, то есть сам породил бы дубль. Отсюда третье состояние: ссылку
+   * показываем, но с оговоркой и с возможностью выписать новую.
+   */
+  state: 'alive' | 'dead' | 'unknown'
   /** Текст отказа от сервера — показываем как есть (он уже написан для человека). */
   reason?: string
 }
@@ -100,16 +119,69 @@ export interface LinkVerdict {
  * открыть **старое** дело и нажать кнопку на ссылке, которая давно израсходована или протухла — и
  * отправить клиенту мёртвую ссылку, не узнав об этом.
  *
- * ⚠️ **Fail-open, и это осознанно.** Мёртвой ссылку объявляем ТОЛЬКО по явному отказу сервера. «Слишком
- * много запросов» (429) и сбой сервера (5xx) — это не вердикт о ссылке, а состояние проверки; посчитав
- * их отказом, мы заставили бы сотрудника выписывать вторую ссылку на живое приглашение, то есть сами
- * породили бы дубль ровно там, где от него защищаемся. Цена ошибки в другую сторону — сотрудник отправит
- * ссылку, которая не откроется, и клиент попросит новую: неприятно, но обратимо.
+ * ⚠️ Мёртвой ссылку объявляем ТОЛЬКО по явному отказу сервера. «Слишком много запросов» (429) и сбой
+ * сервера (5xx) — это не вердикт о ссылке, а состояние проверки: они дают `unknown`.
  */
 export function readLinkVerdict(status: number, body: unknown): LinkVerdict {
   const b = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
-  if (b['ok'] === true) return { alive: true }
-  if (status === 429 || status >= 500) return { alive: true }
+  if (b['ok'] === true) return { state: 'alive' }
+  if (status === 429 || status >= 500) return { state: 'unknown' }
   const reason = readText(b['error'])
-  return reason !== undefined ? { alive: false, reason } : { alive: false }
+  return reason !== undefined ? { state: 'dead', reason } : { state: 'dead' }
+}
+
+/** Что показать в виджете, открытом по кнопке из таймлайна. */
+export interface IssuedLinkView {
+  /** Текст над ссылкой и кнопками. */
+  message: string
+  /** Показывать готовую ссылку. */
+  showLink: boolean
+  /** Показывать кнопку «Создать ссылку на опрос». */
+  showReissue: boolean
+}
+
+/**
+ * Собрать вид виджета по вердикту. Чистая функция: три состояния ссылки × «известна ли сделка» —
+ * ровно та комбинаторика, которую в `.vue` никто бы не проверил.
+ *
+ * ⚠️ `hasDeal` решает, показывать ли кнопку выписки: без id сделки она всё равно не сработает, и
+ * обещать «можно создать новую» там, где не можем, — хуже, чем честно отправить в карточку сделки.
+ */
+export function issuedLinkView(verdict: LinkVerdict, hasDeal: boolean): IssuedLinkView {
+  if (verdict.state === 'alive') {
+    return { message: 'Приглашение уже готово. Отправьте клиенту эту ссылку:', showLink: true, showReissue: false }
+  }
+  if (verdict.state === 'unknown') {
+    return {
+      message: hasDeal
+        ? 'Ссылку проверить не удалось — скорее всего она рабочая. Если клиент не сможет её открыть, создайте новую.'
+        : 'Ссылку проверить не удалось — скорее всего она рабочая.',
+      showLink: true,
+      showReissue: hasDeal
+    }
+  }
+  const why = verdict.reason ?? 'Ссылка из этого дела больше не действует.'
+  return {
+    message: hasDeal ? `${why} Можно создать новую.` : `${why} Откройте виджет из карточки сделки, чтобы создать новую.`,
+    showLink: false,
+    showReissue: hasDeal
+  }
+}
+
+/**
+ * Собрать `actionParams` кнопки «Отправить приглашение» на деле в таймлайне.
+ *
+ * Живёт РЯДОМ с разбором намеренно: имена параметров нужны в двух несвязанных местах — тут их пишет
+ * дело (`src/bitrix24/activity.ts`), там читает виджет. Разъехавшись, они не сломают ни сборку, ни
+ * тесты: кнопка просто откроет виджет без токена, тот примет это за обычное открытие и выпишет ВТОРОЕ
+ * приглашение. Parity-тест прогоняет настоящий конструктор дела через настоящий разбор.
+ */
+export function inviteActionParams(p: {
+  dealId: number
+  surveyKey: string
+  token: string
+  /** Абсолютная ссылка, ровно та, что записана текстом в теле дела. */
+  url: string
+}): Record<string, string | number> {
+  return { dealId: p.dealId, surveyKey: p.surveyKey, token: p.token, url: p.url }
 }

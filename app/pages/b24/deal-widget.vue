@@ -16,7 +16,7 @@ import { initializeB24Frame } from '@bitrix24/b24jssdk'
 import { serverMessage } from '~core/client/server-message'
 // Разбор параметров открытия — чистой функцией в ядре: их два способа, и перепутать их значит
 // выписать ВТОРОЕ приглашение на ту же сделку.
-import { hasIssuedInvitation, readLinkVerdict, readWidgetParams } from '~core/client/widget-params'
+import { hasIssuedInvitation, issuedLinkView, readLinkVerdict, readWidgetParams, type LinkVerdict } from '~core/client/widget-params'
 import { INVITATION_TOKEN_PARAM, surveyPath } from '~core/client/invitation-link'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
@@ -27,6 +27,8 @@ const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
 const message = ref('Загрузка…')
 const link = ref('')
 const dealId = ref<number | undefined>()
+/** Показывать кнопку выписки рядом с уже готовой ссылкой (когда проверить её не удалось). */
+const canReissue = ref(false)
 let auth: FrameAuth | undefined
 
 onMounted(async () => {
@@ -38,25 +40,21 @@ onMounted(async () => {
     const params = readWidgetParams(b24.placement.options)
     dealId.value = params.dealId
     if (hasIssuedInvitation(params)) {
-      // Пришли по кнопке из таймлайна: ссылка уже есть, собираем её из токена. Домен берём свой —
-      // виджет и страница опроса живут на одном хосте.
-      const issued = `${window.location.origin}${surveyPath(params.surveyKey, params.token)}`
+      // Пришли по кнопке из таймлайна: ссылка уже есть. Берём ГОТОВУЮ строку, которую сервер записал
+      // в тело дела, — тогда менеджер видит и копирует одну и ту же ссылку. Сборка из
+      // `window.location.origin` — только фолбэк: сервер строит URL из настроенного домена приложения,
+      // а виджет в iframe знает лишь свой origin, и за прокси/на алиасе домена это разные хосты.
+      const issued = params.url ?? `${window.location.origin}${surveyPath(params.surveyKey, params.token)}`
       message.value = 'Проверяем ссылку…'
       const verdict = await checkLink(params.surveyKey, params.token)
-      if (verdict.alive) {
-        link.value = issued
-        phase.value = 'done'
-        message.value = 'Приглашение уже готово. Отправьте клиенту эту ссылку:'
-        return
-      }
-      // Дело в таймлайне не исчезает, а ссылка на нём — да. Не молчим и не отправляем мёртвую:
-      // показываем причину и предлагаем выписать новую — это ровно то, зачем сотрудник сюда пришёл.
-      phase.value = 'ready'
-      const why = verdict.reason ?? 'Ссылка из этого дела больше не действует.'
-      // Без id сделки кнопка выписки всё равно не работает — не обещаем того, чего не сможем сделать.
-      message.value = dealId.value
-        ? `${why} Можно создать новую.`
-        : `${why} Откройте виджет из карточки сделки, чтобы создать новую.`
+      // Что показать — решает чистая функция ядра: три состояния ссылки × «известна ли сделка».
+      const view = issuedLinkView(verdict, dealId.value !== undefined)
+      link.value = view.showLink ? issued : ''
+      canReissue.value = view.showReissue
+      // `done` рисует ссылку, `ready` — кнопку выписки; при `unknown` нужны обе, поэтому фаза
+      // выбирается по наличию ссылки, а кнопка — отдельным флагом.
+      phase.value = view.showLink ? 'done' : 'ready'
+      message.value = view.message
       return
     }
     phase.value = 'ready'
@@ -74,7 +72,7 @@ onMounted(async () => {
  * правды о годности приглашения быть не должно. Правило разбора ответа — в ядре (`readLinkVerdict`,
  * fail-open: сбой проверки не повод объявлять ссылку мёртвой).
  */
-async function checkLink(surveyKey: string, token: string): Promise<{ alive: boolean; reason?: string }> {
+async function checkLink(surveyKey: string, token: string): Promise<LinkVerdict> {
   try {
     const r = await $fetch.raw<unknown>(`/api/survey/${encodeURIComponent(surveyKey)}/invitation`, {
       query: { [INVITATION_TOKEN_PARAM]: token },
@@ -82,8 +80,8 @@ async function checkLink(surveyKey: string, token: string): Promise<{ alive: boo
     })
     return readLinkVerdict(r.status, r._data)
   } catch {
-    // Сеть недоступна — вердикта нет. Ссылку показываем: см. fail-open в `readLinkVerdict`.
-    return { alive: true }
+    // Сеть недоступна — вердикта НЕТ. Не «жива» и не «мертва»: см. `LinkVerdict.state`.
+    return { state: 'unknown' }
   }
 }
 
@@ -92,7 +90,8 @@ async function checkLink(surveyKey: string, token: string): Promise<{ alive: boo
  * Отказ буфера обмена (нет прав, старый браузер) не прячем: ссылка видна рядом и её можно выделить
  * руками, но молчаливая кнопка выглядела бы как поломка.
  */
-const copyLabel = ref('Скопировать ссылку')
+const COPY_IDLE = 'Скопировать ссылку'
+const copyLabel = ref(COPY_IDLE)
 async function copyLink() {
   try {
     await navigator.clipboard.writeText(link.value)
@@ -106,6 +105,8 @@ async function launch() {
   if (!auth || !dealId.value) return
   phase.value = 'init'
   message.value = 'Создаём ссылку…'
+  // Метка относится к КОНКРЕТНОЙ ссылке: оставшись от прошлой, «Скопировано» соврало бы про новую.
+  copyLabel.value = COPY_IDLE
   try {
     const r = await $fetch<{ ok: boolean; url?: string; error?: string }>('/api/b24/deal-invite', {
       method: 'POST',
@@ -137,8 +138,15 @@ async function launch() {
       />
       <div v-if="phase === 'done'" class="mt-2 flex flex-col gap-2">
         <a :href="link" target="_blank" class="break-all text-indigo-600 underline dark:text-indigo-400">{{ link }}</a>
-        <div>
+        <div class="flex flex-wrap gap-2">
           <B24Button color="air-secondary" :label="copyLabel" @click="copyLink" />
+          <B24Button
+            v-if="canReissue"
+            color="air-tertiary"
+            label="Создать новую ссылку"
+            :disabled="!dealId"
+            @click="launch"
+          />
         </div>
       </div>
     </template>

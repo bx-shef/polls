@@ -52,19 +52,38 @@ describe('правило «уже приглашали?» — таблица ц�
       .toEqual({ action: 'skip', reason: 'answered' })
   })
 
+  it('дел НЕТ, но ответ есть → всё равно приглашаем', () => {
+    // Условие `activities.length > 0` несёт вес само по себе: без него любой прошлый ответ по сделке
+    // навсегда съедал бы новый законный переход. Раньше корректность держалась на short-circuit'е
+    // вызывающего (ответы не спрашиваются, когда дел нет), то есть на другом файле.
+    expect(decideInvite({ activities: [], answeredAfterTransition: true })).toEqual({ action: 'create' })
+  })
+
   it('открытое дело перевешивает ответ — ждём именно его', () => {
     expect(decideInvite({ activities: [closed, open], answeredAfterTransition: true }))
       .toEqual({ action: 'skip', reason: 'open' })
   })
 })
 
-/** Заготовка зависимостей: по умолчанию дел нет, ответов нет, создание отдаёт id. */
+/**
+ * Заготовка зависимостей: таймлайн пуст, ответов нет, создание отдаёт id.
+ *
+ * ⚠️ Двойник СОСТОЯТЕЛЬНЫЙ: созданное дело появляется в поиске, как на живом портале. Двойник,
+ * который всегда отдаёт пустой список, тихо ломает всё, что зависит от read-after-write, — в том
+ * числе контрольную проверку `markerVisible`, ради которой она и заведена.
+ */
 function deps(over: Partial<DeliverInviteDeps> = {}): DeliverInviteDeps & { created: () => number } {
   let createdCount = 0
+  const timeline: MarkedActivity[] = []
   const base: DeliverInviteDeps = {
-    findByMarker: () => Promise.resolve([]),
+    findByMarker: () => Promise.resolve([...timeline]),
     answeredAfterTransition: () => Promise.resolve(false),
-    createInvite: () => { createdCount++; return Promise.resolve(100 + createdCount) },
+    createInvite: () => {
+      createdCount++
+      const id = 100 + createdCount
+      timeline.push({ id, completed: false })
+      return Promise.resolve(id)
+    },
     ensureMarker: () => Promise.resolve('already'),
     serializer: createKeySerializer(),
     ...over
@@ -80,8 +99,41 @@ describe('доставка приглашения целиком', () => {
       kind: 'created',
       activityId: 101,
       marker: { originatorId: 'bx-shef.polls', originId: 'stage:4242:csat_postdeal' },
-      markerFix: 'already'
+      markerFix: 'already',
+      markerVisible: 'yes'
     })
+  })
+
+  it('поиск НЕ видит созданное дело → это видно наружу (защита не работает)', async () => {
+    // Самый дорогой из непроверенных сценариев: `crm.activity.list` вживую сверен на ОБЫЧНОМ деле,
+    // а настраиваемое вебхуком не создать. Если `list` не возвращает настраиваемые дела, дедуп —
+    // no-op, и без этой проверки лог показывал бы ровное `markerFix: already`, то есть «всё хорошо»
+    // при 2–4 письмах клиенту.
+    const d = deps({ findByMarker: () => Promise.resolve([]) })
+    const out = await deliverInvite('4242', 'k', d)
+    expect(out.kind === 'created' && out.markerVisible).toBe('no')
+  })
+
+  it('контрольный поиск упал → вердикта нет, но приглашение НЕ теряется', async () => {
+    // Приглашение к этому моменту уже выписано и дело создано. Ронять доставку из-за неудавшейся
+    // ПРОВЕРКИ значило бы выбросить сделанную работу; выдавать сбой за «не видно» — врать в лог.
+    let calls = 0
+    const d = deps({
+      findByMarker: () => {
+        calls++
+        return calls === 1 ? Promise.resolve([]) : Promise.reject(new Error('портал недоступен'))
+      }
+    })
+    const out = await deliverInvite('4242', 'k', d)
+    expect(out.kind).toBe('created')
+    expect(out.kind === 'created' && out.markerVisible).toBe('unknown')
+  })
+
+  it('маркер дописать НЕ удалось → `failed` наружу, а не тихий «repaired»', async () => {
+    // `crm.activity.update` отвечает успехом и когда поле для этого типа дела не поддерживается.
+    const d = deps({ ensureMarker: () => Promise.resolve('failed') })
+    const out = await deliverInvite('4242', 'k', d)
+    expect(out.kind === 'created' && out.markerFix).toBe('failed')
   })
 
   it('маркер не прижился при создании → дописывается, и это видно наружу', async () => {
