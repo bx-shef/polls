@@ -37,6 +37,16 @@ export interface SurveySummary {
   triggerStages: string[]
 }
 
+/**
+ * `member_id` служебного портала-плейсхолдера: под ним копятся данные, пока приложение не связано с
+ * Bitrix. Подчёркивания не коллидируют с настоящими member_id.
+ *
+ * ⚠️ Живёт здесь, а не в `store/bootstrap`, намеренно: константу читают ОБА слоя — бутстрап стора и
+ * `bitrix24/portal` (присвоение плейсхолдера, #171). Импорт `bitrix24 → store/bootstrap` разворачивал
+ * бы зависимость слоёв (бутстрап тянет `demo/seed` со всем демо-датасетом) и подводил бы к циклу.
+ */
+export const LOCAL_PORTAL_MEMBER_ID = '__local__'
+
 /** Итог записи ответа: записали или отбросили как повтор по токену приглашения. */
 export interface AddResponseResult {
   stored: boolean

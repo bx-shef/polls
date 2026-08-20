@@ -48,6 +48,30 @@ export async function usePortalDb(): Promise<Queryable | undefined> {
   return pgDb
 }
 
+/**
+ * Сбросить закэшированные на процесс стор/API/приглашения — так, чтобы следующий вызов собрал их
+ * заново (перечитав `portal`).
+ *
+ * ⚠️ Зовётся ровно из одного места: после успешного `deletePortal` на удалении приложения
+ * ([#171](https://github.com/bx-shef/polls/issues/171)). Раньше плейсхолдер-портал переживал
+ * uninstall — удалялась вторая, пустая строка, — и инстанс продолжал работать. Теперь строка одна и
+ * та же: `deletePortal` сносит РОВНО ту, на числовой `portal.id` которой прибиты `PgStore` и
+ * `PgInvitationStore`. Без сброса каждая последующая запись падала бы на FK
+ * (`survey_group_portal_id_fkey`), причём **тихо для наблюдателя**: install-страница рисует
+ * «Приложение установлено», а `GET /api/health` остаётся зелёным — `ping` это `select 1`, порталов
+ * он не касается. Переустановка без рестарта не лечила бы: новая строка получает НОВЫЙ id, а кэш
+ * держит старый.
+ *
+ * Пул соединений (`pgDb`) намеренно НЕ трогаем: он не привязан к порталу, а его пересоздание на
+ * каждом uninstall стоило бы дороже пользы.
+ */
+export function resetStoreCache(): void {
+  storePromise = undefined
+  apiPromise = undefined
+  invitationStore = undefined
+  pgPortalId = undefined
+}
+
 export function useStore(): Promise<IStore> {
   if (!storePromise) {
     storePromise = buildStore().catch((e) => {

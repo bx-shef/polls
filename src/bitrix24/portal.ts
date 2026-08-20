@@ -1,5 +1,4 @@
-import type { Queryable } from '../store/types'
-import { LOCAL_PORTAL_MEMBER_ID } from '../store/bootstrap'
+import { LOCAL_PORTAL_MEMBER_ID, type Queryable } from '../store/types'
 import { TokenCipher, encryptedBlobSchema } from './crypto'
 import { Bitrix24OAuth, OAuthError, oauthTokensSchema, type OAuthTokens } from './oauth'
 
@@ -85,6 +84,21 @@ export interface SaveTokensOpts {
    * всегда; решение принимает SQL.
    */
   adoptLocal?: boolean
+  /**
+   * Какой портал этот инстанс обслуживает (env `B24_EXPECTED_MEMBER_ID`). Задан — присваиваем
+   * накопленное ТОЛЬКО ему; чужая установка получит `refused`.
+   *
+   * ⚠️ Зачем гейт. `verifyInstallMember` доказывает, что POST пришёл от настоящего портала X, но не
+   * то, что X имеет отношение к данным под плейсхолдером. В частном развёртывании этого хватает:
+   * приложение локальное, install-URL знает только владелец. В Маркете URL один на всех — и тогда
+   * приложение может поставить кто угодно, включая модератора или партнёра с тестового портала. Без
+   * гейта он присвоит чужие ПДн и сможет их стереть (uninstall с «очистить данные»).
+   *
+   * Не задан — присвоение работает как раньше. Дефолт выбран так, а не «выключено», потому что
+   * выключенное по умолчанию присвоение оставило бы #171 открытым на самом обычном пути: владелец
+   * ставит приложение, забыв про переменную, — и удаление данных снова ничего не стирает.
+   */
+  expectedMemberId?: string
 }
 
 /**
@@ -118,13 +132,29 @@ export function resolveTombstoneDays(raw: string | undefined): number {
 }
 
 /** Наблюдатели за событиями стора. Ядро про логгер не знает — событие отдаётся наружу колбэком. */
+/**
+ * Чем кончилась попытка присвоить плейсхолдер-портал.
+ *
+ * ⚠️ Наружу отдаются ВСЕ три исхода, а не только удачный. `skipped` и `refused` означают, что
+ * накопленные ПДн остались за плейсхолдером и удаление приложения их не сотрёт — то есть #171 в этой
+ * базе открыт и лечится руками. Молчание на этих ветках было бы худшим вариантом: работающим
+ * выглядел бы именно провал.
+ */
+export type AdoptOutcome =
+  /** Присвоено: строка плейсхолдера теперь принадлежит порталу. */
+  | { kind: 'adopted'; memberId: string; portalId: number }
+  /** Плейсхолдер есть, но настоящий портал в базе уже был — присваивать нельзя, чьи данные неясно. */
+  | { kind: 'skipped'; memberId: string }
+  /** Установка не от ожидаемого портала (`expectedMemberId`) — присвоение запрещено гейтом. */
+  | { kind: 'refused'; memberId: string }
+
 export interface PortalTokenStoreHooks {
   /**
-   * Плейсхолдер-портал присвоен настоящему `member_id` (см. `SaveTokensOpts.adoptLocal`).
-   * Событие разовое и важное: с этого момента накопленные данные принадлежат порталу, и удаление
-   * приложения их сотрёт. Без строки в логе оно прошло бы незаметно.
+   * Итог присвоения плейсхолдера (см. `SaveTokensOpts.adoptLocal`). Событие разовое и важное: на
+   * `adopted` накопленные данные с этого момента принадлежат порталу и удаление приложения их сотрёт;
+   * на `skipped`/`refused` — НЕ сотрёт, и это надо увидеть.
    */
-  onAdopt?: (memberId: string) => void
+  onAdopt?: (outcome: AdoptOutcome) => void
 }
 
 export class PortalTokenStore {
@@ -158,32 +188,65 @@ export class PortalTokenStore {
     // Гонка check-then-act (SELECT тумбстоуна → upsert → DELETE) до активации гарда была теоретической,
     // теперь путь живой: параллельный uninstall между чтением и записью воскресил бы портал. Три
     // запроса идут одной транзакцией, если драйвер её умеет.
-    return this.inTx((db) => this.saveIn(db, tokens, opts))
+    const r = await this.inTx((db) => this.saveIn(db, tokens, opts))
+    // ⚠️ Хук — ПОСЛЕ коммита, а не внутри транзакции. Изнутри он сообщал бы о присвоении, которого
+    // могло не случиться: упади следующий запрос той же транзакции, всё откатится, а строка
+    // «присвоено» уже лежала бы в логе — и разбор инцидента поехал бы по ложному следу.
+    if (r.adoption) this.hooks.onAdopt?.(r.adoption)
+    return r.saved
   }
 
-  private async saveIn(db: Queryable, tokens: OAuthTokens, opts: SaveTokensOpts): Promise<boolean> {
+  private async saveIn(
+    db: Queryable,
+    tokens: OAuthTokens,
+    opts: SaveTokensOpts
+  ): Promise<{ saved: boolean; adoption?: AdoptOutcome }> {
     const stampedAt = (opts.now ?? new Date()).toISOString()
     if (opts.eventTs !== undefined) {
       const blocked = await db.query(
         'select 1 from portal_tombstone where member_id = $1 and deleted_ts >= $2 limit 1',
         [tokens.memberId, opts.eventTs]
       )
-      if (blocked.rows.length > 0) return false // out-of-order install после uninstall — не воскрешаем
+      // out-of-order install после uninstall — не воскрешаем
+      if (blocked.rows.length > 0) return { saved: false }
     }
+    let adoption: AdoptOutcome | undefined
     if (opts.adoptLocal) {
-      // Плейсхолдер становится настоящим порталом. Условия в самом SQL, а не в коде: (1) строка
-      // плейсхолдера есть, (2) настоящего портала ещё нет, (3) плейсхолдер — ЕДИНСТВЕННЫЙ портал.
-      // Третье обязательно: при нескольких порталах непонятно, чьи данные лежат под плейсхолдером,
-      // и присвоение отдало бы накопленное одного портала другому.
-      const adopted = await db.query(
-        `update portal set member_id = $1, domain = $2, updated_at = $3
-          where member_id = $4
-            and not exists (select 1 from portal p2 where p2.member_id = $1)
-            and (select count(*) from portal) = 1
-          returning id`,
-        [tokens.memberId, tokens.domain ?? '', stampedAt, LOCAL_PORTAL_MEMBER_ID]
-      )
-      if (adopted.rows.length > 0) this.hooks.onAdopt?.(tokens.memberId)
+      // ⚠️ Опциональный гейт: если инстанс знает, какой портал он обслуживает, чужая установка
+      // накопленное НЕ присваивает. Без гейта (значение не задано) — сегодняшнее поведение частного
+      // развёртывания: приложение локальное, install-URL знает только владелец. Перед публикацией в
+      // Маркете гейт обязателен — там URL один на всех, см. §Ключевые решения.
+      if (opts.expectedMemberId !== undefined && opts.expectedMemberId !== tokens.memberId) {
+        adoption = { kind: 'refused', memberId: tokens.memberId }
+      } else {
+        // Плейсхолдер становится настоящим порталом. Условия в самом SQL, а не в коде: строка
+        // плейсхолдера есть И настоящих порталов нет ни одного. Второе обязательно: при уже
+        // установленном портале непонятно, чьи данные лежат под плейсхолдером, и присвоение отдало
+        // бы накопленное одного портала другому.
+        // `domain`/`updated_at`/`tokens` тут не трогаем: их всё равно перезапишет upsert ниже, в той
+        // же транзакции. Меняем ровно то, что upsert выставить не может: владельца строки и дату
+        // установки (иначе у присвоенного портала там навсегда осталась бы дата развёртывания).
+        const adopted = await db.query<{ id: number }>(
+          // `member_id = $3` формально избыточен (при живом `not exists` других строк и быть не может),
+          // но оставлен намеренно: он выражает НАМЕРЕНИЕ «присваиваем именно плейсхолдер». Без него
+          // ослабление `not exists` в будущем молча превратило бы это в «присвоить любой портал».
+          `update portal set member_id = $1, installed_at = $2
+            where member_id = $3
+              and not exists (select 1 from portal p2 where p2.member_id <> $3)
+            returning id`,
+          [tokens.memberId, stampedAt, LOCAL_PORTAL_MEMBER_ID]
+        )
+        const id = adopted.rows[0]?.id
+        if (id !== undefined) {
+          adoption = { kind: 'adopted', memberId: tokens.memberId, portalId: id }
+        } else {
+          // Присвоения НЕ случилось. Молчать тут нельзя: это ровно тот исход, при котором
+          // накопленные ПДн остаются за плейсхолдером и удаление приложения их не сотрёт, — то есть
+          // #171 в этой базе остался открытым, и лечится он только руками.
+          const stale = await db.query('select 1 from portal where member_id = $1 limit 1', [LOCAL_PORTAL_MEMBER_ID])
+          if (stale.rows.length > 0) adoption = { kind: 'skipped', memberId: tokens.memberId }
+        }
+      }
     }
     await db.query(
       `insert into portal (member_id, domain, tokens, updated_at) values ($1, $2, $3, $4)
@@ -198,7 +261,7 @@ export class PortalTokenStore {
         [tokens.memberId, opts.eventTs]
       )
     }
-    return true
+    return adoption !== undefined ? { saved: true, adoption } : { saved: true }
   }
 
   /**
