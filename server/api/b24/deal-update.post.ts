@@ -120,6 +120,19 @@ export default defineEventHandler(async (event) => {
               ageSec: seen.ageSec ?? null,
               records: records.length
             })
+          } else {
+            // ⚠️ `transitionId` в логе — не украшение, а ИЗМЕРЕНИЕ дублей перед их лечением (#138).
+            // Вся гипотеза лечения стоит на том, что гроздь событий вокруг одного перехода видит в
+            // истории ОДНУ И ТУ ЖЕ запись. На живом портале это надо не предположить, а увидеть:
+            // несколько строк `b24_stage_entry_fresh` с одинаковым `transitionId` — гипотеза верна и
+            // маркер сработает; разные `transitionId` — лечить надо иначе, и хорошо, что узнали до, а
+            // не после того, как клиент получил несколько писем.
+            logger.info('b24_stage_entry_fresh', {
+              dealId,
+              stageId,
+              transitionId: seen.transitionId ?? '(ID не прочитан)',
+              ageSec: seen.ageSec ?? null
+            })
           }
           return seen.fresh
         } catch (e) {
