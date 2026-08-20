@@ -322,12 +322,22 @@ export function createApi(deps: ApiDeps): Api {
             // пройден», а не «попросите новую ссылку у менеджера». Диагноз даёт `consume` — здесь он
             // НИЧЕГО не расходует по построению: сюда мы попали только потому, что живого
             // приглашения нет, а погасить уже погашенное (или несуществующее) нечем.
-            const diag = await invitations.consume(
-              p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now()
-            )
-            return diag.status === 'replay'
-              ? err(409, INVITATION_TEXT.replay)
-              : err(403, INVITATION_TEXT.dead)
+            // ⚠️ Отказ самого диагноза НЕ должен менять ответ: решение («приглашение не годно») уже
+            // принято выше, диагноз влияет только на ТЕКСТ. Без этого `catch` лежащий стор превращал
+            // протухшую ссылку в 500 «попробуйте ещё раз» — совет, который не может сработать в
+            // принципе, и каждая попытка стоила бы ещё одного запроса к БД.
+            const diag = await invitations
+              .consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
+              .catch((e: unknown) => { onError(e); return { status: 'unknown' } as const })
+            // Явный разбор всех статусов, а не тернарник: `mismatch` сегодня сюда не доходит (строка,
+            // живая для `consume`, была бы отдана `peek`), но недостижимость держится на инварианте
+            // двух методов, а не на типах. `switch` заставит компилятор обновить ветку, если в
+            // `InvitationConsume` появится четвёртый статус.
+            switch (diag.status) {
+              case 'replay': return err(409, INVITATION_TEXT.replay)
+              case 'mismatch': return err(409, INVITATION_TEXT.mismatch)
+              default: return err(403, INVITATION_TEXT.dead)
+            }
           }
           if (inv.surveyKey !== p.surveyKey || inv.versionNo !== p.versionNo) {
             return err(409, INVITATION_TEXT.mismatch)
@@ -335,8 +345,9 @@ export function createApi(deps: ApiDeps): Api {
           context = inv.context
         }
 
+        const responseId = idGen()
         const { stored } = await store.addResponse({
-          id: idGen(),
+          id: responseId,
           surveyKey: version.surveyKey,
           versionNo: version.versionNo,
           submittedAt: now().toISOString(), // только сервер; клиентское поле игнорируется (#4)
@@ -345,22 +356,52 @@ export function createApi(deps: ApiDeps): Api {
           // токен → durable-якорь идемпотентности (стор дедуплицирует по нему, #3/#4)
           ...(p.invitation != null ? { invitationToken: p.invitation } : {})
         })
-        // Дедуп по токену сказал «такой ответ уже есть» — значит по этой ссылке опрос пройден.
-        // Отвечаем тем же 409, каким раньше отвечал `consume` на `replay`.
-        if (!stored) return err(409, INVITATION_TEXT.replay)
 
+        /**
+         * Гасим ссылку ПОСЛЕ записи — и в обеих ветках, а не только на успешной.
+         *
+         * ⚠️ Ветка `stored === false` («ответ по этой ссылке уже записан») — это ровно то состояние,
+         * ради которого весь PR: предыдущая попытка записала ответ, но не догасила токен. Если
+         * выйти отсюда сразу с 409, состояние «ответ есть, ссылка жива» становится ТЕРМИНАЛЬНЫМ:
+         * единственный код, который гасит токен, до него больше не доходит. А значит предпросмотр
+         * `peek` бессрочно отдаёт снимок CRM, `invitationCheck` отвечает «ссылка годна» — человек с
+         * пересланной ссылкой заполняет анкету и узнаёт правду только на «Отправить», — и чистка
+         * ПДн меряет срок от `expires_at`, а не от прохождения опроса.
+         *
+         * Отказ гашения ответа не теряет: он записан, а повторная отправка упрётся в дедуп и снова
+         * попадёт сюда же. Поэтому ошибку не пробрасываем — иначе человек увидел бы «не
+         * отправилось» по уже принятому ответу и заполнял бы заново.
+         */
         if (p.invitation != null) {
-          // Гасим ссылку ПОСЛЕ записи. Отказ здесь ответа не теряет: он записан, а повторная
-          // отправка упрётся в дедуп выше и получит честный 409. Поэтому ошибку не пробрасываем —
-          // иначе человек увидел бы «не отправилось» по уже принятому ответу и заполнял бы заново.
+          // ⚠️ Ошибку НЕ гоним через `onError`: это хук внутренних отказов, по умолчанию пишущий
+          // `api_error` уровня error. Запрос при этом отвечает 200 — и всё, что считает `api_error`
+          // за пятисотку (алерт, дашборд), получало бы ложный сигнал отказа на успешном ответе.
           const burnt = await invitations
             .consume(p.invitation, { surveyKey: p.surveyKey, versionNo: p.versionNo }, now())
-            .catch((e: unknown) => { onError(e); return undefined })
-          if (burnt?.status !== 'ok') {
-            // Ссылка осталась живой (или её погасил кто-то другой), а ответ записан. Строка нужна,
-            // чтобы такое расхождение было видно, а не тонуло.
-            logger.warn('invitation_burn_failed', { status: burnt?.status ?? 'error' })
+            .catch((e: unknown) => ({ status: 'error', err: errInfo(e) }) as const)
+          // `replay` — ссылка уже была погашена прошлой попыткой: это норма, а не расхождение.
+          if (burnt.status !== 'ok' && burnt.status !== 'replay') {
+            // Ссылка осталась живой, а ответ записан. Поля — чтобы расхождение можно было найти и
+            // догасить руками; токен в лог не кладём (он и есть секрет-ссылка).
+            logger.warn('invitation_burn_failed', {
+              status: burnt.status,
+              responseId,
+              surveyKey: p.surveyKey,
+              versionNo: p.versionNo,
+              ...('err' in burnt ? { err: burnt.err } : {})
+            })
           }
+        }
+
+        // Дедуп по токену сказал «такой ответ уже есть» — значит по этой ссылке опрос пройден.
+        // Отвечаем тем же 409, каким раньше отвечал `consume` на `replay`.
+        // ⚠️ Сужено до пути С приглашением: без токена дедупа нет ни в одной реализации, и
+        // `stored: false` тут означал бы поломку стора, а не повтор. Отдать на неё «ссылка уже
+        // использована» значило бы молча потерять публичный ответ под неверным текстом.
+        if (!stored) {
+          if (p.invitation != null) return err(409, INVITATION_TEXT.replay)
+          onError(new Error('addResponse вернул stored:false для ответа без приглашения'))
+          return err(500, 'Не удалось сохранить ответ. Попробуйте ещё раз позже.')
         }
 
         return { status: 200, body: { ok: true } }

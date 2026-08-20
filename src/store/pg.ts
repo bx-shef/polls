@@ -354,6 +354,11 @@ export class PgStore implements IStore {
         throw new Error(`Версия ${rec.versionNo} опроса ${rec.surveyKey} не найдена`)
       }
       const c = rec.context
+      // ⚠️ SECURITY-RELEVANT: на `invitation_token` в этой строке держится ОДНОРАЗОВОСТЬ ссылки
+      // (#170) — `invitation.used_at` после того PR стал бухгалтерией, а не барьером. Значит чистка
+      // ПДн (#31/#10) и план «перевести дедуп на FK `invitation_id`» обязаны сначала восстановить
+      // барьер: иначе удаление строки/обнуление токена молча вернёт возможность ответить по ссылке
+      // второй раз и переписать оценку. Подробности — issue #181.
       // ON CONFLICT по частичному uq_response_invitation_token (см. миграцию 0003):
       // повтор того же invitation_token (даже с другого инстанса) → DO NOTHING, строка
       // не вставляется и `rows` пуст → идемпотентный no-op ниже. Токен NULL

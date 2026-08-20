@@ -463,3 +463,46 @@ describe('паритет: память и PostgreSQL отвечают одина
     })
   }
 })
+
+describe('ИНВАРИАНТ ПОРТА: `peek` пуст ⇒ `consume` не сожжёт', () => {
+  /**
+   * Живой набор `peek` обязан быть НАДМНОЖЕСТВОМ сжигаемого набора `consume`.
+   *
+   * ⚠️ На этом стоит диагностика в `submit` (#170): когда `peek` вернул пусто, `consume` зовётся
+   * РАДИ СТАТУСА — отличить «опрос пройден» от «ссылка протухла». Безопасно это только потому, что
+   * жечь там нечего. Реализация, где `peek` строже (сузили предпросмотр, повесили кэш, разошлись
+   * условия по сроку), начнёт жечь токены прямо на пути «мёртвый токен»: обладатель утёкшей ссылки
+   * погасит чужое приглашение одним POST с мусорными ответами и верным `surveyKey`/`versionNo`.
+   *
+   * ⚠️ Проверять надо на ЖИВОМ приглашении в разных точках его срока — на мёртвых утверждение
+   * выполняется само собой и мутацию не ловит (проверено: сужение `peek` такой набор переживает).
+   */
+  const PIN3 = { surveyKey: 'k-invariant', versionNo: 4 }
+  const TTL5 = 5 * 60_000
+
+  /** Нарушен ли инвариант в этой точке: `peek` уже молчит, а `consume` ещё жжёт. */
+  async function violated(s: InvitationStore, atMs: number): Promise<boolean> {
+    const inv = await s.create({ ...PIN3, context: ctx, ttlMs: TTL5 }, NOW)
+    const at = later(atMs)
+    const peekEmpty = (await s.peek(inv.token, at)) === undefined
+    const burned = (await s.consume(inv.token, PIN3, at)).status === 'ok'
+    return peekEmpty && burned
+  }
+
+  // Точки внутри срока, включая самый его хвост: сужение предпросмотра проявится именно там.
+  const POINTS: Array<[string, number]> = [
+    ['сразу после выписки', 0],
+    ['в середине срока', TTL5 / 2],
+    ['за 30 секунд до истечения', TTL5 - 30_000],
+    ['за секунду до истечения', TTL5 - 1_000]
+  ]
+
+  for (const [name, atMs] of POINTS) {
+    it(`память: ${name}`, async () => {
+      expect(await violated(new MemoryInvitationStore(), atMs)).toBe(false)
+    })
+    it(`PostgreSQL: ${name}`, async () => {
+      expect(await violated(new PgInvitationStore(db, { portalId: await freshPortal() }), atMs)).toBe(false)
+    })
+  }
+})

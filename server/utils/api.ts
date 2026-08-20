@@ -90,7 +90,11 @@ async function buildStore(): Promise<IStore> {
   await applyMigrations(db, readMigrationSqls())
   const portalId = await ensureDefaultPortal(db)
   pgPortalId = portalId
-  const store = new PgStore(db, { portalId })
+  // `requireTransaction` — не педантизм: без транзакции отказ между вставкой `response` и
+  // `response_answer` оставит пустой ответ, а повтор упрётся в дедуп по токену и получит 409 «опрос
+  // пройден» (#170). Флаг падает на старте, если драйвер транзакций не умеет, — вместо тихой
+  // неатомарной записи. `queryableFromPool` их умеет, так что это страховка от будущей подмены.
+  const store = new PgStore(db, { portalId, requireTransaction: true })
   if (await seedDemoIfEmpty(store)) {
     logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД (single-tenant MVP, #6)' })
   }

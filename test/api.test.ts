@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
 import { nullLogger } from '../src/obs/logger'
 import { MemoryNonceStore } from '../src/api/nonce'
@@ -347,15 +347,17 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     // человек читал «вы уже прошли опрос» по анкете, которой нет. Переиздать её мог только менеджер.
     const invitations = new MemoryInvitationStore({ idGen: () => 'inv-tok-1' })
     const store = await buildDemo(new MemoryStore())
+    // Подменяем МЕТОД на настоящем сторе (`vi.spyOn`), а не копируем объект: копия через
+    // `Object.create`/`Object.assign` работала бы лишь пока состояние лежит в TS-`private` полях, а
+    // перевод любого на `#private` превратил бы её в рантайм-ошибку — в тесте, который и есть
+    // доказательство #170.
     let failWrite = true
-    const flaky = Object.assign(Object.create(Object.getPrototypeOf(store) as object), store, {
-      addResponse: (r: Parameters<MemoryStore['addResponse']>[0]) => {
-        if (failWrite) return Promise.reject(new Error('БД недоступна'))
-        return store.addResponse(r)
-      }
-    }) as MemoryStore
+    const real = store.addResponse.bind(store)
+    const spy = vi.spyOn(store, 'addResponse').mockImplementation((r) =>
+      failWrite ? Promise.reject(new Error('БД недоступна')) : real(r)
+    )
     const c = clock()
-    const api = createApi({ store: flaky, invitations, now: c.now, logger: nullLogger })
+    const api = createApi({ store, invitations, now: c.now, logger: nullLogger })
     const inv = await invitations.create({ surveyKey: SURVEY_KEY, versionNo: 2, context: snapshot }, c.now())
 
     expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
@@ -366,6 +368,7 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     expect((await api.submit({ ip: 'a', body: { ...validPayload(await issueNonce(api)), invitation: inv.token } })).status)
       .toBe(200)
     expect((await store.listResponses()).at(-1)!.context).toEqual(snapshot)
+    spy.mockRestore()
   })
 
   it('ОТКАЗ ГАШЕНИЯ после записи не теряет ответ, а повтор самозаживает в 409', async () => {
