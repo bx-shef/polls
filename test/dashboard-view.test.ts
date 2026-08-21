@@ -290,6 +290,22 @@ describe('дашборд: решение роута', () => {
       'в срез попали ответы других версий').toEqual(['Петров'])
   })
 
+  it('?version вне диапазона int4 не доезжает до SQL (иначе 500 на валидной сессии)', async () => {
+    // ⚠️ Найдено пробой на ревью: значение уходит в SQL как `$3::int`, и `?version=99999999999`
+    // ронял запрос («out of range for type integer») — то есть 500 вместо обещанного «показываем
+    // все версии». Страница сама пересылает в API любое положительное целое из адреса.
+    const store = fakeStore()
+    const spy = store.dashboardAggregates as unknown as { mock: { calls: Array<[{ versionNo?: number }]> } }
+    for (const bad of ['99999999999', '2147483648', '-1', '0']) {
+      const out = await ask(deps({}, store), { version: bad })
+      expect(out.status, bad).toBe(200)
+      expect(spy.mock.calls.at(-1)?.[0].versionNo, `${bad}: уехало в хранилище`).toBeUndefined()
+    }
+    // Граница диапазона — валидна и передаётся.
+    await ask(deps({}, store), { version: '2147483647' })
+    expect(spy.mock.calls.at(-1)?.[0].versionNo).toBe(2_147_483_647)
+  })
+
   it('список версий считается ДО фильтра — иначе селектор схлопывается', async () => {
     const mixed = [...RESPONSES, { ...record(300, 'speed'), versionNo: 3 }]
     const out = await ask(deps({}, fakeStore(mixed)), { version: '3' })

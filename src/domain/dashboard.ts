@@ -3,6 +3,7 @@ import {
   byVersion,
   csatFor,
   distributionFor,
+  meetsAnonymity,
   npsFor,
   npsTrend,
   ANONYMITY_THRESHOLD
@@ -18,7 +19,14 @@ import type { ResponseRecord } from './schema'
  * реализации по одним данным и сравнивает результат целиком. Разъехаться молча они не могут.
  *
  * ⚠️ Живёт в `domain/`, а не в сторе: чистая функция над записями, без единого обращения наружу.
- * Ею пользуются `MemoryStore` (dev/демо/тесты) и она же — эталон для SQL.
+ * Ею пользуется `MemoryStore` (dev/демо/тесты) и она же — эталон для SQL.
+ *
+ * ⚠️ **Ответы обязаны прийти в порядке `(submittedAt, порядок вставки)`** — том же, в котором их
+ * отдаёт `PgStore` (`submitted_at asc, id asc`, где `id` это bigserial, то есть порядок вставки). От
+ * него зависит имя группы: оно фиксируется первым вхождением ключа. Сортировка вызывающего должна
+ * быть УСТОЙЧИВОЙ и **не сравнивать `id` как строку**: в проде это `randomUUID`, и лексикографический
+ * порядок с порядком вставки не совпадает — при равном `submittedAt` память и SQL выбирали бы разные
+ * имена одной группы (найдено пробой на ревью).
  */
 export interface DashboardShape {
   npsKey?: string
@@ -50,17 +58,27 @@ const emptyToNull = (d: Record<string, number>): Record<string, number> | null =
 export function dashboardFromResponses(all: ResponseRecord[], q: DashboardShape) {
   // Версии — из ВСЕХ ответов (до фильтра), чтобы селектор не «схлопывался» при срезе.
   const versions = [...new Set(all.map((r) => r.versionNo))].sort((a, b) => a - b)
-  const responses = q.versionNo != null ? byVersion(all, q.versionNo) : all
-  const opts = { npsKey: q.npsKey, csatKey: q.csatKey }
+  // ⚠️ Несуществующую версию игнорируем ЗДЕСЬ, а не у вызывающего: список версий известен только
+  // отсюда, и вид, проверявший его у себя, был вынужден ходить в хранилище второй раз.
+  const version = q.versionNo != null && versions.includes(q.versionNo) ? q.versionNo : null
+  const responses = version != null ? byVersion(all, version) : all
+  const n = responses.length
 
+  // ⚠️ Гейт по общему N — ЗДЕСЬ, в слое чтения, а не только у вида. Две причины. Первая — правило
+  // проекта: подавление живёт там же, где данные, иначе его можно обойти, позвав порт напрямую.
+  // Вторая — цена: без гейта свежий опрос (0–4 ответа), где ответ гарантированно подавлен, всё
+  // равно стоил бы восьми запросов к базе со срезами и именами. А открывают дашборд чаще всего
+  // именно на нём.
+  if (!meetsAnonymity(n)) return EMPTY(n, versions, version)
+
+  const opts = { npsKey: q.npsKey, csatKey: q.csatKey }
   return {
-    n: responses.length,
+    n,
     versions,
+    version,
     nps: q.npsKey ? orNull(npsFor(responses, q.npsKey)) : null,
     csat: q.csatKey ? orNull(csatFor(responses, q.csatKey)) : null,
     // Сырые счётчики по `option_key`: метки живут в версии, а k-анонимность ячеек — у потребителя.
-    // Пусто ⇒ `null` (не `{}`): «вопрос был, никто не выбрал» и «вопроса нет» вид рисует одинаково,
-    // а SQL-вариант пустого объекта не порождает вовсе.
     distribution: q.choiceKey ? emptyToNull(distributionFor(responses, q.choiceKey)) : null,
     // Помесячно; точки с n < порога подавлены (анонимность по месяцу).
     trend: q.npsKey ? npsTrend(responses, q.npsKey, 'month', ANONYMITY_THRESHOLD) : [],
@@ -87,3 +105,18 @@ export function dashboardFromResponses(all: ResponseRecord[], q: DashboardShape)
     )
   }
 }
+
+/** Подавленный ответ порта: размер выборки и список версий есть, цифр нет. */
+const EMPTY = (n: number, versions: number[], version: number | null) => ({
+  n,
+  versions,
+  version,
+  nps: null,
+  csat: null,
+  distribution: null,
+  trend: [],
+  services: [],
+  directions: [],
+  responsibles: [],
+  clients: []
+})

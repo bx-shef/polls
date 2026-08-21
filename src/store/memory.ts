@@ -119,7 +119,15 @@ export class MemoryStore implements IStore {
    * (`submitted_at asc, id asc`): от него зависит имя группы — оно фиксируется первым вхождением.
    */
   async dashboardAggregates(q: DashboardQuery): Promise<DashboardAggregates> {
-    const all = [...this._responses.filter((r) => r.surveyKey === q.surveyKey)].sort(keysetCmp)
+    // ⚠️ Сортировка — УСТОЙЧИВАЯ и ТОЛЬКО по моменту ответа. `keysetCmp` здесь стоял и снят на
+    // ревью: он доразрешает ничью сравнением `id` КАК СТРОКИ, а в проде это `randomUUID` — то есть
+    // при равном `submittedAt` память брала лексикографически первый UUID, а `PgStore` (`id` это
+    // bigserial) — первый вставленный, и обе выбирали РАЗНОЕ имя одной и той же группы. Тест
+    // паритета этого не видел: в демо-сиде все даты различны. `Array#sort` устойчива, поэтому при
+    // равных датах остаётся порядок вставки — ровно то, что даёт bigserial.
+    const all = this._responses
+      .filter((r) => r.surveyKey === q.surveyKey)
+      .sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt))
     return dashboardFromResponses(all, q)
   }
 

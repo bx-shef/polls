@@ -231,7 +231,7 @@ export function finishBreakdown(groups: RawGroup[], minN: number = ANONYMITY_THR
       csat: g.csat && meetsAnonymity(g.csat.n, minN) ? g.csat.mean : null
     }))
     .filter((row) => meetsAnonymity(row.n, minN) && (row.nps !== null || row.csat !== null))
-    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
+    .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name, 'ru'))
 }
 
 /** Ячейка распределения ответов: человекочитаемая метка варианта и число выборов. */

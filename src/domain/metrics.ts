@@ -46,8 +46,17 @@ export interface CsatSummary {
 }
 
 /** CSAT: средняя оценка и доля топ-бокса (по умолчанию ≥4 по шкале 1–5). */
+/**
+ * Нижняя граница «топ-бокса» CSAT по умолчанию.
+ *
+ * ⚠️ Экспортируется затем, чтобы SQL-вариант (`PgStore`) считал по ТОЙ ЖЕ границе, а не по своей
+ * четвёрке, зашитой числом: значения совпадали, связи не было — смена дефолта развела бы верхнюю
+ * метрику и срезы, и заметить это можно было бы только сравнив цифры на одном портале.
+ */
+export const CSAT_TOP_BOX_MIN = 4
+
 export function csat(values: number[], opts: { topBoxMin?: number } = {}): CsatSummary {
-  const topBoxMin = opts.topBoxMin ?? 4
+  const topBoxMin = opts.topBoxMin ?? CSAT_TOP_BOX_MIN
   const n = values.length
   if (n === 0) return { n: 0, mean: 0, topBoxPct: 0 }
   const sum = values.reduce((a, b) => a + b, 0)

@@ -84,6 +84,155 @@ describe('агрегаты дашборда: память и SQL считают 
   })
 })
 
+/**
+ * Состязательная фикстура паритета — ОДНА на все краевые случаи (#49, по итогам ревью).
+ *
+ * ⚠️ Демо-сид доказывал совпадение реализаций на данных, которые не содержат ни одной из ситуаций,
+ * ради которых общий хвост и написан: там все даты различны, баллы целые, ничьих по NPS нет, каждый
+ * ответ отвечает на всё, а месяцев ровно два и оба выше порога. Мутации, снимающие подавление точек
+ * тренда, сортировку `order by` в имени группы, приведение времени к UTC и добор по имени в
+ * сортировке срезов, проходили ВЕСЬ набор.
+ *
+ * Каждый блок ниже подписан тем, что он ловит. Один сид на оба хранилища — pglite небыстрый.
+ */
+async function seedAdversarial(store: MemoryStore | PgStore): Promise<void> {
+  const nps = (v: number) => [{ questionKey: NPS_Q, metric: 'nps' as const, valueChoice: [], valueNumber: v, valueText: null }]
+
+  // (1) МЕСЯЦ С МАЛОЙ ВЫБОРКОЙ — ловит `minN: 1` в тренде: одна точка на одного человека.
+  await store.addResponse({
+    id: 'lonely-march', surveyKey: SURVEY_KEY, versionNo: 2,
+    submittedAt: '2026-03-15T10:00:00.000Z', context: {}, answers: nps(10)
+  })
+
+  // (2) НИЧЬЯ ПО МОМЕНТУ ОТВЕТА — ловит потерю `order by` в имени группы и разный ключ сортировки.
+  // `zzz` вставлен ПЕРВЫМ: лексикографически он последний, по порядку вставки — первый.
+  for (const [id, name] of [['zzz-first', 'Имя-ИЗ-ZZZ'], ['aaa-second', 'Имя-ИЗ-AAA']] as const) {
+    await store.addResponse({
+      id, surveyKey: SURVEY_KEY, versionNo: 2, submittedAt: '2027-03-01T10:00:00.000Z',
+      context: { companyId: 909, companyName: name }, answers: nps(10)
+    })
+  }
+  for (let i = 0; i < 3; i++) {
+    await store.addResponse({
+      id: `tie-filler-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+      submittedAt: `2027-03-0${i + 2}T10:00:00.000Z`,
+      context: { companyId: 909, companyName: 'Имя-ПОЗЖЕ' }, answers: nps(10)
+    })
+  }
+
+  // (2б) САМЫЙ РАННИЙ ОТВЕТ ГРУППЫ ВСТАВЛЕН ПОСЛЕДНИМ — ловит потерю `order by` в `array_agg`: без
+  // сортировки агрегат берёт порядок скана, то есть порядок вставки, и имя оказывается не тем.
+  for (let i = 0; i < 4; i++) {
+    await store.addResponse({
+      id: `late-scan-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+      submittedAt: `2027-09-1${i + 1}T10:00:00.000Z`,
+      context: { companyId: 910, companyName: 'Имя-ПОЗДНЕЕ' }, answers: nps(10)
+    })
+  }
+  await store.addResponse({
+    id: 'earliest-inserted-last', surveyKey: SURVEY_KEY, versionNo: 2,
+    submittedAt: '2027-09-01T10:00:00.000Z',
+    context: { companyId: 910, companyName: 'Имя-САМОЕ-РАННЕЕ' }, answers: nps(10)
+  })
+
+  // (3) РАВНЫЙ NPS У ДВУХ ГРУПП — ловит потерю добора по имени в сортировке `finishBreakdown`.
+  for (const [cid, name] of [[801, 'Бета'], [802, 'Альфа']] as const) {
+    for (let i = 0; i < 5; i++) {
+      await store.addResponse({
+        id: `same-nps-${cid}-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+        submittedAt: `2027-07-0${i + 1}T10:00:00.000Z`,
+        context: { companyId: cid, companyName: name }, answers: nps(9)
+      })
+    }
+  }
+
+  // (4) ВОПРОС-МЕТРИКА ПРОПУЩЕН — ловит лишний порог на верхних NPS/CSAT: группа есть, метрики мало.
+  for (let i = 0; i < 5; i++) {
+    await store.addResponse({
+      id: `silent-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+      submittedAt: `2027-08-0${i + 1}T10:00:00.000Z`,
+      context: { responsibleId: 555, responsibleName: 'Молчун' },
+      answers: i < 2 ? nps(9) : []
+    })
+  }
+
+  // (5) ДРОБНЫЕ БАЛЛЫ — ловит точное десятичное деление вместо double: 19.47/6 это 3.245 в базе и
+  // 3.2449999999999997 в double, то есть 3.25 против 3.24.
+  for (const [i, v] of [4.84, 0.35, 2.19, 4.9, 3.74, 3.45].entries()) {
+    await store.addResponse({
+      id: `frac-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+      submittedAt: `2027-04-0${i + 1}T10:00:00.000Z`,
+      context: { companyId: 777, companyName: 'Дробная' },
+      answers: [{ questionKey: CSAT_Q, metric: 'csat', valueChoice: [], valueNumber: v, valueText: null }]
+    })
+  }
+
+  // (6) ГРАНИЦА МЕСЯЦА — вместе с не-UTC таймзоной сессии ловит потерю `at time zone 'UTC'`.
+  for (let i = 0; i < 5; i++) {
+    await store.addResponse({
+      id: `edge-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+      submittedAt: '2026-06-30T23:30:00.000Z', context: {}, answers: nps(9)
+    })
+  }
+
+  // (7) ОДИН ОТВЕТ — ДВА ТОВАРА, и имя без снимка CRM (фолбэк `#id`).
+  for (let i = 0; i < 5; i++) {
+    await store.addResponse({
+      id: `multi-${i}`, surveyKey: SURVEY_KEY, versionNo: 2,
+      submittedAt: `2027-05-0${i + 1}T10:00:00.000Z`,
+      context: { products: [{ productId: 7001, productName: 'Аудит' }, { productId: 7002 }] },
+      answers: nps(9)
+    })
+  }
+}
+
+describe('агрегаты дашборда: паритет на КРАЕВЫХ данных (найдено ревью)', () => {
+  let mem: MemoryStore
+  let pg: PgStore
+  beforeAll(async () => {
+    // ⚠️ Таймзона сессии НЕ UTC намеренно: иначе `at time zone 'UTC'` в тренде удаляется молча —
+    // pglite стартует в UTC, и приведение становится тождеством.
+    // ⚠️ Таймзона сессии НЕ UTC намеренно: иначе `at time zone 'UTC'` в тренде удаляется молча —
+    // pglite стартует в UTC, и приведение становится тождеством.
+    await pglite.exec("set time zone 'Asia/Kamchatka'")
+    mem = await buildDemo(new MemoryStore())
+    pg = await buildDemo(await pgStore())
+    await Promise.all([seedAdversarial(mem), seedAdversarial(pg)])
+  })
+
+  it('весь ответ порта совпадает целиком', async () => {
+    const [a, b] = await Promise.all([mem.dashboardAggregates(FULL), pg.dashboardAggregates(FULL)])
+    expect(b).toEqual(a)
+  })
+
+  it('фикстура действительно содержит краевые случаи — иначе паритет сравнивает пустоту', async () => {
+    const a = await mem.dashboardAggregates(FULL)
+    // (1) месяц с одним ответом подавлен в тренде, а месяцы с выборкой — есть.
+    expect(a.trend.map((p) => p.bucket), 'месяц из одного ответа виден в тренде').not.toContain('2026-03')
+    expect(a.trend.length).toBeGreaterThan(1)
+    // (2) имя группы взято из ПЕРВОГО вставленного, а не лексикографически первого.
+    expect(a.clients.find((c) => c.n === 5 && ['Имя-ИЗ-ZZZ', 'Имя-ИЗ-AAA'].includes(c.name))?.name)
+      .toBe('Имя-ИЗ-ZZZ')
+    // (3) две группы с равным NPS — порядок решает имя.
+    const same = a.clients.filter((c) => ['Альфа', 'Бета'].includes(c.name)).map((c) => c.name)
+    expect(same, 'ничьей по NPS в фикстуре нет').toEqual(['Альфа', 'Бета'])
+    // (4) у группы 5 ответов, но метрику дали двое — метрика подавлена, строка осталась по CSAT? нет:
+    // без метрик строка не выводится вовсе.
+    expect(a.responsibles.map((r) => r.name), 'группа с подавленной метрикой всё же показана')
+      .not.toContain('Молчун')
+    // (5) дробное среднее посчитано как в ядре.
+    expect(a.clients.find((c) => c.name === 'Дробная')?.csat).toBe(3.24)
+    // (6) граница месяца в UTC, а не в таймзоне сессии.
+    expect(a.trend.map((p) => p.bucket)).toContain('2026-06')
+    // (2б) имя взято у самого раннего ответа, хотя вставлен он последним.
+    expect(a.clients.find((c) => c.n === 5 && c.name.startsWith('Имя-'))?.name).toBeDefined()
+    expect(a.clients.map((c) => c.name), 'взято имя по порядку скана, а не по времени ответа')
+      .toContain('Имя-САМОЕ-РАННЕЕ')
+    // (7) фолбэк имени товара.
+    expect(a.services.map((x) => x.name)).toEqual(expect.arrayContaining(['Аудит', '#7002']))
+  })
+})
+
 describe('агрегаты дашборда: SQL-специфика', () => {
   it('чужой портал не виден: тот же опрос в другом тенанте даёт ноль', async () => {
     // ⚠️ Ключ опроса тенанта НЕ задаёт (уникальность в схеме — `(group_id, survey_key)`), поэтому

@@ -3,7 +3,7 @@ import {
   type BreakdownRow, type RawGroup, type TrendPoint
 } from '../domain/aggregate'
 import { compile } from '../domain/compile'
-import { round1, round2, type CsatSummary, type NpsSummary } from '../domain/metrics'
+import { round1, round2, CSAT_TOP_BOX_MIN, type CsatSummary, type NpsSummary } from '../domain/metrics'
 import {
   compiledVersionSchema,
   invitationPolicySchema,
@@ -584,37 +584,57 @@ export class PgStore implements IStore {
    * большого портала.
    */
   async dashboardAggregates(q: DashboardQuery): Promise<DashboardAggregates> {
-    const version = { versionFrom: q.versionNo, versionTo: q.versionNo }
-    const base = { surveyKey: q.surveyKey, ...version }
-
-    // Число ответов и список версий — одним запросом. Версии считаются ДО фильтра по версии,
-    // поэтому у них свой (пустой) срез: иначе селектор версий схлопывался бы после первого клика.
-    const counts = await this.db.query<{ n: number; version_no: number | null }>(
-      `select count(*) filter (where $3::int is null or r.version_no = $3)::int as n,
-              r.version_no
+    // ⚠️ Шаг 1 — ОДИН дешёвый запрос: размер выборки и список версий. Всё остальное делается только
+    // если оно вообще понадобится (см. гейт ниже) — свежий опрос стоит одного запроса, а не девяти.
+    const counts = await this.db.query<{ n: number; version_no: number }>(
+      `select count(*)::int as n, r.version_no
        from response r join survey s on s.id = r.survey_id
        where r.portal_id = $1 and s.survey_key = $2
        group by r.version_no
        order by r.version_no asc`,
-      [this.opts.portalId, q.surveyKey, q.versionNo ?? null]
+      [this.opts.portalId, q.surveyKey]
     )
-    const n = counts.rows.reduce((a, row) => a + row.n, 0)
-    const versions = counts.rows.map((row) => row.version_no).filter((v): v is number => v != null)
+    const versions = counts.rows.map((row) => row.version_no)
+    // Несуществующую версию игнорируем ЗДЕСЬ: список версий известен только отсюда, и вид,
+    // проверявший его у себя, был вынужден ходить в хранилище второй раз.
+    const version = q.versionNo != null && versions.includes(q.versionNo) ? q.versionNo : null
+    const n = version != null
+      ? (counts.rows.find((row) => row.version_no === version)?.n ?? 0)
+      : counts.rows.reduce((a, row) => a + row.n, 0)
 
-    const [nps, csat, distribution, trend, services, directions, responsibles, clients] = await Promise.all([
+    // ⚠️ Гейт по общему N — в слое чтения. Разбор — в `dashboardFromResponses`; здесь он ещё и
+    // отсекает восемь запросов на состоянии, в котором дашборд открывают чаще всего.
+    if (!meetsAnonymity(n)) {
+      return {
+        n, versions, version,
+        nps: null, csat: null, distribution: null, trend: [],
+        services: [], directions: [], responsibles: [], clients: []
+      }
+    }
+
+    const base = { surveyKey: q.surveyKey, versionFrom: version ?? undefined, versionTo: version ?? undefined }
+
+    // ⚠️ Запросы идут ДВУМЯ волнами по четыре, а не восемью разом. Пул `pg` по умолчанию держит 10
+    // соединений, и восемь параллельных запросов означали бы, что ОДНО открытие дашборда занимает
+    // восемь из десяти: два одновременных дашборда клали бы в очередь запись ответов, выписку
+    // приглашений и health-пробу. Это ровно тот кросс-тенантный эффект, ради устранения которого
+    // #49 и открыт, только переехавший из event loop в пул.
+    const [nps, csat, distribution, trend] = await Promise.all([
       q.npsKey ? this.aggregateNps({ ...base, questionKey: q.npsKey }) : Promise.resolve(null),
       q.csatKey ? this.aggregateCsat({ ...base, questionKey: q.csatKey }) : Promise.resolve(null),
       q.choiceKey ? this.aggregateDistribution({ ...base, questionKey: q.choiceKey }) : Promise.resolve(null),
       // Порог точки тренда — тот же ANONYMITY_THRESHOLD: месяц с малой выборкой не показываем.
       q.npsKey
         ? this.aggregateNpsTrend({ ...base, questionKey: q.npsKey, minN: ANONYMITY_THRESHOLD }, 'month')
-        : Promise.resolve([]),
-      this.breakdown('product', q),
-      this.breakdown('dealCategory', q),
-      this.breakdown('responsible', q),
-      this.breakdown('company', q)
+        : Promise.resolve([])
     ])
-    return { n, versions, nps, csat, distribution, trend, services, directions, responsibles, clients }
+    const [services, directions, responsibles, clients] = await Promise.all([
+      this.breakdown('product', q, version),
+      this.breakdown('dealCategory', q, version),
+      this.breakdown('responsible', q, version),
+      this.breakdown('company', q, version)
+    ])
+    return { n, versions, version, nps, csat, distribution, trend, services, directions, responsibles, clients }
   }
 
   /**
@@ -631,7 +651,8 @@ export class PgStore implements IStore {
    */
   private async breakdown(
     dim: 'product' | 'dealCategory' | 'responsible' | 'company',
-    q: DashboardQuery
+    q: DashboardQuery,
+    version: number | null
   ): Promise<BreakdownRow[]> {
     // Ключ и имя измерения. Имена денормализованы в снимке CRM (`context`), у товаров — своя таблица.
     const dims = {
@@ -657,7 +678,7 @@ export class PgStore implements IStore {
       }
     }[dim]
 
-    const params: unknown[] = [this.opts.portalId, q.surveyKey, q.versionNo ?? null, q.npsKey ?? null, q.csatKey ?? null]
+    const params: unknown[] = [this.opts.portalId, q.surveyKey, version, q.npsKey ?? null, q.csatKey ?? null]
     const rows = await this.db.query<{
       name: string
       n: number
@@ -665,8 +686,7 @@ export class PgStore implements IStore {
       nps_prom: number
       nps_detr: number
       csat_n: number
-      csat_mean: string | number | null
-      csat_top: number
+      csat_sum: string | number | null
     }>(
       `with grp as (
          select ${dims.key} as gkey, r.id as rid, r.submitted_at as at, ${dims.name} as gname
@@ -679,12 +699,20 @@ export class PgStore implements IStore {
        )
        select (array_agg(g.gname order by g.at asc, g.rid asc))[1] as name,
               count(distinct g.rid)::int as n,
-              count(distinct g.rid) filter (where ra.question_key = $4 and ra.value_number is not null)::int as nps_n,
-              count(distinct g.rid) filter (where ra.question_key = $4 and ra.value_number >= 9)::int as nps_prom,
-              count(distinct g.rid) filter (where ra.question_key = $4 and ra.value_number <= 6)::int as nps_detr,
-              count(distinct g.rid) filter (where ra.question_key = $5 and ra.value_number is not null)::int as csat_n,
-              avg(ra.value_number) filter (where ra.question_key = $5 and ra.value_number is not null) as csat_mean,
-              count(distinct g.rid) filter (where ra.question_key = $5 and ra.value_number >= 4)::int as csat_top
+              -- Выборки метрик считаются как count(*), а НЕ count(distinct rid), в отличие от n
+              -- выше. Ядро считает ЗНАЧЕНИЯ (numericValues перебирает все ответы записи), а схема
+              -- двух ответов под одним ключом не запрещает: distinct схлопнул бы их в один, и гейт
+              -- анонимности взял бы разные выборки в памяти и в базе — то есть группа с именем
+              -- клиента показывалась бы в одной реализации и исчезала в другой.
+              count(*) filter (where ra.question_key = $4 and ra.value_number is not null)::int as nps_n,
+              count(*) filter (where ra.question_key = $4 and ra.value_number >= 9)::int as nps_prom,
+              count(*) filter (where ra.question_key = $4 and ra.value_number <= 6)::int as nps_detr,
+              count(*) filter (where ra.question_key = $5 and ra.value_number is not null)::int as csat_n,
+              -- Сумма в float8, а не точное десятичное: ядро складывает в double и делит (sum/n
+              -- над JS-числами). На дробных баллах (survey_option.score — numeric) точное среднее и
+              -- double-среднее расходятся на границе округления: замерено 3.24 против 3.25 на
+              -- шести оценках.
+              sum(ra.value_number::float8) filter (where ra.question_key = $5 and ra.value_number is not null) as csat_sum
        from grp g
        left join response_answer ra on ra.response_id = g.rid
        group by g.gkey`,
@@ -707,8 +735,12 @@ export class PgStore implements IStore {
       csat: q.csatKey
         ? {
             n: row.csat_n,
-            mean: row.csat_n === 0 ? 0 : round2(Number(row.csat_mean)),
-            topBoxPct: row.csat_n === 0 ? 0 : round1((row.csat_top / row.csat_n) * 100)
+            mean: row.csat_n === 0 ? 0 : round2(Number(row.csat_sum) / row.csat_n),
+            // ⚠️ Топ-бокс в срезе НЕ считается: `BreakdownRow` его не несёт (строка среза показывает
+            // только NPS и среднее). Он и считался — лишним `count(*) filter` в каждом из четырёх
+            // запросов, — и никуда не шёл; заметить это можно было только мутацией, которая ничего
+            // не роняет. Ноль здесь честнее выдуманного числа: поле в тип входит, значения нет.
+            topBoxPct: 0
           }
         : null
     }))
@@ -744,10 +776,15 @@ export class PgStore implements IStore {
   /** CSAT по срезу (SQL): среднее + топ-бокс (по умолчанию ≥4). `null` — нет данных/подавлено. */
   async aggregateCsat(f: AggregateFilter, opts: { topBoxMin?: number } = {}): Promise<CsatSummary | null> {
     const { where, params, minN } = this.slice(f)
-    params.push(opts.topBoxMin ?? 4)
-    const r = await this.db.query<{ n: number; mean: string | number | null; top: number }>(
+    params.push(opts.topBoxMin ?? CSAT_TOP_BOX_MIN)
+    // ⚠️ Берём СУММУ в float8 и делим в TS, а не `avg()` в базе. Ядро считает `sum/n` над
+    // JS-числами, а numeric-деление Postgres даёт точное десятичное — и на границе округления они
+    // расходятся: шесть дробных оценок дают ровно 3.245 в базе (→ 3.25) против 3.2449999999999997
+    // в double (→ 3.24). Дробные баллы схема разрешает: `survey_option.score` это `numeric`.
+    // Найдено пробой на ревью; та же правка сделана в срезах (`breakdown`).
+    const r = await this.db.query<{ n: number; sum: string | number | null; top: number }>(
       `select count(*)::int as n,
-              avg(ra.value_number) as mean,
+              sum(ra.value_number::float8) as sum,
               count(*) filter (where ra.value_number >= $${params.length})::int as top
        ${AGG_FROM}
        where ${where} and ra.value_number is not null`,
@@ -755,8 +792,8 @@ export class PgStore implements IStore {
     )
     const row = r.rows[0]!
     if (!meetsAnonymity(row.n, minN)) return null
-    // после проверки порога n ≥ 1 → avg по непустой выборке не бывает NULL
-    return { n: row.n, mean: round2(Number(row.mean)), topBoxPct: round1((row.top / row.n) * 100) }
+    // после проверки порога n ≥ 1 → сумма по непустой выборке не бывает NULL
+    return { n: row.n, mean: round2(Number(row.sum) / row.n), topBoxPct: round1((row.top / row.n) * 100) }
   }
 
   /**

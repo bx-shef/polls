@@ -94,12 +94,16 @@ export async function dashboardDecision(
   const csatKey = version.questions.find((q) => q.metric === 'csat')?.key
   const choiceQ = version.questions.find((q) => q.metric === 'choice')
 
-  // ⚠️ Фильтр по версии (?version=N) принимаем ТОЛЬКО скаляр-строкой и только целым числом; чужое
-  // значение игнорируем (все версии). Проверить «а есть ли такая версия» до запроса нечем —
-  // `versions` считает само хранилище, — поэтому несуществующая версия даёт пустой срез, а селектор
-  // на странице остаётся полным: `versions` берутся ДО фильтра.
+  // ⚠️ Фильтр по версии (?version=N) принимаем ТОЛЬКО скаляр-строкой и только целым числом В
+  // ДИАПАЗОНЕ int4. Верхняя граница не педантизм: значение уходит в SQL как `$3::int`, и
+  // `?version=99999999999` с валидной сессией ронял запрос («out of range for type integer»), то
+  // есть давал 500 вместо обещанного «показываем все версии». Найдено пробой на ревью; страница
+  // сама пересылает в API любое положительное целое из адреса. Существует ли такая версия, решает
+  // хранилище — список версий известен только оттуда.
   const versionParam = typeof input.version === 'string' ? Number(input.version) : NaN
-  const wanted = Number.isInteger(versionParam) ? versionParam : null
+  const wanted = Number.isInteger(versionParam) && versionParam >= 1 && versionParam <= 2_147_483_647
+    ? versionParam
+    : null
 
   // ⚠️ ОДНО обращение к хранилищу вместо чтения всех ответов в память (#49). Подавление групп,
   // пороги и сортировка — внутри порта, общим кодом для обеих реализаций.
@@ -108,20 +112,16 @@ export async function dashboardDecision(
     ...(csatKey != null ? { csatKey } : {}),
     ...(choiceQ != null ? { choiceKey: choiceQ.key } : {})
   }
-  let agg = await store.dashboardAggregates({
+  // ⚠️ Несуществующая версия в адресе игнорируется — показываем ВСЕ версии, а не пустой экран. Это
+  // решает ХРАНИЛИЩЕ и отдаёт фактически применённый фильтр (`agg.version`): список версий известен
+  // только ему. Пока проверял вид, кривой `?version=` стоил ВТОРОГО полного захода — то есть
+  // опечатка в ссылке удваивала нагрузку на базу.
+  const agg = await store.dashboardAggregates({
     surveyKey: input.surveyKey,
     ...(wanted != null ? { versionNo: wanted } : {}),
     ...metrics
   })
-
-  // ⚠️ Несуществующая версия в адресе игнорируется — показываем ВСЕ версии, а не пустой экран.
-  // Второй запрос идёт только на этом пути (кривая ссылка), и он дешевле альтернативы: узнать список
-  // версий заранее нельзя, его считает само хранилище, а «просто отдать пусто» превратило бы опечатку
-  // в адресе в «данные пропали». `versions` в первом ответе уже полный — он считается ДО фильтра.
-  const versionFilter = wanted != null && agg.versions.includes(wanted) ? wanted : null
-  if (wanted != null && versionFilter == null) {
-    agg = await store.dashboardAggregates({ surveyKey: input.surveyKey, ...metrics })
-  }
+  const versionFilter = agg.version
   const n = agg.n
 
   // surveyKey в ответ НЕ зеркалим (клиент знает его из URL; не отражаем недоверенный ввод).
