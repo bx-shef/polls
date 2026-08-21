@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { runRobotTrigger, parseRobotEvent, type RobotDeps } from '../src/bitrix24/robot'
+import { runRobotTrigger, parseRobotEvent, robotTransition, ROBOT_TS_SKEW_MS, type RobotDeps } from '../src/bitrix24/robot'
 import { parseBracketForm } from '../src/bitrix24/bracket-form'
 import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import type { TriggerStore, TriggerTenant } from '../src/bitrix24/trigger'
@@ -249,5 +249,92 @@ describe('runRobotTrigger — портал выбирается ПОСЛЕ св�
     if (res.kind !== 'ok') throw new Error('unreachable')
     expect(tenant).toHaveBeenCalledWith('member-id-fake-0000000000000000')
     expect(await mine.peek(res.results[0]!.token, new Date())).toBeDefined()
+  })
+})
+
+describe('robotTransition — ключ перехода для робота (#175)', () => {
+  const now = new Date('2026-08-21T10:00:00.000Z')
+  const nowSec = Math.floor(now.getTime() / 1000)
+
+  it('часы портала правдоподобны → ключ и момент берутся из них', () => {
+    const portalSec = nowSec - 5
+    const t = robotTransition(String(portalSec), now)
+    expect(t.id).toBe(`robot-${portalSec}`)
+    expect(t.at.toISOString()).toBe(new Date(portalSec * 1000).toISOString())
+  })
+
+  it('число вместо строки принимается так же (wire-формат бывает разным)', () => {
+    expect(robotTransition(nowSec, now).id).toBe(`robot-${nowSec}`)
+  })
+
+  it('ПОВТОРНЫЙ вызов с тем же ts даёт ТОТ ЖЕ ключ — повтор bizproc не плодит дело', () => {
+    // Ключ из момента СРАБАТЫВАНИЯ, а не из наших часов, именно поэтому: повтор вызова роботом
+    // должен упереться в поиск по маркеру, а не создать второе дело. На своих часах два вызова,
+    // разошедшиеся на секунду, дали бы РАЗНЫЕ ключи — и дубль.
+    const portalSec = String(nowSec - 3)
+    const a = robotTransition(portalSec, now)
+    const b = robotTransition(portalSec, new Date(now.getTime() + 900))
+    expect(a.id).toBe(b.id)
+  })
+
+  it('другой переход (другая секунда) → ДРУГОЙ ключ: возврат в стадию — законный повод спросить', () => {
+    expect(robotTransition(String(nowSec), now).id).not.toBe(robotTransition(String(nowSec - 1), now).id)
+  })
+
+  for (const [name, ts] of [
+    ['мусор', 'позавчера'], ['пусто', ''], ['нет поля', undefined],
+    ['ноль', '0'], ['отрицательное', '-5'], ['дробное', '1.5'], ['миллисекунды вместо секунд', String(nowSec * 1000)]
+  ] as const) {
+    it(`негодный ts (${name}) → берём СВОИ часы, а не то, что прислали`, () => {
+      const t = robotTransition(ts, now)
+      expect(t.id).toBe(`robot-${nowSec}`)
+      expect(t.at.getTime()).toBe(now.getTime())
+    })
+  }
+
+  it('часы портала уехали больше чем на сутки → берём свои', () => {
+    // ⚠️ Несущее: `at` решает «отвечал ли клиент ПОСЛЕ этого перехода». Момент из далёкого прошлого
+    // заставил бы прошлогодний ответ погасить сегодняшний повод спросить — приглашение молча не
+    // выписалось бы, и снаружи это неотличимо от «робот не сработал».
+    const stale = Math.floor((now.getTime() - ROBOT_TS_SKEW_MS - 1000) / 1000)
+    expect(robotTransition(String(stale), now).id).toBe(`robot-${nowSec}`)
+    const future = Math.floor((now.getTime() + ROBOT_TS_SKEW_MS + 1000) / 1000)
+    expect(robotTransition(String(future), now).id).toBe(`robot-${nowSec}`)
+  })
+
+  it('ключ не содержит двоеточий — иначе маркер перестанет разбираться', () => {
+    // `markerMatchesSurvey` режет `stage:<переход>:<опрос>` по ВТОРОМУ двоеточию: лишнее в ключе
+    // перехода означало бы, что мы перестали узнавать свои же дела, и закрытие ответом молча умерло.
+    expect(robotTransition(String(nowSec), now).id).not.toContain(':')
+  })
+})
+
+describe('runRobotTrigger — доставка приглашения (#175)', () => {
+  it('выписка идёт через `issue` (дело в таймлайне), а не в фолбэк «только токен»', async () => {
+    // Ровно тот дефект, ради которого задача: без `issue` приглашение появлялось в базе, дела не
+    // было, и сотрудник ссылку не видел.
+    type IssueCtx = { transition: { id?: string; at?: Date }; memberId: string }
+    const issue = vi.fn((_ctx: IssueCtx) => async () => ({ surveyKey: 'csat_postdeal', versionNo: 2, token: 'tk' }))
+    // ⚠️ `ts` берём близким к настоящим часам: значение из прошлого сработала бы проверка
+    // правдоподобия, и тест доказывал бы её, а не проводку выписки.
+    const ts = String(Math.floor(Date.now() / 1000) - 2)
+    const res = await runRobotTrigger(rawRobot({ ts }), deps({ issue }))
+    expect(res.kind).toBe('ok')
+    expect(issue).toHaveBeenCalledTimes(1)
+    const ctx = issue.mock.calls[0]![0]
+    expect(ctx.transition.id).toBe(`robot-${ts}`)
+    expect(ctx.memberId).toBe('member-id-fake-0000000000000000')
+  })
+
+  it('отказ выписки по ОДНОМУ опросу не роняет вызов и доезжает в лог', async () => {
+    const onIssueError = vi.fn()
+    const res = await runRobotTrigger(rawRobot(), deps({
+      issue: () => async () => { throw new Error('портал недоступен') },
+      onIssueError
+    }))
+    expect(res.kind).toBe('ok')
+    if (res.kind !== 'ok') throw new Error('unreachable')
+    expect(res.results).toEqual([])
+    expect(onIssueError).toHaveBeenCalledWith('csat_postdeal', expect.any(Error))
   })
 })

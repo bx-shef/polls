@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { verifyApplicationToken, dealToCrmContext } from './deal-event'
 import {
-  dealIdFromDocumentId, handleDealTrigger, type TriggerResult, type TriggerTenantResolver
+  dealIdFromDocumentId, handleDealTrigger,
+  type IssueInvitation, type TriggerResult, type TriggerTenantResolver
 } from './trigger'
 
 /**
@@ -50,6 +51,13 @@ function toStringArray(v: unknown): string[] | undefined {
 // поэтому многомегабайтный `member_id` не должен уезжать в SQL-параметр и в лог.
 const robotEventSchema = z.object({
   document_id: z.preprocess(toStringArray, z.array(z.string().max(200)).min(1).max(10)),
+  /**
+   * Момент срабатывания по часам ПОРТАЛА (epoch-секунды; приходит строкой). Раньше поле просто
+   * игнорировалось — теперь из него строится ключ «перехода» для маркера дела
+   * ([#175](https://github.com/bx-shef/polls/issues/175), см. {@link robotTransition}).
+   * Необязательно: отсутствие поля не должно выключать доставку.
+   */
+  ts: z.union([z.string().max(20), z.number()]).optional(),
   auth: z.object({
     member_id: z.string().min(1).max(200),
     application_token: z.string().min(1).max(253)
@@ -87,7 +95,49 @@ export interface RobotDeps {
    * `application_token`. См. {@link TriggerTenantResolver}.
    */
   tenant: TriggerTenantResolver
+  /**
+   * Как выписывать приглашение — доставка делом в таймлайне (#175, паритет с событийным путём).
+   *
+   * ⚠️ Без него `handleDealTrigger` уходит в фолбэк «создать токен и всё»: приглашение появляется в
+   * базе, дела нет, сотрудник ссылку не видит. Ровно это и было дефектом при `TRIGGER_MODE=robot`.
+   */
+  issue?: (ctx: { transition: { id?: string; at?: Date }; memberId: string }) => IssueInvitation
+  /** Куда сообщить об отказе по ОДНОМУ опросу (остальные опросы этой стадии не теряем). */
+  onIssueError?: (surveyKey: string, error: unknown) => void
   now?: Date
+}
+
+/**
+ * Ключ и момент «перехода» для робота (#175).
+ *
+ * ⚠️ У робота НЕТ `ID` записи истории стадий — он её не спрашивает и спрашивать не должен: он
+ * вызывается ровно на входе в стадию, доказывать ему нечего. Но маркер дела строится из ключа
+ * перехода, и без ключа доставка не работает (`makeInviteIssue` без него молчит). Поэтому ключ
+ * берётся из МОМЕНТА СРАБАТЫВАНИЯ.
+ *
+ * Почему не спрашиваем историю ради ключа (решение владельца, вариант «B»): это лишний REST на
+ * каждое срабатывание и, главное, НЕПРОВЕРЕННОЕ допущение — успевает ли Битрикс24 записать строку
+ * истории до вызова робота, вживую не сверено. Возьми мы оттуда `ID` прошлого перехода — приглашение
+ * съелось бы как дубль. Цена варианта «B»: событийный путь и робот не узнаю́т дела друг друга, что
+ * важно только в режиме `both`, а он и так помечен «не выбирать».
+ *
+ * ⚠️ `ts` портала проверяется на ПРАВДОПОДОБИЕ, а не просто на число. Значение уходит в `at`, по
+ * которому решается «отвечал ли клиент ПОСЛЕ этого перехода»: далёкое прошлое заставило бы
+ * прошлогодний ответ погасить сегодняшний повод спросить — то есть приглашение молча не выписалось
+ * бы. Отклонение больше суток в любую сторону значит, что часы разъехались или поле не то, и мы
+ * берём свои часы.
+ */
+export const ROBOT_TS_SKEW_MS = 24 * 60 * 60_000
+
+export function robotTransition(ts: unknown, now: Date): { id: string; at: Date } {
+  const seconds = typeof ts === 'number' ? ts : Number(String(ts ?? '').trim())
+  const at = Number.isInteger(seconds) && seconds > 0 ? new Date(seconds * 1000) : undefined
+  const plausible = at !== undefined && Math.abs(at.getTime() - now.getTime()) <= ROBOT_TS_SKEW_MS
+  const moment = plausible && at ? at : now
+  // ⚠️ Префикс `robot-` — не украшение: по маркеру дела видно, какой путь его создал, а числовой
+  // ключ событийного пути с ним не совпадёт даже случайно. Двоеточий в ключе быть не должно —
+  // `markerMatchesSurvey` режет маркер по ВТОРОМУ двоеточию.
+  return { id: `robot-${Math.floor(moment.getTime() / 1000)}`, at: moment }
 }
 
 export async function runRobotTrigger(raw: unknown, deps: RobotDeps): Promise<RobotOutcome> {
@@ -113,14 +163,21 @@ export async function runRobotTrigger(raw: unknown, deps: RobotDeps): Promise<Ro
 
   const { deal, productRows } = await deps.fetchDeal(dealId, ev.auth.member_id)
   const context = dealToCrmContext(deal, productRows)
-  // Ни проверки истории стадий, ни отсечения дублей: робот вызывается РОВНО на входе в стадию, то
-  // есть один раз на переход. Гроздь событий рождает только событийный путь (`deal-update.ts`), где
-  // апдейт сделки прилетает на каждую правку; здесь отсекать нечего, и ключа перехода взять неоткуда.
+  // ⚠️ Проверки истории стадий тут по-прежнему НЕТ и быть не должно: робот вызывается РОВНО на входе
+  // в стадию, то есть один раз на переход — доказывать нечего. Гроздь событий рождает только
+  // событийный путь (`deal-update.ts`), где апдейт прилетает на каждую правку.
+  //
+  // ⚠️ А вот ДОСТАВКА нужна и здесь (#175): без `issue` `handleDealTrigger` уходит в фолбэк «создать
+  // токен и всё» — приглашение появляется в базе, дела нет, сотрудник ссылку не видит. Ключ перехода
+  // строится из момента срабатывания (`robotTransition`), а не из истории стадий.
+  const transition = robotTransition(ev.ts, deps.now ?? new Date())
   const outcome = await handleDealTrigger({
     store: tenant.store,
     invitations: tenant.invitations,
     context,
-    now: deps.now
+    now: deps.now,
+    ...(deps.issue ? { issue: deps.issue({ transition, memberId: ev.auth.member_id }) } : {}),
+    ...(deps.onIssueError ? { onIssueError: deps.onIssueError } : {})
   })
   return { kind: 'ok', results: outcome.created, dealId }
 }
