@@ -3,20 +3,20 @@ import { versionETag, etagMatches, cacheDecision } from '../src/api/http-cache'
 
 describe('versionETag', () => {
   it('строит стабильный ETag в кавычках из (surveyKey, versionNo, schemaVersion)', () => {
-    expect(versionETag('csat_postdeal', 2, 1)).toBe('"sv-csat_postdeal-2-s1"')
+    expect(versionETag('csat_postdeal', 2, 1, undefined)).toBe('"sv-csat_postdeal-2-s1"')
   })
 
   it('разные версии/схема → разные ETag (смена любого инвалидирует кэш)', () => {
-    expect(versionETag('k', 1, 1)).not.toBe(versionETag('k', 2, 1))
-    expect(versionETag('a', 1, 1)).not.toBe(versionETag('b', 1, 1))
-    expect(versionETag('k', 1, 1)).not.toBe(versionETag('k', 1, 2)) // смена schema_version
+    expect(versionETag('k', 1, 1, undefined)).not.toBe(versionETag('k', 2, 1, undefined))
+    expect(versionETag('a', 1, 1, undefined)).not.toBe(versionETag('b', 1, 1, undefined))
+    expect(versionETag('k', 1, 1, undefined)).not.toBe(versionETag('k', 1, 2, undefined)) // смена schema_version
   })
 
   it('экранирует спецсимволы ключа (кавычка/запятая) — валидный quoted-string, без ложного split', () => {
-    expect(versionETag('a,b', 1, 1)).toBe('"sv-a%2Cb-1-s1"')
-    expect(versionETag('a"b', 1, 1)).toBe('"sv-a%22b-1-s1"')
+    expect(versionETag('a,b', 1, 1, undefined)).toBe('"sv-a%2Cb-1-s1"')
+    expect(versionETag('a"b', 1, 1, undefined)).toBe('"sv-a%22b-1-s1"')
     // round-trip: наш собственный ETag со спецсимволом ключа матчится сам с собой (304 работает).
-    const e = versionETag('a,b', 3, 1)
+    const e = versionETag('a,b', 3, 1, undefined)
     expect(etagMatches(e, e)).toBe(true)
   })
 })
@@ -64,22 +64,22 @@ describe('cacheDecision (решение условного GET из ApiResult)',
   const body = (over = {}) => ({ ok: true, version: { surveyKey: 'k', versionNo: 3 }, schema_version: 1, ...over })
 
   it('200 + валидная версия → ETag выставлен, notModified по совпадению If-None-Match', () => {
-    expect(cacheDecision(200, body(), undefined)).toEqual({ etag: '"sv-k-3-s1"', notModified: false })
-    expect(cacheDecision(200, body(), '"sv-k-3-s1"')).toEqual({ etag: '"sv-k-3-s1"', notModified: true })
-    expect(cacheDecision(200, body(), '"sv-k-2-s1"')).toEqual({ etag: '"sv-k-3-s1"', notModified: false })
+    expect(cacheDecision(200, body(), undefined, undefined)).toEqual({ etag: '"sv-k-3-s1"', notModified: false })
+    expect(cacheDecision(200, body(), '"sv-k-3-s1"', undefined)).toEqual({ etag: '"sv-k-3-s1"', notModified: true })
+    expect(cacheDecision(200, body(), '"sv-k-2-s1"', undefined)).toEqual({ etag: '"sv-k-3-s1"', notModified: false })
   })
 
   it('не-200 (404/429/400/304) → некэшируемо (нет ETag, нет 304) даже при If-None-Match', () => {
     for (const s of [404, 429, 400, 500]) {
-      expect(cacheDecision(s, { ok: false, error: 'x' }, '*')).toEqual({ notModified: false })
+      expect(cacheDecision(s, { ok: false, error: 'x' }, '*', undefined)).toEqual({ notModified: false })
     }
   })
 
   it('неожиданная форма тела (нет version/versionNo/schema_version) → некэшируемо', () => {
-    expect(cacheDecision(200, { ok: false, error: 'x' }, '*')).toEqual({ notModified: false })
-    expect(cacheDecision(200, { version: { surveyKey: 'k' }, schema_version: 1 }, '*')).toEqual({ notModified: false })
-    expect(cacheDecision(200, { version: { surveyKey: 'k', versionNo: 3 } }, '*')).toEqual({ notModified: false }) // нет schema_version
-    expect(cacheDecision(200, null, '*')).toEqual({ notModified: false })
+    expect(cacheDecision(200, { ok: false, error: 'x' }, '*', undefined)).toEqual({ notModified: false })
+    expect(cacheDecision(200, { version: { surveyKey: 'k' }, schema_version: 1 }, '*', undefined)).toEqual({ notModified: false })
+    expect(cacheDecision(200, { version: { surveyKey: 'k', versionNo: 3 } }, '*', undefined)).toEqual({ notModified: false }) // нет schema_version
+    expect(cacheDecision(200, null, '*', undefined)).toEqual({ notModified: false })
   })
 })
 
@@ -93,7 +93,7 @@ describe('портал в ETag (#49)', () => {
   })
 
   it('без портала (режим памяти) ключ прежний — совместимость с уже отданными ETag', () => {
-    expect(versionETag('csat_postdeal', 2, 1)).toBe('"sv-csat_postdeal-2-s1"')
+    expect(versionETag('csat_postdeal', 2, 1, undefined)).toBe('"sv-csat_postdeal-2-s1"')
   })
 
   it('304 не выдаётся на ETag ЧУЖОГО портала', () => {
@@ -101,5 +101,14 @@ describe('портал в ETag (#49)', () => {
     const foreign = versionETag('csat_postdeal', 2, 1, 8)
     expect(cacheDecision(200, body, foreign, 7).notModified).toBe(false)
     expect(cacheDecision(200, body, foreign, 8).notModified).toBe(true)
+  })
+})
+
+describe('ETag остаётся РАЗДЕЛЯЮЩИМ при любом ключе опроса', () => {
+  it('дефис в ключе не подделывает сегмент портала', () => {
+    // ⚠️ `encodeURIComponent` дефис не трогает, а он у нас разделитель: без экранирования ключ
+    // `p7-x` без портала и ключ `x` портала 7 дали бы ОДИН ETag — то есть портал в ключе перестал бы
+    // разделять ровно в том случае, ради которого он там и стоит.
+    expect(versionETag('p7-x', 2, 1, undefined)).not.toBe(versionETag('x', 2, 1, 7))
   })
 })

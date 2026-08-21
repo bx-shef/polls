@@ -20,8 +20,14 @@ import type { Queryable } from './types'
 export type TenantResolution =
   /** Портал определён однозначно. */
   | { kind: 'portal'; portalId: number }
-  /** Ключ опубликован несколькими порталами, а токена нет — выбирать наугад нельзя. */
-  | { kind: 'ambiguous'; count: number }
+  /**
+   * Ключ опубликован несколькими порталами, а годного токена нет — выбирать наугад нельзя.
+   *
+   * ⚠️ `atLeast`, а не `count`: запрос капнут `limit 2`, поэтому число здесь всегда 2, сколько бы
+   * порталов ни было. Имя `count` уводило лог владельца («опубликован порталами (2)») искать
+   * конкретную пару там, где их могло быть пять.
+   */
+  | { kind: 'ambiguous'; atLeast: number }
   /** Ни один портал такого не публиковал (либо токен не найден). */
   | { kind: 'unknown' }
 
@@ -29,8 +35,15 @@ export type TenantResolution =
  * Портал по хешу токена приглашения — авторитетный путь.
  *
  * ⚠️ Ищем по ХЕШУ, а не по токену: в базе лежит только он (#4). Поиск идёт по ВСЕМ порталам —
- * в этом и смысл: до резолва мы ещё не знаем, чей это токен. Уникальный индекс по хешу делает
- * ответ однозначным.
+ * в этом и смысл: до резолва мы ещё не знаем, чей это токен.
+ *
+ * ⚠️ Однозначность ответа держит **энтропия токена** (`randomUUID`, 122 бита), а НЕ схема:
+ * уникальный индекс `uq_invitation_token_hash` составной — `(portal_id, token_hash)`, то есть два
+ * портала формально могут нести один хеш, и `limit 1` выбрал бы из них произвольный. Писать «индекс
+ * делает ответ однозначным» (так было в первой редакции) значит обещать гарантию, которой в базе
+ * нет. Под ЭТОТ запрос заведён отдельный индекс `idx_invitation_token_hash` (миграция `0006`):
+ * ведущая колонка составного — `portal_id`, и без него поиск по одному хешу шёл бы полным сканом на
+ * самом горячем публичном пути.
  */
 export async function portalByInvitationToken(db: Queryable, tokenHash: string): Promise<number | undefined> {
   const r = await db.query<{ portal_id: number }>(
@@ -46,8 +59,18 @@ export async function portalByInvitationToken(db: Queryable, tokenHash: string):
  * ⚠️ Считаем порталы, а не берём первый: `limit 2` отвечает на вопрос «однозначно ли» дешевле, чем
  * полный `count(*)`, и этого достаточно — нам важно только «один или больше одного».
  *
- * Учитываются лишь ОПУБЛИКОВАННЫЕ опросы (есть версия): черновик наружу не отдаётся, и портал с
- * одним черновиком не должен делать чужой опубликованный ключ неоднозначным.
+ * Учитываются лишь ОПУБЛИКОВАННЫЕ опросы: черновик наружу не отдаётся, и портал, который только
+ * завёл опрос, не должен делать чужой опубликованный ключ невыдаваемым.
+ *
+ * ⚠️ Признак публикации — `survey.current_version_id`, ТОТ ЖЕ, по которому работают `currentVersion`
+ * и `surveysTriggeredBy`. Первая редакция спрашивала «есть хоть одна строка `survey_version`», а
+ * `survey_version.status` допускает `draft`: появись писатель черновиков — и портал с черновиком
+ * начал бы ломать публичные ссылки соседа. Два определения «опубликован» в одной кодовой базе
+ * разъезжаются молча.
+ *
+ * ⚠️ `distinct` не косметика: уникальность в схеме — `(group_id, survey_key)`, то есть ОДИН портал
+ * вправе завести тот же ключ в двух группах. Без `distinct` он сам себе делал бы ключ неоднозначным
+ * и ломал бы собственные публичные ссылки.
  */
 export async function portalBySurveyKey(db: Queryable, surveyKey: string): Promise<TenantResolution> {
   const r = await db.query<{ portal_id: number }>(
@@ -55,11 +78,11 @@ export async function portalBySurveyKey(db: Queryable, surveyKey: string): Promi
        from survey s
        join survey_group g on g.id = s.group_id
       where s.survey_key = $1
-        and exists (select 1 from survey_version v where v.survey_id = s.id)
+        and s.current_version_id is not null
       limit 2`,
     [surveyKey]
   )
   if (r.rows.length === 0) return { kind: 'unknown' }
-  if (r.rows.length > 1) return { kind: 'ambiguous', count: r.rows.length }
+  if (r.rows.length > 1) return { kind: 'ambiguous', atLeast: r.rows.length }
   return { kind: 'portal', portalId: r.rows[0]!.portal_id }
 }

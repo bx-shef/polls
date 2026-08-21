@@ -12,6 +12,7 @@
     "./close-invite.test.ts",
     "./close-invite-wiring.test.ts",
     "./tenant-wiring.test.ts",
+    "./demo-seed-wiring.test.ts",
     "./helpers/schema.ts",
     "../server/**/*.ts"
   ]

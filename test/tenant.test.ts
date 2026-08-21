@@ -64,7 +64,7 @@ describe('портал по ключу опроса — путь БЕЗ токе
     // портал. «Взять первый» показало бы клиенту чужую анкету, и заметить это невозможно.
     const [a, b] = [await portal('m-a'), await portal('m-b')]
     for (const id of [a, b]) await new PgStore(db, { portalId: id }).publish(draftV2(), 2)
-    expect(await portalBySurveyKey(db, SURVEY_KEY)).toEqual({ kind: 'ambiguous', count: 2 })
+    expect(await portalBySurveyKey(db, SURVEY_KEY)).toEqual({ kind: 'ambiguous', atLeast: 2 })
   })
 
   it('такого опроса нет ни у кого → unknown', async () => {

@@ -7,6 +7,7 @@
 // (128 КБ → 413, тело без заявленной длины → 411) — ровно для таких роутов он и сделан. Раньше `readBody`
 // здесь шёл до подтверждения фрейма вообще без ограничения.
 import { surveyPath } from '~core/client/invitation-link'
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
 import { dealToCrmContext } from '~core/bitrix24/deal-event'
@@ -65,9 +66,11 @@ export default defineEventHandler(async (event) => {
     const tenant = await tenantByMemberId(portal.portalId)
     if (!tenant) {
       // Портал подтверждён, а строки нет: приложение удалили прямо сейчас. Отдельный текст, потому
-      // что «опрос не опубликован» здесь было бы неправдой и увело бы админа настраивать опрос.
+      // что «опрос не опубликован» здесь было бы неправдой и увело бы настраивать опрос. ⚠️ Совет
+      // адресован ТОМУ, КТО ЧИТАЕТ: виджет открывает продавец из карточки сделки, а установка
+      // приложения ему недоступна — «установите заново» он выполнить не может.
       setResponseStatus(event, 409)
-      return { ok: false, error: 'Приложение больше не установлено на этом портале. Установите его заново.' }
+      return { ok: false, error: PORTAL_GONE_MESSAGE }
     }
     const { routing, fallback } = useSurveyRouting()
     const surveyKey = surveyKeyForEntity('deal', routing, fallback)

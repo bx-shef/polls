@@ -56,11 +56,25 @@ describe('гейт прав на роутах (#139)', () => {
   })
 
   it.each(READ_ROUTES)('%s гейтит ДО обращения к хранилищу (не тратим работу на отказ)', (path) => {
+    // ⚠️ Имя стора перечислено ОБОИМИ вариантами и его отсутствие — ОШИБКА, а не «нечего проверять».
+    // Вторая редакция этого гарда искала только `useStore(`; мультитенант перевёл роуты на
+    // `storeFor(`, и все три проверки стали ранним `return` — гард прошёл, ничего не проверив,
+    // ровно в том PR, который менял порядок обращений. Ранний выход по «не нашли» — это способ
+    // выключить проверку правкой прод-кода.
     const src = stripComments(read(path))
     const gate = src.search(/\b(require|resolve)PortalSession\(event\)/)
-    const store = src.indexOf('useStore(')
-    if (store < 0) return // роут в стор не ходит — проверять нечего
+    const store = src.search(/\b(useStore|storeFor)\(/)
+    expect(store, `${path}: роут не ходит в стор — либо гард смотрит не туда`).toBeGreaterThan(-1)
     expect(gate, `${path}: обращение к хранилищу раньше гейта`).toBeLessThan(store)
+  })
+
+  it.each(READ_ROUTES)('%s берёт стор ПО ПОРТАЛУ сессии, а не общий (#47/#49)', (path) => {
+    // Гейт доказывает «какой это портал», а `useStore()` этот ответ выбрасывает: сотрудник одного
+    // заказчика получил бы данные того портала, который инстанс выбрал себе по умолчанию.
+    const src = stripComments(read(path))
+    expect(src, `${path}: нет резолва портала сессии`).toContain('resolveSessionPortal(')
+    expect(src, `${path}: стор берётся мимо портала сессии`).toMatch(/storeFor\(\s*tenant\.portalId\s*\)/)
+    expect(src, `${path}: остался общий стор на процесс`).not.toMatch(/\buseStore\(\)/)
   })
 
   it('гейт записи стоит ДО чтения тела запроса (не тратим работу на отказ)', () => {

@@ -3,7 +3,7 @@ import { PGlite } from '@electric-sql/pglite'
 import { applySchema } from './helpers/schema'
 import { PgStore } from '../src/store/pg'
 import type { Queryable } from '../src/store/types'
-import { ensureDefaultPortal, seedDemoIfEmpty, LOCAL_PORTAL_MEMBER_ID } from '../src/store/bootstrap'
+import { ensureDefaultPortal, isPlaceholderPortal, seedDemoIfEmpty, LOCAL_PORTAL_MEMBER_ID } from '../src/store/bootstrap'
 import { SURVEY_KEY } from '../src/demo/seed'
 
 describe('bootstrap прод-стора (#6, pglite)', () => {
@@ -61,6 +61,25 @@ describe('bootstrap прод-стора (#6, pglite)', () => {
       const seededAgain = await seedDemoIfEmpty(store)
       expect(seededAgain).toBe(false)
       expect(await responseCount()).toBe(after1) // дубликатов нет
+    })
+  })
+
+  describe('isPlaceholderPortal — можно ли сеять демо (#47/#49)', () => {
+    it('плейсхолдер → да; настоящий портал → нет', async () => {
+      // ⚠️ Смысл гейта: портал по умолчанию с мультитенантом — самый ранний НАСТОЯЩИЙ портал, то есть
+      // чей-то боевой тенант. Без этой проверки удаление первого арендатора превращает второго в
+      // получателя демо-опроса и дюжины выдуманных ответов — и снаружи это выглядит нормальной работой.
+      const local = await ensureDefaultPortal(db)
+      expect(await isPlaceholderPortal(db, local)).toBe(true)
+
+      const r = await db.query<{ id: number }>(
+        `insert into portal (member_id, domain, tokens) values ('m-real', 'real.b24', '{}'::jsonb) returning id`
+      )
+      expect(await isPlaceholderPortal(db, r.rows[0]!.id)).toBe(false)
+    })
+
+    it('портала нет вовсе → нет (строку удалили под нами)', async () => {
+      expect(await isPlaceholderPortal(db, 999_999)).toBe(false)
     })
   })
 })

@@ -47,7 +47,10 @@ create unique index if not exists uq_invitation_token_hash
 create index if not exists idx_response_invitation on response (invitation_id);
 
 -- ⚠️ Индекса под `peek`/`consume` НЕ заводим намеренно: оба ищут по `(portal_id, token_hash)` и
--- обслуживаются уникальным индексом выше — проверено планами на 200 000 строк (`Index Scan using
+-- обслуживаются уникальным индексом выше.
+-- ⚠️ ЧИТАТЕЛЕЙ СТАЛО ТРИ (#47/#49): резолв тенанта спрашивает «чей это токен», то есть ищет по
+-- ОДНОМУ `token_hash`, и этим индексом НЕ обслуживается — под него заведён отдельный
+-- `idx_invitation_token_hash` в миграции `0006`. Абзац ниже описывает первых двух — проверено планами на 200 000 строк (`Index Scan using
 -- uq_invitation_token_hash`, 0.04–0.24 мс). Первая редакция несла здесь `idx_invitation_live`
 -- (частичный, `where used_at is null`); замер показал `idx_scan = 0` — он не подходил ни чтениям
 -- (у них уже есть точный индекс), ни чистке (та ищет ровно `used_at is not null`, то есть строки,

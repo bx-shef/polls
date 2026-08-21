@@ -18,7 +18,7 @@ export function versionETag(
   surveyKey: string,
   versionNo: number,
   schemaVersion: number,
-  portalId?: number
+  portalId: number | undefined
 ): string {
   // encodeURIComponent: `surveyKey` по схеме без ограничения charset. Без экранирования кавычка `"`
   // в ключе даёт битый quoted-string (RFC 7232), а запятая `,` ложно расщепляется в `etagMatches`
@@ -29,8 +29,13 @@ export function versionETag(
   // РАЗНЫЕ анкеты. Адрес `/api/survey/:key/current` у них при этом общий — значит и в кэше браузера
   // они лежат под одним ключом: респондент, открывший подряд ссылки двух заказчиков, получал бы на
   // второй 304 и видел анкету первого. Тихо и правдоподобно: страница рисуется, вопросы «какие-то есть».
+  // ⚠️ Дефис в ключе ЭКРАНИРУЕМ. `encodeURIComponent` его не трогает, а он у нас разделитель сегментов:
+  // без экранирования `versionETag('p7-x', 2, 1, undefined)` и `versionETag('x', 2, 1, 7)` дают одну и
+  // ту же строку — то есть портал в ключе перестаёт разделять ровно в том случае, ради которого его
+  // туда и положили.
+  const key = encodeURIComponent(surveyKey).replace(/-/g, '%2D')
   const tenant = portalId === undefined ? '' : `-p${portalId}`
-  return `"sv${tenant}-${encodeURIComponent(surveyKey)}-${versionNo}-s${schemaVersion}"`
+  return `"sv${tenant}-${key}-${versionNo}-s${schemaVersion}"`
 }
 
 /**
@@ -67,7 +72,9 @@ export function cacheDecision(
   status: number,
   body: unknown,
   ifNoneMatch: string | undefined,
-  portalId?: number
+  // ⚠️ Обязательный, хоть и допускающий `undefined`: забытый аргумент у второго вызывающего молча
+  // вернул бы ETag без тенанта — ровно тот дефект, ради которого поле и заведено.
+  portalId: number | undefined
 ): CacheDecision {
   if (status !== 200) return { notModified: false }
   const b = body as { version?: { surveyKey?: unknown; versionNo?: unknown }; schema_version?: unknown }

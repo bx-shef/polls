@@ -11,7 +11,7 @@
 //
 // IP по умолчанию — socket; за доверенным reverse-proxy включать xForwardedFor осознанно
 // (как в src/server/node.ts), на слое деплоя (#4).
-import { submitTenantHint } from '~core/api/handlers'
+import { submitTenantHint, RATE_LIMIT_MESSAGE } from '~core/api/handlers'
 
 const MAX_BODY_BYTES = 64 * 1024
 
@@ -28,14 +28,23 @@ export default defineEventHandler(async (event) => {
   // Раньше выбор был на процесс: ответ клиента одного заказчика лёг бы в данные другого — и снаружи
   // это неотличимо от успеха, потому что «ответ принят» отвечают оба случая.
   const hint = submitTenantHint(body)
-  const tenant = await resolvePublicPortal(hint.surveyKey, hint.token)
-  if (!tenant.ok) {
+  const ip = requestIp(event)
+  const tenant = await resolvePublicPortal(hint.surveyKey, hint.token, ip)
+  if (!tenant.ok && tenant.reason === 'rate') {
+    setResponseStatus(event, 429)
+    return { ok: false, error: RATE_LIMIT_MESSAGE }
+  }
+  // ⚠️ Мёртвый токен обслуживаем ОБЫЧНЫМ путём (фолбэк-стор): ссылка не найдена ни у кого, значит
+  // вердикт о ней одинаков в любом сторе, а записи не будет — ядро откажет на самом приглашении.
+  // Ответить здесь своим отказом значило бы завести второй вердикт о ссылке и соврать человеку,
+  // который открыл ровно ту ссылку, которую ему и советуют открыть.
+  if (!tenant.ok && !tenant.deadToken) {
     setResponseStatus(event, 404)
     return { ok: false, error: AMBIGUOUS_SUBMIT_MESSAGE }
   }
 
-  const api = await useApiFor(tenant.portalId)
-  const r = await api.submit({ ip: requestIp(event), body })
+  const api = await useApiFor(tenant.ok ? tenant.portalId : undefined)
+  const r = await api.submit({ ip, body })
   setResponseStatus(event, r.status)
   return r.body
 })

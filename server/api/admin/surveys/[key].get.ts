@@ -1,5 +1,5 @@
 import { versionToDraft } from '~core/domain/compile'
-import { dashboardAuthMessage } from '~core/api/session'
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
 
 /**
  * GET /api/admin/surveys/:key — текущая версия опроса как РЕДАКТИРУЕМЫЙ черновик (для админ-UI:
@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
   const tenant = await resolveSessionPortal(session)
   if (!tenant.ok) {
     setResponseStatus(event, tenant.status)
-    return { ok: false, error: dashboardAuthMessage(tenant.status) }
+    return { ok: false, error: PORTAL_GONE_MESSAGE }
   }
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {

@@ -37,6 +37,9 @@ type DepsOver = Omit<Partial<RobotDeps>, 'tenant'> & {
 
 function deps(over: DepsOver = {}): RobotDeps {
   const { store: overStore, invitations: overInvitations, tenant: overTenant, ...rest } = over
+  if (overTenant && (overStore || overInvitations)) {
+    throw new Error('deps(): tenant задан вместе со store/invitations — они бы никуда не поехали')
+  }
   const tenant: TriggerTenant = {
     store: overStore ?? store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
     invitations: overInvitations ?? new MemoryInvitationStore()
@@ -235,12 +238,16 @@ describe('runRobotTrigger — портал выбирается ПОСЛЕ св�
     expect(fetchDeal).not.toHaveBeenCalled()
   })
 
-  it('приглашение ложится в стор тенанта, а не в переданный мимо него', async () => {
+  it('тенант резолвится по ПОДТВЕРЖДЁННОМУ member_id, и приглашение ложится в его стор', async () => {
+    // ⚠️ Аргумент резолвера сверяем поимённо: `deps.tenant('')` вместо `deps.tenant(member_id)`
+    // выглядит рабочим кодом и делает робота молча мёртвым — каждый эвент даёт `ignored/tenant`.
     const mine = new MemoryInvitationStore()
-    const res = await runRobotTrigger(rawRobot(), deps({
-      tenant: async () => ({ store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }), invitations: mine })
+    const tenant = vi.fn(async (_memberId: string) => ({
+      store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }), invitations: mine
     }))
+    const res = await runRobotTrigger(rawRobot(), deps({ tenant }))
     if (res.kind !== 'ok') throw new Error('unreachable')
+    expect(tenant).toHaveBeenCalledWith('member-id-fake-0000000000000000')
     expect(await mine.peek(res.results[0]!.token, new Date())).toBeDefined()
   })
 })

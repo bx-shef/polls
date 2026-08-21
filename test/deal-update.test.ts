@@ -46,6 +46,12 @@ type DepsOver = Omit<Partial<DealUpdateDeps>, 'tenant'> & {
 
 function deps(over: DepsOver = {}): DealUpdateDeps {
   const { store: overStore, invitations: overInvitations, tenant: overTenant, ...rest } = over
+  // ⚠️ Шим обязан ругаться на несовместимую пару. Первая редакция молча игнорировала `invitations`
+  // рядом с `tenant`, и ассерт «в чужой стор не писали» проходил тавтологически: чужой стор не был
+  // подключён ни к чему. Тест, который нельзя провалить, хуже отсутствующего.
+  if (overTenant && (overStore || overInvitations)) {
+    throw new Error('deps(): tenant задан вместе со store/invitations — они бы никуда не поехали')
+  }
   const tenant: TriggerTenant = {
     store: overStore ?? store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
     invitations: overInvitations ?? new MemoryInvitationStore()
@@ -301,15 +307,19 @@ describe('runDealUpdate — портал выбирается ПОСЛЕ све�
   })
 
   it('приглашение ложится в стор ИМЕННО того тенанта, что вернул резолвер', async () => {
+    // Два тенанта, резолвер отдаёт ВТОРОЙ. Первый подключён к настоящему резолверу (по другому
+    // `member_id`) — то есть он достижим, и «в него не писали» это утверждение, а не тавтология.
     const mine = new MemoryInvitationStore()
     const foreign = new MemoryInvitationStore()
     const foreignCreate = vi.spyOn(foreign, 'create')
+    const triggering = store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 })
     const res = await runDealUpdate(rawEvent(), deps({
-      tenant: async () => ({ store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }), invitations: mine }),
-      invitations: foreign
+      tenant: async (memberId) => memberId === 'member-id-fake-0000000000000000'
+        ? { store: triggering, invitations: mine }
+        : { store: triggering, invitations: foreign }
     }))
     if (res.kind !== 'ok') throw new Error('unreachable')
     expect(await mine.peek(res.results[0]!.token, new Date())).toBeDefined()
-    expect(foreignCreate).not.toHaveBeenCalled()
+    expect(foreignCreate, 'приглашение уехало в стор другого портала').not.toHaveBeenCalled()
   })
 })

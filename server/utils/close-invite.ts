@@ -185,19 +185,23 @@ const portalQueue = createKeySerializer()
  * отозванными токенами, и каждый ответ писал бы `close_fail`.
  */
 export function liveCloseDeps(forPortalId?: number): CloseInviteDeps {
-  const cacheKey: number | 'default' = forPortalId ?? 'default'
+  // ⚠️ Ключ кэша — РЕЗОЛЬВНУТЫЙ портал, а не аргумент. Считая его до резолва, мы получали бы две
+  // записи на один портал (`liveCloseDeps(5)` и `liveCloseDeps()` при процессном портале 5), то есть
+  // два независимых leaky-bucket'а SDK — ровно то, против чего кэш и заведён.
+  let cacheKey: number | 'default' = forPortalId ?? 'default'
   return {
     log: logger,
     onFailure: () => { cachedByPortal.delete(cacheKey) },
     // ⚠️ Ключ очереди — ПОРТАЛ. Общий ключ выстроил бы ответы разных заказчиков в одну цепочку:
     // медленный рефреш одного портала держал бы закрытие дел всех остальных.
-    portalClient: () => portalQueue.run(`close-invite:${cacheKey}`, async () => {
-      const cached = cachedByPortal.get(cacheKey)
-      if (cached && Date.now() - cached.at < CLIENT_TTL_MS) return cached.client
+    portalClient: () => portalQueue.run(`close-invite:${forPortalId ?? 'default'}`, async () => {
       const db = await usePortalDb()
       // Портал ответа приходит параметром (его знает `useApiFor`, собирая хук). `undefined` — режим
       // памяти либо портал по умолчанию: тогда спрашиваем процессный, как было до мультитенанта.
       const portalId = forPortalId ?? await usePortalId()
+      if (portalId !== undefined) cacheKey = portalId
+      const cached = cachedByPortal.get(cacheKey)
+      if (cached && Date.now() - cached.at < CLIENT_TTL_MS) return cached.client
       const cfg = b24AppConfig()
       const tokenStore = await usePortalTokenStore()
       if (!db || portalId === undefined || !cfg || !tokenStore) return undefined

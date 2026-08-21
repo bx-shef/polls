@@ -8,7 +8,7 @@ import {
   meetsAnonymity,
   ANONYMITY_THRESHOLD
 } from '~core/domain/aggregate'
-import { dashboardAuthMessage } from '~core/api/session'
+import { dashboardAuthMessage, PORTAL_GONE_MESSAGE } from '~core/api/session'
 
 /**
  * GET /api/dashboard/:key — агрегаты опроса для дашборда (контур B). Считается СЕРВЕРНО через
@@ -61,7 +61,7 @@ export default defineEventHandler(async (event) => {
   const tenant = await resolveSessionPortal(session.session)
   if (!tenant.ok) {
     setResponseStatus(event, tenant.status)
-    return { ok: false, error: dashboardAuthMessage(tenant.status) }
+    return { ok: false, error: PORTAL_GONE_MESSAGE }
   }
 
   const surveyKey = getRouterParam(event, 'key') ?? ''

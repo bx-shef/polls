@@ -1,4 +1,4 @@
-import { dashboardAuthMessage } from '~core/api/session'
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
 
 /**
  * GET /api/admin/surveys — список опросов портала для админ-экрана (фаза мульти-сущность).
@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
   const tenant = await resolveSessionPortal(session)
   if (!tenant.ok) {
     setResponseStatus(event, tenant.status)
-    return { ok: false, error: dashboardAuthMessage(tenant.status) }
+    return { ok: false, error: PORTAL_GONE_MESSAGE }
   }
   const store = await storeFor(tenant.portalId)
   const surveys = await store.listSurveys()

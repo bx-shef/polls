@@ -5,18 +5,21 @@
 // клиент одного заказчика видит анкету другого, а сотрудник одного заказчика — срезы другого, с
 // именами клиентов и ответственных. Снаружи оба отказа не видны: страница рисуется, ответ «принят».
 //
-// Входов ДВА, и вопросы у них разные:
+// Входов ТРИ, и вопросы у них разные:
 //  - ПУБЛИЧНЫЙ (`/s/:key`, `POST /api/submit`) — анонимен: ни фрейма, ни сессии. Портал выводится
 //    из токена приглашения, а без токена — из ключа опроса, и только если ответ однозначен.
 //  - ФРЕЙМОВЫЙ (дашборд, админка) — портал уже доказан подписанной сессией; остаётся перевести
 //    `member_id` в числовой `portal.id`, которым скоуплен стор.
+//  - СОБЫТИЙНЫЙ (событие портала, виджет карточки) — портал доказан `application_token` либо
+//    `verifyFrameAuth`; резолвер (`tenantByMemberId`) зовётся ТОЛЬКО после проверки.
 import { portalByInvitationToken, portalBySurveyKey, type TenantResolution } from '~core/store/tenant'
 import { hashToken } from '~core/store/pg-invitation'
+import { MAX_SURVEY_KEY_LEN, MAX_INVITATION_TOKEN_LEN } from '~core/api/handlers'
 import { portalIdByMemberId } from '~core/bitrix24/portal'
 import { DEV_PORTAL_ID, type PortalSession } from '~core/api/session'
 import type { InvitationStore } from '~core/api/invitation'
 import type { IStore } from '~core/store/types'
-import { usePortalDb, useStore, useInvitations, storeFor, invitationsFor, logger } from './api'
+import { usePortalDb, useStore, useInvitations, storeFor, invitationsFor, sharedLimiter, logger } from './api'
 
 /**
  * Итог резолва тенанта для публичного запроса.
@@ -27,7 +30,18 @@ import { usePortalDb, useStore, useInvitations, storeFor, invitationsFor, logger
  */
 export type PublicTenant =
   | { ok: true; portalId: number | undefined }
-  | { ok: false; reason: 'ambiguous' }
+  /**
+   * Обслужить нельзя.
+   *  - `ambiguous` — ключ опубликован несколькими порталами, а годного токена нет;
+   *  - `rate` — исчерпан бюджет резолва по этому адресу (429).
+   *
+   * `deadToken` — токен в запросе БЫЛ и не нашёлся ни у кого. Отдельный признак нужен вызывающему:
+   * вердикт о мёртвой ссылке одинаков в любом сторе, и роут, которому этого достаточно, обязан
+   * ответить обычным текстом ядра («срок истёк или опрос уже пройден»), а не своим отказом про
+   * личную ссылку. Иначе человек, открывший ровно ту ссылку, о которой ему говорят, получает совет
+   * открыть её ещё раз — и заодно наружу утекает бит «такого токена не существует».
+   */
+  | { ok: false; reason: 'ambiguous' | 'rate'; deadToken: boolean }
 
 /**
  * Портал для публичного запроса: токен авторитетнее ключа.
@@ -42,29 +56,52 @@ export type PublicTenant =
  * «срок истёк или опрос уже пройден». Отказать здесь своим текстом значило бы завести второй источник
  * вердикта о ссылке, который разъедется с ядровым.
  */
-export async function resolvePublicPortal(surveyKey: string, token: string | undefined): Promise<PublicTenant> {
+export async function resolvePublicPortal(
+  surveyKey: string,
+  token: string | undefined,
+  ip: string
+): Promise<PublicTenant> {
   const db = await usePortalDb()
   if (!db) return { ok: true, portalId: undefined }
 
-  if (token !== undefined) {
-    const byToken = await portalByInvitationToken(db, hashToken(token))
-    if (byToken !== undefined) return { ok: true, portalId: byToken }
+  // ⚠️ Форма — ДО базы. `readInvitationToken` длину не капает вовсе, а `surveyKey` роут берёт из
+  // адреса как есть: без этих двух строк аноним заставлял бы сервер хешировать и искать килобайты
+  // мусора. Пределы — ТЕ ЖЕ, что у схемы записи: вход, который проходит выбор портала и не проходит
+  // запись, — это лишняя работа с обеих сторон.
+  const key = surveyKey.length > MAX_SURVEY_KEY_LEN ? '' : surveyKey
+  const tok = token !== undefined && token.length > MAX_INVITATION_TOKEN_LEN ? undefined : token
+  if (!key && tok === undefined) return { ok: true, portalId: undefined }
+
+  // ⚠️ Бюджет — ПЕРЕД базой, и это не перестраховка. Лимитер ядра живёт внутри `api.submit`/
+  // `api.survey`, то есть теперь ПОЗЖЕ резолва: без этой строки каждый анонимный запрос покупал бы
+  // себе обращение к общему пулу до всякой защиты — ровно тот антипаттерн, из-за которого лимитер и
+  // не переносили в БД. Ключ свой (`t:`), объект общий: счётчики раздельные, а лимитер один.
+  if (!sharedLimiter().allow(`t:${ip}`, new Date())) {
+    return { ok: false, reason: 'rate', deadToken: false }
   }
 
-  const r: TenantResolution = await portalBySurveyKey(db, surveyKey)
+  let deadToken = false
+  if (tok !== undefined) {
+    const byToken = await portalByInvitationToken(db, hashToken(tok))
+    if (byToken !== undefined) return { ok: true, portalId: byToken }
+    // Токен прислан и не найден НИ У КОГО — ссылка мертва глобально. Портал по ней не определить,
+    // но и не нужно: вердикт одинаков в любом сторе.
+    deadToken = true
+  }
+
+  const r: TenantResolution = await portalBySurveyKey(db, key)
   if (r.kind === 'portal') return { ok: true, portalId: r.portalId }
   if (r.kind === 'unknown') return { ok: true, portalId: undefined }
 
   // Отказ ВИДЕН в логе: иначе владелец не поймёт, почему публичная ссылка перестала открываться
   // ровно после того, как второй портал завёл опрос с тем же ключом.
   logger.warn('tenant_ambiguous', {
-    surveyKey,
-    // ⚠️ Формулировка про токен обтекаемая намеренно: сюда приходит и запрос БЕЗ токена, и запрос с
-    // токеном, которого нет в базе. Написать «токена нет» значило бы для второго случая соврать —
-    // и увести того, кто читает лог, искать поломку в сборке ссылки.
-    msg: `Ключ опубликован порталами (${r.count}), а годного токена приглашения в запросе нет — выбрать нельзя (#49)`
+    surveyKey: key,
+    // ⚠️ Число НЕ печатаем: запрос капнут `limit 2`, и «порталов 2» было бы неправдой при пяти —
+    // лог, заведённый ради предсказуемости, уводил бы искать конкретную пару.
+    msg: `Ключ опубликован более чем одним порталом (${r.atLeast}+), а годного токена приглашения в запросе нет — выбрать нельзя (#49)`
   })
-  return { ok: false, reason: 'ambiguous' }
+  return { ok: false, reason: 'ambiguous', deadToken }
 }
 
 /**

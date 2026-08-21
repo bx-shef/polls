@@ -17,7 +17,7 @@ import { surveyRoutingFromEnv } from '~core/bitrix24/survey-routing'
 import { PgStore, queryableFromPool } from '~core/store/pg'
 import { PgInvitationStore } from '~core/store/pg-invitation'
 import { applyMigrations, upSql } from '~core/store/migrate'
-import { ensureDefaultPortal, seedDemoIfEmpty } from '~core/store/bootstrap'
+import { ensureDefaultPortal, isPlaceholderPortal, seedDemoIfEmpty } from '~core/store/bootstrap'
 import { resolveMemberIdByDomain } from '~core/bitrix24/portal'
 import type { IStore, Queryable } from '~core/store/types'
 import { setPortalResolver } from './b24-session'
@@ -133,9 +133,12 @@ async function buildStore(): Promise<IStore> {
   // Портал ПО УМОЛЧАНИЮ — фолбэк для путей, где портала нет вовсе (см. `ensureDefaultPortal`).
   // Портал запроса выбирают `storeFor`/`invitationsFor`/`useApiFor` (#49).
   const portalId = await ensureDefaultPortal(db, {
-    onAmbiguous: (chosen, total) =>
+    onAmbiguous: (chosen, all) =>
       logger.info('store_default_portal', {
-        msg: `Порталов в базе ${total}; фолбэк-стор (запрос без портала) пишет под ${chosen}`
+        // ⚠️ Второй аргумент — СПИСОК member_id, а не число. Первая редакция подставляла его как
+        // количество («Порталов в базе m-a,m-b»), и лог, заведённый ради предсказуемости выбора,
+        // сам врал про то, что печатает.
+        msg: `Порталов в базе ${all.length} (${all.join(', ')}); фолбэк-стор (запрос без портала) пишет под ${chosen}`
       })
   })
   pgPortalId = portalId
@@ -144,8 +147,11 @@ async function buildStore(): Promise<IStore> {
   // пройден» (#170). Флаг падает на старте, если драйвер транзакций не умеет, — вместо тихой
   // неатомарной записи. `queryableFromPool` их умеет, так что это страховка от будущей подмены.
   const store = new PgStore(db, { portalId, requireTransaction: true })
-  if (await seedDemoIfEmpty(store)) {
-    logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД (#6)' })
+  // ⚠️ Демо — ТОЛЬКО в плейсхолдер (#47/#49). Портал по умолчанию с мультитенантом это самый ранний
+  // НАСТОЯЩИЙ портал: без гейта удаление первого арендатора превращало бы второго в получателя
+  // демо-опроса и дюжины выдуманных ответов. Разбор — `seedDemoIfEmpty`.
+  if (await isPlaceholderPortal(db, portalId) && await seedDemoIfEmpty(store)) {
+    logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД под плейсхолдер-портал (#6)' })
   }
   // Боевой резолвер handshake app-фрейма: domain → member_id из таблицы portal (#47/#49).
   setPortalResolver((domain) => resolveMemberIdByDomain(db, domain))
@@ -160,9 +166,10 @@ async function buildStore(): Promise<IStore> {
  * несколькими порталами это означало бы, что ответы одного заказчика ложатся в данные другого —
  * тихо, потому что снаружи всё выглядит рабочим. Теперь портал — ПАРАМЕТР, а не состояние.
  *
- * Мемоизация по `portalId` дешёвая (конструктор `PgStore` — это `db` + опции), но нужна ради
- * `Api`: у него внутри лимитер и nonce-стор, и пересоздавать их на запрос значило бы обнулять
- * анти-абьюз каждым запросом.
+ * Мемоизация по `portalId` — гигиена, а не защита: один `PgStore`/`Api` на портал вместо объекта на
+ * каждый запрос. Анти-абьюз она НЕ держит — лимитер и nonce-стор общие и живут отдельными
+ * синглтонами (`sharedLimiter`/`sharedNonces`); первая редакция этого комментария утверждала
+ * обратное, и опровергалась строкой тридцатью ниже, в том же файле.
  */
 const storesByPortal = new Map<number, IStore>()
 const invitationsByPortal = new Map<number, InvitationStore>()
@@ -368,7 +375,7 @@ async function seedDemoInvitation(invitations: InvitationStore): Promise<void> {
  * ceiling от примитивного флуда.
  */
 let limiterOnce: SlidingWindowLimiter | undefined
-function sharedLimiter(): SlidingWindowLimiter {
+export function sharedLimiter(): SlidingWindowLimiter {
   if (!limiterOnce) limiterOnce = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
   return limiterOnce
 }
