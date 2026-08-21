@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildSurveyInviteActivity } from '../src/bitrix24/activity'
-import { hasIssuedInvitation, issuedLinkView, readLinkVerdict, readWidgetParams } from '../src/client/widget-params'
+import { buildSurveyInviteActivity, buildSurveyResultActivity } from '../src/bitrix24/activity'
+import {
+  hasIssuedInvitation, hasResultRequest, issuedLinkView, readLinkVerdict, readWidgetParams
+} from '../src/client/widget-params'
 
 /**
  * Разбор параметров открытия виджета. Цена ошибки здесь конкретная: перепутав два способа открытия,
@@ -92,6 +94,64 @@ describe('проводка кнопки: дело пишет — виджет ч
       token: 'tok-1',
       url: 'https://polls.example/s/csat_postdeal?token=tok-1'
     })
+  })
+})
+
+describe('проводка кнопки РЕЗУЛЬТАТА: дело пишет — виджет читает (#18)', () => {
+  const built = (over: Record<string, unknown> = {}) => buildSurveyResultActivity({
+    dealId: 759,
+    surveyTitle: 'Оценка после сделки',
+    lines: [{ label: 'Насколько вероятно?', value: '9' }],
+    marker: { originatorId: 'bx-shef.polls', originId: 'result:r-42' },
+    responseId: 'r-42',
+    ...over
+  })
+
+  it('actionParams РЕАЛЬНОГО дела распознаются как «показать результат»', () => {
+    // Тот же гард, что у приглашения, и с той же ценой: разъедься имена — кнопка откроет виджет без
+    // `responseId`, тот примет это за открытие из карточки и предложит выписать НОВОЕ приглашение
+    // клиенту, который только что ответил.
+    const button = built().layout.footer!.buttons.openResult as {
+      action: { type: string; actionParams: Record<string, unknown> }
+    }
+    expect(button.action.type).toBe('openRestApp')
+    const params = readWidgetParams(button.action.actionParams)
+    expect(hasResultRequest(params)).toBe(true)
+    expect(params).toEqual({ responseId: 'r-42', dealId: 759 })
+  })
+
+  it('числовой responseId НЕ теряется: портал приводит actionParams по-разному', () => {
+    // ⚠️ `dealId` читался терпимо (число или строка), а `responseId` — только строкой. В PgStore это
+    // `bigint`, и приведи портал параметр к числу, он бы исчез — виджет свалился бы в «выписать новое
+    // приглашение» клиенту, который только что ответил.
+    expect(readWidgetParams({ responseId: 42, dealId: 759 })).toEqual({ responseId: '42', dealId: 759 })
+    expect(hasResultRequest(readWidgetParams({ responseId: 42 }))).toBe(true)
+    // Мусор по-прежнему не проходит.
+    for (const bad of [Number.NaN, Infinity, '', '   ', null, {}, []]) {
+      expect(readWidgetParams({ responseId: bad }).responseId, String(bad)).toBeUndefined()
+    }
+  })
+
+  it('результат распознаётся РАНЬШЕ приглашения — иначе позовём отвечавшего снова', () => {
+    // ⚠️ Дело-результат живёт на той же сделке, что и дело-приглашение, и портал может добавить в
+    // options свои ключи. Порядок проверок в виджете решает, что человек увидит.
+    const both = readWidgetParams({ responseId: 'r-42', dealId: 759, surveyKey: 'csat', token: 'tk' })
+    expect(hasResultRequest(both)).toBe(true)
+  })
+
+  it('без записи ответа кнопки НЕТ вовсе: мёртвая кнопка хуже отсутствующей', () => {
+    // До страницы просмотра результата футер отсутствовал ровно поэтому. Сводка в теле дела остаётся
+    // в любом случае — ради неё менеджер сюда и смотрит, и от кнопки она зависеть не должна.
+    // ⚠️ Пустая строка тоже не считается: кнопка была бы, `readText('')` вернул бы `undefined`, и
+    // виджет предложил бы выписать НОВОЕ приглашение только что ответившему клиенту.
+    expect(built({ responseId: undefined }).layout.footer).toBeUndefined()
+    expect(built({ responseId: '' }).layout.footer).toBeUndefined()
+    // ⚠️ А от МАРКЕРА кнопка зависеть не должна: он про дедуп дела, а не про показ ответа. Появись
+    // путь, где маркер считается позже, кнопка исчезла бы молча.
+    expect(built({ marker: undefined }).layout.footer, 'кнопка снова завязана на маркер').toBeDefined()
+    // ⚠️ Именно ЧИСЛО блоков: `toBeDefined()` истинно и для пустого объекта, а Bitrix24 требует ≥1
+    // блока — то есть дело просто не создалось бы, молча (постинг best-effort).
+    expect(Object.keys(built().layout.body.blocks), 'сводка исчезла вместе с кнопкой').toHaveLength(1)
   })
 })
 

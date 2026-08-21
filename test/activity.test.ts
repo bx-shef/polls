@@ -159,12 +159,17 @@ describe('buildSurveyResultActivity — результат опроса в та�
     expect(a.layout.body.blocks.line0).toEqual({ type: 'text', properties: { value: 'Опрос заполнен: без ответов' } })
   })
 
-  it('футера НЕТ: кнопке «Открыть результат» вести некуда, пока нет страницы результата', () => {
-    // ⚠️ Утверждение, а не пропуск. Кнопка была, и вела она в `openRestApp` с `responseId`, которого
-    // виджет не читает (`readWidgetParams` знает про сделку и приглашение) — то есть в пустой экран.
-    // Сама сводка ответов лежит в теле дела, ради неё менеджер сюда и смотрит.
-    const a = buildSurveyResultActivity({ ...rInput, dealId: 7 })
-    expect(a.layout.footer).toBeUndefined()
+  it('без записи ответа футера НЕТ: мёртвая кнопка хуже отсутствующей', () => {
+    // ⚠️ Утверждение, а не пропуск. Кнопка «Открыть результат» появилась вместе со страницей (#18),
+    // но открывать ей нечего, если `responseId` неизвестен. Пустая строка тоже не считается: кнопка
+    // была бы, а виджет принял бы открытие за обычное и предложил выписать НОВОЕ приглашение
+    // клиенту, который только что ответил.
+    // ⚠️ Сводка ответов лежит в теле дела и от кнопки не зависит — ради неё менеджер сюда и смотрит.
+    for (const responseId of [undefined, '']) {
+      const a = buildSurveyResultActivity({ ...rInput, dealId: 7, ...(responseId !== undefined ? { responseId } : {}) })
+      expect(a.layout.footer, String(responseId)).toBeUndefined()
+      expect(a.layout.body.blocks, 'сводка исчезла вместе с кнопкой').toBeDefined()
+    }
   })
 
   it('маркер идемпотентности едет в fields (одна запись ответа — одно дело)', () => {

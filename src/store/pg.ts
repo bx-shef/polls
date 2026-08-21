@@ -470,6 +470,23 @@ export class PgStore implements IStore {
     return this.hydrate(rows.rows)
   }
 
+  async getResponse(responseId: string): Promise<ResponseRecord | undefined> {
+    // ⚠️ `portal_id` в WHERE — несущее, а не «как везде за компанию»: `responseId` приезжает из
+    // параметров кнопки, то есть из недоверенной части запроса. Без фильтра менеджер одного портала
+    // прочитал бы ответ другого простым перебором id — а ответ несёт свободный текст клиента.
+    // ⚠️ Форму отсекаем ДО базы. Сперва здесь стояло `r.id::text = $2` — оно не падало на нечисловом
+    // значении, но выключало индекс по первичному ключу: план шёл по портальному индексу и вычислял
+    // `id::text` на КАЖДОЙ строке портала. На портале с десятками тысяч ответов это скан на каждое
+    // открытие результата, то есть дешёвый рычаг нагрузки для любого сотрудника. `id` в PgStore —
+    // `bigint`, и нечисловая строка нашей записью быть не может по построению.
+    if (!/^\d{1,19}$/.test(responseId)) return undefined
+    const rows = await this.db.query<ResponseRow>(
+      `${SELECT_RESPONSE} where r.portal_id = $1 and r.id = $2::bigint limit 1`,
+      [this.opts.portalId, responseId]
+    )
+    return (await this.hydrate(rows.rows))[0]
+  }
+
   async hasResponseSince(surveyKey: string, dealId: number, since: Date): Promise<boolean> {
     // `limit 1` и `exists`-семантика: вопрос булев, тянуть строки незачем. Фильтр по `portal_id` —
     // как везде: ответ чужого портала не должен закрывать наш повод спросить (tenant-изоляция).

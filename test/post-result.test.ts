@@ -32,7 +32,13 @@ const INFO: AnsweredInfo = {
  * (camelCase), а `crm.activity.get` отдаёт `ORIGINATOR_ID`. Ровно из-за этого расхождения и
  * существует `ensureActivityMarker` — фейк, сглаживающий его, проверял бы не то.
  */
-function fakePortal(over: { failAdd?: boolean; dropMarker?: boolean; deaf?: boolean } = {}) {
+function fakePortal(over: {
+  failAdd?: boolean
+  dropMarker?: boolean
+  deaf?: boolean
+  /** Портал не принимает `layout.footer` — форма футера вживую не сверена (#18). */
+  rejectFooter?: boolean
+} = {}) {
   const created: Array<Record<string, unknown>> = []
   const calls: string[] = []
   let nextId = 100
@@ -41,6 +47,8 @@ function fakePortal(over: { failAdd?: boolean; dropMarker?: boolean; deaf?: bool
     let result: unknown
     if (opts.method === 'crm.activity.configurable.add') {
       if (over.failAdd) throw new Error('портал недоступен')
+      const layout = (opts.params as { layout?: { footer?: unknown } }).layout ?? {}
+      if (over.rejectFooter && layout.footer !== undefined) throw new Error('Поле footer не поддерживается')
       const fields = (opts.params as { fields?: Record<string, unknown> }).fields ?? {}
       const id = nextId++
       // `dropMarker` — портал принял вызов и маркер НЕ сохранил: принимает ли `configurable.add`
@@ -49,6 +57,10 @@ function fakePortal(over: { failAdd?: boolean; dropMarker?: boolean; deaf?: bool
         ID: id,
         COMPLETED: fields.completed,
         RESPONSIBLE_ID: fields.responsibleId,
+        // ⚠️ Разметку сохраняем ЦЕЛИКОМ: пока фейк выбрасывал `layout`, мутация «не передавать
+        // `responseId` в дело» проходила весь набор — кнопки «Открыть результат» не было бы ни у
+        // кого, а CI оставался зелёным при 100% покрытии.
+        LAYOUT: (opts.params as { layout?: unknown }).layout,
         ...(over.dropMarker ? {} : { ORIGINATOR_ID: fields.originatorId, ORIGIN_ID: fields.originId })
       })
       result = id
@@ -180,5 +192,32 @@ describe('результат опроса в таймлайне сделки', (
     const d = deps(slow, { deadlineMs: 20 })
     await postResult(INFO, d)
     expect(d.logs.some(([lvl, e]) => lvl === 'warn' && e === 'b24_result_post_timeout')).toBe(true)
+  })
+
+  it('в дело уезжает `responseId` — иначе кнопки «Открыть результат» не будет ни у кого (#18)', async () => {
+    // ⚠️ Единственная боевая точка проводки. `test/widget-params.test.ts` зовёт билдер напрямую со
+    // своим значением, то есть проверяет ФОРМУ, а не то, что мы её действительно заполняем.
+    const portal = fakePortal()
+    await postResult(INFO, deps(portal.client))
+    const layout = portal.created[0]?.LAYOUT as {
+      footer?: { buttons: { openResult?: { action: { actionParams: Record<string, unknown> } } } }
+    }
+    expect(layout.footer?.buttons.openResult?.action.actionParams)
+      .toMatchObject({ responseId: INFO.responseId, dealId: INFO.context.dealId })
+  })
+
+  it('портал не принял ФУТЕР → дело всё равно создаётся, но без кнопки и с warn (#18)', async () => {
+    // ⚠️ Отказ здесь МОЛЧАЛИВЫЙ, а форма футера вживую не сверена: не будь повторной попытки, портал
+    // убил бы запись результата ЦЕЛИКОМ — вместе со сводкой, ради которой менеджер в карточку и
+    // смотрит. Кнопка это улучшение, сводка — суть; терять суть из-за улучшения нельзя.
+    const portal = fakePortal({ rejectFooter: true })
+    const d = deps(portal.client)
+    await postResult(INFO, d)
+    expect(portal.created, 'запись результата потеряна целиком').toHaveLength(1)
+    expect(portal.created[0]?.ORIGIN_ID, 'маркер не проставлен — дело потом не найти').toBeDefined()
+    const line = d.logs.find((l) => l[1] === 'b24_result_posted')
+    expect(line?.[2].buttonDropped, 'потеря кнопки не названа').toBe(true)
+    expect(line?.[0], 'потеря кнопки прошла как обычная строка').toBe('warn')
+    expect(d.logs.find((l) => l[1] === 'b24_result_footer_rejected')).toBeDefined()
   })
 })

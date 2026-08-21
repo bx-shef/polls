@@ -77,23 +77,42 @@ export async function postResult(info: AnsweredInfo, deps: PostResultDeps): Prom
     // созданием, как у выписки приглашения (`deliverInvite`). Без него ретрай положит второе дело:
     // Bitrix24 уникальность `ORIGIN_ID` не форсит, проверено вживую.
     const marker = resultMarker(info.responseId)
-    const activityId = await activityConfigurableAdd(client, buildSurveyResultActivity({
+    const build = (withButton: boolean) => buildSurveyResultActivity({
       dealId,
       surveyTitle: info.surveyTitle,
       lines: [...info.lines],
       marker,
+      // Идентификатор записи — в кнопку «Открыть результат» (#18). Тот же, из которого построен
+      // маркер, но передаётся отдельно: форма маркера это деталь дедупа, и разбирать её ради кнопки
+      // значило бы связать их молча.
+      ...(withButton ? { responseId: info.responseId } : {}),
       ...(info.context.responsibleId != null ? { responsibleId: info.context.responsibleId } : {})
-    }))
+    })
+
+    // ⚠️ ОДНА повторная попытка БЕЗ кнопки, и это не перестраховка. Футер с `openRestApp` у
+    // настраиваемого дела вживую не сверен (метод недоступен вебхуку), а отказ здесь МОЛЧАЛИВЫЙ:
+    // не приняв форму, портал убил бы запись результата ЦЕЛИКОМ — вместе со сводкой, ради которой
+    // менеджер в карточку и смотрит. Кнопка — улучшение, сводка — суть; терять суть из-за улучшения
+    // нельзя. Заодно это прямой ответ живого прогона: по тому, какая ветка сработала, сразу видно,
+    // принимает ли портал футер.
+    let buttonDropped = false
+    const activityId = await activityConfigurableAdd(client, build(true)).catch(async (e: unknown) => {
+      deps.log.warn('b24_result_footer_rejected', { dealId, responseId: info.responseId, err: errInfo(e) })
+      buttonDropped = true
+      return activityConfigurableAdd(client, build(false))
+    })
 
     // ⚠️ ПЕРЕЧИТЫВАЕМ маркер, а не верим вызову — ровно как выписка приглашения. Принимает ли
     // `crm.activity.configurable.add` поля `originatorId`/`originId` в своём `fields`, вживую не
     // сверено; без сверки лог рапортовал бы об успехе там, где дело создано БЕЗ маркера — то есть
     // найти его потом (и не создать второе) было бы нечем.
     const fix = await ensureActivityMarker(client, activityId, marker)
-    deps.log[fix === 'failed' ? 'warn' : 'info']('b24_result_posted', {
+    deps.log[fix === 'failed' || buttonDropped ? 'warn' : 'info']('b24_result_posted', {
       surveyKey: info.surveyKey,
       dealId,
       responseId: info.responseId,
+      // `true` — портал не принял футер, дело создано без кнопки «Открыть результат» (#18).
+      buttonDropped,
       activityId,
       lines: info.lines.length,
       // `already` — маркер приняла сама `configurable.add`; `repaired` — дописали; `failed` — дела с

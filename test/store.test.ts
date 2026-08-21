@@ -190,6 +190,26 @@ describe('MemoryStore.listResponsesPage (keyset-пагинация)', () => {
   })
 })
 
+describe('getResponse — один ответ по id (#18)', () => {
+  const resp = (id: string): ResponseRecord => ({
+    id,
+    surveyKey: 'csat_postdeal',
+    versionNo: 1,
+    submittedAt: '2026-08-20T12:00:00.000Z',
+    context: { dealId: 777 },
+    answers: []
+  })
+
+  it('находит свою запись и не выдумывает чужую', async () => {
+    const s = new MemoryStore()
+    await s.addResponse(resp('r-1'))
+    await s.addResponse(resp('r-2'))
+    expect((await s.getResponse('r-2'))?.id).toBe('r-2')
+    expect(await s.getResponse('r-3')).toBeUndefined()
+    expect(await s.getResponse('')).toBeUndefined()
+  })
+})
+
 describe('hasResponseSince — «ответил ли клиент после перехода» (#138)', () => {
   const at = (iso: string) => new Date(iso)
   const resp = (over: Partial<ResponseRecord> = {}): ResponseRecord => ({

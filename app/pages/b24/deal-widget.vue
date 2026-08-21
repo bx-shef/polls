@@ -4,26 +4,36 @@
 // options) → по кнопке POST /api/b24/deal-invite → ссылка-приглашение /s/:key?token=…
 // Только клиент (iframe нет на SSR).
 //
-// ⚠️ Виджет открывается ДВУМЯ способами, и это разные ситуации:
+// ⚠️ Виджет открывается ТРЕМЯ способами, и это разные ситуации:
 //  1. из карточки сделки — приглашения ещё нет, менеджер жмёт «Создать ссылку»;
 //  2. кнопкой «Отправить приглашение» на деле в таймлайне — приглашение УЖЕ выписано автотриггером,
 //     и его токен приезжает в параметрах. Тогда показываем ГОТОВУЮ ссылку, а не выписываем новую:
 //     иначе у клиента окажутся две, и первая умрёт при ответе по второй — дубль, сделанный руками
-//     менеджера ровно после того, как мы избавились от машинных (#138).
+//     менеджера ровно после того, как мы избавились от машинных (#138);
+//  3. кнопкой «Открыть результат» на деле-РЕЗУЛЬТАТЕ (#18) — клиент уже ответил, и в параметрах едет
+//     идентификатор записи. Эта ветка проверяется ПЕРВОЙ: спутав её со второй, виджет предложил бы
+//     выписать новое приглашение только что ответившему клиенту.
 import { initializeB24Frame } from '@bitrix24/b24jssdk'
 // Текст ошибки берёт ядровая `serverMessage` (одна на всё приложение). Своя копия здесь падала на
 // `statusMessage` — служебную АНГЛИЙСКУЮ строку h3, которую сотрудник в карточке сделки видеть не должен.
 import { serverMessage } from '~core/client/server-message'
 // Разбор параметров открытия — чистой функцией в ядре: их два способа, и перепутать их значит
 // выписать ВТОРОЕ приглашение на ту же сделку.
-import { hasIssuedInvitation, issuedLinkView, readLinkVerdict, readWidgetParams, type LinkVerdict } from '~core/client/widget-params'
+import {
+  hasIssuedInvitation, hasResultRequest, issuedLinkView, readLinkVerdict, readWidgetParams, type LinkVerdict
+} from '~core/client/widget-params'
+// Псевдоним намеренный: автоимпортируемый компонент называется так же (`ResultView.vue`), и
+// одноимённый type-only импорт читается как использование значения из него.
+import type { ResultView as ResultViewData } from '~core/domain/result-view'
 import { INVITATION_TOKEN_PARAM, surveyPath } from '~core/client/invitation-link'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
 
 const serverError = (e: unknown, fallback: string): string => serverMessage(e) ?? fallback
 
-const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
+const phase = ref<'init' | 'ready' | 'done' | 'error' | 'result'>('init')
+/** Готовый результат клиента — виджет открыт кнопкой «Открыть результат» на деле-результате (#18). */
+const result = ref<ResultViewData | undefined>()
 /**
  * Сервер ответил «приглашение по этой сделке уже отправлено» (#176). Отдельное состояние, а не текст
  * ошибки: человек ничего не сделал не так, и вести его надо в таймлайн сделки, а не в «попробуйте
@@ -52,6 +62,19 @@ onMounted(async () => {
     auth = { domain: a.domain, member_id: a.member_id, access_token: a.access_token }
     const params = readWidgetParams(b24.placement.options)
     dealId.value = params.dealId
+    // ⚠️ Результат проверяется ПЕРВЫМ, и порядок несущий: дело-результат живёт на той же сделке, что
+    // и дело-приглашение. Спутав их, виджет предложил бы выписать НОВОЕ приглашение клиенту, который
+    // только что ответил. Порядок закреплён структурным гардом (`test/tenant-routes.test.ts`).
+    //
+    // ⚠️ Прошлый результат гасим на КАЖДОМ открытии: если портал переиспользует уже открытый фрейм,
+    // остаточное значение показало бы ответ ПРЕДЫДУЩЕГО клиента под текущей сделкой. Переиспользует
+    // ли — вживую не сверено, и это отдельный пункт живого прогона.
+    result.value = undefined
+    if (hasResultRequest(params)) {
+      message.value = 'Загружаем результат…'
+      await loadResult(params.responseId)
+      return
+    }
     if (hasIssuedInvitation(params)) {
       // Пришли по кнопке из таймлайна: ссылка уже есть. Берём ГОТОВУЮ строку, которую сервер записал
       // в тело дела, — тогда менеджер видит и копирует одну и ту же ссылку. Сборка из
@@ -79,6 +102,33 @@ onMounted(async () => {
     message.value = 'Не удалось открыть виджет. Обновите страницу и откройте его заново из карточки сделки.'
   }
 })
+
+/**
+ * Прочитать результат по идентификатору записи. Портал подтверждает сервер — тем же фрейм-токеном,
+ * что и остальные экраны; здесь показывается то, что он вернул.
+ */
+async function loadResult(responseId: string): Promise<void> {
+  if (!auth) {
+    // ⚠️ Не голый `return`: он оставил бы экран в вечном «Загружаем результат…». Сегодня сюда не
+    // попасть (единственный вызов идёт после присвоения `auth`), но защитная ветка, ведущая в
+    // тупик, — плохой сосед для фазовой машины.
+    phase.value = 'error'
+    message.value = 'Не удалось открыть виджет. Обновите страницу и откройте его заново из карточки сделки.'
+    return
+  }
+  try {
+    const r = await $fetch<{ ok: boolean; view?: ResultViewData; error?: string }>('/api/b24/result', {
+      method: 'POST',
+      body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token, responseId }
+    })
+    if (!r.ok || !r.view) throw new Error(r.error ?? 'сервер не вернул результат')
+    result.value = r.view
+    phase.value = 'result'
+  } catch (e) {
+    phase.value = 'error'
+    message.value = serverError(e, 'Не удалось открыть результат. Попробуйте ещё раз.')
+  }
+}
 
 /**
  * Жива ли уже выписанная ссылка. Спрашиваем тот же роут, что и страница опроса, — второго источника
@@ -187,6 +237,7 @@ async function launch(force = false, reason: 'dedup' | 'reissue' = 'dedup') {
 <template>
   <main class="mx-auto max-w-xl p-4">
     <B24Alert v-if="phase === 'error'" color="air-primary-alert" :title="message" />
+    <ResultView v-else-if="phase === 'result' && result" :view="result" />
     <template v-else>
       <p class="mb-3 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
       <B24Button
