@@ -227,13 +227,33 @@ describe('ручной путь виджета не обходит защиту 
     expect(src).toMatch(/force[\s\S]{0,160}===\s*true/)
   })
 
-  it('клиент портала для дела — тот же, которым читается сделка', () => {
-    // Два независимых клиента разъехались бы молча: дело село бы в одну CRM, а снимок сделки пришёл
-    // бы из другой.
+  it('выписка пишет в стор и приглашения ПОДТВЕРЖДЁННОГО портала', () => {
+    // ⚠️ Здесь стояла ещё проверка `manualInvite(… client,` под именем «тот же клиент, которым
+    // читается сделка». Она ложна в ОБЕ стороны: доказывала лишь то, что переменная называется
+    // `client` (подстановка второго клиента с чужим доменом её проходила), и краснела на безобидном
+    // переименовании и на выносе deps в переменную. Гард, который врёт о причине, учит следующего
+    // ослаблять регулярку — поэтому утверждение снято, а не «подкручено».
     const src = stripComments(read(PATH))
-    expect(src).toMatch(/manualInvite\([\s\S]{0,400}\bclient,/)
     expect(src).toMatch(/store:\s*tenant\.store/)
     expect(src).toMatch(/invitations:\s*tenant\.invitations/)
+    expect(src).toMatch(/portalId:\s*portal\.portalId/)
+  })
+
+  it('контракт роут↔виджет держится с ОБЕИХ сторон', () => {
+    // ⚠️ Обе половины снимались незаметно. `force` вычислялся, но не доезжал до `manualInvite`
+    // (typecheck молчит — поле необязательное), и кнопка «Всё равно создать новую» становилась
+    // мёртвой: сколько ни жми, ответ один. А переименуй сервер `alreadyInvited` — виджет ветку не
+    // узнает и покажет ошибку вместо честного «уже приглашали». Ровно тот класс дефекта, про который
+    // предупреждает JSDoc `inviteActionParams`: расхождение имён молча даёт второе приглашение.
+    const route = stripComments(read(PATH))
+    const widget = stripComments(read('app/pages/b24/deal-widget.vue'))
+    expect(route, 'force не доезжает до выписки').toMatch(/manualInvite\([\s\S]{0,300}\bforce\b/)
+    for (const [name, field] of [['alreadyInvited', 'alreadyInvited'], ['activityMissing', 'activityMissing']] as const) {
+      expect(route, `сервер не отдаёт ${name}`).toMatch(new RegExp(`\\b${field}\\b`))
+      expect(widget, `виджет не читает ${name}`).toMatch(new RegExp(`\\b${field}\\b`))
+    }
+    // «Уже приглашали» — это 200, а не 4xx: человек всё сделал правильно.
+    expect(route).not.toMatch(/alreadyInvited[\s\S]{0,200}setResponseStatus/)
   })
 })
 

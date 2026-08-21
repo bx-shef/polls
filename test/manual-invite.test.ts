@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { manualInvite, type ManualInviteDeps } from '../server/utils/manual-invite'
+import { manualInvite, MAX_EXISTING_IDS, type ManualInviteDeps } from '../server/utils/manual-invite'
 import { MemoryInvitationStore } from '../src/api/invitation'
 import { INVITE_ORIGINATOR, markerMatchesSurvey } from '../src/bitrix24/invite-delivery'
 import { DEAL_OWNER_TYPE_ID } from '../src/bitrix24/activity'
@@ -23,12 +23,17 @@ function fakePortal(existing: Array<Record<string, unknown>> = [], over: {
   failList?: boolean
   /** `configurable.add` принял вызов, но поля маркера проигнорировал (вживую не сверено). */
   dropMarker?: boolean
+  /** `crm.activity.update` отказывает — тогда маркер дописать не выйдет (`markerFix: 'failed'`). */
+  failUpdate?: boolean
 } = {}) {
   const rows = new Map(existing.map((a) => [a.ID as number, { COMPLETED: 'N', ...a }]))
   let nextId = 1000
   const calls: string[] = []
+  /** Параметры вызовов — параллельно `calls`: без них содержимое созданного дела не проверить. */
+  const params: Array<Record<string, unknown> | undefined> = []
   const make = vi.fn(async (opts: { method: string; params?: Record<string, unknown> }): Promise<CallResult> => {
     calls.push(opts.method)
+    params.push(opts.params)
     let result: unknown
     if (opts.method === 'crm.activity.list') {
       if (over.failList) throw new Error('портал недоступен')
@@ -55,6 +60,7 @@ function fakePortal(existing: Array<Record<string, unknown>> = [], over: {
     } else if (opts.method === 'crm.activity.get') {
       result = rows.get((opts.params as { id: number }).id) ?? null
     } else if (opts.method === 'crm.activity.update') {
+      if (over.failUpdate) throw new Error('правка дела запрещена')
       const p = opts.params as { id: number; fields: Record<string, unknown> }
       Object.assign(rows.get(p.id) ?? {}, p.fields)
       result = true
@@ -62,7 +68,7 @@ function fakePortal(existing: Array<Record<string, unknown>> = [], over: {
     return { isSuccess: true, getData: () => ({ result, time: {} }), getErrorMessages: () => [] }
   })
   const client: PortalClient = { actions: { v2: { call: { make } } } }
-  return { client, rows, calls }
+  return { client, rows, calls, params }
 }
 
 const version = { versionNo: 2, title: 'Оценка после сделки' } as CompiledVersion
@@ -175,7 +181,10 @@ describe('ручной запуск из карточки сделки: «уже
 
   it('дело-РЕЗУЛЬТАТ не читается как приглашение', async () => {
     // Префиксы разведены намеренно: совпади они, запись о результате гасила бы новый опрос.
-    const p = fakePortal([row(7, 'result:r-1')])
+    // ⚠️ Форма ТРЁХЧАСТНАЯ намеренно: `result:r-1` не совпал бы ни при какой реализации (разделитель
+    // всего один), и тест обещал бы больше, чем проверяет. Здесь мутация «добавить `result:` в список
+    // префиксов приглашения» обязана краснеть.
+    const p = fakePortal([row(7, 'result:4242:' + SURVEY)])
     const res = await manualInvite({ dealId: 759, surveyKey: SURVEY, context: CONTEXT }, deps(p.client))
     expect(res.kind).toBe('created')
   })
@@ -215,6 +224,45 @@ describe('ручной запуск: что именно создаётся (#17
     // нажатия, ни в закрытии при ответе (#177) — висело бы в карточке открытым вечно.
     expect(markerMatchesSurvey(created?.ORIGIN_ID, SURVEY)).toBe(true)
     expect(String(created?.ORIGIN_ID)).toMatch(/^manual:\d+:csat_postdeal$/)
+
+    // ⚠️ СОДЕРЖИМОЕ дела, а не только его маркер. Без этого мутация «в шапку чужой заголовок, в тело
+    // пустая ссылка, в кнопку чужой токен» проходила весь набор: менеджер получал дело с нерабочей
+    // ссылкой, а кнопка «Отправить приглашение» уносила клиенту недействительный токен.
+    const add = p.calls.indexOf('crm.activity.configurable.add')
+    expect(add).toBeGreaterThanOrEqual(0)
+    const params = p.params[add] as {
+      layout: { header: { title: string }; body: { blocks: Record<string, { properties: { value: string } }> } }
+    }
+    expect(params.layout.header.title).toContain('Оценка после сделки')
+    expect(params.layout.body.blocks.surveyLink?.properties.value).toBe(res.url)
+
+    // ⚠️ `already`, а не «любой успех»: маркер обязан уходить в САМ `configurable.add`. Забудь мы его
+    // там — `ensureActivityMarker` всё дочинил бы, и единственным следом остался бы лишний REST на
+    // каждое создание плюс полная зависимость от того, что правка дела разрешена.
+    expect(d.logs.find((l) => l[1] === 'b24_manual_activity')?.[2].markerFix).toBe('already')
+  })
+
+  it('маркер дописать НЕ вышло → это warn и `failed`, а не тихий успех', async () => {
+    // ⚠️ Единственный сигнал о том, что дедуп ручного пути сломан: дело без маркера не найдёт ни
+    // следующее нажатие, ни закрытие по ответу. Выдай мы отказ за `already` — провал защиты стал бы
+    // неотличим от её работы, ровно как это было до перечитывания в `ensureActivityMarker`.
+    const p = fakePortal([], { dropMarker: true, failUpdate: true })
+    const d = deps(p.client)
+    const res = await manualInvite({ dealId: 759, surveyKey: SURVEY, context: CONTEXT }, d)
+    expect(res.kind).toBe('created')
+    const line = d.logs.find((l) => l[1] === 'b24_manual_activity')
+    expect(line?.[2].markerFix, 'провал маркера выдан за успех').toBe('failed')
+    expect(line?.[0], 'дедуп сломан, а в логе это info').toBe('warn')
+  })
+
+  it('список id капается: десяток дел означает поломку, а не нагрузку', async () => {
+    const many = Array.from({ length: 14 }, (_, i) => row(100 + i, `stage:${i}:${SURVEY}`))
+    const res = await manualInvite(
+      { dealId: 759, surveyKey: SURVEY, context: CONTEXT },
+      deps(fakePortal(many).client)
+    )
+    if (res.kind !== 'existing') throw new Error('unreachable')
+    expect(res.activityIds).toHaveLength(MAX_EXISTING_IDS)
   })
 
   it('маркер, не принятый `configurable.add`, ДОПИСЫВАЕТСЯ — иначе дело не найдётся никем', async () => {

@@ -237,7 +237,11 @@ describe('маркер → «тот ли опрос» (закрытие дела
   })
 
   it('чужая форма маркера, пусто и мусор → не наше', () => {
-    for (const bad of [undefined, '', 'csat', 'stage:csat', 'other:4242:csat', 'STAGE:4242:csat']) {
+    for (const bad of [
+      undefined, '', 'csat', 'stage:csat', 'other:4242:csat', 'STAGE:4242:csat',
+      // Ручная форма симметрична автоматической — негативы обязаны совпадать (#176).
+      'manual:csat', 'MANUAL:4242:csat', 'manualx:4242:csat'
+    ]) {
       expect(markerMatchesSurvey(bad, 'csat'), String(bad)).toBe(false)
     }
   })
@@ -262,6 +266,9 @@ describe('маркер → «тот ли опрос» (закрытие дела
     // собственном результате, и в логе это выглядело бы нормальной работой.
     expect(markerMatchesSurvey(resultMarker('r-1').originId, 'csat')).toBe(false)
     expect(markerMatchesSurvey('result:4242:csat', 'csat')).toBe(false)
+    // Хвостовое совпадение отвергается и у ручной формы.
+    expect(markerMatchesSurvey('manual:1:x:a:b', 'a:b')).toBe(false)
+    expect(markerMatchesSurvey('manual:1:a:b', 'a:b')).toBe(true)
   })
 })
 
