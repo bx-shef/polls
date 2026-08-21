@@ -67,13 +67,20 @@ const mark = (transition: string, survey = 'csat_postdeal'): string => `stage:${
 
 describe('закрытие дела-приглашения при ответе', () => {
   it('закрывает дела ЭТОЙ сделки по ЭТОМУ опросу', async () => {
-    const p = fakePortal([{ ID: 1, ORIGIN_ID: mark('100') }, { ID: 2, ORIGIN_ID: mark('200') }])
+    // ⚠️ Третье дело — РУЧНОЕ (#176). Ответ клиента закрывает вопрос по опросу целиком, а не по тому,
+    // кто выписал приглашение; без этой строки «ручное дело тоже закрывается» держалось только на
+    // юнит-тесте разбора маркера.
+    const p = fakePortal([
+      { ID: 1, ORIGIN_ID: mark('100') },
+      { ID: 2, ORIGIN_ID: mark('200') },
+      { ID: 3, ORIGIN_ID: 'manual:1787220000:csat_postdeal' }
+    ])
     const d = deps(p.client)
     await closeInvite(INFO, d)
     expect([...p.open.keys()], 'дела не закрылись').toEqual([])
     const line = d.logs.find((l) => l[1] === 'b24_invite_closed')
     expect(line?.[0]).toBe('info')
-    expect(line?.[2]).toMatchObject({ found: 2, closed: 2, failed: 0, stillOpen: 0 })
+    expect(line?.[2]).toMatchObject({ found: 3, closed: 3, failed: 0, stillOpen: 0 })
   })
 
   it('дело ДРУГОГО опроса на той же сделке остаётся открытым', async () => {

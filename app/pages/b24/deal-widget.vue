@@ -24,6 +24,19 @@ type FrameAuth = { domain: string; member_id: string; access_token: string }
 const serverError = (e: unknown, fallback: string): string => serverMessage(e) ?? fallback
 
 const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
+/**
+ * Сервер ответил «приглашение по этой сделке уже отправлено» (#176). Отдельное состояние, а не текст
+ * ошибки: человек ничего не сделал не так, и вести его надо в таймлайн сделки, а не в «попробуйте
+ * снова». Рядом остаётся осознанное «всё равно создать новую» — ручной путь это действие человека,
+ * который смотрит на карточку, и запрещать его насовсем неправильно.
+ */
+const alreadyInvited = ref(false)
+/**
+ * Ссылка выдана, а дела в таймлайне нет (портал отказал в создании). Говорим вслух: следующее
+ * нажатие о такой ссылке не узнает, и ответ клиента её не закроет — то есть это ровно та «невидимая
+ * вторая ссылка», ради которой затевался #176. Молчаливое «Ссылка готова» здесь было бы неправдой.
+ */
+const activityMissing = ref(false)
 const message = ref('Загрузка…')
 const link = ref('')
 const dealId = ref<number | undefined>()
@@ -101,21 +114,68 @@ async function copyLink() {
   }
 }
 
-async function launch() {
+/**
+ * Выписать ссылку. `force` — осознанный обход дедупа, и он уходит ТОЛЬКО вторым нажатием: первое
+ * всегда идёт без него, чтобы сервер успел ответить «уже приглашали».
+ *
+ * ⚠️ Здесь была дыра. Кнопка «Создать новую ссылку» рядом с готовой ссылкой слала `force` СРАЗУ, а
+ * рисуется она при вердикте `unknown` — когда проверку ссылки просто не удалось выполнить (429 от
+ * портала, сбой сети) и ссылка «скорее всего рабочая». То есть дедуп выключался ровно в том случае,
+ * ради которого разбор вердикта сделан fail-open, и одно нажатие давало вторую ссылку при живом
+ * открытом деле — дефект #176 целиком, только через другую кнопку.
+ */
+async function launch(force = false, reason: 'dedup' | 'reissue' = 'dedup') {
   if (!auth || !dealId.value) return
   phase.value = 'init'
-  message.value = 'Создаём ссылку…'
+  alreadyInvited.value = false
+  activityMissing.value = false
+  message.value = force ? 'Создаём новую ссылку…' : 'Создаём ссылку…'
   // Метка относится к КОНКРЕТНОЙ ссылке: оставшись от прошлой, «Скопировано» соврало бы про новую.
   copyLabel.value = COPY_IDLE
   try {
-    const r = await $fetch<{ ok: boolean; url?: string; error?: string }>('/api/b24/deal-invite', {
-      method: 'POST',
-      body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token, dealId: dealId.value }
-    })
+    const r = await $fetch<{
+      ok: boolean
+      url?: string
+      error?: string
+      alreadyInvited?: boolean
+      activityMissing?: boolean
+    }>(
+      '/api/b24/deal-invite',
+      {
+        method: 'POST',
+        body: {
+          DOMAIN: auth.domain,
+          member_id: auth.member_id,
+          AUTH_ID: auth.access_token,
+          dealId: dealId.value,
+          // Флаг уходит ТОЛЬКО по второму нажатию — тому, что человек делает, уже зная про первое
+          // приглашение. Слать его всегда значило бы вернуть дефект #176 под другим именем.
+          // `forceReason` нужен логу: без него законная перевыписка мёртвой ссылки смешалась бы с
+          // настоящим обходом дедупа, и живой прогон не смог бы измерить ни то, ни другое.
+          ...(force ? { force: true, forceReason: reason } : {})
+        }
+      }
+    )
+    if (!r.ok && r.alreadyInvited) {
+      // ⚠️ Это не ошибка: кнопка остаётся на месте, но подписана честно, а текст ведёт к конкретному
+      // делу в таймлайне, где ссылка уже есть.
+      alreadyInvited.value = true
+      canReissue.value = true
+      // ⚠️ Уже показанную ссылку НЕ прячем: сюда можно прийти из таймлайна, где человек за ней и
+      // открыл виджет. Уводить его в пустой экран из-за ответа «уже приглашали» — потеря того, за чем
+      // пришли.
+      phase.value = link.value ? 'done' : 'ready'
+      message.value = r.error ?? 'Приглашение по этой сделке уже отправлено — оно в таймлайне сделки.'
+      return
+    }
     if (!r.ok || !r.url) throw new Error(r.error ?? 'сервер не вернул ссылку')
     link.value = r.url
+    canReissue.value = false
+    activityMissing.value = r.activityMissing === true
     phase.value = 'done'
-    message.value = 'Ссылка готова. Скопируйте её и отправьте клиенту:'
+    message.value = activityMissing.value
+      ? 'Ссылка готова, но записать её в таймлайн сделки не удалось. Скопируйте и отправьте клиенту — и учтите, что в карточке её не будет:'
+      : 'Ссылка готова. Скопируйте её и отправьте клиенту:'
   } catch (e) {
     phase.value = 'error'
     // Сервер уже кладёт понятный текст с подсказкой (напр. «Опрос ещё не опубликован…») — показываем его.
@@ -131,10 +191,10 @@ async function launch() {
       <p class="mb-3 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
       <B24Button
         v-if="phase === 'ready'"
-        color="air-primary"
-        label="Создать ссылку на опрос"
+        :color="alreadyInvited ? 'air-secondary' : 'air-primary'"
+        :label="alreadyInvited ? 'Всё равно создать новую ссылку' : 'Создать ссылку на опрос'"
         :disabled="!dealId"
-        @click="launch"
+        @click="launch(alreadyInvited, 'dedup')"
       />
       <div v-if="phase === 'done'" class="mt-2 flex flex-col gap-2">
         <a :href="link" target="_blank" class="break-all text-indigo-600 underline dark:text-indigo-400">{{ link }}</a>
@@ -143,9 +203,9 @@ async function launch() {
           <B24Button
             v-if="canReissue"
             color="air-tertiary"
-            label="Создать новую ссылку"
+            :label="alreadyInvited ? 'Всё равно создать новую ссылку' : 'Создать новую ссылку'"
             :disabled="!dealId"
-            @click="launch"
+            @click="launch(alreadyInvited, 'reissue')"
           />
         </div>
       </div>

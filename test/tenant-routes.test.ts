@@ -204,6 +204,59 @@ describe('оба пути триггера доставляют приглаше
   )
 })
 
+describe('ручной путь виджета не обходит защиту от дублей (#176)', () => {
+  const PATH = 'server/api/b24/deal-invite.post.ts'
+
+  it('роут выписывает через `manualInvite`, а не голым `createSurveyInvitation`', () => {
+    // ⚠️ Именно голый `createSurveyInvitation` и был дефектом #176: он не смотрит, не висит ли уже
+    // открытое дело-приглашение по этой сделке, и дела не создаёт — вторая ссылка появлялась молча и
+    // в дедупе не участвовала вовсе. Снаружи это неотличимо от нормальной работы: ответ 200 со
+    // ссылкой в обоих случаях. Покрытия у `server/**` нет, поэтому проверка структурная.
+    const src = stripComments(read(PATH))
+    expect(src, 'выписка не идёт через manualInvite').toMatch(/\bmanualInvite\(/)
+    expect(src, 'manualInvite не из общего модуля выписки')
+      .toMatch(/import\s*\{[^}]*\bmanualInvite\b[^}]*\}\s*from\s*'[^']*utils\/manual-invite'/)
+    expect(src, 'вернулась прямая выписка мимо проверки «уже приглашали»')
+      .not.toMatch(/\bcreateSurveyInvitation\(/)
+  })
+
+  it('«всё равно создать новую» приходит ОТ КЛИЕНТА и только явным true', () => {
+    // ⚠️ Сервер не решает за человека. Но и доверять произвольному значению нельзя: `force` из тела
+    // сравнивается с `true`, иначе строка «false» из form-urlencoded включила бы обход дедупа.
+    const src = stripComments(read(PATH))
+    expect(src).toMatch(/force[\s\S]{0,160}===\s*true/)
+  })
+
+  it('выписка пишет в стор и приглашения ПОДТВЕРЖДЁННОГО портала', () => {
+    // ⚠️ Здесь стояла ещё проверка `manualInvite(… client,` под именем «тот же клиент, которым
+    // читается сделка». Она ложна в ОБЕ стороны: доказывала лишь то, что переменная называется
+    // `client` (подстановка второго клиента с чужим доменом её проходила), и краснела на безобидном
+    // переименовании и на выносе deps в переменную. Гард, который врёт о причине, учит следующего
+    // ослаблять регулярку — поэтому утверждение снято, а не «подкручено».
+    const src = stripComments(read(PATH))
+    expect(src).toMatch(/store:\s*tenant\.store/)
+    expect(src).toMatch(/invitations:\s*tenant\.invitations/)
+    expect(src).toMatch(/portalId:\s*portal\.portalId/)
+  })
+
+  it('контракт роут↔виджет держится с ОБЕИХ сторон', () => {
+    // ⚠️ Обе половины снимались незаметно. `force` вычислялся, но не доезжал до `manualInvite`
+    // (typecheck молчит — поле необязательное), и кнопка «Всё равно создать новую» становилась
+    // мёртвой: сколько ни жми, ответ один. А переименуй сервер `alreadyInvited` — виджет ветку не
+    // узнает и покажет ошибку вместо честного «уже приглашали». Ровно тот класс дефекта, про который
+    // предупреждает JSDoc `inviteActionParams`: расхождение имён молча даёт второе приглашение.
+    const route = stripComments(read(PATH))
+    const widget = stripComments(read('app/pages/b24/deal-widget.vue'))
+    expect(route, 'force не доезжает до выписки').toMatch(/manualInvite\([\s\S]{0,300}\bforce\b/)
+    for (const [name, field] of [['alreadyInvited', 'alreadyInvited'], ['activityMissing', 'activityMissing']] as const) {
+      expect(route, `сервер не отдаёт ${name}`).toMatch(new RegExp(`\\b${field}\\b`))
+      expect(widget, `виджет не читает ${name}`).toMatch(new RegExp(`\\b${field}\\b`))
+    }
+    // «Уже приглашали» — это 200, а не 4xx: человек всё сделал правильно.
+    expect(route).not.toMatch(/alreadyInvited[\s\S]{0,200}setResponseStatus/)
+  })
+})
+
 describe('удаление приложения сбрасывает оба кэша', () => {
   it('uninstall чистит и стор, и клиентов порталов', () => {
     // Клиент портала живёт до минуты своим кэшем: без сброса удалённый портал ещё это время получал
