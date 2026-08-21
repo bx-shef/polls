@@ -1,6 +1,6 @@
-import { SWEEP_BATCH, resolveInvitationKeepDays } from '~core/store/pg-invitation'
+import { SWEEP_BATCH, resolveInvitationKeepDays, sweepAllPortalsInvitations } from '~core/store/pg-invitation'
 import { errInfo } from '~core/obs/logger'
-import { logger, usePgInvitations } from '../utils/api'
+import { logger, usePortalDb } from '../utils/api'
 
 /**
  * Периодическая чистка мёртвых приглашений (#4, #31).
@@ -22,10 +22,11 @@ import { logger, usePgInvitations } from '../utils/api'
  * старше `INVITATION_KEEP_DAYS` (дефолт 30 суток). Живые приглашения не трогает никогда — иначе
  * ссылка со сроком в 5 дней умирала бы раньше собственного срока.
  *
- * ⚠️ **Скоуп — один портал** (`usePgInvitations()` строит стор на портале по умолчанию). Сегодня это
- * весь мир: single-tenant, один портал на инстанс. С приходом мультитенанта (#47/#49) приглашения
- * остальных порталов не подметёт НИКТО, и заметить это будет неоткуда — гейт молчит, когда чистить
- * нечего. Инвариант записан здесь, чтобы обход порталов не забыли завести вместе с ними.
+ * ⚠️ **Скоуп — ВСЕ порталы** (`sweepAllPortalsInvitations`, #49), и это не мелочь раскладки. Пока
+ * чистка шла через стор, скоупленный порталом по умолчанию, приглашения остальных арендаторов не
+ * подметал бы НИКТО — а заметить это неоткуда: крон молчит ровно так же, когда чистить нечего.
+ * Удержание ПДн — обязанность перед всеми арендаторами сразу, поэтому предикат один, а фильтра по
+ * порталу здесь нет вовсе.
  *
  * Каденция фиксированная (сутки) и отдельной переменной не заводится: лишняя ручка настройки
  * требует объяснения, зачем её крутить, а ответа нет. Сам DELETE идёт полным сканом `invitation`
@@ -46,14 +47,14 @@ export default defineNitroPlugin((nitroApp) => {
 
   const tick = async (): Promise<void> => {
     // В памяти (нет `DATABASE_URL`) чистить нечего: там приглашения и так не переживают перезапуск.
-    const store = await usePgInvitations()
-    if (!store) return
+    const db = await usePortalDb()
+    if (!db) return
     // ⚠️ Несколько батчей за прогон, а не один. Каждый DELETE ограничен капом, чтобы не держать
     // соединение пула на всём накопленном хвосте; но и растягивать разбор хвоста на месяцы по
     // батчу в сутки незачем. Останавливаемся, как только батч вернул меньше капа, — хвост кончился.
     let swept = 0
     for (let pass = 0; pass < MAX_PASSES; pass++) {
-      const n = await store.sweepExpired(new Date(), keepDays)
+      const n = await sweepAllPortalsInvitations(db, new Date(), keepDays)
       swept += n
       if (n < SWEEP_BATCH) break
     }

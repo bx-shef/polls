@@ -14,7 +14,6 @@ export default defineEventHandler(async (event) => {
   // нельзя рассуждать.
   setResponseHeader(event, 'Cache-Control', 'no-store')
 
-  const api = await useApi()
   const surveyKey = getRouterParam(event, 'key') ?? ''
   // Разбор — общей функцией, а не инлайном: правило («массив отвергается целиком, пробелы срежем»)
   // должно быть одним и тем же у того, кто ссылку собирает, и у того, кто её читает. Инлайн
@@ -25,6 +24,16 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: 'Ссылка неполная — в ней нет кода приглашения. Попросите новую ссылку у менеджера.' }
   }
 
+  // Портал выбирается ПО ТОКЕНУ (#49): он глобально уникален и лежит рядом с `portal_id`. Без этого
+  // проверка шла бы в стор портала, выбранного инстансом по умолчанию, и живая ссылка чужого
+  // заказчика читалась бы как мёртвая — «срок истёк или опрос уже пройден» на совершенно исправной.
+  const tenant = await resolvePublicPortal(surveyKey, token)
+  if (!tenant.ok) {
+    setResponseStatus(event, 404)
+    return { ok: false, error: AMBIGUOUS_SURVEY_MESSAGE }
+  }
+
+  const api = await useApiFor(tenant.portalId)
   const r = await api.invitationCheck({ ip: requestIp(event), surveyKey, token })
   setResponseStatus(event, r.status)
   return r.body

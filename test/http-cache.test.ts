@@ -82,3 +82,24 @@ describe('cacheDecision (решение условного GET из ApiResult)',
     expect(cacheDecision(200, null, '*')).toEqual({ notModified: false })
   })
 })
+
+describe('портал в ETag (#49)', () => {
+  it('один ключ у ДВУХ порталов → РАЗНЫЕ ETag', () => {
+    // ⚠️ Ровно тот дефект, ради которого портал попал в ключ. Адрес `/api/survey/:key/current` у
+    // порталов ОБЩИЙ, значит и в кэше браузера ответы лежат под одним ключом: без портала в ETag
+    // респондент, открывший подряд личные ссылки двух заказчиков, получил бы на вторую 304 и увидел
+    // анкету первого — с чужими вопросами и чужим названием.
+    expect(versionETag('csat_postdeal', 2, 1, 7)).not.toBe(versionETag('csat_postdeal', 2, 1, 8))
+  })
+
+  it('без портала (режим памяти) ключ прежний — совместимость с уже отданными ETag', () => {
+    expect(versionETag('csat_postdeal', 2, 1)).toBe('"sv-csat_postdeal-2-s1"')
+  })
+
+  it('304 не выдаётся на ETag ЧУЖОГО портала', () => {
+    const body = { version: { surveyKey: 'csat_postdeal', versionNo: 2 }, schema_version: 1 }
+    const foreign = versionETag('csat_postdeal', 2, 1, 8)
+    expect(cacheDecision(200, body, foreign, 7).notModified).toBe(false)
+    expect(cacheDecision(200, body, foreign, 8).notModified).toBe(true)
+  })
+})

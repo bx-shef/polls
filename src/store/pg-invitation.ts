@@ -73,6 +73,68 @@ interface InvitationRow {
   expires_at: Date | null
 }
 
+/**
+ * Чистка мёртвых приглашений — общая реализация предиката.
+ *
+ * Отдельной функцией, а не только методом стора, потому что вопросов ДВА, а предикат «что считается
+ * мёртвым» обязан быть один: подмести приглашения ОДНОГО портала (метод стора — им пользуются тесты
+ * tenant-изоляции и точечная чистка) и подмести ВСЕ (суточный крон удержания ПДн, #49). Две копии
+ * условия однажды разошлись бы, и разошлись бы молча: снаружи «чистка работает» в обоих случаях.
+ *
+ * ⚠️ Кап батча. Один незакапанный DELETE держит соединение из пула столько, сколько занимает весь
+ * накопленный хвост, — а первый прогон на давно живущей базе это как раз весь хвост. Остаток
+ * подметётся следующим прогоном: чистка суточная, спешить ей некуда.
+ *
+ * ⚠️ Третья ветка условия — про строки БЕЗ срока. Схема `0005` разрешает `expires_at is null` (иначе
+ * не прошло бы ослабление старых колонок), а наш писатель срок ставит всегда. Значит строка без срока
+ * — либо чужая, либо испорченная; без этой ветки она была бы ВЕЧНОЙ: `peek` её не отдаёт, `consume`
+ * не расходует, чистка не видит. Считаем такую мёртвой по построению и меряем возраст от `sent_at`.
+ */
+async function sweepDeadInvitations(
+  db: Queryable,
+  now: Date,
+  keepDays: number,
+  batch: number,
+  portalId?: number
+): Promise<number> {
+  // Тот же резолвер, что читает переменную окружения: два разных ответа на один вход у публичного
+  // метода и у его вызывающего — это расхождение, которое однажды заметят на проде.
+  const days = resolveInvitationKeepDays(String(keepDays))
+  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60_000)
+  const scope = portalId === undefined ? '' : ' and portal_id = $3'
+  const params: unknown[] = portalId === undefined ? [cutoff, batch] : [cutoff, batch, portalId]
+  const r = await db.query<{ id: number }>(
+    `delete from invitation
+      where id in (
+        select id from invitation
+         where ((used_at is not null and used_at < $1)
+             or (expires_at is not null and expires_at < $1)
+             or (used_at is null and expires_at is null and sent_at < $1))${scope}
+         limit $2
+      )
+    returning id`,
+    params
+  )
+  return r.rows.length
+}
+
+/**
+ * Подмести мёртвые приглашения ВО ВСЕХ ПОРТАЛАХ (#49).
+ *
+ * ⚠️ Нужна отдельно от метода стора, потому что стор скоуплен порталом КОНСТРУКТОРОМ, а удержание
+ * ПДн — обязанность перед всеми арендаторами сразу. Пока крон ходил через стор «портала по
+ * умолчанию», приглашения остальных порталов не подметал бы НИКТО — и заметить это неоткуда: крон
+ * молчит ровно так же, когда чистить нечего.
+ */
+export function sweepAllPortalsInvitations(
+  db: Queryable,
+  now: Date,
+  keepDays: number,
+  batch = SWEEP_BATCH
+): Promise<number> {
+  return sweepDeadInvitations(db, now, keepDays, batch)
+}
+
 export class PgInvitationStore implements InvitationStore {
   private readonly ttlMs: number
   private readonly idGen: () => string
@@ -182,33 +244,7 @@ export class PgInvitationStore implements InvitationStore {
    * `rowCount` в нём не объявлен (тот же приём, что в `sweepTombstones`).
    */
   async sweepExpired(now: Date, keepDays: number, batch = SWEEP_BATCH): Promise<number> {
-    // Тот же резолвер, что читает переменную окружения: два разных ответа на один вход у публичного
-    // метода и у его вызывающего — это расхождение, которое однажды заметят на проде.
-    const days = resolveInvitationKeepDays(String(keepDays))
-    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60_000)
-    // ⚠️ Кап батча. Один незакапанный DELETE держит соединение из пула столько, сколько занимает
-    // весь накопленный хвост, — а первый прогон на давно живущей базе это как раз весь хвост.
-    // Остаток подметётся следующим прогоном: чистка суточная, спешить ей некуда.
-    //
-    // ⚠️ Третья ветка условия — про строки БЕЗ срока. Схема `0005` разрешает `expires_at is null`
-    // (иначе не прошло бы ослабление старых колонок), а наш писатель срок ставит всегда. Значит
-    // строка без срока — либо чужая, либо испорченная; без этой ветки она была бы ВЕЧНОЙ: `peek`
-    // её не отдаёт, `consume` не расходует, чистка не видит. Считаем такую мёртвой по построению и
-    // меряем возраст от `sent_at`.
-    const r = await this.db.query<{ id: number }>(
-      `delete from invitation
-        where id in (
-          select id from invitation
-           where portal_id = $1
-             and ((used_at is not null and used_at < $2)
-               or (expires_at is not null and expires_at < $2)
-               or (used_at is null and expires_at is null and sent_at < $2))
-           limit $3
-        )
-      returning id`,
-      [this.opts.portalId, cutoff, batch]
-    )
-    return r.rows.length
+    return sweepDeadInvitations(this.db, now, keepDays, batch, this.opts.portalId)
   }
 
   private toInvitation(token: string, row: InvitationRow, status: 'pending' | 'used'): Invitation {

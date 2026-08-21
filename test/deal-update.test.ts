@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { runDealUpdate, type DealUpdateDeps } from '../src/bitrix24/deal-update'
 import { parseBracketForm } from '../src/bitrix24/bracket-form'
 import { surveyEventBindParams, SURVEY_DEAL_EVENT } from '../src/bitrix24/install'
-import { MemoryInvitationStore } from '../src/api/invitation'
-import type { TriggerStore } from '../src/bitrix24/trigger'
+import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
+import type { TriggerStore, TriggerTenant } from '../src/bitrix24/trigger'
 import type { CompiledVersion } from '../src/domain/schema'
 
 const ver = (n: number): CompiledVersion => ({ versionNo: n }) as CompiledVersion
@@ -33,13 +33,28 @@ const rawEvent = (over: Record<string, unknown> = {}) => ({
 /** Сделка, которую вернёт fetchDeal — стадия `C1:WON` триггерит опрос. */
 const dealFields = { ID: '759', STAGE_ID: 'C1:WON', COMPANY_ID: '101', ASSIGNED_BY_ID: '5' }
 
-function deps(over: Partial<DealUpdateDeps> = {}): DealUpdateDeps {
+/**
+ * Пер-портальный стор и приглашения (#49) резолвятся резолвером `tenant`, а не приходят значениями.
+ * Тесты продолжают говорить про `store`/`invitations` — так читается то, что они проверяют, — а шим
+ * собирает из них тенанта.
+ */
+type DepsOver = Omit<Partial<DealUpdateDeps>, 'tenant'> & {
+  store?: TriggerStore
+  invitations?: InvitationStore
+  tenant?: DealUpdateDeps['tenant']
+}
+
+function deps(over: DepsOver = {}): DealUpdateDeps {
+  const { store: overStore, invitations: overInvitations, tenant: overTenant, ...rest } = over
+  const tenant: TriggerTenant = {
+    store: overStore ?? store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
+    invitations: overInvitations ?? new MemoryInvitationStore()
+  }
   return {
     storedApplicationToken: async () => 'app-token-fake-0000000000000000', // по умолчанию сходится
     fetchDeal: async () => ({ deal: { ...dealFields }, productRows: [] }),
-    store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
-    invitations: new MemoryInvitationStore(),
-    ...over
+    tenant: overTenant ?? (async () => tenant),
+    ...rest
   }
 }
 
@@ -254,5 +269,47 @@ describe('гроздь событий одного перехода → одно
       confirmStageEntry: async () => ({ fresh: true, transitionId: '4242' })
     }))
     expect(out.kind === 'ok' && out.results).toHaveLength(1)
+  })
+})
+
+describe('runDealUpdate — портал выбирается ПОСЛЕ сверки токена (#49)', () => {
+  it('токен не сошёлся → тенант НЕ резолвится (стор чужого портала даже не трогаем)', async () => {
+    // ⚠️ Смысл резолвера ровно в порядке. Пока стор приходил значением, он выбирался до того, как
+    // мы знали, чей это POST: недоверенное тело фактически указывало, в чьи данные писать.
+    const tenant = vi.fn(async () => ({ store: store({}, {}), invitations: new MemoryInvitationStore() }))
+    const res = await runDealUpdate(rawEvent(), deps({ storedApplicationToken: async () => 'другой', tenant }))
+    expect(res.kind).toBe('forged')
+    expect(tenant).not.toHaveBeenCalled()
+  })
+
+  it('тенант резолвится по ПОДТВЕРЖДЁННОМУ member_id', async () => {
+    const tenant = vi.fn(async () => ({
+      store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
+      invitations: new MemoryInvitationStore()
+    }))
+    const res = await runDealUpdate(rawEvent(), deps({ tenant }))
+    expect(res.kind).toBe('ok')
+    expect(tenant).toHaveBeenCalledWith('member-id-fake-0000000000000000')
+  })
+
+  it('портал исчез между сверкой и выбором стора → ignored/tenant, догрузки сделки нет', async () => {
+    const fetchDeal = vi.fn(deps().fetchDeal)
+    const res = await runDealUpdate(rawEvent(), deps({ tenant: async () => undefined, fetchDeal }))
+    expect(res).toEqual({ kind: 'ignored', reason: 'tenant' })
+    // Портала нет — писать некуда, значит и спрашивать сделку у него незачем.
+    expect(fetchDeal).not.toHaveBeenCalled()
+  })
+
+  it('приглашение ложится в стор ИМЕННО того тенанта, что вернул резолвер', async () => {
+    const mine = new MemoryInvitationStore()
+    const foreign = new MemoryInvitationStore()
+    const foreignCreate = vi.spyOn(foreign, 'create')
+    const res = await runDealUpdate(rawEvent(), deps({
+      tenant: async () => ({ store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }), invitations: mine }),
+      invitations: foreign
+    }))
+    if (res.kind !== 'ok') throw new Error('unreachable')
+    expect(await mine.peek(res.results[0]!.token, new Date())).toBeDefined()
+    expect(foreignCreate).not.toHaveBeenCalled()
   })
 })

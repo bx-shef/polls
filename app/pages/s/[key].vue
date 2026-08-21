@@ -49,18 +49,25 @@ const brokenToken = computed(() =>
  * мигание, за которое он успевает нажать «Начать». Токен в payload при этом не «утекает» — он и так
  * в адресной строке этой же страницы.
  *
- * Ключи: per-опрос (при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом) и БЕЗ
- * токена — иначе он попал бы в разметку отдельным полем, а пользы ноль: на странице всегда ровно
- * один токен.
+ * Ключи: per-опрос (при ремоунте — свежий fetch, без кеша чужого опроса под общим ключом) и per-токен
+ * (#49): ответ обоих запросов зависит от портала, а портал выводится из токена. Токен в ключе в
+ * разметку не попадает — он и так стоит в адресной строке этой же страницы.
  */
 const [{ data, error }, { error: linkError }] = await Promise.all([
   useAsyncData(
-    `survey:${surveyKey.value}`,
-    () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`)
+    // ⚠️ Ключ включает ТОКЕН (#49). Ответ зависит от портала, а портал сервер выводит из токена:
+    // под общим ключом две ссылки разных заказчиков с одинаковым `surveyKey` делили бы один кэш
+    // Nuxt, и второй респондент увидел бы анкету первого.
+    `survey:${surveyKey.value}:${invitationToken.value ?? ''}`,
+    () => $fetch<{ ok: boolean; version: PublicVersion }>(`/api/survey/${surveyKey.value}/current`, {
+      // Токен идёт ТОЛЬКО как ключ арендатора: годность ссылки проверяет соседний запрос, а этот
+      // без токена не смог бы выбрать портал, если ключ опроса завели двое.
+      query: invitationToken.value ? { [INVITATION_TOKEN_PARAM]: invitationToken.value } : undefined
+    })
   ),
   // Тело ответа не нужно: годность выражается кодом, а всё остальное сервер наружу не отдаёт.
   useAsyncData(
-    `invitation:${surveyKey.value}`,
+    `invitation:${surveyKey.value}:${invitationToken.value ?? ''}`,
     () => invitationToken.value
       ? $fetch<{ ok: boolean }>(`/api/survey/${surveyKey.value}/invitation`, {
         query: { [INVITATION_TOKEN_PARAM]: invitationToken.value }

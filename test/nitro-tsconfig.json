@@ -11,6 +11,7 @@
     "./install-wiring.test.ts",
     "./close-invite.test.ts",
     "./close-invite-wiring.test.ts",
+    "./tenant-wiring.test.ts",
     "./helpers/schema.ts",
     "../server/**/*.ts"
   ]

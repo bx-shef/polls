@@ -14,7 +14,8 @@ import { createSurveyInvitation } from '~core/bitrix24/trigger'
 import { surveyKeyForEntity } from '~core/bitrix24/survey-routing'
 import { allowB24Session, useB24Authenticator } from '../../utils/b24-session'
 import { b24AppConfig } from '../../utils/portal'
-import { useStore, useInvitations, useSurveyRouting, logger } from '../../utils/api'
+import { useSurveyRouting, logger } from '../../utils/api'
+import { tenantByMemberId } from '../../utils/tenant'
 
 // Какой опрос запускать по сделке — из конфигурации портала (env `SURVEY_KEY_DEAL`/`SURVEY_KEY_DEFAULT`),
 // с дефолтом. UI-маппинг entityType→surveyKey — отдельный issue.
@@ -58,14 +59,21 @@ export default defineEventHandler(async (event) => {
     })
     const context = dealToCrmContext(deal, productRows)
 
-    // ⚠️ TENANT (#49): `useStore()` сейчас SINGLE-TENANT (один PgStore на инстанс приложения) —
-    // приложение обслуживает ОДИН портал. Подтверждённый `portal.portalId` тут НЕ выбирает стор.
-    // Для мульти-портала ОБЯЗАТЕЛЕН scoped-стор по `portal.portalId` (member_id → portal.id), иначе
-    // портал A создаст приглашение в данных портала B (инвариант createSurveyInvitation). Гейт — #49.
-    const store = await useStore()
+    // TENANT (#49): стор и приглашения — портала, ПОДТВЕРЖДЁННОГО выше (`verifyFrameAuth`: домен из
+    // allowlist → живой `profile` → сверка member_id с сохранённым). Раньше стор был один на процесс,
+    // и виджет одного заказчика создавал бы приглашение в данных другого.
+    const tenant = await tenantByMemberId(portal.portalId)
+    if (!tenant) {
+      // Портал подтверждён, а строки нет: приложение удалили прямо сейчас. Отдельный текст, потому
+      // что «опрос не опубликован» здесь было бы неправдой и увело бы админа настраивать опрос.
+      setResponseStatus(event, 409)
+      return { ok: false, error: 'Приложение больше не установлено на этом портале. Установите его заново.' }
+    }
     const { routing, fallback } = useSurveyRouting()
     const surveyKey = surveyKeyForEntity('deal', routing, fallback)
-    const res = await createSurveyInvitation({ store, invitations: useInvitations(), surveyKey, context })
+    const res = await createSurveyInvitation({
+      store: tenant.store, invitations: tenant.invitations, surveyKey, context
+    })
     if (!res) {
       setResponseStatus(event, 422)
       return { ok: false, error: 'Опрос ещё не опубликован. Опубликуйте его в разделе «Опросы» и повторите.' }

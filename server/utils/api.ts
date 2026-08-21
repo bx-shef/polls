@@ -4,6 +4,7 @@ import { createApi, type Api, type AnsweredInfo } from '~core/api/handlers'
 import { buildDemo } from '~core/demo/seed'
 import { createJsonLogger, type Logger } from '~core/obs/logger'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
+import { MemoryNonceStore } from '~core/api/nonce'
 import {
   MemoryInvitationStore,
   type InvitationCreate, type InvitationPin, type InvitationStore
@@ -70,6 +71,12 @@ export function resetStoreCache(): void {
   apiPromise = undefined
   invitationStore = undefined
   pgPortalId = undefined
+  // ⚠️ Пер-портальные кэши чистятся ТЕМ ЖЕ вызовом (#49). Они держат `portalId` удалённой строки
+  // ровно так же, как процессный кэш: пропустить их значит оставить живой стор, чья каждая запись
+  // упрётся в FK, — и снова тихо, потому что install-страница и `/api/health` этого не видят.
+  storesByPortal.clear()
+  invitationsByPortal.clear()
+  apisByPortal.clear()
 }
 
 /**
@@ -123,10 +130,12 @@ async function buildStore(): Promise<IStore> {
   const db: Queryable = queryableFromPool(pool)
   pgDb = db // доступен для PortalTokenStore (установка #17)
   await applyMigrations(db, readMigrationSqls())
+  // Портал ПО УМОЛЧАНИЮ — фолбэк для путей, где портала нет вовсе (см. `ensureDefaultPortal`).
+  // Портал запроса выбирают `storeFor`/`invitationsFor`/`useApiFor` (#49).
   const portalId = await ensureDefaultPortal(db, {
     onAmbiguous: (chosen, total) =>
-      logger.warn('store_multi_portal', {
-        msg: `Порталов в базе ${total}, а инстанс обслуживает один — пишем под ${chosen}. Мультипортал — #49`
+      logger.info('store_default_portal', {
+        msg: `Порталов в базе ${total}; фолбэк-стор (запрос без портала) пишет под ${chosen}`
       })
   })
   pgPortalId = portalId
@@ -136,12 +145,76 @@ async function buildStore(): Promise<IStore> {
   // неатомарной записи. `queryableFromPool` их умеет, так что это страховка от будущей подмены.
   const store = new PgStore(db, { portalId, requireTransaction: true })
   if (await seedDemoIfEmpty(store)) {
-    logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД (single-tenant MVP, #6)' })
+    logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД (#6)' })
   }
   // Боевой резолвер handshake app-фрейма: domain → member_id из таблицы portal (#47/#49).
   setPortalResolver((domain) => resolveMemberIdByDomain(db, domain))
   logger.info('store_pg', { msg: 'PgStore активен (PostgreSQL) — данные сохраняются между рестартами' })
   return store
+}
+
+/**
+ * Стор и приглашения ПО ПОРТАЛУ (#49).
+ *
+ * ⚠️ Раньше и то и другое выбиралось на процесс: портал был один, и `portalId` жил глобалом. С
+ * несколькими порталами это означало бы, что ответы одного заказчика ложатся в данные другого —
+ * тихо, потому что снаружи всё выглядит рабочим. Теперь портал — ПАРАМЕТР, а не состояние.
+ *
+ * Мемоизация по `portalId` дешёвая (конструктор `PgStore` — это `db` + опции), но нужна ради
+ * `Api`: у него внутри лимитер и nonce-стор, и пересоздавать их на запрос значило бы обнулять
+ * анти-абьюз каждым запросом.
+ */
+const storesByPortal = new Map<number, IStore>()
+const invitationsByPortal = new Map<number, InvitationStore>()
+const apisByPortal = new Map<number, Api>()
+
+/** Стор нужного портала. Без БД (режим памяти) — общий демо-стор: порталов там нет. */
+export async function storeFor(portalId: number | undefined): Promise<IStore> {
+  if (portalId === undefined) return useStore()
+  const db = await usePortalDb()
+  if (!db) return useStore()
+  const cached = storesByPortal.get(portalId)
+  if (cached) return cached
+  const store = new PgStore(db, { portalId, requireTransaction: true })
+  storesByPortal.set(portalId, store)
+  return store
+}
+
+/** Приглашения нужного портала. */
+export async function invitationsFor(portalId: number | undefined): Promise<InvitationStore> {
+  if (portalId === undefined) return useInvitations()
+  const db = await usePortalDb()
+  if (!db) return useInvitations()
+  const cached = invitationsByPortal.get(portalId)
+  if (cached) return cached
+  const store = new PgInvitationStore(db, { portalId })
+  invitationsByPortal.set(portalId, store)
+  return store
+}
+
+/**
+ * `Api`, обслуживающий КОНКРЕТНЫЙ портал.
+ *
+ * ⚠️ Лимитер и nonce-стор — ОБЩИЕ на все порталы, и это не экономия: они защищают наш сервис от
+ * флуда по IP, а не данные тенанта. Раздельные счётчики означали бы, что злоумышленник обходит
+ * лимит, чередуя порталы.
+ */
+export async function useApiFor(portalId: number | undefined): Promise<Api> {
+  if (portalId === undefined) return useApi()
+  const db = await usePortalDb()
+  if (!db) return useApi()
+  const cached = apisByPortal.get(portalId)
+  if (cached) return cached
+  const api = createApi({
+    store: await storeFor(portalId),
+    invitations: await invitationsFor(portalId),
+    logger,
+    limiter: sharedLimiter(),
+    nonces: sharedNonces(),
+    onAnswered: onAnsweredHookFor(portalId)
+  })
+  apisByPortal.set(portalId, api)
+  return api
 }
 
 export function useApi(): Promise<Api> {
@@ -214,12 +287,6 @@ class LazyInvitationStore implements InvitationStore {
   }
 }
 
-/** Активный стор приглашений на PostgreSQL — для чистки по сроку (крон). `undefined` в памяти. */
-export async function usePgInvitations(): Promise<PgInvitationStore | undefined> {
-  await useStore()
-  return pgDb && pgPortalId !== undefined ? new PgInvitationStore(pgDb, { portalId: pgPortalId }) : undefined
-}
-
 /**
  * Демо-режим — ровно то же условие, по которому выбирается стор: `DATABASE_URL` не задан.
  *
@@ -288,24 +355,58 @@ async function seedDemoInvitation(invitations: InvitationStore): Promise<void> {
   }
 }
 
+/**
+ * Лимитер и nonce-стор — ОБЩИЕ на все порталы (#49).
+ *
+ * ⚠️ Не экономия: они защищают наш сервис от флуда по IP, а не данные тенанта. Раздельные счётчики
+ * означали бы, что лимит обходится чередованием порталов.
+ *
+ * Щедрый потолок — для dev/gate-сервера: SSR-рендер сам дёргает `/api/survey/:key/current`
+ * (server-to-server, один loopback-IP), и визуальный гейт прогоняет страницу многократно — дефолтные
+ * 10/60с быстро упираются в 429 (флаки гейта). Это НЕ прод-граница анти-абьюза (она по IP за
+ * доверенным прокси + общий стор, #4/#6); здесь высокий потолок убирает ложные 429, оставляя
+ * ceiling от примитивного флуда.
+ */
+let limiterOnce: SlidingWindowLimiter | undefined
+function sharedLimiter(): SlidingWindowLimiter {
+  if (!limiterOnce) limiterOnce = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
+  return limiterOnce
+}
+let noncesOnce: MemoryNonceStore | undefined
+function sharedNonces(): MemoryNonceStore {
+  if (!noncesOnce) noncesOnce = new MemoryNonceStore()
+  return noncesOnce
+}
+
+/**
+ * Побочные действия после записи ответа: закрыть дело-приглашение в таймлайне (#177).
+ *
+ * Динамический импорт разрывает цикл `api.ts → close-invite.ts → api.ts` (модулю нужны `usePortalDb`
+ * и `logger` отсюда же). Он же оставляет путь без БД нетронутым: модуль просто не грузится.
+ */
+function onAnsweredHookFor(portalId?: number): (info: AnsweredInfo) => Promise<void> {
+  return async (info: AnsweredInfo): Promise<void> => {
+    const { closeInvite, liveCloseDeps } = await import('./close-invite')
+    // ⚠️ Портал ПРОКИДЫВАЕТСЯ (#49): дело закрывается в том же портале, где записан ответ. Пока
+    // портал резолвился внутри («тот, под которым пишет стор процесса»), ответ клиента одного
+    // заказчика уходил бы закрывать дело в CRM другого — с его токенами и его сделками.
+    await closeInvite(info, liveCloseDeps(portalId))
+  }
+}
+
 async function buildApi(): Promise<Api> {
   const store = await useStore()
-  // Щедрый лимитер для dev/gate-сервера: SSR-рендер сам дёргает /api/survey/:key/current
-  // (server-to-server, один loopback-IP), и визуальный гейт прогоняет страницу многократно —
-  // дефолтные 10/60с быстро упираются в 429 (флаки гейта). Это НЕ прод-граница анти-абьюза
-  // (она по IP за доверенным прокси + общий стор — #4/#6); здесь высокий потолок убирает
-  // ложные 429, оставляя ceiling от примитивного флуда.
-  const limiter = new SlidingWindowLimiter({ limit: 1000, windowMs: 60_000 })
   const invitations = useInvitations()
   await seedDemoInvitation(invitations)
-  // `onAnswered` — побочные действия после записи ответа: закрыть дело-приглашение в таймлайне (#177).
-  // Динамический импорт разрывает цикл `api.ts → close-invite.ts → api.ts` (модулю нужны `usePortalDb`
-  // и `logger` отсюда же). Он же оставляет путь без БД нетронутым: модуль просто не грузится.
-  const onAnswered = async (info: AnsweredInfo): Promise<void> => {
-    const { closeInvite, liveCloseDeps } = await import('./close-invite')
-    await closeInvite(info, liveCloseDeps())
-  }
-  return createApi({ store, logger, limiter, invitations, onAnswered })
+  return createApi({
+    store,
+    logger,
+    limiter: sharedLimiter(),
+    nonces: sharedNonces(),
+    invitations,
+    // Без явного портала — процессный (`usePortalId()` внутри), как было до мультитенанта.
+    onAnswered: onAnsweredHookFor()
+  })
 }
 
 /**

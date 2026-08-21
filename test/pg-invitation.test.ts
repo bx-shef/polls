@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import {
   DEFAULT_INVITATION_KEEP_DAYS, MAX_INVITATION_KEEP_DAYS,
-  PgInvitationStore, hashToken, resolveInvitationKeepDays
+  PgInvitationStore, hashToken, resolveInvitationKeepDays, sweepAllPortalsInvitations
 } from '../src/store/pg-invitation'
 import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import type { Queryable } from '../src/store/types'
@@ -370,6 +370,30 @@ describe('PgInvitationStore: чистка по сроку', () => {
     const day = 24 * 60 * 60_000
     expect(await b.sweepExpired(later(40 * day), 30), 'подмели чужой портал').toBe(0)
     expect(await a.sweepExpired(later(40 * day), 30), 'своё не подмели').toBe(1)
+  })
+
+  it('общепортальная чистка подметает ВСЕ порталы — иначе ПДн чужих арендаторов вечны (#49)', async () => {
+    // ⚠️ Прямая противоположность предыдущему тесту, и оба нужны. Стор скоуплен порталом, значит
+    // крон, ходивший через стор «портала по умолчанию», не трогал бы никого больше. Заметить это
+    // неоткуда: крон молчит ровно так же, когда чистить нечего.
+    // ⚠️ Чистим таблицу: эта проверка считает ВСЕ строки базы, а предыдущие тесты оставили свои.
+    await db.query('delete from invitation')
+    const a = await store()
+    const b = await store()
+    await issue(a, { ttlMs: 60_000 })
+    await issue(b, { ttlMs: 60_000 })
+    const day = 24 * 60 * 60_000
+    expect(await sweepAllPortalsInvitations(db, later(2 * day), 30), 'подмели живое').toBe(0)
+    expect(await sweepAllPortalsInvitations(db, later(40 * day), 30), 'подмели не всех').toBe(2)
+  })
+
+  it('общепортальная чистка соблюдает кап батча', async () => {
+    await db.query('delete from invitation')
+    const a = await store()
+    const day = 24 * 60 * 60_000
+    for (let i = 0; i < 3; i++) await issue(a, { ttlMs: 60_000 })
+    expect(await sweepAllPortalsInvitations(db, later(40 * day), 30, 2)).toBe(2)
+    expect(await sweepAllPortalsInvitations(db, later(40 * day), 30, 2)).toBe(1)
   })
 })
 

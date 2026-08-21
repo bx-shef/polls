@@ -12,7 +12,7 @@ import { dashboardAuthMessage } from '~core/api/session'
 
 /**
  * GET /api/dashboard/:key — агрегаты опроса для дашборда (контур B). Считается СЕРВЕРНО через
- * domain/aggregate над общим стором (useStore — те же ответы, что собирает /api/submit).
+ * domain/aggregate над стором ПОРТАЛА сессии (те же ответы, что собирает /api/submit для этого портала).
  * Вопросы NPS/CSAT/выбор берём по МЕТРИКЕ из текущей версии (не хардкод seed-ключей);
  * распределение отдаём с человекочитаемыми МЕТКАМИ опций (не внутренними ключами).
  * Тренд NPS — помесячно (`npsTrend`, версионно-безопасно по question_key).
@@ -33,12 +33,13 @@ import { dashboardAuthMessage } from '~core/api/session'
  * AUTH (#47): `resolvePortalSession` — прод (`DASHBOARD_AUTH_SECRET`) требует валидную
  * подписанную сессию портала, иначе 401 (срезы раскрывают ИМЕНА клиентов/`responsibleName`-PII —
  * fail-closed). Dev/гейт — открыто (portalId='dev'). Handshake app-фрейма (минт сессии) уже сделан
- * (`/api/b24/session`). Осталось: tenant-фильтрация стора по portalId (PgStore-путь, #49); ещё без
- * rate-limit (#49). PII-редакция контекста — #31. Данные пока синтетические (seed).
+ * (`/api/b24/session`). Tenant-изоляция сделана: стор берётся ПО ПОРТАЛУ сессии
+ * (`resolveSessionPortal` → `storeFor`), а не общий на процесс. Осталось: rate-limit этого роута и
+ * SQL-агрегация вместо `listResponses` (#49). PII-редакция контекста — #31.
  */
 export default defineEventHandler(async (event) => {
   // Гейт #47: прод без валидной сессии портала → 401/503 (не отдаём имена клиентов/сотрудников
-  // без auth); dev/гейт — открыто. tenant-фильтрация стора по portalId — на PgStore-пути (#49).
+  // без auth); dev/гейт — открыто. Портал сессии становится скоупом стора шагом ниже.
   //
   // Отвечаем ТЕЛОМ, а не броском: `requirePortalSession` кидает `createError`, Nitro заворачивает его
   // в свой конверт, и до страницы текст не доезжает — ей приходилось писать свои 401/503, то есть
@@ -54,13 +55,22 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: dashboardAuthMessage(session.status) }
   }
 
+  // Tenant-изоляция (#47): `member_id` подписанной сессии → числовой `portal.id`, которым скоуплен
+  // стор. Без этого шага дашборд читал бы портал, выбранный инстансом по умолчанию, — то есть
+  // сотрудник одного заказчика видел бы срезы другого, с именами клиентов и ответственных.
+  const tenant = await resolveSessionPortal(session.session)
+  if (!tenant.ok) {
+    setResponseStatus(event, tenant.status)
+    return { ok: false, error: dashboardAuthMessage(tenant.status) }
+  }
+
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {
     setResponseStatus(event, 400)
     return { ok: false, error: 'Неверный адрес дашборда. Проверьте ссылку.' }
   }
 
-  const store = await useStore()
+  const store = await storeFor(tenant.portalId)
   const version = await store.currentVersion(surveyKey)
   if (!version) {
     setResponseStatus(event, 404)

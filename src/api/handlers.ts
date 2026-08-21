@@ -62,6 +62,29 @@ const httpSubmitSchema = z
   })
   .refine((s) => Object.keys(s.answers).length <= 200, { message: 'Слишком много ответов в payload' })
 
+/**
+ * Ключ опроса и токен приглашения из СЫРОГО тела `POST /api/submit` — до полной валидации (#49).
+ *
+ * ⚠️ Нужно раньше `submit`, а не внутри: чтобы позвать `submit`, надо уже выбрать `Api` нужного
+ * портала, а выбирают его именно этими двумя полями. Отдельная схема (а не `httpSubmitSchema`)
+ * потому, что вопрос другой: тут не «валиден ли ответ» (на это отвечает `submit`, своим текстом и
+ * своим статусом), а «кому он адресован». Тело без `surveyKey` — не отказ, а «портал неизвестен»:
+ * пустой ключ никому не принадлежит, дальше отвечает обычный путь.
+ *
+ * Границы длин — те же, что у `httpSubmitSchema`: разъехавшись, они дали бы вход, который проходит
+ * выбор портала и не проходит запись (или наоборот).
+ */
+const submitTenantHintSchema = z.object({
+  surveyKey: z.string().min(1).max(200),
+  invitation: invitationTokenSchema.optional()
+})
+
+export function submitTenantHint(body: unknown): { surveyKey: string; token: string | undefined } {
+  const parsed = submitTenantHintSchema.safeParse(body)
+  if (!parsed.success) return { surveyKey: '', token: undefined }
+  return { surveyKey: parsed.data.surveyKey, token: parsed.data.invitation }
+}
+
 export const SUPPORTED_SCHEMA_VERSION = 1
 
 export interface ApiDeps {

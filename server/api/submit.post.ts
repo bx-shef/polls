@@ -11,6 +11,8 @@
 //
 // IP по умолчанию — socket; за доверенным reverse-proxy включать xForwardedFor осознанно
 // (как в src/server/node.ts), на слое деплоя (#4).
+import { submitTenantHint } from '~core/api/handlers'
+
 const MAX_BODY_BYTES = 64 * 1024
 
 export default defineEventHandler(async (event) => {
@@ -19,8 +21,20 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 413)
     return { ok: false, error: 'Слишком большой объём ответа. Сократите текст и попробуйте снова.' }
   }
-  const api = await useApi()
   const body = await readBody(event)
+
+  // Портал — ПАРАМЕТР записи (#49). Токен приглашения авторитетен (он глобально уникален и лежит
+  // рядом с `portal_id`); без токена обслуживаем, только если ключ опубликован ровно одним порталом.
+  // Раньше выбор был на процесс: ответ клиента одного заказчика лёг бы в данные другого — и снаружи
+  // это неотличимо от успеха, потому что «ответ принят» отвечают оба случая.
+  const hint = submitTenantHint(body)
+  const tenant = await resolvePublicPortal(hint.surveyKey, hint.token)
+  if (!tenant.ok) {
+    setResponseStatus(event, 404)
+    return { ok: false, error: AMBIGUOUS_SUBMIT_MESSAGE }
+  }
+
+  const api = await useApiFor(tenant.portalId)
   const r = await api.submit({ ip: requestIp(event), body })
   setResponseStatus(event, r.status)
   return r.body

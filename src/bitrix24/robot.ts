@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { verifyApplicationToken, dealToCrmContext } from './deal-event'
-import { dealIdFromDocumentId, handleDealTrigger, type TriggerResult, type TriggerStore } from './trigger'
-import type { InvitationStore } from '../api/invitation'
+import {
+  dealIdFromDocumentId, handleDealTrigger, type TriggerResult, type TriggerTenantResolver
+} from './trigger'
 
 /**
  * Оркестрация робота автоматизации «Запустить опрос» (#122) — ЯДРО-рантайм, без HTTP/портала.
@@ -63,8 +64,11 @@ export function parseRobotEvent(raw: unknown): RobotEvent | null {
 }
 
 export type RobotOutcome =
-  /** Не наш/битый POST либо `document_id` не про сделку — отвечаем 200, ничего не делаем. */
-  | { kind: 'ignored'; reason: 'parse' | 'not_deal' }
+  /**
+   * Не наш/битый POST, `document_id` не про сделку либо портал исчез между сверкой токена и выбором
+   * стора (`tenant`) — отвечаем 200, ничего не делаем.
+   */
+  | { kind: 'ignored'; reason: 'parse' | 'not_deal' | 'tenant' }
   /** `application_token` не сошёлся либо портал не установлен — ничего не триггерим. */
   | { kind: 'forged'; reason: 'unknown_portal' | 'token_mismatch'; memberId: string }
   /** Верифицировано: создано 0..N приглашений (0 — стадия не триггерит ни один опрос). */
@@ -78,8 +82,11 @@ export interface RobotDeps {
     dealId: number,
     memberId: string
   ) => Promise<{ deal: Record<string, unknown>; productRows: Array<Record<string, unknown>> }>
-  store: TriggerStore
-  invitations: InvitationStore
+  /**
+   * Стор и приглашения ПОРТАЛА события (#49) — по подтверждённому `member_id`, ПОСЛЕ сверки
+   * `application_token`. См. {@link TriggerTenantResolver}.
+   */
+  tenant: TriggerTenantResolver
   now?: Date
 }
 
@@ -100,14 +107,18 @@ export async function runRobotTrigger(raw: unknown, deps: RobotDeps): Promise<Ro
     }
   }
 
+  // Токен сошёлся — `member_id` подтверждён, и только теперь выбирается тенант (#49).
+  const tenant = await deps.tenant(ev.auth.member_id)
+  if (!tenant) return { kind: 'ignored', reason: 'tenant' }
+
   const { deal, productRows } = await deps.fetchDeal(dealId, ev.auth.member_id)
   const context = dealToCrmContext(deal, productRows)
   // Ни проверки истории стадий, ни отсечения дублей: робот вызывается РОВНО на входе в стадию, то
   // есть один раз на переход. Гроздь событий рождает только событийный путь (`deal-update.ts`), где
   // апдейт сделки прилетает на каждую правку; здесь отсекать нечего, и ключа перехода взять неоткуда.
   const outcome = await handleDealTrigger({
-    store: deps.store,
-    invitations: deps.invitations,
+    store: tenant.store,
+    invitations: tenant.invitations,
     context,
     now: deps.now
   })

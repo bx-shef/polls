@@ -61,6 +61,12 @@ pnpm test:visual  # визуальный гейт: скриншот-регрес
 - Валидация на границах: `compile()` парсит черновик, `addResponse()` — запись.
 - Подавление малых выборок (`ANONYMITY_THRESHOLD = 5` / `meetsAnonymity`), пагинация и tenant-изоляция
   (`portalId`) — ответственность слоя чтения/PgStore, не «сырых» агрегатов.
+- **Портал — ПАРАМЕТР запроса, а не состояние процесса** (#47/#49). Стор/приглашения/`Api` берутся
+  через `storeFor`/`invitationsFor`/`useApiFor(portalId)`; портал резолвится по токену приглашения
+  (публичный вход), по сессии портала (фрейм) или по `member_id` — **только после** проверки
+  (`application_token`/`verifyFrameAuth`). `useStore()`/`useApi()` — фолбэк для путей, где портала нет
+  вовсе. Ключ опроса тенанта НЕ задаёт: уникальность в схеме — `(group_id, survey_key)`. Детали —
+  карта проекта, §Мультитенант.
 - Секреты не логируем (`redact` по имени ключа); токены портала шифруются (AES-256-GCM);
   входящие события/установку верифицируем (constant-time `application_token`, member_id-binding,
   SSRF-allowlist домена). Детали — карта проекта, §Безопасность.
@@ -143,4 +149,4 @@ GitHub Actions: `ci.yml` (typecheck ядра + граница `~core` + `lint` +
 `@bitrix24/b24ui-nuxt ^2.9`. Базовый шаблон приложения — [`bitrix24/templates-dashboard`](https://github.com/bitrix24/templates-dashboard).
 
 ---
-*Обновлено: 2026-08-14. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
+*Обновлено: 2026-08-21. Полная карта проекта — [`docs/project-map.md`](docs/project-map.md).*
