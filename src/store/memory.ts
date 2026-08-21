@@ -1,7 +1,8 @@
 import { compile } from '../domain/compile'
 import { responseRecordSchema, type CompiledVersion, type ResponseRecord, type SurveyDraft } from '../domain/schema'
 import { afterKeyset, decodeCursor, encodeCursor, keysetCmp } from './cursor'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type AddResponseResult, type IStore, type ResponsePage, type ResponsePageOptions, type SurveySummary } from './types'
+import { dashboardFromResponses } from '../domain/dashboard'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type AddResponseResult, type IStore, type ResponsePage, type ResponsePageOptions, type SurveySummary, type DashboardAggregates, type DashboardQuery } from './types'
 
 /**
  * In-memory реализация {@link IStore} — для локальной проверки итога и тестов.
@@ -110,6 +111,24 @@ export class MemoryStore implements IStore {
       // Битую дату считаем «не после»: выдуманный ответ закрыл бы клиенту законный повод его дать.
       return Number.isFinite(at) && at >= from
     })
+  }
+
+  /**
+   * Агрегаты дашборда (#49). В памяти считаются чистой `dashboardFromResponses` — той самой, что
+   * задаёт КОНТРАКТ для SQL-реализации `PgStore`. Порядок ответов совпадает с `PgStore`
+   * (`submitted_at asc, id asc`): от него зависит имя группы — оно фиксируется первым вхождением.
+   */
+  async dashboardAggregates(q: DashboardQuery): Promise<DashboardAggregates> {
+    // ⚠️ Сортировка — УСТОЙЧИВАЯ и ТОЛЬКО по моменту ответа. `keysetCmp` здесь стоял и снят на
+    // ревью: он доразрешает ничью сравнением `id` КАК СТРОКИ, а в проде это `randomUUID` — то есть
+    // при равном `submittedAt` память брала лексикографически первый UUID, а `PgStore` (`id` это
+    // bigserial) — первый вставленный, и обе выбирали РАЗНОЕ имя одной и той же группы. Тест
+    // паритета этого не видел: в демо-сиде все даты различны. `Array#sort` устойчива, поэтому при
+    // равных датах остаётся порядок вставки — ровно то, что даёт bigserial.
+    const all = this._responses
+      .filter((r) => r.surveyKey === q.surveyKey)
+      .sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt))
+    return dashboardFromResponses(all, q)
   }
 
   async listResponsesPage(opts: ResponsePageOptions = {}): Promise<ResponsePage> {

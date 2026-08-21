@@ -6,7 +6,8 @@ import { createDashboardLimiter, DASHBOARD_RATE_MESSAGE } from '../server/utils/
 import { PORTAL_GONE_MESSAGE } from '../src/api/session'
 import type { PortalSession } from '../src/api/session'
 import type { CompiledVersion, Question, ResponseRecord } from '../src/domain/schema'
-import type { IStore } from '../src/store/types'
+import type { DashboardQuery, IStore } from '../src/store/types'
+import { dashboardFromResponses } from '../src/domain/dashboard'
 
 /**
  * Решение дашборда (#47/#49) — ИСПОЛНЯЕМО.
@@ -76,9 +77,13 @@ const RESPONSES: ResponseRecord[] = [
  */
 function fakeStore(rs: ResponseRecord[] = RESPONSES, version: CompiledVersion | null = VERSION) {
   // (см. комментарий выше: `null` — «версии нет», `undefined` сюда не передаём вовсе)
+  //
+  // ⚠️ Двойник считает агрегаты НАСТОЯЩЕЙ `dashboardFromResponses` — той же, что стоит в `MemoryStore`
+  // и задаёт контракт для SQL. Двойник с выдуманными цифрами проверял бы, что вид их переложил, а не
+  // что дашборд показывает правду; а двойник, отдающий пусто, скрыл бы половину веток вида.
   return {
     currentVersion: vi.fn(async () => version ?? undefined),
-    listResponses: vi.fn(async () => rs)
+    dashboardAggregates: vi.fn(async (q: DashboardQuery) => dashboardFromResponses(rs, q))
   } as unknown as IStore
 }
 
@@ -117,7 +122,8 @@ describe('дашборд: решение роута', () => {
     expect(out.body.suppressed).toBe(false)
     expect(out.body.n).toBe(16)
     expect(d.seen).toEqual(['session', 'tenant', 'allowPortal', 'storeFor'])
-    expect((store.listResponses as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(1)
+    expect((store.dashboardAggregates as unknown as { mock: { calls: unknown[] } }).mock.calls,
+      'хранилище опрошено дважды на обычном пути').toHaveLength(1)
   })
 
   it('портал для стора берётся из ТЕНАНТА, а не из ключа опроса или адреса', async () => {
@@ -136,8 +142,8 @@ describe('дашборд: решение роута', () => {
     const out = await ask(d)
     expect(out.status).toBe(429)
     expect(d.seen).toEqual(['session', 'tenant', 'allowPortal'])
-    expect((store.listResponses as unknown as { mock: { calls: unknown[] } }).mock.calls,
-      'ответы прочитаны вопреки исчерпанному потолку').toHaveLength(0)
+    expect((store.dashboardAggregates as unknown as { mock: { calls: unknown[] } }).mock.calls,
+      'агрегаты посчитаны вопреки исчерпанному потолку').toHaveLength(0)
   })
 
   it('лимит портала получает ИМЕННО portalId тенанта', async () => {
@@ -284,6 +290,22 @@ describe('дашборд: решение роута', () => {
       'в срез попали ответы других версий').toEqual(['Петров'])
   })
 
+  it('?version вне диапазона int4 не доезжает до SQL (иначе 500 на валидной сессии)', async () => {
+    // ⚠️ Найдено пробой на ревью: значение уходит в SQL как `$3::int`, и `?version=99999999999`
+    // ронял запрос («out of range for type integer») — то есть 500 вместо обещанного «показываем
+    // все версии». Страница сама пересылает в API любое положительное целое из адреса.
+    const store = fakeStore()
+    const spy = store.dashboardAggregates as unknown as { mock: { calls: Array<[{ versionNo?: number }]> } }
+    for (const bad of ['99999999999', '2147483648', '-1', '0']) {
+      const out = await ask(deps({}, store), { version: bad })
+      expect(out.status, bad).toBe(200)
+      expect(spy.mock.calls.at(-1)?.[0].versionNo, `${bad}: уехало в хранилище`).toBeUndefined()
+    }
+    // Граница диапазона — валидна и передаётся.
+    await ask(deps({}, store), { version: '2147483647' })
+    expect(spy.mock.calls.at(-1)?.[0].versionNo).toBe(2_147_483_647)
+  })
+
   it('список версий считается ДО фильтра — иначе селектор схлопывается', async () => {
     const mixed = [...RESPONSES, { ...record(300, 'speed'), versionNo: 3 }]
     const out = await ask(deps({}, fakeStore(mixed)), { version: '3' })
@@ -426,6 +448,17 @@ describe('дашборд: боевая проводка роута', () => {
     const call = src.slice(src.indexOf('dashboardDecision('))
     expect(call, 'в объекте зависимостей появился спред — им перекрывают проверенные строки')
       .not.toMatch(/\.\.\./)
+  })
+
+  it('дашборд НЕ читает все ответы в память — ради этого порт и заводился (#49)', () => {
+    // ⚠️ Регресс сюда возвращается одной строкой (`store.listResponses(...)` вместо порта) и не
+    // роняет ничего: цифры-то те же. А цена — та, из-за которой #49 и открыт: один сотрудник одного
+    // портала, зажавший F5 на большом опросе, занимает пул и event loop всем арендаторам.
+    const decider = readFileSync(resolve(process.cwd(), 'server/utils/dashboard-view.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    expect(decider, 'вернулось чтение всех ответов в память').not.toMatch(/\blistResponses\(/)
+    expect(decider, 'порт агрегатов не используется').toMatch(/store\.dashboardAggregates\(/)
   })
 
   it('роут НИЧЕГО не решает сам — иначе исполняемые тесты выше проверяют не тот код', () => {

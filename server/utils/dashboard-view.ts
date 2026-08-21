@@ -1,14 +1,4 @@
-import {
-  npsFor,
-  csatFor,
-  distributionFor,
-  npsTrend,
-  byVersion,
-  breakdownBy,
-  meetsAnonymity,
-  suppressSmallBins,
-  ANONYMITY_THRESHOLD
-} from '~core/domain/aggregate'
+import { meetsAnonymity, suppressSmallBins, ANONYMITY_THRESHOLD } from '~core/domain/aggregate'
 import { dashboardAuthMessage, PORTAL_GONE_MESSAGE } from '~core/api/session'
 import type { PortalSession } from '~core/api/session'
 import type { IStore } from '~core/store/types'
@@ -97,81 +87,76 @@ export async function dashboardDecision(
     return { status: 404, body: { ok: false, error: 'Опрос не найден. Проверьте адрес.' } }
   }
 
-  const allResponses = await store.listResponses(input.surveyKey)
-  // Доступные версии — из ВСЕХ ответов (до фильтра), чтобы селектор не «схлопывался» при срезе.
-  const versions = [...new Set(allResponses.map((r) => r.versionNo))].sort((a, b) => a - b)
+  // ⚠️ Вопросы-метрики берутся из ТЕКУЩЕЙ версии, а не угадываются хранилищем: версионная
+  // безопасность держится на стабильном `question_key`, и решать, какой вопрос считать NPS, — дело
+  // схемы опроса, а не SQL.
+  const npsKey = version.questions.find((q) => q.metric === 'nps')?.key
+  const csatKey = version.questions.find((q) => q.metric === 'csat')?.key
+  const choiceQ = version.questions.find((q) => q.metric === 'choice')
 
-  // Фильтр по версии (?version=N): сравнение «до/после публикации». `getQuery` может вернуть
-  // string|string[]|undefined — принимаем ТОЛЬКО скаляр-строку (массив/повтор не коэрсим).
-  // Принимаем лишь СУЩЕСТВУЮЩУЮ версию; невалидное/чужое значение игнорируем (все версии).
+  // ⚠️ Фильтр по версии (?version=N) принимаем ТОЛЬКО скаляр-строкой и только целым числом В
+  // ДИАПАЗОНЕ int4. Верхняя граница не педантизм: значение уходит в SQL как `$3::int`, и
+  // `?version=99999999999` с валидной сессией ронял запрос («out of range for type integer»), то
+  // есть давал 500 вместо обещанного «показываем все версии». Найдено пробой на ревью; страница
+  // сама пересылает в API любое положительное целое из адреса. Существует ли такая версия, решает
+  // хранилище — список версий известен только оттуда.
   const versionParam = typeof input.version === 'string' ? Number(input.version) : NaN
-  const versionFilter = Number.isInteger(versionParam) && versions.includes(versionParam) ? versionParam : null
-  const responses = versionFilter != null ? byVersion(allResponses, versionFilter) : allResponses
-  const n = responses.length
+  const wanted = Number.isInteger(versionParam) && versionParam >= 1 && versionParam <= 2_147_483_647
+    ? versionParam
+    : null
+
+  // ⚠️ ОДНО обращение к хранилищу вместо чтения всех ответов в память (#49). Подавление групп,
+  // пороги и сортировка — внутри порта, общим кодом для обеих реализаций.
+  const metrics = {
+    ...(npsKey != null ? { npsKey } : {}),
+    ...(csatKey != null ? { csatKey } : {}),
+    ...(choiceQ != null ? { choiceKey: choiceQ.key } : {})
+  }
+  // ⚠️ Несуществующая версия в адресе игнорируется — показываем ВСЕ версии, а не пустой экран. Это
+  // решает ХРАНИЛИЩЕ и отдаёт фактически применённый фильтр (`agg.version`): список версий известен
+  // только ему. Пока проверял вид, кривой `?version=` стоил ВТОРОГО полного захода — то есть
+  // опечатка в ссылке удваивала нагрузку на базу.
+  const agg = await store.dashboardAggregates({
+    surveyKey: input.surveyKey,
+    ...(wanted != null ? { versionNo: wanted } : {}),
+    ...metrics
+  })
+  const versionFilter = agg.version
+  const n = agg.n
 
   // surveyKey в ответ НЕ зеркалим (клиент знает его из URL; не отражаем недоверенный ввод).
-  const base = { ok: true as const, title: version.title, n, versions, version: versionFilter }
+  const base = { ok: true as const, title: version.title, n, versions: agg.versions, version: versionFilter }
 
   if (!meetsAnonymity(n)) {
     return { status: 200, body: { ...base, suppressed: true as const, threshold: ANONYMITY_THRESHOLD } }
   }
 
-  const npsKey = version.questions.find((q) => q.metric === 'nps')?.key
-  const csatKey = version.questions.find((q) => q.metric === 'csat')?.key
-  const choiceQ = version.questions.find((q) => q.metric === 'choice')
-
   let distribution = null
-  if (choiceQ) {
+  if (choiceQ && agg.distribution) {
     const labelByKey = new Map(choiceQ.options.map((o) => [o.key, o.label]))
-    const counted = Object.entries(distributionFor(responses, choiceQ.key))
+    const counted = Object.entries(agg.distribution)
       .map(([key, count]) => ({ label: labelByKey.get(key) ?? key, count }))
       .sort((a, b) => b.count - a.count)
-    // ⚠️ Подавление ПО ЯЧЕЙКАМ (#49) — второй уровень поверх гейта по общему N. Гейт по N говорит
-    // «выборка достаточна», но внутри достаточной выборки «Отказ от услуги — 1» это один конкретный
-    // клиент, а рядом на том же экране лежат срезы по компаниям и ответственным.
+    // ⚠️ Подавление ПО ЯЧЕЙКАМ (#49) — второй уровень поверх гейта по общему N, и единственная часть
+    // анонимности, которая живёт НЕ в хранилище: сырое распределение нужно и для расчётов, поэтому
+    // порт отдаёт счётчики как есть, а прячет их тот, кто показывает их человеку.
     const { items, hiddenBins, hiddenCount } = suppressSmallBins(counted)
     distribution = { question: choiceQ.text, items, hiddenBins, hiddenCount }
   }
-
-  // Срезы по измерениям через ядровой `breakdownBy` (группировка + подавление малых N — там).
-  // Имена денормализованы в контексте (productName/dealCategoryName/responsibleName/companyName),
-  // фолбэк — внутренний ID вида `#11`. Ответ с несколькими услугами попадает в каждую.
-  const opts = { npsKey, csatKey }
-  const services = breakdownBy(
-    responses,
-    (r) => (r.context.products ?? []).map((p) => ({ key: p.productId, name: p.productName ?? `#${p.productId}` })),
-    opts
-  )
-  const directions = breakdownBy(
-    responses,
-    (r) => (r.context.dealCategoryId != null ? [{ key: r.context.dealCategoryId, name: r.context.dealCategoryName ?? `#${r.context.dealCategoryId}` }] : []),
-    opts
-  )
-  const responsibles = breakdownBy(
-    responses,
-    (r) => (r.context.responsibleId != null ? [{ key: r.context.responsibleId, name: r.context.responsibleName ?? `#${r.context.responsibleId}` }] : []),
-    opts
-  )
-  const clients = breakdownBy(
-    responses,
-    (r) => (r.context.companyId != null ? [{ key: r.context.companyId, name: r.context.companyName ?? `#${r.context.companyId}` }] : []),
-    opts
-  )
 
   return {
     status: 200,
     body: {
       ...base,
       suppressed: false as const,
-      nps: npsKey ? npsFor(responses, npsKey) : null,
-      csat: csatKey ? csatFor(responses, csatKey) : null,
+      nps: agg.nps,
+      csat: agg.csat,
       distribution,
-      // Помесячный тренд NPS; точки с n < порога подавлены (анонимность по месяцу).
-      trend: npsKey ? npsTrend(responses, npsKey, 'month', ANONYMITY_THRESHOLD) : [],
-      services,
-      directions,
-      responsibles,
-      clients
+      trend: agg.trend,
+      services: agg.services,
+      directions: agg.directions,
+      responsibles: agg.responsibles,
+      clients: agg.clients
     }
   }
 }
