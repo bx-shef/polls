@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { buildResponseAnswers } from '../domain/answers'
+import { summarizeResponse, type ResultLine } from '../domain/result-summary'
+import { resultToTimelineEnabled } from '../domain/invitation'
 import { rawAnswerSchema, type CompiledVersion, type CrmContext, type PublicVersion } from '../domain/schema'
 import type { IStore } from '../store/types'
 import { errInfo, nullLogger, type Logger } from '../obs/logger'
@@ -143,9 +145,39 @@ export interface ApiDeps {
   onAnswered?: (info: AnsweredInfo) => Promise<void>
 }
 
-/** Что известно об ответе на момент побочных действий (закрытие дела в CRM). */
+/** Что известно об ответе на момент побочных действий (закрытие дела в CRM, запись результата). */
 export interface AnsweredInfo {
   surveyKey: string
+  /**
+   * Заголовок опроса из версии — в шапку дела-результата (#18).
+   *
+   * ⚠️ Берётся из ТОЙ версии, по которой собран ответ, а не из текущей: опрос могли переиздать между
+   * выпиской ссылки и ответом, и запись в таймлайне обязана называть то, что человек реально видел.
+   */
+  surveyTitle: string
+  /**
+   * Идентификатор записи ответа — ключ идемпотентности дела-результата (`resultMarker`).
+   *
+   * ⚠️ Ключ именно записи, а не сделки: сделка может пройти триггерную стадию не один раз, и у
+   * каждого прохождения свой результат. Ключ по сделке съел бы второй как дубль.
+   */
+  responseId: string
+  /**
+   * Сводка «вопрос → значение» (`summarizeResponse`) — тело дела-результата.
+   *
+   * ⚠️ Считается ЗДЕСЬ, а не в слое связки: тексты вопросов живут в версии, версия уже загружена, и
+   * второе чтение дало бы шанс взять другую. Слой связки про доменные метрики знать не должен.
+   */
+  lines: readonly ResultLine[]
+  /**
+   * Разрешает ли ЭТОТ опрос класть индивидуальный результат в карточку сделки
+   * (`invitationPolicy.resultToTimeline`, #18).
+   *
+   * ⚠️ Решение принимается ЗДЕСЬ, по версии, на которой человек отвечал, — а не в слое связки по
+   * текущей версии опроса. Опрос могли переиздать между выпиской ссылки и ответом, и обещание,
+   * данное респонденту на интро, должно пережить переиздание.
+   */
+  resultToTimeline: boolean
   /** Версия, на которой пинилось приглашение — для диагностики: закрытие само её не использует. */
   versionNo: number
   /** Снимок CRM из приглашения; пустой, если ответ пришёл по публичной ссылке без токена. */
@@ -419,7 +451,9 @@ export function createApi(deps: ApiDeps): Api {
         }
 
         const responseId = idGen()
-        const { stored } = await store.addResponse({
+        // Записываемая строка держится в переменной: её же читает сводка для дела-результата (#18).
+        // Собрать её второй раз значило бы завести второй источник того, что уходит в CRM.
+        const record = {
           id: responseId,
           surveyKey: version.surveyKey,
           versionNo: version.versionNo,
@@ -428,7 +462,8 @@ export function createApi(deps: ApiDeps): Api {
           answers,
           // токен → durable-якорь идемпотентности (стор дедуплицирует по нему, #3/#4)
           ...(p.invitation != null ? { invitationToken: p.invitation } : {})
-        })
+        }
+        const { stored } = await store.addResponse(record)
 
         /**
          * Гасим ссылку ПОСЛЕ записи — и в обеих ветках, а не только на успешной.
@@ -490,7 +525,11 @@ export function createApi(deps: ApiDeps): Api {
           await Promise.resolve()
             .then(() => hook({
               surveyKey: version.surveyKey,
+              surveyTitle: version.title,
               versionNo: version.versionNo,
+              responseId,
+              lines: summarizeResponse(version, record),
+              resultToTimeline: resultToTimelineEnabled(version),
               context,
               at: now()
             }))

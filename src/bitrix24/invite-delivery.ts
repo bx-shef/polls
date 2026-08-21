@@ -20,6 +20,16 @@ export const INVITE_ORIGINATOR = 'bx-shef.polls'
 /** Префикс формы маркера. Строится и разбирается в одном файле — иначе они разъедутся молча. */
 const MARKER_PREFIX = 'stage:'
 
+/**
+ * Префикс маркера дела-РЕЗУЛЬТАТА (#18) — намеренно ДРУГОЙ.
+ *
+ * ⚠️ Разные префиксы — это не аккуратность, а защита. Дела-приглашения ищет и закрывает
+ * `openInviteActivities` + `markerMatchesSurvey`; тот требует префикс `stage:`, поэтому дело с
+ * результатом под его фильтр не попадает по построению. Совпади префиксы — и ответ клиента «закрывал»
+ * бы запись о собственном результате, а в логе это выглядело бы нормальной работой.
+ */
+const RESULT_MARKER_PREFIX = 'result:'
+
 export interface InviteMarker {
   originatorId: string
   originId: string
@@ -37,6 +47,18 @@ export interface InviteMarker {
  */
 export function inviteMarker(transitionId: string, surveyKey: string): InviteMarker {
   return { originatorId: INVITE_ORIGINATOR, originId: `${MARKER_PREFIX}${transitionId}:${surveyKey}` }
+}
+
+/**
+ * Маркер дела-результата: код приложения + идентификатор ЗАПИСИ ОТВЕТА (#18).
+ *
+ * ⚠️ Ключ — `responseId`, а не сделка и не опрос. Один клиент может пройти опрос по этой сделке
+ * несколько раз (сделка вернулась в стадию — законный повод спросить снова), и у каждого прохождения
+ * свой результат: ключ по сделке съел бы второй результат как дубль. `responseId` рождается сервером
+ * на каждую запись, поэтому «одна запись — одно дело» держится по построению.
+ */
+export function resultMarker(responseId: string): InviteMarker {
+  return { originatorId: INVITE_ORIGINATOR, originId: `${RESULT_MARKER_PREFIX}${responseId}` }
 }
 
 /**

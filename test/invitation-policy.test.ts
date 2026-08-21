@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { compile, diffVersions } from '../src/domain/compile'
 import { surveyDraftSchema, type InvitationPolicy, type SurveyDraft } from '../src/domain/schema'
+import { resultToTimelineEnabled } from '../src/domain/invitation'
 import { MemoryStore } from '../src/store/memory'
 import { PgStore, type Queryable } from '../src/store/pg'
 import { applySchema } from './helpers/schema'
@@ -116,5 +117,29 @@ describe('политика переживает запись/чтение и з�
     } finally {
       await pg.close()
     }
+  })
+})
+
+describe('resultToTimelineEnabled — гейт записи результата в карточку (#18)', () => {
+  it('политики нет вовсе → кладём (старые опросы работают как работали)', () => {
+    expect(resultToTimelineEnabled({})).toBe(true)
+  })
+
+  it('поле не задано → кладём (то же умолчание, что и без политики)', () => {
+    // ⚠️ Два входа обязаны давать ОДИН ответ: «политики нет» и «поле не заполнено» — это одно и то
+    // же состояние, и решает его одна функция. Дефолт в схеме дал бы второе место, где написано
+    // «по умолчанию кладём».
+    expect(resultToTimelineEnabled({ invitationPolicy: POLICY })).toBe(true)
+  })
+
+  it('опрос обещал анонимность (false) → НЕ кладём', () => {
+    expect(resultToTimelineEnabled({ invitationPolicy: { ...POLICY, resultToTimeline: false } })).toBe(false)
+  })
+
+  it('флаг переживает публикацию версии (обещание дано на интро ТОЙ версии)', () => {
+    // Опрос могли переиздать между выпиской ссылки и ответом; решение принимается по версии, на
+    // которой человек отвечал, поэтому флаг обязан быть version-frozen, как и остальная политика.
+    const v = compile(draft({ invitationPolicy: { ...POLICY, resultToTimeline: false } }), 1)
+    expect(resultToTimelineEnabled(v)).toBe(false)
   })
 })

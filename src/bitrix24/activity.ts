@@ -87,7 +87,11 @@ export interface ConfigurableActivityParams {
       logo: { code: string; action: { type: string; uri: string } }
       blocks: Record<string, unknown>
     }
-    footer: { buttons: Record<string, unknown> }
+    /**
+     * Футер с кнопками. Необязателен: у дела-РЕЗУЛЬТАТА кнопок нет (#18) — вести им сегодня некуда,
+     * а «мёртвая кнопка хуже отсутствующей». Вернётся вместе со страницей просмотра результата.
+     */
+    footer?: { buttons: Record<string, unknown> }
   }
 }
 
@@ -163,8 +167,8 @@ export interface SurveyResultActivityInput {
   surveyTitle: string
   /** Сводка ответов клиента (`summarizeResponse`) — строки «вопрос → значение». */
   lines: ResultLine[]
-  /** id записи ответа — в `actionParams` кнопки «Открыть результат» (виджет знает, что открыть). */
-  responseId: string
+  /** Маркер идемпотентности: `result:<responseId>` (`resultMarker`). */
+  marker?: InviteMarker
   /** Ответственный за активность (опц.). */
   responsibleId?: number
 }
@@ -192,7 +196,8 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
       // completed=Y — активность-ЗАПИСЬ о завершённом опросе (в отличие от pending-приглашения completed=N).
       typeId: 'CONFIGURABLE',
       completed: 'Y',
-      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {})
+      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {}),
+      ...(input.marker ? { originatorId: input.marker.originatorId, originId: input.marker.originId } : {})
     },
     layout: {
       icon: { code: SURVEY_ACTIVITY_LOGO },
@@ -200,17 +205,12 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
       body: {
         logo: { code: SURVEY_ACTIVITY_LOGO, action: { type: 'redirect', uri: dealPath } },
         blocks
-      },
-      footer: {
-        buttons: {
-          openResult: {
-            title: 'Открыть результат',
-            type: 'primary',
-            // ⚠️ `openRestApp` вживую не сверен (сосед live-verified только `redirect`) — smoke #126.
-            action: { type: 'openRestApp', actionParams: { responseId: input.responseId, dealId: input.dealId } }
-          }
-        }
       }
+      // ⚠️ Футера НЕТ намеренно. Здесь стояла кнопка «Открыть результат» (`openRestApp` с
+      // `responseId`), но открывать ей нечего: виджет `responseId` не читает (`readWidgetParams`
+      // знает только про сделку и приглашение), страницы просмотра результата ещё нет. Кнопка,
+      // ведущая в пустой экран, хуже её отсутствия — а сама сводка ответов уже в теле дела, ради неё
+      // менеджер сюда и смотрит. Вернётся вместе со страницей результата (#18, вторая половина).
     }
   }
 }

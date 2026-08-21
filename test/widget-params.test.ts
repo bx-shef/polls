@@ -81,7 +81,7 @@ describe('проводка кнопки: дело пишет — виджет ч
       token: 'tok-1',
       surveyUrl: 'https://polls.example/s/csat_postdeal?token=tok-1'
     })
-    const button = activity.layout.footer.buttons.sendInvite as {
+    const button = activity.layout.footer!.buttons.sendInvite as {
       action: { actionParams: Record<string, unknown> }
     }
     const params = readWidgetParams(button.action.actionParams)

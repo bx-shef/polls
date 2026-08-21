@@ -12,6 +12,7 @@ import {
   SURVEY_ACTIVITY_LOGO,
   type SurveyInviteActivityInput
 } from '../src/bitrix24/activity'
+import { INVITE_ORIGINATOR, markerMatchesSurvey, resultMarker } from '../src/bitrix24/invite-delivery'
 import type { ResultLine } from '../src/domain/result-summary'
 import type { PortalClient, CallResult } from '../src/bitrix24/client'
 
@@ -80,8 +81,8 @@ describe('buildSurveyInviteActivity — параметры настраивае�
 
   it('футер: одна кнопка «Отправить приглашение» → openRestApp с контекстом отправки', () => {
     const a = buildSurveyInviteActivity(input({ dealId: 7, surveyKey: 'k', token: 'tk', surveyUrl: 'https://p/s/k?token=tk' }))
-    expect(Object.keys(a.layout.footer.buttons)).toEqual(['sendInvite']) // ≤2 кнопок футера
-    expect(a.layout.footer.buttons.sendInvite).toEqual({
+    expect(Object.keys(a.layout.footer!.buttons)).toEqual(['sendInvite']) // ≤2 кнопок футера
+    expect(a.layout.footer!.buttons.sendInvite).toEqual({
       title: 'Отправить приглашение',
       type: 'primary',
       action: {
@@ -118,7 +119,7 @@ describe('buildSurveyInviteActivity — параметры настраивае�
     const blocks = Object.keys(a.layout.body.blocks).length
     expect(blocks).toBeGreaterThanOrEqual(1)
     expect(blocks).toBeLessThanOrEqual(20)
-    expect(Object.keys(a.layout.footer.buttons).length).toBeLessThanOrEqual(2)
+    expect(Object.keys(a.layout.footer!.buttons).length).toBeLessThanOrEqual(2)
   })
 })
 
@@ -127,7 +128,7 @@ describe('buildSurveyResultActivity — результат опроса в та�
     { label: 'Оцените', value: '9' },
     { label: 'Комментарий', value: 'отличный сервис' }
   ]
-  const rInput = { dealId: 759, surveyTitle: 'CSAT', lines, responseId: 'r42' }
+  const rInput = { dealId: 759, surveyTitle: 'CSAT', lines }
 
   it('запись о завершённом опросе: completed=Y (в отличие от pending-приглашения N)', () => {
     expect(buildSurveyResultActivity(rInput).fields).toEqual({ typeId: 'CONFIGURABLE', completed: 'Y' })
@@ -158,13 +159,24 @@ describe('buildSurveyResultActivity — результат опроса в та�
     expect(a.layout.body.blocks.line0).toEqual({ type: 'text', properties: { value: 'Опрос заполнен: без ответов' } })
   })
 
-  it('кнопка «Открыть результат» → openRestApp с responseId+dealId', () => {
-    const a = buildSurveyResultActivity({ ...rInput, dealId: 7, responseId: 'r42' })
-    expect(a.layout.footer.buttons.openResult).toEqual({
-      title: 'Открыть результат',
-      type: 'primary',
-      action: { type: 'openRestApp', actionParams: { responseId: 'r42', dealId: 7 } }
-    })
+  it('футера НЕТ: кнопке «Открыть результат» вести некуда, пока нет страницы результата', () => {
+    // ⚠️ Утверждение, а не пропуск. Кнопка была, и вела она в `openRestApp` с `responseId`, которого
+    // виджет не читает (`readWidgetParams` знает про сделку и приглашение) — то есть в пустой экран.
+    // Сама сводка ответов лежит в теле дела, ради неё менеджер сюда и смотрит.
+    const a = buildSurveyResultActivity({ ...rInput, dealId: 7 })
+    expect(a.layout.footer).toBeUndefined()
+  })
+
+  it('маркер идемпотентности едет в fields (одна запись ответа — одно дело)', () => {
+    const a = buildSurveyResultActivity({ ...rInput, marker: resultMarker('r42') })
+    expect(a.fields.originatorId).toBe(INVITE_ORIGINATOR)
+    expect(a.fields.originId).toBe('result:r42')
+  })
+
+  it('маркер результата НЕ узнаётся фильтром дел-приглашений', () => {
+    // Иначе ответ клиента «закрывал» бы запись о собственном результате, а в логе это выглядело бы
+    // нормальной работой закрытия.
+    expect(markerMatchesSurvey(resultMarker('r42').originId, 'csat_postdeal')).toBe(false)
   })
 
   it('BB-нейтрализация метки/значения сводки (анти-инъекция таймлайна)', () => {

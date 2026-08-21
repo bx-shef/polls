@@ -148,7 +148,7 @@ describe('анти-абьюз и закрытие дела скоуплены п
   })
 
   it('клиент портала и очередь рефреша ключуются порталом', () => {
-    const src = stripComments(read('server/utils/close-invite.ts'))
+    const src = stripComments(read('server/utils/portal-deps.ts'))
     expect(src, 'кэш клиента снова один на процесс').toContain('cachedByPortal')
     expect(src, 'очередь рефреша общая — медленный портал держит остальных')
       .toMatch(/portalQueue\.run\(`close-invite:\$\{forPortalId \?\? 'default'\}`/)

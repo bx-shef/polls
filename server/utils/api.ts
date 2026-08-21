@@ -393,11 +393,19 @@ function sharedNonces(): MemoryNonceStore {
  */
 function onAnsweredHookFor(portalId?: number): (info: AnsweredInfo) => Promise<void> {
   return async (info: AnsweredInfo): Promise<void> => {
-    const { closeInvite, liveCloseDeps } = await import('./close-invite')
-    // ⚠️ Портал ПРОКИДЫВАЕТСЯ (#49): дело закрывается в том же портале, где записан ответ. Пока
-    // портал резолвился внутри («тот, под которым пишет стор процесса»), ответ клиента одного
-    // заказчика уходил бы закрывать дело в CRM другого — с его токенами и его сделками.
-    await closeInvite(info, liveCloseDeps(portalId))
+    const { closeInvite } = await import('./close-invite')
+    const { postResult } = await import('./post-result')
+    const { livePortalDeps } = await import('./portal-deps')
+    // ⚠️ Портал ПРОКИДЫВАЕТСЯ (#49): и закрытие дела, и запись результата идут в тот же портал, где
+    // записан ответ. Пока портал резолвился внутри («тот, под которым пишет стор процесса»), ответ
+    // клиента одного заказчика уходил бы в CRM другого — с его токенами и его сделками.
+    const deps = livePortalDeps(portalId)
+    // ⚠️ ПАРАЛЛЕЛЬНО, а не по очереди. У каждого действия свой дедлайн в 3 секунды; последовательный
+    // запуск дал бы шесть секунд ожидания человеку, который уже нажал «Отправить», — на самом видимом
+    // клиенту экране. Клиент портала у них общий (кэш в `portal-deps`), так что второй получает
+    // готовый: параллельность стоит одного лишнего промиса, а не второго рефреша токена.
+    // ⚠️ `Promise.all` безопасен: оба действия ловят свои отказы внутри и наружу их не пробрасывают.
+    await Promise.all([closeInvite(info, deps), postResult(info, deps)])
   }
 }
 
