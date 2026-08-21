@@ -78,6 +78,10 @@ function deps(over: Partial<DeliverInviteDeps> = {}): DeliverInviteDeps & { crea
   const base: DeliverInviteDeps = {
     findByMarker: () => Promise.resolve([...timeline]),
     answeredAfterTransition: () => Promise.resolve(false),
+    // ⚠️ Считаем ПО ТОМУ ЖЕ таймлайну: на портале это один и тот же список дел, просто найденный
+    // другим фильтром (по владельцу, а не по маркеру). Двойник, отдающий здесь константный ноль,
+    // выключил бы правило #198 во всех тестах разом.
+    countOpenForDeal: () => Promise.resolve(timeline.filter((a) => !a.completed).length),
     createInvite: () => {
       createdCount++
       const id = 100 + createdCount
@@ -177,6 +181,10 @@ describe('доставка приглашения целиком', () => {
       // выродилась бы: синхронный фейк не даёт второму обработчику влезть в промежуток.
       findByMarker: async () => { await new Promise((r) => setImmediate(r)); return [...timeline] },
       answeredAfterTransition: () => Promise.resolve(false),
+      countOpenForDeal: async () => {
+        await new Promise((r) => setImmediate(r))
+        return timeline.filter((a) => !a.completed).length
+      },
       createInvite: async () => {
         await new Promise((r) => setImmediate(r))
         const id = ++nextId
@@ -197,19 +205,24 @@ describe('доставка приглашения целиком', () => {
     expect(results.filter((r) => r.kind === 'skipped')).toHaveLength(2)
   })
 
-  it('РАЗНЫЕ переходы не мешают друг другу', async () => {
-    const timeline: MarkedActivity[] = []
+  it('РАЗНЫЕ переходы: очередь их не путает, но живое приглашение остаётся ОДНО (#198)', async () => {
+    // ⚠️ Тест изначально доказывал, что ключ очереди пер-переходный и переходы не съедают друг
+    // друга. Это по-прежнему проверяется — тремя параллельными вызовами и отсутствием ошибок. Но
+    // ПРАВИЛО изменилось: пока по сделке висит открытая ссылка, второй переход новую не выписывает,
+    // иначе у клиента их две и по какой он ответит — решает случай.
+    const timeline: Array<MarkedActivity & { key: string }> = []
     const serializer = createKeySerializer()
     let nextId = 0
     const d: DeliverInviteDeps = {
       findByMarker: async (m) => {
         await new Promise((r) => setImmediate(r))
-        return timeline.filter((a) => (a as MarkedActivity & { key?: string }).key === m.originId)
+        return timeline.filter((a) => a.key === m.originId)
       },
       answeredAfterTransition: () => Promise.resolve(false),
+      countOpenForDeal: () => Promise.resolve(timeline.filter((a) => !a.completed).length),
       createInvite: async (m) => {
         const id = ++nextId
-        timeline.push({ id, completed: false, key: m.originId } as MarkedActivity & { key: string })
+        timeline.push({ id, completed: false, key: m.originId })
         return id
       },
       ensureMarker: () => Promise.resolve('already'),
@@ -218,8 +231,56 @@ describe('доставка приглашения целиком', () => {
     const out = await Promise.all([
       deliverInvite('1', 'k', d), deliverInvite('2', 'k', d), deliverInvite('1', 'k', d)
     ])
-    expect(timeline, 'переходы съели друг друга').toHaveLength(2)
-    expect(out.filter((r) => r.kind === 'created')).toHaveLength(2)
+    expect(timeline, 'у клиента больше одной живой ссылки').toHaveLength(1)
+    expect(out.filter((r) => r.kind === 'created')).toHaveLength(1)
+  })
+
+  it('прошлый переход ЗАКРЫТ без ответа → новый переход зовёт снова', async () => {
+    // «Закрыто» значит, что менеджер снял задачу с себя, а не что клиента спросили. Правило #198
+    // молчит про закрытые дела — иначе одна забытая задача выключила бы опрос по сделке навсегда.
+    const timeline: Array<MarkedActivity & { key: string }> = [{ id: 1, completed: true, key: 'stage:1:k' }]
+    const d: DeliverInviteDeps = {
+      findByMarker: (m) => Promise.resolve(timeline.filter((a) => a.key === m.originId)),
+      answeredAfterTransition: () => Promise.resolve(false),
+      countOpenForDeal: () => Promise.resolve(timeline.filter((a) => !a.completed).length),
+      createInvite: (m) => {
+        timeline.push({ id: timeline.length + 1, completed: false, key: m.originId })
+        return Promise.resolve(timeline.length)
+      },
+      ensureMarker: () => Promise.resolve('already'),
+      serializer: createKeySerializer()
+    }
+    expect((await deliverInvite('2', 'k', d)).kind).toBe('created')
+  })
+
+  it('РУЧНОЕ приглашение висит открытым → переход НЕ шлёт вторую ссылку (#198)', async () => {
+    // ⚠️ Поиск по маркеру этого дела не видит по построению: у ручного пути маркер свой (`manual:`).
+    // До правила менеджер, нажавший «Создать ссылку», а потом протащивший сделку через стадию, слал
+    // клиенту ДВЕ живые ссылки на один опрос.
+    const d = deps({
+      findByMarker: () => Promise.resolve([]),
+      countOpenForDeal: () => Promise.resolve(1)
+    })
+    const out = await deliverInvite('4242', 'csat_postdeal', d)
+    expect(out).toEqual({ kind: 'skipped', reason: 'open-other', marker: inviteMarker('4242', 'csat_postdeal') })
+    expect(d.created(), 'выписана вторая живая ссылка').toBe(0)
+  })
+
+  it('чужие открытые приглашения спрашиваются ЛЕНИВО — гроздь их не оплачивает', async () => {
+    // Лишний `crm.activity.list` на каждое событие грозди — это 2–4 запроса к порталу вместо нуля.
+    const probe = vi.fn(() => Promise.resolve(0))
+    const d = deps({ findByMarker: () => Promise.resolve([{ id: 7, completed: false }]), countOpenForDeal: probe })
+    const out = await deliverInvite('4242', 'csat_postdeal', d)
+    expect(out.kind).toBe('skipped')
+    expect(probe, 'портал спрошен там, где решение уже принято').not.toHaveBeenCalled()
+  })
+
+  it('портал не ответил на вопрос о чужих приглашениях → зовём (fail-open), но это видно вызывающему', async () => {
+    // ⚠️ Выбор между «клиент получит вторую ссылку» и «клиента не спросят вовсе». Второе хуже: звать
+    // — прямая работа этого пути, дедуп здесь страховка. Боевая проводка глушит ошибку в ноль и
+    // пишет строку `b24_invite_open_probe_fail`; сюда отказ приходит уже как ноль.
+    const d = deps({ countOpenForDeal: () => Promise.resolve(0) })
+    expect((await deliverInvite('4242', 'csat_postdeal', d)).kind).toBe('created')
   })
 })
 

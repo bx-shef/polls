@@ -157,6 +157,12 @@ export type InviteDecision =
   | { action: 'skip'; reason: 'open' }
   /** Дело закрыто И клиент ответил после перехода — цикл завершён. */
   | { action: 'skip'; reason: 'answered' }
+  /**
+   * По сделке уже висит ОТКРЫТОЕ приглашение, выписанное не этим переходом
+   * ([#198](https://github.com/bx-shef/polls/issues/198)) — вручную из виджета карточки либо прошлым
+   * переходом той же сделки. Клиент ещё не ответил, и вторая живая ссылка ему не нужна.
+   */
+  | { action: 'skip'; reason: 'open-other' }
 
 export interface InviteDecisionInput {
   /** Дела, найденные по маркеру (наши, этого перехода и опроса). */
@@ -169,6 +175,18 @@ export interface InviteDecisionInput {
    * дала ключ, — поэтому ничего дополнительно хранить не нужно.
    */
   answeredAfterTransition: boolean
+  /**
+   * Сколько ОТКРЫТЫХ приглашений по этой сделке и опросу висит помимо дел этого перехода
+   * ([#198](https://github.com/bx-shef/polls/issues/198)): выписанных вручную из виджета или прошлым
+   * переходом той же сделки.
+   *
+   * ⚠️ Спрашивается ЛЕНИВО — только когда первые два правила уже сказали «создавать». Это лишний
+   * `crm.activity.list` на редком пути, и платить им за каждое событие грозди незачем.
+   *
+   * ⚠️ `undefined` — не спрашивали. Это НЕ «ноль»: решение по такому входу принимается без учёта
+   * чужих приглашений, и вызывающий обязан знать, что оно предварительное.
+   */
+  openElsewhere?: number
 }
 
 /**
@@ -181,6 +199,11 @@ export function decideInvite(input: InviteDecisionInput): InviteDecision {
   if (input.activities.some((a) => !a.completed)) return { action: 'skip', reason: 'open' }
   // Дело закрыто И клиент ответил после перехода — цикл завершён, новый опрос будет новым поводом.
   if (input.activities.length > 0 && input.answeredAfterTransition) return { action: 'skip', reason: 'answered' }
+  // ⚠️ Приглашение, выписанное НЕ этим переходом (#198). Поиск по маркеру его не видит по построению:
+  // у ручного пути маркер свой (`manual:`), у прошлого перехода — свой `transitionId`. До этой ветки
+  // менеджер, нажавший «Создать ссылку», а потом протащивший сделку через стадию, слал клиенту ДВЕ
+  // живые ссылки на один опрос — и по какой из них тот ответит, решал случай.
+  if ((input.openElsewhere ?? 0) > 0) return { action: 'skip', reason: 'open-other' }
   // Сюда падают два случая: дел нет вовсе и дела есть, но все закрыты без ответа. Второй — законный
   // повод позвать снова: «закрыто» значит, что менеджер снял задачу с себя, а не что клиента спросили.
   return { action: 'create' }
@@ -191,6 +214,18 @@ export interface DeliverInviteDeps {
   findByMarker: (marker: InviteMarker) => Promise<MarkedActivity[]>
   /** Отвечал ли клиент по этой сделке и опросу после перехода — чтение НАШИХ ответов, не портала. */
   answeredAfterTransition: () => Promise<boolean>
+  /**
+   * Сколько ОТКРЫТЫХ приглашений висит по этой сделке и опросу — кем бы ни выписаны
+   * ([#198](https://github.com/bx-shef/polls/issues/198)). Боевая реализация — тот же
+   * `findOpenInviteActivities`, которым пользуется ручной путь: он ищет по владельцу и коду
+   * приложения, а опрос отфильтровывает разбором `ORIGIN_ID`, поэтому видит ОБА префикса.
+   *
+   * ⚠️ **Отказ = ноль, и это осознанный fail-open.** Не спросив портал, мы выбираем между «клиент
+   * получит вторую ссылку» и «клиента не спросят вовсе». Второе хуже: звать — прямая работа этого
+   * пути, а дедуп здесь страховка. Дедуп грозди событий при этом продолжает работать — он стоит на
+   * поиске по маркеру, отдельном запросе. Отказ обязан быть виден в логе строкой.
+   */
+  countOpenForDeal: () => Promise<number>
   /**
    * Создать приглашение и дело в таймлайне; вернуть id дела. Внутри — выписка токена и
    * `crm.activity.configurable.add` с маркером.
@@ -252,7 +287,7 @@ export type DeliverOutcome =
       markerFix: MarkerFix
       markerVisible: MarkerVisible
     }
-  | { kind: 'skipped'; reason: 'open' | 'answered'; marker: InviteMarker }
+  | { kind: 'skipped'; reason: 'open' | 'answered' | 'open-other'; marker: InviteMarker }
 
 /**
  * Полный путь одного приглашения: под очередью по ключу — найти свои дела → решить по правилу →
@@ -274,7 +309,16 @@ export async function deliverInvite(
     const answeredAfterTransition = activities.some((a) => !a.completed)
       ? false
       : activities.length > 0 && (await deps.answeredAfterTransition())
-    const decision = decideInvite({ activities, answeredAfterTransition })
+    // ⚠️ Решение принимается В ДВА ШАГА, и это не стилистика. Первый шаг отвечает на дешёвые
+    // вопросы (свои дела уже найдены, ответы спрашиваются только когда могут изменить исход). Второй
+    // — лишний `crm.activity.list`, и платить им за КАЖДОЕ событие грозди незачем: гроздь отсекается
+    // первым шагом, до него.
+    const early = decideInvite({ activities, answeredAfterTransition })
+    if (early.action === 'skip') return { kind: 'skipped', reason: early.reason, marker }
+
+    // Дошли бы до создания — теперь спрашиваем про приглашения, выписанные НЕ этим переходом (#198).
+    const openElsewhere = await deps.countOpenForDeal()
+    const decision = decideInvite({ activities, answeredAfterTransition, openElsewhere })
     if (decision.action === 'skip') return { kind: 'skipped', reason: decision.reason, marker }
     const activityId = await deps.createInvite(marker)
     const markerFix = await deps.ensureMarker(activityId, marker)

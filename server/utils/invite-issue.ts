@@ -6,8 +6,10 @@
 // «упало создание дела — живого токена не остаётся», «маркер не виден поиску» проверялись только
 // глазами по диффу. Теперь это обычная функция с внедрёнными зависимостями.
 import {
-  activityConfigurableAdd, activityListByMarker, buildSurveyInviteActivity, ensureActivityMarker
+  activityConfigurableAdd, activityListByMarker, buildSurveyInviteActivity, ensureActivityMarker,
+  findOpenInviteActivities
 } from '~core/bitrix24/activity'
+import { errInfo } from '~core/obs/logger'
 import type { PortalClient } from '~core/bitrix24/client'
 import { deliverInvite } from '~core/bitrix24/invite-delivery'
 import type { KeySerializer } from '~core/api/serial-by-key'
@@ -79,6 +81,18 @@ export function makeInviteIssue(
       // Точка отсчёта — момент ЭТОГО перехода: прошлогодний ответ не должен закрывать новый повод
       // спросить, если сделка прошла стадию второй раз.
       answeredAfterTransition: () => store.hasResponseSince(args.surveyKey, dealId, transitionAt),
+      // #198: открытые приглашения по этой сделке, выписанные НЕ этим переходом (вручную из виджета
+      // или прошлым переходом). Тот же запрос, которым пользуется ручной путь, — он видит оба
+      // префикса маркера. Отказ портала = ноль: звать клиента важнее, чем страховать от второй
+      // ссылки, а гроздь событий отсекается отдельным поиском по маркеру. Отказ виден строкой.
+      countOpenForDeal: () => findOpenInviteActivities(client, dealId, args.surveyKey)
+        .then((r) => r.found)
+        .catch((e: unknown) => {
+          deps.log.warn('b24_invite_open_probe_fail', {
+            surveyKey: args.surveyKey, dealId, err: errInfo(e)
+          })
+          return 0
+        }),
       createInvite: async (marker) => {
         const inv = await invitations.create(
           { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },

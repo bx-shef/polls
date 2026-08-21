@@ -4,6 +4,7 @@ import { createKeySerializer } from '../src/api/serial-by-key'
 import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import type { PortalClient, CallResult } from '../src/bitrix24/client'
 import type { CrmContext } from '../src/domain/schema'
+import { INVITE_ORIGINATOR } from '../src/bitrix24/invite-delivery'
 
 /**
  * Проводка выписки целиком — ИСПОЛНЯЕМАЯ, с фейковым порталом.
@@ -16,7 +17,7 @@ import type { CrmContext } from '../src/domain/schema'
 /** Фейк портала: помнит созданные дела и отвечает на list/get/update как настоящий. */
 function fakePortal(over: { failAdd?: boolean; listReturns?: () => unknown[]; markerAccepted?: boolean } = {}) {
   const markerAccepted = over.markerAccepted ?? true
-  const activities: Array<{ ID: number; COMPLETED: string; ORIGINATOR_ID?: string; ORIGIN_ID?: string }> = []
+  const activities: Array<Record<string, unknown> & { ID: number; COMPLETED: string; ORIGINATOR_ID?: string; ORIGIN_ID?: string }> = []
   let seq = 0
   const calls: string[] = []
   const make = vi.fn(async (opts: { method: string; params?: Record<string, unknown> }): Promise<CallResult> => {
@@ -26,16 +27,24 @@ function fakePortal(over: { failAdd?: boolean; listReturns?: () => unknown[]; ma
     if (opts.method === 'crm.activity.configurable.add') {
       if (over.failAdd) throw new Error('ERROR_WRONG_CONTEXT')
       const fields = (p as unknown as { fields?: { originatorId?: string; originId?: string } }).fields ?? {}
-      const row = { ID: ++seq + 100, COMPLETED: 'N', ...(markerAccepted
+      // ⚠️ Владельца записываем: `findOpenInviteActivities` (#198) ищет по `OWNER_ID`/`OWNER_TYPE_ID`,
+      // и без этих полей дело «висит в никуда» — фейк отвечал бы пустотой на верный запрос.
+      const owner = (p as unknown as { ownerTypeId?: number; ownerId?: number })
+      const row = { ID: ++seq + 100, COMPLETED: 'N', OWNER_TYPE_ID: owner.ownerTypeId, OWNER_ID: owner.ownerId,
+        ...(markerAccepted
         ? { ORIGINATOR_ID: fields.originatorId, ORIGIN_ID: fields.originId }
         : {}) }
       activities.push(row)
       result = row.ID
     } else if (opts.method === 'crm.activity.list') {
       const f = (p as unknown as { filter: Record<string, unknown> }).filter
+      // ⚠️ Соблюдаем ВЕСЬ фильтр, а не пару полей. Прежний фейк сверял `ORIGINATOR_ID` и `ORIGIN_ID`,
+      // а поиск открытых дел по сделке (#198) `ORIGIN_ID` не шлёт вовсе — фейк отвечал бы пустотой
+      // на любой такой запрос, и правило «не слать вторую живую ссылку» проходило бы набор
+      // выключенным. Ровно эта ошибка двойника уже пропускала «поиск в чужой сделке» в #200.
       result = over.listReturns
         ? over.listReturns()
-        : activities.filter((a) => a.ORIGINATOR_ID === f.ORIGINATOR_ID && a.ORIGIN_ID === f.ORIGIN_ID)
+        : activities.filter((a) => Object.entries(f).every(([k, v]) => a[k] === v))
     } else if (opts.method === 'crm.activity.get') {
       result = activities.find((a) => a.ID === (p as unknown as { id: number }).id) ?? null
     } else if (opts.method === 'crm.activity.update') {
@@ -203,6 +212,64 @@ describe('выписка приглашения — проводка с фейк
     portal.activities.forEach((a) => { a.COMPLETED = 'Y' })
     expect(await issue(ARGS)).toBeTruthy()
     expect(portal.activities).toHaveLength(2)
+  })
+
+  it('РУЧНОЕ приглашение висит открытым → переход второй ссылки НЕ шлёт (#198)', async () => {
+    // ⚠️ Единственная боевая точка проводки правила. `test/invite-delivery.test.ts` внедряет
+    // `countOpenForDeal` сам — то есть проверяет ФОРМУ, а не то, что роут её действительно
+    // заполняет: мутация «`countOpenForDeal: () => Promise.resolve(0)`» выключает правило целиком.
+    // Дело здесь помечено маркером РУЧНОГО пути — поиск по маркеру перехода его не видит.
+    const portal = fakePortal()
+    portal.activities.push({
+      ID: 55, COMPLETED: 'N', OWNER_TYPE_ID: 2, OWNER_ID: 759,
+      ORIGINATOR_ID: INVITE_ORIGINATOR, ORIGIN_ID: 'manual:1755770000:csat_postdeal'
+    })
+    const d = deps({ portalClient: () => Promise.resolve(portal.client) })
+    const issued = await makeInviteIssue(CTX, d)(ARGS)
+
+    expect(issued, 'выписана вторая живая ссылка').toBeUndefined()
+    expect(portal.calls, 'дело всё-таки создано').not.toContain('crm.activity.configurable.add')
+    const dedup = d.logs.find((l) => l[1] === 'b24_invite_dedup')
+    expect(dedup?.[2].reason, 'причина отсечения не названа').toBe('open-other')
+  })
+
+  it('ЗАКРЫТОЕ ручное приглашение переход не блокирует', async () => {
+    // Иначе одна забытая закрытая задача выключила бы опрос по сделке навсегда.
+    const portal = fakePortal()
+    portal.activities.push({
+      ID: 55, COMPLETED: 'Y', OWNER_TYPE_ID: 2, OWNER_ID: 759,
+      ORIGINATOR_ID: INVITE_ORIGINATOR, ORIGIN_ID: 'manual:1755770000:csat_postdeal'
+    })
+    const d = deps({ portalClient: () => Promise.resolve(portal.client) })
+    expect(await makeInviteIssue(CTX, d)(ARGS), 'приглашение не выписано').toBeDefined()
+  })
+
+  it('ручное приглашение по ДРУГОМУ опросу переход не блокирует', async () => {
+    // Опрос отфильтровывается разбором `ORIGIN_ID`: дело по `nps` не должно гасить приглашение по
+    // `csat_postdeal`, висящее на той же сделке.
+    const portal = fakePortal()
+    portal.activities.push({
+      ID: 55, COMPLETED: 'N', OWNER_TYPE_ID: 2, OWNER_ID: 759,
+      ORIGINATOR_ID: INVITE_ORIGINATOR, ORIGIN_ID: 'manual:1755770000:nps_quarterly'
+    })
+    const d = deps({ portalClient: () => Promise.resolve(portal.client) })
+    expect(await makeInviteIssue(CTX, d)(ARGS)).toBeDefined()
+  })
+
+  it('портал не ответил про чужие приглашения → зовём, но отказ ВИДЕН строкой (#198)', async () => {
+    // fail-open: звать клиента — прямая работа этого пути, дедуп здесь страховка. Молчаливый
+    // fail-open неотличим от «правило не сработало».
+    let first = true
+    const portal = fakePortal({
+      listReturns: () => {
+        // Поиск по маркеру отвечает штатно, поиск открытых по сделке — падает.
+        if (first) { first = false; return [] }
+        throw new Error('портал недоступен')
+      }
+    })
+    const d = deps({ portalClient: () => Promise.resolve(portal.client) })
+    expect(await makeInviteIssue(CTX, d)(ARGS), 'клиента не спросили из-за отказа страховки').toBeDefined()
+    expect(d.logs.some((l) => l[1] === 'b24_invite_open_probe_fail'), 'отказ страховки прошёл молча').toBe(true)
   })
 
   it('ссылка в деле строится от НАСТРОЕННОГО домена приложения', async () => {
