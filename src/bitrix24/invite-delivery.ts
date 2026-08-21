@@ -18,7 +18,7 @@ import type { KeySerializer } from '../api/serial-by-key'
 export const INVITE_ORIGINATOR = 'bx-shef.polls'
 
 /** Префикс маркера дела-приглашения, выписанного АВТОМАТОМ (по переходу стадии). */
-const MARKER_PREFIX = 'stage:'
+const STAGE_MARKER_PREFIX = 'stage:'
 
 /**
  * Префикс маркера дела-приглашения, выписанного РУКАМИ из карточки сделки (#176).
@@ -34,16 +34,21 @@ const MANUAL_MARKER_PREFIX = 'manual:'
 /**
  * Формы маркера ПРИГЛАШЕНИЯ — обе. Список читает `markerMatchesSurvey`; `result:` сюда не входит и
  * входить не должен (разбор — у `RESULT_MARKER_PREFIX`).
+ *
+ * ⚠️ Разбор берёт ПЕРВЫЙ подошедший префикс, и это корректно ровно потому, что ни один из них не
+ * является началом другого. Добавите третий вида `manual-v2:` — порядок в этом массиве начнёт решать
+ * молча; тогда либо сортировать по убыванию длины, либо запретить вложенность тестом-переписью.
  */
-const INVITE_MARKER_PREFIXES = [MARKER_PREFIX, MANUAL_MARKER_PREFIX] as const
+const INVITE_MARKER_PREFIXES = [STAGE_MARKER_PREFIX, MANUAL_MARKER_PREFIX] as const
 
 /**
  * Префикс маркера дела-РЕЗУЛЬТАТА (#18) — намеренно ДРУГОЙ.
  *
  * ⚠️ Разные префиксы — это не аккуратность, а защита. Дела-приглашения ищет и закрывает
- * `openInviteActivities` + `markerMatchesSurvey`; тот знает ровно префиксы ПРИГЛАШЕНИЯ
- * (`INVITE_MARKER_PREFIXES`), поэтому дело с результатом под его фильтр не попадает по построению. Совпади префиксы — и ответ клиента «закрывал»
- * бы запись о собственном результате, а в логе это выглядело бы нормальной работой.
+ * `findOpenInviteActivities` + `markerMatchesSurvey`; тот знает ровно префиксы ПРИГЛАШЕНИЯ
+ * (`INVITE_MARKER_PREFIXES`), поэтому дело с результатом под его фильтр не попадает по построению.
+ * Совпади префиксы — и ответ клиента «закрывал» бы запись о собственном результате, а в логе это
+ * выглядело бы нормальной работой.
  */
 const RESULT_MARKER_PREFIX = 'result:'
 
@@ -65,7 +70,7 @@ export interface InviteMarker {
  * клиента снова — по такому ключу второй заход навсегда съедался бы как дубль.
  */
 export function inviteMarker(transitionId: string, surveyKey: string): InviteMarker {
-  return { originatorId: INVITE_ORIGINATOR, originId: `${MARKER_PREFIX}${transitionId}:${surveyKey}` }
+  return { originatorId: INVITE_ORIGINATOR, originId: `${STAGE_MARKER_PREFIX}${transitionId}:${surveyKey}` }
 }
 
 /**

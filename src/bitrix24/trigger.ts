@@ -196,6 +196,18 @@ async function issueWithoutDedup(
   return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: inv.token }
 }
 
+/** Приглашение ручного пути — то же, что у автоматического, плюс заголовок версии. */
+export interface ManualInvitation extends TriggerResult {
+  /**
+   * Заголовок ЭТОЙ версии — в шапку дела таймлайна (#176).
+   *
+   * ⚠️ Не для красоты: ручной путь тоже кладёт дело в таймлайн сделки, а в шапке стоит название
+   * опроса. Версия в этот момент уже прочитана, и отдать заголовок вместе с токеном дешевле, чем
+   * читать её второй раз ради одной строки — тот же довод, что у `IssueInvitation`.
+   */
+  title: string
+}
+
 /**
  * Извлекает числовой id сделки из `document_id` робота бизнес-процесса:
  * `['crm','CCrmDocumentDeal','DEAL_759']` → `759`. undefined — не сделка/неразборчиво.
@@ -220,17 +232,6 @@ export function dealIdFromDocumentId(documentId: unknown): number | undefined {
  * поиском открытых дел по сделке (`server/utils/manual-invite.ts`, #176). Здесь выписка идёт
  * безусловно — потому что попасть сюда можно и осознанным «всё равно создать новую ссылку».
  */
-export interface ManualInvitation extends TriggerResult {
-  /**
-   * Заголовок ЭТОЙ версии — в шапку дела таймлайна (#176).
-   *
-   * ⚠️ Не для красоты: ручной путь тоже кладёт дело в таймлайн сделки, а в шапке стоит название
-   * опроса. Версия в этот момент уже прочитана, и отдать заголовок вместе с токеном дешевле, чем
-   * читать её второй раз ради одной строки — тот же довод, что у `IssueInvitation`.
-   */
-  title: string
-}
-
 export async function createSurveyInvitation(deps: {
   store: Pick<IStore, 'currentVersion'>
   invitations: InvitationStore

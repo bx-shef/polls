@@ -1,8 +1,11 @@
 // POST /api/b24/deal-invite — создать приглашение на опрос по сделке из виджета карточки сделки
 // (#17, плейсмент CRM_DEAL_DETAIL_ACTIVITY — ручной запуск, охват на всех тарифах). Конвейер:
 // rate-limit → parseFrameAuth → verifyFrameAuth (SSRF-allowlist → profile → сверка member_id) →
-// crm.deal.get токеном виджета → dealToCrmContext → createSurveyInvitation (общий стор приглашений)
-// → ссылка /s/:key?token=… для адресата. Fail-closed: невалидный фрейм → 401, нет сделки/версии → 422.
+// crm.deal.get токеном виджета → dealToCrmContext → manualInvite (#176: «уже приглашали?» по открытым
+// делам сделки → выписка → дело в таймлайне с маркером `manual:`) → ссылка /s/:key?token=… для
+// адресата. Исходов ЧЕТЫРЕ: 200 со ссылкой; 200 + `alreadyInvited` («уже отправлено» / «клиент уже
+// ответил» — не ошибка, человек всё сделал верно); 422 «опрос не опубликован»; 409 «портал исчез».
+// Fail-closed: невалидный фрейм → 401.
 // Своего кап-лимита на тело нет намеренно: его держит общий бэкстоп `server/middleware/body-limit.ts`
 // (128 КБ → 413, тело без заявленной длины → 411) — ровно для таких роутов он и сделан. Раньше `readBody`
 // здесь шёл до подтверждения фрейма вообще без ограничения.
@@ -32,6 +35,11 @@ export default defineEventHandler(async (event) => {
   // булеву: строка `"false"` из form-urlencoded иначе включила бы обход дедупа. Флаг присылает
   // КЛИЕНТ и только вторым нажатием — тем, что человек делает, уже зная про первое приглашение.
   const force = (body as { force?: unknown }).force === true
+  // Откуда обход: `dedup` — человек увидел «уже приглашали» и всё равно нажал; `reissue` — виджет сам
+  // предложил перевыписать мёртвую ссылку. Чужое значение отбрасываем: поле идёт только в лог, но
+  // класть в него произвольную строку из тела запроса незачем.
+  const rawReason = (body as { forceReason?: unknown }).forceReason
+  const forceReason = rawReason === 'dedup' || rawReason === 'reissue' ? rawReason : undefined
   const frame = parseFrameAuth(body)
   if (!frame || !Number.isInteger(dealId) || dealId <= 0) {
     setResponseStatus(event, 400)
@@ -86,25 +94,48 @@ export default defineEventHandler(async (event) => {
     // роута проверить было нечем. Раньше здесь стоял голый `createSurveyInvitation`: ни поиска
     // открытых дел, ни записи в таймлайн — вторая ссылка появлялась молча и в дедупе не участвовала.
     const res = await manualInvite(
-      { dealId, surveyKey, context, ...(force ? { force } : {}) },
-      { client, store: tenant.store, invitations: tenant.invitations, baseUrl: base, log: logger }
+      { dealId, surveyKey, context, ...(force ? { force } : {}), ...(forceReason ? { forceReason } : {}) },
+      {
+        client,
+        portalId: portal.portalId,
+        store: tenant.store,
+        invitations: tenant.invitations,
+        baseUrl: base,
+        log: logger
+      }
     )
     if (res.kind === 'unpublished') {
       setResponseStatus(event, 422)
       return { ok: false, error: 'Опрос ещё не опубликован. Опубликуйте его в разделе «Опросы» и повторите.' }
     }
-    if (res.kind === 'existing') {
-      // ⚠️ Не ошибка и не 4xx: человек сделал всё правильно, просто приглашение уже отправлено.
+    if (res.kind === 'existing' || res.kind === 'answered') {
+      // ⚠️ Не ошибка и не 4xx: человек сделал всё правильно, просто спрашивать больше нечего.
       // Отдельный флаг, а не текст в `error`, — виджету нужно решить, показывать ли кнопку «всё
       // равно создать новую», а разбирать для этого строку он не должен.
+      // ⚠️ Текст ведёт к КОНКРЕТНОМУ действию, которое уже работает: у дела в таймлайне есть кнопка
+      // «Отправить приглашение», и она открывает виджет с готовой ссылкой (#126). Отправлять «куда-то
+      // в таймлайн» значило бы сделать правильный путь дороже неправильного — а неправильный стоит
+      // одно нажатие рядом.
+      const deal = res.surveyTitle ? `«Опрос: ${res.surveyTitle}»` : 'с опросом'
       return {
         ok: false,
         alreadyInvited: true,
-        error: 'Приглашение по этой сделке уже отправлено — оно в таймлайне сделки, там же ссылка.'
+        error: res.kind === 'answered'
+          ? 'Клиент уже прошёл этот опрос по данной сделке. Новая ссылка нужна, только если хотите спросить ещё раз.'
+          : `Приглашение по этой сделке уже отправлено. Откройте в таймлайне сделки дело ${deal} и нажмите в нём «Отправить приглашение» — там готовая ссылка.`
       }
     }
     logger.info('b24_deal_invite', { msg: `Приглашение по сделке ${dealId} (портал ${portal.portalId})` })
-    return { ok: true, surveyKey: res.surveyKey, token: res.token, url: res.url }
+    // ⚠️ `activityMissing` — не деталь реализации, а то, что человеку надо знать: ссылка у него на
+    // руках, но записи в таймлайне нет, значит следующее нажатие о ней не узнает и ответ клиента её
+    // не закроет. Молчать здесь значило бы вернуть «невидимую вторую ссылку», от которой весь #176.
+    return {
+      ok: true,
+      surveyKey: res.surveyKey,
+      token: res.token,
+      url: res.url,
+      ...(res.activityId === undefined ? { activityMissing: true } : {})
+    }
   } catch (e) {
     logger.warn('b24_deal_invite_fail', { msg: `Сделка ${dealId}: ${(e as Error).message}` })
     setResponseStatus(event, 502)

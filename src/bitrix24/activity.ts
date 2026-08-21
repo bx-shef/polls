@@ -321,18 +321,29 @@ export async function ensureActivityMarker(
 }
 
 /**
- * Открытые дела-приглашения ЭТОЙ сделки по ЭТОМУ опросу — для закрытия при получении ответа (#177).
+ * Открытые дела-приглашения ЭТОЙ сделки по ЭТОМУ опросу.
+ *
+ * **Потребителей ДВА, и вопросы у них разные:**
+ *  - закрытие при получении ответа ([#177](https://github.com/bx-shef/polls/issues/177)) — ему нужны
+ *    `ids`, дела надо открыть и закрыть;
+ *  - дедуп ручного пути ([#176](https://github.com/bx-shef/polls/issues/176)) — ему нужен `found`,
+ *    вопрос ровно один: «приглашение по этой сделке уже висит?».
+ *
+ * ⚠️ **`found` и `ids.length` — РАЗНОЕ, и это несущее.** Строка без читаемого `ID` бесполезна как
+ * «дело, которое можно открыть», но важна как факт «приглашение уже есть»: выбросив её, дедуп
+ * пригласил бы второй раз. Тот же разбор — у `activityListByMarker`, и здесь он повторён намеренно,
+ * потому что первая редакция этой функции писалась под закрытие и молча роняла такие строки.
  *
  * ⚠️ Ищем не по полному маркеру, а по владельцу и коду приложения: ключа перехода на этом пути нет
- * (клиент отвечает по ссылке, а переход известен путям ТРИГГЕРА). Опрос отфильтровываем
- * разбором `ORIGIN_ID` уже у себя — так закрытие по одному опросу не заденет дело по другому,
- * висящее на той же сделке.
+ * (клиент отвечает по ссылке; на ручном пути перехода нет вовсе — менеджер нажал кнопку). Опрос
+ * отфильтровываем разбором `ORIGIN_ID` уже у себя — так закрытие по одному опросу не заденет дело по
+ * другому, висящее на той же сделке.
  */
-export async function openInviteActivities(
+export async function findOpenInviteActivities(
   client: PortalClient,
   dealId: number,
   surveyKey: string
-): Promise<number[]> {
+): Promise<{ found: number; ids: number[] }> {
   const rows = await callMethod<Array<{ ID?: number | string; ORIGIN_ID?: string }>>(
     client,
     'crm.activity.list',
@@ -350,10 +361,23 @@ export async function openInviteActivities(
       start: 0
     }
   )
-  return (rows ?? [])
-    .filter((r) => markerMatchesSurvey(r.ORIGIN_ID, surveyKey))
-    .map((r) => Number(r.ID))
-    .filter((id) => Number.isFinite(id) && id > 0)
+  const ours = (rows ?? []).filter((r) => markerMatchesSurvey(r.ORIGIN_ID, surveyKey))
+  return {
+    found: ours.length,
+    ids: ours.map((r) => Number(r.ID)).filter((id) => Number.isFinite(id) && id > 0)
+  }
+}
+
+/**
+ * Те же дела, но только их id — для закрытия (#177). Тонкая обёртка, чтобы вызывающий не тащил
+ * ненужную ему пару: закрытию нечего делать со строкой без читаемого id.
+ */
+export async function openInviteActivities(
+  client: PortalClient,
+  dealId: number,
+  surveyKey: string
+): Promise<number[]> {
+  return (await findOpenInviteActivities(client, dealId, surveyKey)).ids
 }
 
 /**
