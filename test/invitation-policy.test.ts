@@ -114,6 +114,13 @@ describe('политика переживает запись/чтение и з�
       await store.publish(draft({ surveyKey: 'ttl_survey', invitationPolicy: undefined }), 2)
       expect((await store.getVersion('ttl_survey', 1))?.invitationPolicy?.linkTtlSeconds).toBe(300)
       expect((await store.getVersion('ttl_survey', 2))?.invitationPolicy).toBeUndefined()
+      // Гейт возврата результата (#18) переживает JSONB и заморожен по версиям: обещание, данное
+      // респонденту на интро ТОЙ версии, обязано пережить переиздание опроса.
+      const gated: InvitationPolicy = { entityType: 'deal', triggerStages: [], channelOrder: ['email'], resultToTimeline: false }
+      await store.publish(draft({ surveyKey: 'gate_survey', invitationPolicy: gated }), 1)
+      await store.publish(draft({ surveyKey: 'gate_survey', invitationPolicy: { ...gated, resultToTimeline: true } }), 2)
+      expect(resultToTimelineEnabled((await store.getVersion('gate_survey', 1))!)).toBe(false)
+      expect(resultToTimelineEnabled((await store.getVersion('gate_survey', 2))!)).toBe(true)
     } finally {
       await pg.close()
     }

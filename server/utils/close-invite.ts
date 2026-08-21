@@ -12,7 +12,7 @@
 // ⚠️ Работа с зависимостями НАРУЖУ (`closeInvite(info, deps)`), а не резолвится внутри — тем же
 // приёмом и по той же причине, что `invite-issue.ts`: пока всё резолвилось само, модуль нельзя было
 // исполнить в тесте вовсе, а внутри него пять ранних выходов, каждый из которых полностью выключает
-// фичу. Тонкая сборка боевых зависимостей — в самом низу файла.
+// фичу. Тонкая сборка боевых зависимостей — в `portal-deps.ts` (`livePortalDeps`), общая с записью результата.
 import { completeActivity, openInviteActivities } from '~core/bitrix24/activity'
 import type { AnsweredInfo } from '~core/api/handlers'
 import { errInfo } from '~core/obs/logger'

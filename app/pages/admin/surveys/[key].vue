@@ -18,13 +18,23 @@ import {
   type EditorQuestion
 } from '~core/client/survey-editor'
 import { serverMessage } from '~core/client/server-message'
+import type { InvitationPolicy } from '~core/domain/schema'
 
+/**
+ * Черновик в редакторе.
+ *
+ * ⚠️ Политика приглашения типизируется ЯДРОВЫМ типом, а не рукописной копией полей. Копия уже
+ * отстала дважды (нет `linkTtlSeconds`, не было `resultToTimeline`), и держалась она только на том,
+ * что публикация разворачивает пришедший объект спредом. Стоит кому-то «починить типы» и собрать
+ * политику по полям — опрос с выключенным возвратом результата молча потеряет флаг на первом же
+ * сохранении, а следующий ответ клиента уедет в карточку сделки.
+ */
 interface Draft {
   surveyKey: string
   title: string
   lang: string
   questions: EditorQuestion[]
-  invitationPolicy?: { entityType?: string; spaEntityTypeId?: number; triggerStages?: string[]; channelOrder?: string[] }
+  invitationPolicy?: Partial<InvitationPolicy>
 }
 
 // Подписи к каноническим значениям ядра (новый тип/метрика появится в UI сам, label — фолбэк на значение).
@@ -51,6 +61,15 @@ const { data, error, pending, refresh } = await useAsyncData<{
 const draft = ref<Draft | null>(null)
 const baseVersionNo = ref(0)
 const stagesInput = ref('')
+/**
+ * «Класть результат в карточку сделки» (#18).
+ *
+ * ⚠️ Отдельный ref, а не правка `draft.invitationPolicy` на месте: у опроса политики может не быть
+ * вовсе, и тогда редактировать нечего — а решение принять всё равно надо. Умолчание тут ТО ЖЕ, что в
+ * ядре (`resultToTimelineEnabled`), и это единственное место, где оно повторяется: контрол обязан
+ * показывать то, что произойдёт на самом деле, иначе он врёт молча.
+ */
+const resultToTimeline = ref(true)
 
 useHead({ title: () => (draft.value?.title ? `${draft.value.title} — конструктор опроса` : 'Конструктор опроса') })
 
@@ -59,6 +78,7 @@ watchEffect(() => {
     draft.value = JSON.parse(JSON.stringify(data.value.draft))
     baseVersionNo.value = data.value.currentVersionNo
     stagesInput.value = (data.value.draft.invitationPolicy?.triggerStages ?? []).join(', ')
+    resultToTimeline.value = data.value.draft.invitationPolicy?.resultToTimeline ?? true
   }
 })
 
@@ -107,8 +127,10 @@ async function publish() {
   const payload = {
     ...draft.value,
     questions,
+    // ⚠️ Спред сохраняет поля политики, которых редактор не знает (`channelOrder`, `linkTtlSeconds`):
+    // публикация не должна терять то, что выставили не здесь.
     invitationPolicy: draft.value.invitationPolicy
-      ? { ...draft.value.invitationPolicy, triggerStages: stages }
+      ? { ...draft.value.invitationPolicy, triggerStages: stages, resultToTimeline: resultToTimeline.value }
       : undefined,
     expectedVersionNo: baseVersionNo.value
   }
@@ -163,6 +185,23 @@ async function publish() {
             placeholder="C1:WON, EXECUTING"
             class="w-full"
           />
+        </B24FormField>
+
+        <!--
+          ⚠️ Контрол обязателен, а не «удобство»: без него выключить возврат результата можно было бы
+          только сырым публикующим запросом, то есть автор опроса, обещавшего на интро «Анонимно», не
+          мог бы сдержать обещание вообще никак. Подпись говорит про РАСКРЫТИЕ, а не про галочку:
+          менеджер увидит ответ конкретного клиента, и порог «меньше пяти не показываем» сюда не
+          распространяется по построению.
+        -->
+        <B24FormField
+          label="Результат — в карточку сделки"
+          :hint="draft.invitationPolicy
+            ? 'Менеджер увидит ответы этого клиента прямо в сделке. Выключите, если опрос обещает анонимность: правило «меньше пяти ответов не показываем» на карточку не действует.'
+            : 'У опроса нет привязки-датчика — записывать результат некуда'"
+          class="mt-4"
+        >
+          <B24Switch v-model="resultToTimeline" :disabled="!draft.invitationPolicy" />
         </B24FormField>
       </B24Card>
 

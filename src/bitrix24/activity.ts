@@ -166,8 +166,8 @@ export interface SurveyResultActivityInput {
   /** Заголовок опроса — в шапку активности. */
   surveyTitle: string
   /** Сводка ответов клиента (`summarizeResponse`) — строки «вопрос → значение». */
-  lines: ResultLine[]
-  /** Маркер идемпотентности: `result:<responseId>` (`resultMarker`). */
+  lines: readonly ResultLine[]
+  /** Маркер записи: `result:<responseId>` (`resultMarker`) — по нему дело потом находят. */
   marker?: InviteMarker
   /** Ответственный за активность (опц.). */
   responsibleId?: number
@@ -176,9 +176,10 @@ export interface SurveyResultActivityInput {
 /**
  * Собрать параметры активности «Результат опроса» для таймлайна сделки (триггер «клиент заполнил
  * опрос», #18) — симметрично `buildSurveyInviteActivity`. Отличия: `completed:'Y'` (это ЗАПИСЬ о
- * завершённом опросе, не pending-действие); тело — сводка ответов клиента (по блоку на строку); кнопка
- * «Открыть результат» → `openRestApp` (виджет откроет полный результат/PDF, #18). Пустая сводка → один
- * блок-заглушка (Bitrix требует ≥1 блок). Чистая функция — тестируется без портала.
+ * завершённом опросе, не pending-действие); тело — сводка ответов клиента (по блоку на строку);
+ * **футера нет** — вести кнопке некуда, пока нет страницы просмотра результата (разбор — в самом
+ * `layout` ниже). Пустая сводка → один блок-заглушка (Bitrix требует ≥1 блок). Чистая функция —
+ * тестируется без портала.
  */
 export function buildSurveyResultActivity(input: SurveyResultActivityInput): ConfigurableActivityParams {
   const dealPath = dealDetailPath(input.dealId)
@@ -187,7 +188,12 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
   const lineEntries = input.lines.length > 0 ? input.lines.slice(0, 20) : [{ label: 'Опрос заполнен', value: 'без ответов' }]
   const blocks: Record<string, unknown> = {}
   lineEntries.forEach((line, i) => {
-    blocks[`line${i}`] = { type: 'text', properties: { value: neutralizeBb(`${line.label}: ${line.value}`).slice(0, 500) } }
+    // ⚠️ Метку капаем ОТДЕЛЬНО. `summarizeResponse` капает только значение (300), а текст вопроса
+    // схема разрешает до 2000 — на общей обрезке в 500 вопрос длиной 500+ съедал бы ответ целиком, и
+    // в таймлайн уходила бы обрезанная формулировка без единого символа того, что клиент ответил.
+    const label = neutralizeBb(line.label).slice(0, 180)
+    const value = neutralizeBb(line.value).slice(0, 300)
+    blocks[`line${i}`] = { type: 'text', properties: { value: `${label}: ${value}` } }
   })
   return {
     ownerTypeId: DEAL_OWNER_TYPE_ID,

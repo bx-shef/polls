@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createApi, submitTenantHint, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
+import {
+  createApi, submitTenantHint, SUPPORTED_SCHEMA_VERSION, type Api, type AnsweredInfo
+} from '../src/api/handlers'
 import { nullLogger } from '../src/obs/logger'
 import { MemoryNonceStore } from '../src/api/nonce'
 import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import { SlidingWindowLimiter } from '../src/api/ratelimit'
 import { MemoryStore } from '../src/store/memory'
-import { buildDemo, SURVEY_KEY } from '../src/demo/seed'
+import { buildDemo, draftV2, SURVEY_KEY } from '../src/demo/seed'
+import type { InvitationPolicy } from '../src/domain/schema'
+
+/** Минимальная политика: поля с дефолтами схема требует явно. */
+const POLICY_BASE: InvitationPolicy = { entityType: 'deal', triggerStages: [], channelOrder: ['email', 'sms'] }
 
 /** Управляемые часы: детерминированные TTL/окна без таймеров. */
 function clock(startIso = '2026-06-12T10:00:00.000Z'): { now: () => Date; advance: (ms: number) => void } {
@@ -512,6 +518,42 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
       ip: 'a', body: { ...validPayload(await issueNonce(base.api)), invitation: inv.token }
     })).status).toBe(200)
     expect(seen).toEqual([{ surveyKey: SURVEY_KEY, dealId: snapshot.dealId, versionNo: 2 }])
+  })
+
+  it('`onAnswered` несёт сводку ответов и решение по гейту анонимности (#18)', async () => {
+    // ⚠️ Это ЕДИНСТВЕННАЯ строка, соединяющая гейт с проводом, и без неё мутация «захардкодить
+    // `resultToTimeline: true`» оставляет весь набор зелёным: чистая функция проверена отдельно, а
+    // `post-result.test.ts` работает на своём фикстурном булеве. Цена мутации — опрос, обещавший
+    // «Анонимно», начинает класть индивидуальные ответы в карточки сделок при зелёном CI.
+    const seen: AnsweredInfo[] = []
+    const base = await freshApi({ onAnswered: (i) => { seen.push(i); return Promise.resolve() } })
+    expect((await base.api.submit({ ip: 'a', body: validPayload(await issueNonce(base.api)) })).status).toBe(200)
+
+    const info = seen[0]!
+    expect(info.responseId).toBe('srv-id-1')
+    expect(info.surveyTitle, 'заголовок берётся из версии, на которой отвечали').toBe('Постпродажный опрос')
+    // Демо-опрос политики не имеет → умолчание «кладём», и сводка посчитана.
+    expect(info.resultToTimeline).toBe(true)
+    expect(info.lines.length).toBeGreaterThan(0)
+    expect(info.lines.map((l) => l.value)).toContain('9')
+  })
+
+  it('опрос запретил возврат результата → сводка в хук НЕ едет (#18)', async () => {
+    // ⚠️ Пустые `lines` — не оптимизация. Они несут СВОБОДНЫЙ ТЕКСТ респондента, и у опроса,
+    // обещавшего анонимность, ему незачем появляться в payload хука вообще: хук — публичный
+    // контракт, его получит и следующий потребитель.
+    const store = new MemoryStore()
+    const draft = { ...draftV2(), invitationPolicy: { ...POLICY_BASE, resultToTimeline: false } }
+    await store.publish(draft, 2)
+    const seen: AnsweredInfo[] = []
+    const c = clock()
+    const api = createApi({
+      store, now: c.now, idGen: () => 'srv-id-1',
+      onAnswered: (i) => { seen.push(i); return Promise.resolve() }
+    })
+    expect((await api.submit({ ip: 'a', body: validPayload(await issueNonce(api)) })).status).toBe(200)
+    expect(seen[0]!.resultToTimeline).toBe(false)
+    expect(seen[0]!.lines, 'ответы клиента уехали в хук вопреки настройке опроса').toEqual([])
   })
 
   it('ОТКАЗ `onAnswered` не портит ответ клиенту (200) и не теряет диагностику', async () => {

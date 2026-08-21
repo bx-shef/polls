@@ -71,12 +71,27 @@ export function livePortalDeps(forPortalId?: number): PortalActionDeps {
   // записи на один портал (`livePortalDeps(5)` и `livePortalDeps()` при процессном портале 5), то есть
   // два независимых leaky-bucket'а SDK — ровно то, против чего кэш и заведён.
   let cacheKey: number | 'default' = forPortalId ?? 'default'
+  /**
+   * Резолв — ОДИН на набор зависимостей.
+   *
+   * ⚠️ Набор собирается на каждый ответ, а действий по нему теперь ДВА, и запускаются они
+   * параллельно. Без этой памяти оба проходили бы полный резолв на отказном пути (кэш пишется только
+   * на успехе): два обращения к базе, две расшифровки токена и, у границы срока, ДВА рефреша подряд —
+   * при том что рефреш идёт без advisory-lock и наперегонки ротирует refresh-токен. То есть на самом
+   * неприятном пути мы бы удваивали ровно ту работу, из-за которой рядом стоит очередь.
+   */
+  let resolved: Promise<PortalClient | undefined> | undefined
   return {
     log: logger,
-    onFailure: () => { cachedByPortal.delete(cacheKey) },
+    onFailure: () => {
+      cachedByPortal.delete(cacheKey)
+      // Память резолва снимаем вместе с кэшем: иначе следующий ответ получил бы тот же протухший
+      // клиент из замыкания, а не пересобрал его.
+      resolved = undefined
+    },
     // ⚠️ Ключ очереди — ПОРТАЛ. Общий ключ выстроил бы ответы разных заказчиков в одну цепочку:
     // медленный рефреш одного портала держал бы закрытие дел всех остальных.
-    portalClient: () => portalQueue.run(`close-invite:${forPortalId ?? 'default'}`, async () => {
+    portalClient: () => (resolved ??= portalQueue.run(`portal-client:${forPortalId ?? 'default'}`, async () => {
       const db = await usePortalDb()
       // Портал ответа приходит параметром (его знает `useApiFor`, собирая хук). `undefined` — режим
       // памяти либо портал по умолчанию: тогда спрашиваем процессный, как было до мультитенанта.
@@ -99,7 +114,10 @@ export function livePortalDeps(forPortalId?: number): PortalActionDeps {
       if (!tokens?.domain || !accessToken) {
         // Портал установлен, а токен не расшифровался / не обновился — это ОТКАЗ, а не «нечего
         // делать»: без строки отсутствие результата на прогоне прочтут как «код не звался».
-        logger.warn('b24_invite_close_skip', { reason: 'нет токена или домена портала' })
+        // ⚠️ Имя НЕЙТРАЛЬНОЕ: этот отказ гасит ОБА побочных действия, а не только закрытие дела.
+        // Прежнее `b24_invite_close_skip` заставляло бы искать причину пропавшего результата под
+        // именем закрытия приглашения — ровно то «имя врёт», ради которого модуль и выделяли.
+        logger.warn('b24_portal_client_skip', { reason: 'нет токена или домена портала' })
         return undefined
       }
       const client = createPortalClient(
@@ -108,7 +126,7 @@ export function livePortalDeps(forPortalId?: number): PortalActionDeps {
       )
       cachedByPortal.set(cacheKey, { at: Date.now(), client })
       return client
-    })
+    }))
   }
 }
 

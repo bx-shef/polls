@@ -7,9 +7,9 @@
 // где и призыв отправить приглашение, под правами портала и его сроками хранения.
 //
 // ⚠️ Зависимости внедряются (`postResult(info, deps)`), а не резолвятся внутри — тем же приёмом и по
-// той же причине, что `invite-issue.ts`/`close-invite.ts`: внутри четыре ранних выхода, и каждый
-// полностью выключает фичу. Сборка боевых зависимостей живёт рядом с закрытием дела: клиент портала
-// у них общий, и второй раз строить его на тот же ответ незачем.
+// той же причине, что `invite-issue.ts`/`close-invite.ts`: внутри три ранних выхода, и каждый
+// полностью выключает фичу. Сборка боевых зависимостей — в `portal-deps.ts`, ОБЩАЯ для обоих
+// побочных действий: клиент портала у них один, и второй раз строить его на тот же ответ незачем.
 import { activityConfigurableAdd, buildSurveyResultActivity, ensureActivityMarker } from '~core/bitrix24/activity'
 import { resultMarker } from '~core/bitrix24/invite-delivery'
 import type { AnsweredInfo } from '~core/api/handlers'
@@ -65,6 +65,13 @@ export async function postResult(info: AnsweredInfo, deps: PostResultDeps): Prom
     const client = await deps.portalClient()
     if (!client) return // приложение не установлено / режим памяти — сервис работает сам по себе
 
+    // ⚠️ Маркер пишется ЗАРАНЕЕ, и сегодня его никто не читает — это не идемпотентность, а якорь:
+    // по нему дело можно будет найти (страница результата, поиск виджета по нашим делам) и по нему же
+    // будущая ПОВТОРНАЯ запись узнает свою. Дубля сегодня нет по другой причине: хук зовётся ровно раз
+    // на записанный ответ (`stored:false` отвечает 409 РАНЬШЕ хука), а `responseId` рождается свежим.
+    // ⚠️ Появится ретрай хука (очередь, outbox) — тогда сюда обязан прийти поиск по маркеру ПЕРЕД
+    // созданием, как у выписки приглашения (`deliverInvite`). Без него ретрай положит второе дело:
+    // Bitrix24 уникальность `ORIGIN_ID` не форсит, проверено вживую.
     const marker = resultMarker(info.responseId)
     const activityId = await activityConfigurableAdd(client, buildSurveyResultActivity({
       dealId,
@@ -85,8 +92,10 @@ export async function postResult(info: AnsweredInfo, deps: PostResultDeps): Prom
       responseId: info.responseId,
       activityId,
       lines: info.lines.length,
-      // `ok` — маркер приняла сама `configurable.add`; `repaired` — дописали; `failed` — дела с
-      // маркером нет, повторная запись этот результат не узнает.
+      // `already` — маркер приняла сама `configurable.add`; `repaired` — дописали; `failed` — дела с
+      // маркером нет, и найти его потом будет нечем.
+      // ⚠️ Первый живой прогон отвечает на вопрос раз и навсегда: `already` значит, что перечитывание
+      // (`crm.activity.get` на каждый ответ) можно снимать.
       markerFix: fix
     })
   })().catch((e: unknown) => {

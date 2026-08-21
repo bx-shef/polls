@@ -106,7 +106,19 @@ describe('submit → закрытие дела в таймлайне', () => {
     const methods = restCalls.map((c) => c.method)
     expect(methods, 'закрытие дела не подключено к submit').toContain('crm.activity.list')
     expect(methods, 'найденное дело не закрыто').toContain('crm.activity.update')
-    const update = restCalls.find((c) => c.method === 'crm.activity.update')
+    // ⚠️ Ищем по ПОЛЯМ, а не «первый update». Обновлений теперь ДВА параллельных потока — закрытие
+    // дела и дозапись маркера у записи результата (#18), — и `find` по имени метода выбирал бы то
+    // одно, то другое в зависимости от того, кто успел. Гард, зависящий от гонки, падает не про то.
+    const update = restCalls.find((c) => c.method === 'crm.activity.update' && (c.params as { id?: number }).id === 77)
     expect(update?.params).toEqual({ id: 77, fields: { COMPLETED: 'Y' } })
+
+    // ⚠️ ВТОРОЕ побочное действие — запись результата в карточку (#18). Гард здесь по той же причине,
+    // по которой заведён весь файл: удалить `postResult` из `Promise.all` в `server/utils/api.ts` —
+    // и весь набор остаётся зелёным, потому что `post-result.test.ts` зовёт функцию напрямую.
+    expect(methods, 'результат опроса не подключён к submit').toContain('crm.activity.configurable.add')
+    const posted = restCalls.find((c) => c.method === 'crm.activity.configurable.add')
+    const params = posted?.params as { ownerId?: number; layout?: { body?: { blocks?: Record<string, unknown> } } }
+    expect(params?.ownerId, 'результат лёг не в ту сделку').toBe(759)
+    expect(Object.keys(params?.layout?.body?.blocks ?? {}), 'сводка ответов пуста').toHaveLength(3)
   }, 60_000)
 })

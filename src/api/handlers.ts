@@ -167,6 +167,10 @@ export interface AnsweredInfo {
    *
    * ⚠️ Считается ЗДЕСЬ, а не в слое связки: тексты вопросов живут в версии, версия уже загружена, и
    * второе чтение дало бы шанс взять другую. Слой связки про доменные метрики знать не должен.
+   *
+   * ⚠️ **Пусто, когда `resultToTimeline` ложен.** Строки несут свободный текст респондента, и у
+   * опроса, обещавшего анонимность, ему незачем появляться в payload хука вообще — там его никто
+   * не ждёт, а хук это публичный контракт: его получит и следующий потребитель.
    */
   lines: readonly ResultLine[]
   /**
@@ -185,7 +189,7 @@ export interface AnsweredInfo {
   /**
    * Момент записи (серверные часы).
    *
-   * ⚠️ Отметку времени в закрываемое дело сейчас НЕ проставляем (`crm.activity.update` шлёт только
+   * ⚠️ Отметку времени ни одно из побочных действий не использует. В закрываемое дело её НЕ проставляем (`crm.activity.update` шлёт только
    * `COMPLETED: 'Y'`): у настраиваемого дела поведение полей времени вживую не сверено. Поле
    * передаётся, чтобы обработчику не пришлось заводить свои часы — от них разъезжается диагностика.
    */
@@ -523,16 +527,23 @@ export function createApi(deps: ApiDeps): Api {
           // следующей.
           const hook = deps.onAnswered
           await Promise.resolve()
-            .then(() => hook({
-              surveyKey: version.surveyKey,
-              surveyTitle: version.title,
-              versionNo: version.versionNo,
-              responseId,
-              lines: summarizeResponse(version, record),
-              resultToTimeline: resultToTimelineEnabled(version),
-              context,
-              at: now()
-            }))
+            .then(() => {
+              // ⚠️ Сводку считаем ТОЛЬКО когда её есть куда деть. Дело не в стоимости (две карты по
+              // вопросам — шум), а в том, что `lines` несут СВОБОДНЫЙ ТЕКСТ респондента: у опроса,
+              // обещавшего анонимность, он материализовался бы в payload хука без единого получателя.
+              // Источник решения при этом остаётся один — `resultToTimelineEnabled`.
+              const resultToTimeline = resultToTimelineEnabled(version)
+              return hook({
+                surveyKey: version.surveyKey,
+                surveyTitle: version.title,
+                versionNo: version.versionNo,
+                responseId,
+                lines: resultToTimeline ? summarizeResponse(version, record) : [],
+                resultToTimeline,
+                context,
+                at: now()
+              })
+            })
             .catch((e: unknown) => { onError(e) })
         }
 
