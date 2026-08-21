@@ -21,3 +21,42 @@ export async function withDeadline(work: Promise<void>, ms: number, onTimeout: (
     if (timer) clearTimeout(timer)
   }
 }
+
+/**
+ * То же, но для работы, у которой есть РЕЗУЛЬТАТ: не успела к сроку — отдаём запасное значение.
+ *
+ * ⚠️ Заведено после ревью #198. Там страховочный `crm.activity.list` стоит НА КРИТИЧЕСКОМ ПУТИ перед
+ * созданием приглашения, а `.catch(() => 0)` закрывает только мгновенный отказ. Портал так не
+ * отказывает: у клиента Bitrix24 свой таймаут ~30 секунд, до трёх повторов и backoff, то есть один
+ * вызов тянется минутами. Событийный роут ждёт всю работу до отдачи 200 — значит подтормаживающий
+ * портал съедал бы не страховку, а САМУ ДОСТАВКУ, и клиента не спросили бы вовсе. Ровно тот исход,
+ * который решение fail-open объявляет худшим.
+ *
+ * ⚠️ Работа НЕ отменяется (у REST-клиента нет отмены) — она доигрывает в фоне, а мы уходим с
+ * запасным значением. Поэтому её отказ обязан быть проглочен здесь: иначе после ответа всплывёт
+ * unhandled rejection.
+ */
+export async function valueByDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  fallback: T,
+  onTimeout: () => void
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<typeof TIMEOUT>((resolve) => { timer = setTimeout(() => resolve(TIMEOUT), ms) })
+  // Отказ доигрывающей работы гасим: наружу он уже не нужен, а unhandled rejection — нужен ещё меньше.
+  work.catch(() => undefined)
+  try {
+    const r = await Promise.race([work, deadline])
+    if (r === TIMEOUT) {
+      onTimeout()
+      return fallback
+    }
+    return r
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** Часовой уникален по ссылке — значение работы с ним не совпадёт, каким бы оно ни было. */
+const TIMEOUT = Symbol('deadline')
