@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createKeySerializer } from '../src/api/serial-by-key'
 import {
   INVITE_ORIGINATOR, decideInvite, deliverInvite, inviteMarker, manualInviteMarker, markerMatchesSurvey, resultMarker,
-  type DeliverInviteDeps, type MarkedActivity
+  type DeliverInviteDeps, type InviteDecisionInput, type MarkedActivity
 } from '../src/bitrix24/invite-delivery'
 
 describe('маркер дела-приглашения', () => {
@@ -32,36 +32,56 @@ describe('маркер дела-приглашения', () => {
 describe('правило «уже приглашали?» — таблица целиком', () => {
   const open: MarkedActivity = { id: 1, completed: false }
   const closed: MarkedActivity = { id: 2, completed: true }
+  /** Полный вход: оба вопроса уже заданы. Правило отвечает окончательно. */
+  const full = (over: Partial<InviteDecisionInput> = {}): InviteDecisionInput =>
+    ({ activities: [], answeredAfterTransition: false, openElsewhere: 0, ...over })
 
-  it('дел нет → приглашаем', () => {
-    expect(decideInvite({ activities: [], answeredAfterTransition: false })).toEqual({ action: 'create' })
+  it('дел нет, чужих открытых нет, ответа нет → приглашаем', () => {
+    expect(decideInvite(full())).toEqual({ action: 'create' })
   })
 
-  it('дело ОТКРЫТО → молчим (это и есть отсечённая гроздь)', () => {
-    expect(decideInvite({ activities: [open], answeredAfterTransition: false }))
-      .toEqual({ action: 'skip', reason: 'open' })
+  it('дело ОТКРЫТО → молчим (это и есть отсечённая гроздь), и вопросов не задаём', () => {
+    // Своё открытое дело закрывает вопрос само — портал за этим дёргать незачем.
+    expect(decideInvite({ activities: [open] })).toEqual({ action: 'skip', reason: 'open' })
   })
 
   it('дело закрыто, ответа после перехода НЕТ → зовём снова', () => {
     // «Закрыто» значит, что менеджер снял задачу с себя, а не что клиента спросили.
-    expect(decideInvite({ activities: [closed], answeredAfterTransition: false })).toEqual({ action: 'create' })
+    expect(decideInvite(full({ activities: [closed] }))).toEqual({ action: 'create' })
   })
 
-  it('дело закрыто, ответ ЕСТЬ → молчим, цикл завершён', () => {
-    expect(decideInvite({ activities: [closed], answeredAfterTransition: true }))
+  it('ответ ЕСТЬ → молчим, независимо от того, есть ли НАШИ дела (#198)', () => {
+    // ⚠️ Условие `activities.length > 0` здесь СТОЯЛО и снято на ревью. Оно было верно, пока
+    // единственным свидетельством «мы уже спрашивали» было наше собственное дело: оно создавалось
+    // всегда. С правилом `open-other` автопуть может решить НЕ создавать — и свидетельства не
+    // остаётся вовсе; тогда следующее событие того же перехода слало вторую ссылку УЖЕ ОТВЕТИВШЕМУ.
+    // ⚠️ Прежнее обоснование («иначе любой прошлый ответ навсегда съедал бы новый законный переход»)
+    // не держалось уже тогда: флаг называется `answeredAfterTransition` — он про ответ ПОСЛЕ ЭТОГО
+    // перехода, а не «вообще». Новый переход даёт новый момент отсчёта и новый повод спросить.
+    expect(decideInvite(full({ activities: [closed], answeredAfterTransition: true })))
+      .toEqual({ action: 'skip', reason: 'answered' })
+    expect(decideInvite(full({ activities: [], answeredAfterTransition: true })))
       .toEqual({ action: 'skip', reason: 'answered' })
   })
 
-  it('дел НЕТ, но ответ есть → всё равно приглашаем', () => {
-    // Условие `activities.length > 0` несёт вес само по себе: без него любой прошлый ответ по сделке
-    // навсегда съедал бы новый законный переход. Раньше корректность держалась на short-circuit'е
-    // вызывающего (ответы не спрашиваются, когда дел нет), то есть на другом файле.
-    expect(decideInvite({ activities: [], answeredAfterTransition: true })).toEqual({ action: 'create' })
+  it('чужое открытое приглашение → молчим (#198)', () => {
+    expect(decideInvite(full({ openElsewhere: 1 }))).toEqual({ action: 'skip', reason: 'open-other' })
   })
 
   it('открытое дело перевешивает ответ — ждём именно его', () => {
     expect(decideInvite({ activities: [closed, open], answeredAfterTransition: true }))
       .toEqual({ action: 'skip', reason: 'open' })
+  })
+
+  it('НЕДОСТАЮЩИЙ ответ — это «спроси», а НЕ «создавай»', () => {
+    // ⚠️ Раньше отсутствующий `openElsewhere` подразумевался нулём (`?? 0`), и результат был
+    // неотличим от окончательного `create`. Потребитель, забывший второй шаг, получал тихо
+    // выключенное правило — тот же класс дефекта, который #198 и чинит. Теперь «забыть» нельзя:
+    // правило само называет, чего ему не хватает, и порядок вопросов живёт только здесь.
+    expect(decideInvite({ activities: [] })).toEqual({ action: 'ask', need: 'answered' })
+    expect(decideInvite({ activities: [], answeredAfterTransition: false }))
+      .toEqual({ action: 'ask', need: 'open-elsewhere' })
+    expect(decideInvite({ activities: [closed] })).toEqual({ action: 'ask', need: 'answered' })
   })
 })
 
@@ -90,6 +110,7 @@ function deps(over: Partial<DeliverInviteDeps> = {}): DeliverInviteDeps & { crea
     },
     ensureMarker: () => Promise.resolve('already'),
     serializer: createKeySerializer(),
+    serialKey: 'm-1:deal:759:csat_postdeal',
     ...over
   }
   return { ...base, created: () => createdCount }
@@ -192,7 +213,8 @@ describe('доставка приглашения целиком', () => {
         return id
       },
       ensureMarker: () => Promise.resolve('already'),
-      serializer
+      serializer,
+      serialKey: 'm-1:deal:759:k'
     }
 
     const results = await Promise.all([
@@ -219,20 +241,85 @@ describe('доставка приглашения целиком', () => {
         return timeline.filter((a) => a.key === m.originId)
       },
       answeredAfterTransition: () => Promise.resolve(false),
-      countOpenForDeal: () => Promise.resolve(timeline.filter((a) => !a.completed).length),
+      countOpenForDeal: async () => {
+        await new Promise((r) => setImmediate(r))
+        return timeline.filter((a) => !a.completed).length
+      },
+      // ⚠️ Запись в таймлайн ПОСЛЕ ожидания — как настоящий REST. Пока двойник писал синхронно, до
+      // первого `await`, тест был зелёным даже на переходном ключе очереди: гонки просто не
+      // возникало. Ревью исполнило оба варианта и показало, что доказывал он тайминг двойника, а не
+      // код. Один тик — и прежняя версия краснеет.
       createInvite: async (m) => {
+        await new Promise((r) => setImmediate(r))
         const id = ++nextId
         timeline.push({ id, completed: false, key: m.originId })
         return id
       },
       ensureMarker: () => Promise.resolve('already'),
-      serializer
+      serializer,
+      // ⚠️ Ключ СДЕЛОЧНЫЙ — один на оба перехода. Переходный ключ (`…:${m.originId}`) означал бы
+      // мьютекс только внутри одного перехода, и два перехода одной сделки создали бы по ссылке.
+      serialKey: 'm-1:deal:759:k'
     }
     const out = await Promise.all([
       deliverInvite('1', 'k', d), deliverInvite('2', 'k', d), deliverInvite('1', 'k', d)
     ])
     expect(timeline, 'у клиента больше одной живой ссылки').toHaveLength(1)
     expect(out.filter((r) => r.kind === 'created')).toHaveLength(1)
+  })
+
+  it('ПРОПУСК по чужому приглашению не открывает дорогу второй ссылке ответившему (#198)', async () => {
+    // ⚠️ Найдено исполнением на ревью. Цепочка: ручное приглашение открыто → событие перехода даёт
+    // `open-other` и НИЧЕГО не создаёт → клиент отвечает по ручной ссылке → ручное дело закрывается
+    // → приходит ещё одно событие ТОГО ЖЕ перехода (гроздь; окно свежести настраивается до часа).
+    // Своих дел нет, чужих открытых больше нет — и без вопроса «а не ответил ли он» автопуть слал бы
+    // вторую ссылку уже ответившему.
+    let manualOpen = true
+    let answered = false
+    const d = deps({
+      findByMarker: () => Promise.resolve([]),
+      countOpenForDeal: () => Promise.resolve(manualOpen ? 1 : 0),
+      answeredAfterTransition: () => Promise.resolve(answered)
+    })
+    expect((await deliverInvite('4242', 'k', d)).kind).toBe('skipped')
+
+    // Клиент ответил по ручной ссылке, дело закрылось.
+    manualOpen = false
+    answered = true
+
+    const second = await deliverInvite('4242', 'k', d)
+    expect(second, 'вторая ссылка ушла уже ответившему клиенту')
+      .toEqual({ kind: 'skipped', reason: 'answered', marker: inviteMarker('4242', 'k') })
+    expect(d.created()).toBe(0)
+  })
+
+  it('РАЗНЫЕ порталы не ждут друг друга — портал входит в ключ очереди', async () => {
+    // ⚠️ ID записей истории стадий у разных порталов совпадают штатно (они мелкие и свои у каждого).
+    // Потеряй ключ портал — медленный REST одного арендатора держал бы очередь другому. Мутация
+    // «убрать `memberId` из ключа» проходила набор: исход тот же, страдает только время.
+    let active = 0
+    let peak = 0
+    const mk = (serialKey: string): DeliverInviteDeps => ({
+      findByMarker: async () => {
+        active++
+        peak = Math.max(peak, active)
+        await new Promise((r) => setImmediate(r))
+        active--
+        return []
+      },
+      answeredAfterTransition: () => Promise.resolve(false),
+      countOpenForDeal: () => Promise.resolve(0),
+      createInvite: () => Promise.resolve(1),
+      ensureMarker: () => Promise.resolve('already'),
+      serializer,
+      serialKey
+    })
+    const serializer = createKeySerializer()
+    await Promise.all([
+      deliverInvite('1', 'k', mk('m-1:deal:759:k')),
+      deliverInvite('1', 'k', mk('m-2:deal:759:k'))
+    ])
+    expect(peak, 'два портала встали в одну очередь').toBe(2)
   })
 
   it('прошлый переход ЗАКРЫТ без ответа → новый переход зовёт снова', async () => {
@@ -248,7 +335,8 @@ describe('доставка приглашения целиком', () => {
         return Promise.resolve(timeline.length)
       },
       ensureMarker: () => Promise.resolve('already'),
-      serializer: createKeySerializer()
+      serializer: createKeySerializer(),
+      serialKey: 'm-1:deal:759:k'
     }
     expect((await deliverInvite('2', 'k', d)).kind).toBe('created')
   })
@@ -275,12 +363,15 @@ describe('доставка приглашения целиком', () => {
     expect(probe, 'портал спрошен там, где решение уже принято').not.toHaveBeenCalled()
   })
 
-  it('портал не ответил на вопрос о чужих приглашениях → зовём (fail-open), но это видно вызывающему', async () => {
-    // ⚠️ Выбор между «клиент получит вторую ссылку» и «клиента не спросят вовсе». Второе хуже: звать
-    // — прямая работа этого пути, дедуп здесь страховка. Боевая проводка глушит ошибку в ноль и
-    // пишет строку `b24_invite_open_probe_fail`; сюда отказ приходит уже как ноль.
-    const d = deps({ countOpenForDeal: () => Promise.resolve(0) })
-    expect((await deliverInvite('4242', 'csat_postdeal', d)).kind).toBe('created')
+  it('отказ страховки НЕ глушится здесь — это обязанность вызывающего', async () => {
+    // ⚠️ Прежняя версия этого теста подменяла `countOpenForDeal` на `() => 0` и была тавтологией:
+    // база `deps()` при пустом таймлайне отдаёт ровно ноль, то есть оверрайд не менял ничего, а
+    // заголовок обещал проверку fail-open. Настоящий fail-open живёт в проводке
+    // (`test/invite-issue.test.ts`), и здесь важно зафиксировать обратное: ядро отказ НЕ глотает.
+    // Иначе кто-то «упростит» проводку, сняв `.catch`, и потеря страховки станет молчаливой.
+    const d = deps({ countOpenForDeal: () => Promise.reject(new Error('портал недоступен')) })
+    await expect(deliverInvite('4242', 'csat_postdeal', d)).rejects.toThrow('портал недоступен')
+    expect(d.created(), 'приглашение выписано на сломанном входе').toBe(0)
   })
 })
 
@@ -288,6 +379,23 @@ describe('маркер → «тот ли опрос» (закрытие дела
   it('свой опрос узнаётся, чужой — нет', () => {
     expect(markerMatchesSurvey(inviteMarker('4242', 'csat').originId, 'csat')).toBe(true)
     expect(markerMatchesSurvey(inviteMarker('4242', 'nps').originId, 'csat')).toBe(false)
+  })
+
+  it('ПРЕФИКС ключа опроса не считается совпадением', () => {
+    // ⚠️ Зеркало проверки хвоста, и оно не теоретическое: `csat` и `csat_postdeal` — буквально ключи
+    // из примеров этого репозитория. Мутация `=== surveyKey` → `.startsWith(surveyKey)` проходила
+    // весь набор, а стоит она двух дефектов сразу: открытое приглашение по `csat_postdeal`
+    // блокировало бы переход по `csat` (#198), а ответ по `csat` ЗАКРЫВАЛ бы живое приглашение по
+    // `csat_postdeal` на той же сделке (#177).
+    expect(markerMatchesSurvey('stage:1:csat_postdeal', 'csat')).toBe(false)
+    expect(markerMatchesSurvey('manual:1755770000:csat_postdeal', 'csat')).toBe(false)
+    expect(markerMatchesSurvey('stage:1:csat', 'csat'), 'точное совпадение перестало работать').toBe(true)
+  })
+
+  it('префикс маркера сверяется с НАЧАЛОМ строки, а не «где-то внутри»', () => {
+    // `.startsWith` → `.includes` проходило набор: в негативах был `other:4242:csat`, но не строка с
+    // нашим префиксом в середине.
+    expect(markerMatchesSurvey('x:stage:1:csat', 'csat')).toBe(false)
   })
 
   it('ХВОСТ маркера не считается совпадением', () => {

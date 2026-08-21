@@ -10,6 +10,7 @@ import {
   findOpenInviteActivities
 } from '~core/bitrix24/activity'
 import { errInfo } from '~core/obs/logger'
+import { valueByDeadline } from './deadline'
 import type { PortalClient } from '~core/bitrix24/client'
 import { deliverInvite } from '~core/bitrix24/invite-delivery'
 import type { KeySerializer } from '~core/api/serial-by-key'
@@ -19,6 +20,18 @@ import type { IStore } from '~core/store/types'
 import { surveyPath } from '~core/client/invitation-link'
 
 /** Что нужно выписке, кроме самого события. Всё внедряется — модуль ничего не резолвит сам. */
+/**
+ * Бюджет страховочного запроса «есть ли открытые приглашения по сделке» (#198), мс.
+ *
+ * ⚠️ Короткий намеренно. Запрос стоит НА КРИТИЧЕСКОМ ПУТИ перед созданием приглашения, а событийный
+ * роут ждёт всю работу до отдачи 200 — и Bitrix24 события не повторяет. Клиент портала отказывает не
+ * мгновенно (свой таймаут ~30 секунд, повторы, backoff), поэтому без явного бюджета «отказ = ноль»
+ * защищало бы только от мгновенного отказа, а доминирующий режим — зависание — съедал бы саму
+ * доставку. Не уложились ⇒ считаем, что чужих приглашений нет, и зовём: это тот же fail-open, просто
+ * теперь он работает и на зависании.
+ */
+export const OPEN_PROBE_DEADLINE_MS = 1500
+
 export interface InviteIssueDeps {
   /** Клиент нужного портала по `member_id` (из проверенной части события). */
   portalClient: (memberId: string) => Promise<PortalClient>
@@ -73,10 +86,11 @@ export function makeInviteIssue(
     let issued: { token: string } | undefined
     const out = await deliverInvite(transition.id, args.surveyKey, {
       serializer: deps.serializer,
-      // ⚠️ Ключ очереди префиксуется порталом. ID записей истории стадий у каждого портала свои и
-      // мелкие, так что совпадение ключей двух порталов — штатное дело: без префикса медленный REST
-      // одного портала держал бы очередь другого.
-      serialKeyPrefix: memberId,
+      // ⚠️ Ключ очереди СДЕЛОЧНЫЙ, а не переходный (разбор — в JSDoc `DeliverInviteDeps.serialKey`).
+      // Портал в ключе, потому что ID записей истории стадий у разных порталов совпадают штатно;
+      // сделка — потому что правило «одна живая ссылка» сделочное; опрос — чтобы разные опросы одной
+      // сделки не ждали друг друга.
+      serialKey: `${memberId}:deal:${dealId}:${args.surveyKey}`,
       findByMarker: (marker) => activityListByMarker(client, marker, dealId),
       // Точка отсчёта — момент ЭТОГО перехода: прошлогодний ответ не должен закрывать новый повод
       // спросить, если сделка прошла стадию второй раз.
@@ -85,14 +99,21 @@ export function makeInviteIssue(
       // или прошлым переходом). Тот же запрос, которым пользуется ручной путь, — он видит оба
       // префикса маркера. Отказ портала = ноль: звать клиента важнее, чем страховать от второй
       // ссылки, а гроздь событий отсекается отдельным поиском по маркеру. Отказ виден строкой.
-      countOpenForDeal: () => findOpenInviteActivities(client, dealId, args.surveyKey)
-        .then((r) => r.found)
-        .catch((e: unknown) => {
-          deps.log.warn('b24_invite_open_probe_fail', {
-            surveyKey: args.surveyKey, dealId, err: errInfo(e)
-          })
-          return 0
-        }),
+      countOpenForDeal: () => valueByDeadline(
+        findOpenInviteActivities(client, dealId, args.surveyKey)
+          .then((r) => r.found)
+          .catch((e: unknown) => {
+            deps.log.warn('b24_invite_open_probe_fail', {
+              surveyKey: args.surveyKey, dealId, reason: 'error', err: errInfo(e)
+            })
+            return 0
+          }),
+        OPEN_PROBE_DEADLINE_MS,
+        0,
+        () => deps.log.warn('b24_invite_open_probe_fail', {
+          surveyKey: args.surveyKey, dealId, reason: 'timeout', afterMs: OPEN_PROBE_DEADLINE_MS
+        })
+      ),
       createInvite: async (marker) => {
         const inv = await invitations.create(
           { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
