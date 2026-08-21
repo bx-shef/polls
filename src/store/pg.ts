@@ -1,4 +1,7 @@
-import { ANONYMITY_THRESHOLD, meetsAnonymity, type TrendPoint } from '../domain/aggregate'
+import {
+  ANONYMITY_THRESHOLD, finishBreakdown, meetsAnonymity,
+  type BreakdownRow, type RawGroup, type TrendPoint
+} from '../domain/aggregate'
 import { compile } from '../domain/compile'
 import { round1, round2, type CsatSummary, type NpsSummary } from '../domain/metrics'
 import {
@@ -18,7 +21,9 @@ import {
   type Queryable,
   type ResponsePage,
   type ResponsePageOptions,
-  type SurveySummary
+  type SurveySummary,
+  type DashboardAggregates,
+  type DashboardQuery
 } from './types'
 // Re-export для обратной совместимости: исторически Queryable жил здесь.
 export type { Queryable } from './types'
@@ -564,6 +569,150 @@ export class PgStore implements IStore {
       f.productId != null || f.dealId != null
     const minN = sensitive ? Math.max(f.minN ?? ANONYMITY_THRESHOLD, ANONYMITY_THRESHOLD) : (f.minN ?? 1)
     return { where: conds.join(' and '), params, minN }
+  }
+
+  /**
+   * Агрегаты дашборда целиком — В БАЗЕ, без загрузки ответов в память (#49).
+   *
+   * ⚠️ Считает ровно то же, что чистая `dashboardFromResponses` над массивом; тест паритета
+   * (`test/dashboard-aggregates.test.ts`) прогоняет обе реализации по одним данным и сравнивает
+   * результат ЦЕЛИКОМ. Расхождение здесь — не «немного другие цифры»: дашборд читают, чтобы
+   * принимать решения по сотрудникам и клиентам.
+   *
+   * ⚠️ Подавление групп, отбор строк и сортировка — ОБЩИЙ код (`finishBreakdown`). SQL отвечает
+   * только за ГРУППИРОВКУ; иначе порог «на единицу строже» в одной из реализаций жил бы до первого
+   * большого портала.
+   */
+  async dashboardAggregates(q: DashboardQuery): Promise<DashboardAggregates> {
+    const version = { versionFrom: q.versionNo, versionTo: q.versionNo }
+    const base = { surveyKey: q.surveyKey, ...version }
+
+    // Число ответов и список версий — одним запросом. Версии считаются ДО фильтра по версии,
+    // поэтому у них свой (пустой) срез: иначе селектор версий схлопывался бы после первого клика.
+    const counts = await this.db.query<{ n: number; version_no: number | null }>(
+      `select count(*) filter (where $3::int is null or r.version_no = $3)::int as n,
+              r.version_no
+       from response r join survey s on s.id = r.survey_id
+       where r.portal_id = $1 and s.survey_key = $2
+       group by r.version_no
+       order by r.version_no asc`,
+      [this.opts.portalId, q.surveyKey, q.versionNo ?? null]
+    )
+    const n = counts.rows.reduce((a, row) => a + row.n, 0)
+    const versions = counts.rows.map((row) => row.version_no).filter((v): v is number => v != null)
+
+    const [nps, csat, distribution, trend, services, directions, responsibles, clients] = await Promise.all([
+      q.npsKey ? this.aggregateNps({ ...base, questionKey: q.npsKey }) : Promise.resolve(null),
+      q.csatKey ? this.aggregateCsat({ ...base, questionKey: q.csatKey }) : Promise.resolve(null),
+      q.choiceKey ? this.aggregateDistribution({ ...base, questionKey: q.choiceKey }) : Promise.resolve(null),
+      // Порог точки тренда — тот же ANONYMITY_THRESHOLD: месяц с малой выборкой не показываем.
+      q.npsKey
+        ? this.aggregateNpsTrend({ ...base, questionKey: q.npsKey, minN: ANONYMITY_THRESHOLD }, 'month')
+        : Promise.resolve([]),
+      this.breakdown('product', q),
+      this.breakdown('dealCategory', q),
+      this.breakdown('responsible', q),
+      this.breakdown('company', q)
+    ])
+    return { n, versions, nps, csat, distribution, trend, services, directions, responsibles, clients }
+  }
+
+  /**
+   * Одна группировка среза в SQL. Четыре измерения отличаются ТОЛЬКО выражением ключа, имени и
+   * источником строк — поэтому запрос один, а не четыре похожих.
+   *
+   * ⚠️ Имя группы фиксируется ПЕРВЫМ вхождением ключа в порядке `(submitted_at, id)` — том же, в
+   * котором ответы отдаёт `listResponses`. Совпадение порядка несущее: переименовали услугу в CRM —
+   * обе реализации обязаны выбрать одно и то же имя, иначе на дашборде оно «прыгает» между
+   * инсталляциями с базой и без.
+   *
+   * ⚠️ `count(distinct …)`, а не `count(*)`: соединение с ответами на вопросы размножает строку
+   * ответа по числу его ответов, и без `distinct` группа из пяти человек показала бы двадцать.
+   */
+  private async breakdown(
+    dim: 'product' | 'dealCategory' | 'responsible' | 'company',
+    q: DashboardQuery
+  ): Promise<BreakdownRow[]> {
+    // Ключ и имя измерения. Имена денормализованы в снимке CRM (`context`), у товаров — своя таблица.
+    const dims = {
+      product: {
+        join: 'join response_product rp on rp.response_id = r.id',
+        key: 'rp.product_id',
+        name: "coalesce(rp.product_name, '#' || rp.product_id)"
+      },
+      dealCategory: {
+        join: '',
+        key: 'r.deal_category_id',
+        name: "coalesce(r.context->>'dealCategoryName', '#' || r.deal_category_id)"
+      },
+      responsible: {
+        join: '',
+        key: 'r.responsible_id',
+        name: "coalesce(r.context->>'responsibleName', '#' || r.responsible_id)"
+      },
+      company: {
+        join: '',
+        key: 'r.company_id',
+        name: "coalesce(r.context->>'companyName', '#' || r.company_id)"
+      }
+    }[dim]
+
+    const params: unknown[] = [this.opts.portalId, q.surveyKey, q.versionNo ?? null, q.npsKey ?? null, q.csatKey ?? null]
+    const rows = await this.db.query<{
+      name: string
+      n: number
+      nps_n: number
+      nps_prom: number
+      nps_detr: number
+      csat_n: number
+      csat_mean: string | number | null
+      csat_top: number
+    }>(
+      `with grp as (
+         select ${dims.key} as gkey, r.id as rid, r.submitted_at as at, ${dims.name} as gname
+         from response r
+         join survey s on s.id = r.survey_id
+         ${dims.join}
+         where r.portal_id = $1 and s.survey_key = $2
+           and ($3::int is null or r.version_no = $3)
+           and ${dims.key} is not null
+       )
+       select (array_agg(g.gname order by g.at asc, g.rid asc))[1] as name,
+              count(distinct g.rid)::int as n,
+              count(distinct g.rid) filter (where ra.question_key = $4 and ra.value_number is not null)::int as nps_n,
+              count(distinct g.rid) filter (where ra.question_key = $4 and ra.value_number >= 9)::int as nps_prom,
+              count(distinct g.rid) filter (where ra.question_key = $4 and ra.value_number <= 6)::int as nps_detr,
+              count(distinct g.rid) filter (where ra.question_key = $5 and ra.value_number is not null)::int as csat_n,
+              avg(ra.value_number) filter (where ra.question_key = $5 and ra.value_number is not null) as csat_mean,
+              count(distinct g.rid) filter (where ra.question_key = $5 and ra.value_number >= 4)::int as csat_top
+       from grp g
+       left join response_answer ra on ra.response_id = g.rid
+       group by g.gkey`,
+      params
+    )
+
+    const raw: RawGroup[] = rows.rows.map((row) => ({
+      name: row.name,
+      n: row.n,
+      nps: q.npsKey
+        ? {
+            n: row.nps_n,
+            promoters: row.nps_prom,
+            passives: row.nps_n - row.nps_prom - row.nps_detr,
+            detractors: row.nps_detr,
+            // Пустая выборка не делится: `npsFor([])` в ядре тоже отдаёт 0.
+            nps: row.nps_n === 0 ? 0 : round1(((row.nps_prom - row.nps_detr) / row.nps_n) * 100)
+          }
+        : null,
+      csat: q.csatKey
+        ? {
+            n: row.csat_n,
+            mean: row.csat_n === 0 ? 0 : round2(Number(row.csat_mean)),
+            topBoxPct: row.csat_n === 0 ? 0 : round1((row.csat_top / row.csat_n) * 100)
+          }
+        : null
+    }))
+    return finishBreakdown(raw)
   }
 
   /**

@@ -1,4 +1,39 @@
 import type { CompiledVersion, EntityType, ResponseRecord, SurveyDraft } from '../domain/schema'
+import type { CsatSummary, NpsSummary } from '../domain/metrics'
+import type { BreakdownRow, TrendPoint } from '../domain/aggregate'
+
+/** Что дашборд просит у хранилища за один заход (#49). */
+export interface DashboardQuery {
+  surveyKey: string
+  /** Срез по одной версии; `undefined` — все версии. */
+  versionNo?: number
+  /** Ключ вопроса-метрики NPS из текущей версии; нет — NPS не считается. */
+  npsKey?: string
+  /** Ключ вопроса-метрики CSAT; нет — CSAT не считается. */
+  csatKey?: string
+  /** Ключ вопроса с выбором варианта; нет — распределения не будет. */
+  choiceKey?: string
+}
+
+/**
+ * Готовые агрегаты дашборда. Формы совпадают с `src/domain/aggregate` — это тот же контракт,
+ * посчитанный другим способом.
+ */
+export interface DashboardAggregates {
+  /** Число ответов ПОСЛЕ фильтра по версии. */
+  n: number
+  /** Все версии, по которым есть ответы, — ДО фильтра (иначе селектор версий схлопывается). */
+  versions: number[]
+  nps: NpsSummary | null
+  csat: CsatSummary | null
+  /** Сырые счётчики по `option_key`; k-анонимность ячеек — на потребителе (см. `dashboardAggregates`). */
+  distribution: Record<string, number> | null
+  trend: TrendPoint[]
+  services: BreakdownRow[]
+  directions: BreakdownRow[]
+  responsibles: BreakdownRow[]
+  clients: BreakdownRow[]
+}
 
 /** Размер страницы read-API: дефолт и потолок (защита от тяжёлых выборок). */
 export const DEFAULT_PAGE_SIZE = 100
@@ -153,6 +188,25 @@ export interface IStore {
    * признак «приглашали» живёт в CRM, здесь спрашивается только «ответили ли».
    */
   hasResponseSince(surveyKey: string, dealId: number, since: Date): Promise<boolean>
+
+  /**
+   * Всё, что дашборд показывает по опросу, ОДНИМ обращением к хранилищу (#49).
+   *
+   * ⚠️ **Метод отдельный, а не «посчитать по `listResponses`».** Дашборд открывают из фрейма CRM, и
+   * до этого метода каждое открытие поднимало в память ВСЕ ответы опроса и считало по ним восемь
+   * агрегатов синхронно. С мультитенантом это уже не «неоптимально»: один сотрудник одного портала
+   * занимает пул и event loop **всем арендаторам**. `PgStore` считает то же самое в SQL.
+   *
+   * ⚠️ **Подавление малых выборок — ВНУТРИ реализации, а не у вызывающего.** Срезы несут имена
+   * клиентов и сотрудников; правило «группа меньше порога не выводится» обязано жить там же, где
+   * данные, иначе его можно обойти, позвав порт напрямую. Единственное исключение названо в
+   * `CLAUDE.md` §Инварианты: k-анонимность ЯЧЕЕК распределения (`suppressSmallBins`) — дело
+   * потребителя, потому что сырое распределение нужно и для расчётов.
+   *
+   * ⚠️ Ключи вопросов (`npsKey`/`csatKey`/`choiceKey`) приходят СНАРУЖИ, из версии опроса: хранилище
+   * не решает, какой вопрос считать метрикой NPS. Ключа нет ⇒ метрики нет (`null`), а не «угадали».
+   */
+  dashboardAggregates(q: DashboardQuery): Promise<DashboardAggregates>
 
   /**
    * Health-проба соединения с хранилищем (для `GET /api/health`, #5).

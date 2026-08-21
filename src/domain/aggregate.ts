@@ -175,7 +175,6 @@ export function breakdownBy(
   pairsOf: (r: ResponseRecord) => Array<{ key: string | number; name: string }>,
   opts: { npsKey?: string; csatKey?: string; minN?: number } = {}
 ): BreakdownRow[] {
-  const minN = opts.minN ?? ANONYMITY_THRESHOLD
   const groups = new Map<string | number, { name: string; rs: ResponseRecord[] }>()
   for (const r of rs) {
     const seen = new Set<string | number>() // один ответ — не дважды в одну группу (повтор ключа)
@@ -187,17 +186,50 @@ export function breakdownBy(
       else groups.set(key, { name, rs: [r] })
     }
   }
-  return [...groups.values()]
-    .map(({ name, rs: gr }) => {
-      const npsSum = opts.npsKey ? npsFor(gr, opts.npsKey) : null
-      const csatSum = opts.csatKey ? csatFor(gr, opts.csatKey) : null
-      return {
-        name,
-        n: gr.length,
-        nps: npsSum && meetsAnonymity(npsSum.n, minN) ? npsSum.nps : null,
-        csat: csatSum && meetsAnonymity(csatSum.n, minN) ? csatSum.mean : null
-      }
-    })
+  const raw: RawGroup[] = [...groups.values()].map(({ name, rs: gr }) => ({
+    name,
+    n: gr.length,
+    nps: opts.npsKey ? npsFor(gr, opts.npsKey) : null,
+    csat: opts.csatKey ? csatFor(gr, opts.csatKey) : null
+  }))
+  return finishBreakdown(raw, opts.minN)
+}
+
+/**
+ * Сырая группа среза ДО подавления: имя, число ответов и обе метрики целиком (с их собственными `n`).
+ *
+ * Существует затем, чтобы группировку можно было сделать где угодно — в памяти перебором или в
+ * PostgreSQL одним `group by`, — а всё остальное осталось ОДНИМ кодом (`finishBreakdown`).
+ */
+export interface RawGroup {
+  name: string
+  /** Число ОТВЕТОВ в группе. */
+  n: number
+  nps: NpsSummary | null
+  csat: CsatSummary | null
+}
+
+/**
+ * Общий «хвост» среза: подавление, отбор и сортировка.
+ *
+ * ⚠️ Вынесен из `breakdownBy` не ради красоты. Когда дашборд считает срезы в SQL, а демо и тесты — в
+ * памяти, любая разница в этих трёх шагах становится расхождением, которое видно только на живом
+ * портале с большими данными: подавление в одной реализации на единицу строже, сортировка при
+ * равных NPS другая, строка без метрик где-то остаётся. Общий код делает такое расхождение
+ * невозможным по построению — различаться может только ГРУППИРОВКА.
+ *
+ * Анонимность — ДВА независимых гейта (любой скрывает): группа с числом ответов < `minN` не
+ * выводится; метрика обнуляется, если её СОБСТВЕННАЯ выборка < `minN`. Строку без хотя бы одной
+ * метрики не выводим (нечего показать + имя не раскрывается без агрегата).
+ */
+export function finishBreakdown(groups: RawGroup[], minN: number = ANONYMITY_THRESHOLD): BreakdownRow[] {
+  return groups
+    .map((g) => ({
+      name: g.name,
+      n: g.n,
+      nps: g.nps && meetsAnonymity(g.nps.n, minN) ? g.nps.nps : null,
+      csat: g.csat && meetsAnonymity(g.csat.n, minN) ? g.csat.mean : null
+    }))
     .filter((row) => meetsAnonymity(row.n, minN) && (row.nps !== null || row.csat !== null))
     .sort((a, b) => (b.nps ?? -Infinity) - (a.nps ?? -Infinity) || a.name.localeCompare(b.name))
 }
