@@ -12,69 +12,54 @@
 // фрейм-токеном, что и остальные экраны, а запись ищется в данных ИМЕННО этого портала.
 //
 // ⚠️ Отсюда следствие: `responseId` НЕ секрет. Он лежит в `actionParams` кнопки, то есть виден всем,
-// кто видит сделку. Пускать по нему одному нельзя — и не пускаем.
-import { PORTAL_GONE_MESSAGE } from '~core/api/session'
+// кто видит сделку, а в PgStore это `bigint` — перебор тривиален. Поэтому подтверждённого портала
+// МАЛО, и это главный урок ревью: фрейм-токен доказывает портал, но НЕ право сотрудника на сделку.
+// Данные мы отдаём из своей базы, значит портал ничего не проверит за нас — проверку надо звать
+// самим. Зовём `crm.deal.get` ТОКЕНОМ САМОГО СОТРУДНИКА (как `deal-invite.post.ts`): нет доступа к
+// сделке — портал откажет, и мы ответим «не найдено». Без этого рядовой менеджер перебором id читал
+// бы свободный текст клиентов по закрытым для него сделкам — а до этой страницы индивидуальный ответ
+// вообще нельзя было получить иначе как через дело в таймлайне, то есть под правами CRM.
+//
+// ⚠️ И второй гейт: опрос, обещавший клиенту анонимность, ставит `resultToTimeline: false`. Дела и
+// кнопки для такого опроса не существует — но ЗАПИСЬ существует, и без проверки на чтении перебор
+// выдавал бы ровно ту связку «этот клиент ↔ эта сделка ↔ этот текст», ради запрета которой гейт и
+// написан. Порог малых выборок сюда не распространяется по построению: тут один респондент.
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
-import { buildResultView } from '~core/domain/result-view'
-import { errInfo } from '~core/obs/logger'
+import { createPortalClient, dealGet, frameToB24Params } from '~core/bitrix24/client'
 import { allowB24Session, useB24Authenticator } from '../../utils/b24-session'
 import { logger } from '../../utils/api'
 import { tenantByMemberId } from '../../utils/tenant'
+import { resultViewDecision } from '../../utils/result-view'
 
 export default defineEventHandler(async (event) => {
+  // ⚠️ Лимитер стоит ДО разбора и до подтверждения портала — как у соседних b24-роутов. Здесь он
+  // нужнее: `verifyFrameAuth` делает исходящий запрос к домену ИЗ ТЕЛА, то есть без лимита роут
+  // становится усилителем.
   if (!allowB24Session(requestIp(event))) {
     setResponseStatus(event, 429)
     return { ok: false, error: 'Слишком много запросов. Подождите немного и попробуйте снова.' }
   }
 
   const body = await readBody(event).catch(() => ({}))
-  const responseId = (body as { responseId?: unknown }).responseId
   const frame = parseFrameAuth(body)
-  if (!frame || typeof responseId !== 'string' || responseId.trim().length === 0) {
-    setResponseStatus(event, 400)
-    return { ok: false, error: 'Не удалось определить результат. Откройте его кнопкой на деле в карточке сделки.' }
-  }
-
-  let portal
-  try {
-    portal = await verifyFrameAuth(frame, { authenticate: useB24Authenticator() })
-  } catch {
-    setResponseStatus(event, 401)
-    return { ok: false, error: 'Портал не подтверждён. Откройте результат заново из карточки сделки.' }
-  }
-
-  try {
-    // TENANT (#49): читаем данные ПОДТВЕРЖДЁННОГО портала. Скоуп держит реализация стора — без него
-    // менеджер одного заказчика вытащил бы ответ другого перебором id.
-    const tenant = await tenantByMemberId(portal.portalId)
-    if (!tenant) {
-      setResponseStatus(event, 409)
-      return { ok: false, error: PORTAL_GONE_MESSAGE }
+  // ⚠️ Роут сам НИЧЕГО не решает: всё решение — в `resultViewDecision`, потому что только там его
+  // можно исполнить в тесте. Разбор см. в шапке того модуля.
+  const { status, body: out } = await resultViewDecision(
+    { frame: frame ?? undefined, responseId: (body as { responseId?: unknown }).responseId },
+    {
+      verify: (f) => verifyFrameAuth(f, { authenticate: useB24Authenticator() }),
+      tenant: (portalId) => tenantByMemberId(portalId),
+      // Клиент на токене САМОГО СОТРУДНИКА: права на сделку проверяет портал, а не мы.
+      assertDealAccess: async (portal, f, dealId) => {
+        const asUser = createPortalClient(
+          frameToB24Params({ domain: portal.domain, accessToken: f.AUTH_ID, memberId: portal.portalId }),
+          { clientId: process.env.NUXT_B24_CLIENT_ID ?? '', clientSecret: process.env.NUXT_B24_CLIENT_SECRET ?? '' }
+        )
+        await dealGet(asUser, dealId)
+      },
+      log: logger
     }
-    const record = await tenant.store.getResponse(responseId.trim())
-    // ⚠️ «Нет записи» и «запись чужого портала» отвечают ОДИНАКОВО и намеренно: разница — это ответ
-    // на вопрос «а есть ли такой ответ у кого-то ещё», который спрашивающему задавать не положено.
-    if (!record) {
-      setResponseStatus(event, 404)
-      return { ok: false, error: 'Результат не найден. Возможно, данные опроса уже удалены.' }
-    }
-    // ⚠️ Версия берётся ТА, по которой отвечал клиент, а не текущая: опрос могли переиздать, и
-    // страница обязана показывать формулировки, которые человек реально видел. Несовпадение ловит
-    // `buildResultView` — он не собирает вид из чужой версии, а не «подставляет что нашлось».
-    const version = await tenant.store.getVersion(record.surveyKey, record.versionNo)
-    const view = version ? buildResultView(version, record) : undefined
-    if (!view) {
-      // Версия удалена или не сошлась с записью: показать вопросы нечем, а показывать голые значения
-      // без формулировок хуже, чем честно сказать.
-      logger.warn('b24_result_no_version', { surveyKey: record.surveyKey, versionNo: record.versionNo })
-      setResponseStatus(event, 409)
-      return { ok: false, error: 'Опрос этой версии больше не доступен, показать ответы не получится.' }
-    }
-    logger.info('b24_result_view', { surveyKey: view.surveyKey, versionNo: view.versionNo })
-    return { ok: true, view }
-  } catch (e) {
-    logger.warn('b24_result_fail', { err: errInfo(e) })
-    setResponseStatus(event, 502)
-    return { ok: false, error: 'Не удалось открыть результат. Попробуйте ещё раз.' }
-  }
+  )
+  if (status !== 200) setResponseStatus(event, status)
+  return out
 })

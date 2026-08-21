@@ -72,6 +72,17 @@ function readText(raw: unknown): string | undefined {
   return v.length > 0 ? v : undefined
 }
 
+/**
+ * Ключ записи: непустая строка ИЛИ конечное число (портал приводит `actionParams` по-разному).
+ *
+ * ⚠️ Дробное и отрицательное не отбрасываем: форму идентификатора знает только хранилище, а наше дело
+ * — не потерять значение по дороге. Негодное всё равно упрётся в «не найдено» на сервере.
+ */
+function readKey(raw: unknown): string | undefined {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? String(raw) : undefined
+  return readText(raw)
+}
+
 export function readWidgetParams(options: unknown): WidgetParams {
   if (typeof options !== 'object' || options === null) return {}
   const o = options as Record<string, unknown>
@@ -88,7 +99,11 @@ export function readWidgetParams(options: unknown): WidgetParams {
   if (token !== undefined) params.token = token
   const url = pick(o, readText, 'url', 'URL')
   if (url !== undefined) params.url = url
-  const responseId = pick(o, readText, 'responseId', 'RESPONSE_ID')
+  // ⚠️ `readKey`, а не `readText`: `dealId` читается терпимо к форме (число ИЛИ строка), а
+  // `responseId` читался только строкой — асимметрия, которая стоила бы дорого. В PgStore это
+  // `bigint`, боевое значение выглядит как `"31"`; приведи портал `actionParams` к числу — параметр
+  // исчез бы, и виджет свалился бы в «выписать новое приглашение» ответившему клиенту.
+  const responseId = pick(o, readKey, 'responseId', 'RESPONSE_ID')
   if (responseId !== undefined) params.responseId = responseId
   return params
 }

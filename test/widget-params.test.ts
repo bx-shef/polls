@@ -120,6 +120,18 @@ describe('проводка кнопки РЕЗУЛЬТАТА: дело пише�
     expect(params).toEqual({ responseId: 'r-42', dealId: 759 })
   })
 
+  it('числовой responseId НЕ теряется: портал приводит actionParams по-разному', () => {
+    // ⚠️ `dealId` читался терпимо (число или строка), а `responseId` — только строкой. В PgStore это
+    // `bigint`, и приведи портал параметр к числу, он бы исчез — виджет свалился бы в «выписать новое
+    // приглашение» клиенту, который только что ответил.
+    expect(readWidgetParams({ responseId: 42, dealId: 759 })).toEqual({ responseId: '42', dealId: 759 })
+    expect(hasResultRequest(readWidgetParams({ responseId: 42 }))).toBe(true)
+    // Мусор по-прежнему не проходит.
+    for (const bad of [Number.NaN, Infinity, '', '   ', null, {}, []]) {
+      expect(readWidgetParams({ responseId: bad }).responseId, String(bad)).toBeUndefined()
+    }
+  })
+
   it('результат распознаётся РАНЬШЕ приглашения — иначе позовём отвечавшего снова', () => {
     // ⚠️ Дело-результат живёт на той же сделке, что и дело-приглашение, и портал может добавить в
     // options свои ключи. Порядок проверок в виджете решает, что человек увидит.
@@ -127,12 +139,19 @@ describe('проводка кнопки РЕЗУЛЬТАТА: дело пише�
     expect(hasResultRequest(both)).toBe(true)
   })
 
-  it('без responseId кнопки НЕТ вовсе: мёртвая кнопка хуже отсутствующей', () => {
+  it('без записи ответа кнопки НЕТ вовсе: мёртвая кнопка хуже отсутствующей', () => {
     // До страницы просмотра результата футер отсутствовал ровно поэтому. Сводка в теле дела остаётся
     // в любом случае — ради неё менеджер сюда и смотрит, и от кнопки она зависеть не должна.
+    // ⚠️ Пустая строка тоже не считается: кнопка была бы, `readText('')` вернул бы `undefined`, и
+    // виджет предложил бы выписать НОВОЕ приглашение только что ответившему клиенту.
     expect(built({ responseId: undefined }).layout.footer).toBeUndefined()
-    expect(built({ marker: undefined }).layout.footer).toBeUndefined()
-    expect(built().layout.body.blocks, 'сводка исчезла вместе с кнопкой').toBeDefined()
+    expect(built({ responseId: '' }).layout.footer).toBeUndefined()
+    // ⚠️ А от МАРКЕРА кнопка зависеть не должна: он про дедуп дела, а не про показ ответа. Появись
+    // путь, где маркер считается позже, кнопка исчезла бы молча.
+    expect(built({ marker: undefined }).layout.footer, 'кнопка снова завязана на маркер').toBeDefined()
+    // ⚠️ Именно ЧИСЛО блоков: `toBeDefined()` истинно и для пустого объекта, а Bitrix24 требует ≥1
+    // блока — то есть дело просто не создалось бы, молча (постинг best-effort).
+    expect(Object.keys(built().layout.body.blocks), 'сводка исчезла вместе с кнопкой').toHaveLength(1)
   })
 })
 

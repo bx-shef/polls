@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildResultView, RESULT_VIEW_MAX_LINES, RESULT_VIEW_MAX_VALUE } from '../src/domain/result-view'
+import { MAX_QUESTIONS } from '../src/domain/schema'
 import { summarizeResponse } from '../src/domain/result-summary'
 import type { CompiledVersion, Question, ResponseRecord, StoredAnswer } from '../src/domain/schema'
 
@@ -100,6 +101,25 @@ describe('buildResultView — вид одного ответа (#18)', () => {
     expect(view!.context).toEqual({ dealId: 759, companyId: 101, companyName: 'ООО Ромашка' })
     expect(JSON.stringify(view)).not.toContain('Иванов')
     expect(JSON.stringify(view)).not.toContain('100500')
+  })
+
+  it('кап строк НЕ МЕНЬШЕ потолка вопросов схемы — иначе `skipped` соврёт', () => {
+    // ⚠️ Связь была невыраженной: `RESULT_VIEW_MAX_LINES` совпадал с `questions.max(200)` случайно.
+    // Подними кто-нибудь потолок черновика — страница показала бы первые 200 ответов, а внизу
+    // напечатала «Вопросов без ответа: 50» про ОТВЕЧЕННЫЕ. Тест ловит расхождение в момент правки.
+    expect(RESULT_VIEW_MAX_LINES).toBeGreaterThanOrEqual(MAX_QUESTIONS)
+  })
+
+  it('ответов БОЛЬШЕ капа → «не показали» и «не ответил» — разные числа', () => {
+    // ⚠️ Ровно то, ради чего `truncated` отделён от `skipped`: молчать о том, что мы обрезали, нельзя,
+    // а сливать это с «клиент не ответил» — прямое враньё о клиенте.
+    const many = Array.from({ length: RESULT_VIEW_MAX_LINES + 5 }, (_, i) =>
+      q({ key: `q${i}`, text: `Вопрос ${i}`, type: 'text', metric: 'text' }))
+    const answers = many.map((qq) => ans({ questionKey: qq.key, valueText: 'x' }))
+    const view = buildResultView(version(many), response(answers))!
+    expect(view.lines).toHaveLength(RESULT_VIEW_MAX_LINES)
+    expect(view.truncated).toBe(5)
+    expect(view.skipped, 'обрезанные ОТВЕТЫ уехали в «без ответа»').toBe(0)
   })
 
   it('ответ без единой строки — не ошибка, а честный пустой результат', () => {

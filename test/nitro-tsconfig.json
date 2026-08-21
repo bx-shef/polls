@@ -11,6 +11,7 @@
     "./install-wiring.test.ts",
     "./close-invite.test.ts",
     "./manual-invite.test.ts",
+    "./result-view-route.test.ts",
     "./post-result.test.ts",
     "./close-invite-wiring.test.ts",
     "./tenant-wiring.test.ts",

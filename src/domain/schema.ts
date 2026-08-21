@@ -1,6 +1,17 @@
 import { z } from 'zod'
 
 /**
+ * Потолок числа вопросов в черновике.
+ *
+ * ⚠️ Вынесен из инлайна намеренно: на него ОПИРАЕТСЯ страница просмотра результата
+ * (`RESULT_VIEW_MAX_LINES`, #18). Пока число жило только здесь, связь была невыраженной — подними
+ * кто-нибудь потолок, и страница молча печатала бы «Вопросов без ответа: N» про ОТВЕЧЕННЫЕ вопросы.
+ * Теперь расхождение ловит тест.
+ */
+export const MAX_QUESTIONS = 200
+
+
+/**
  * Доменные типы движка опроса.
  * Соответствуют модели данных (docs/project-map.md): вопрос с метрикой и
  * стабильным ключом, вариант со стабильным ключом, ответ со снимком CRM-контекста.
@@ -234,7 +245,7 @@ export const surveyDraftSchema = z.object({
   thanks: thanksSchema.optional(),
   /** Упорядоченные отображаемые имена блоков (совпадают с `question.block`). */
   blocks: z.array(z.string().max(200)).max(50).optional(),
-  questions: z.array(questionSchema).min(1).max(200),
+  questions: z.array(questionSchema).min(1).max(MAX_QUESTIONS),
   /** Политика приглашения (опц.): когда и каким каналом звать клиента. */
   invitationPolicy: invitationPolicySchema.optional()
 })
