@@ -12,6 +12,10 @@ import {
 import { dashboardAuthMessage, PORTAL_GONE_MESSAGE } from '~core/api/session'
 import type { PortalSession } from '~core/api/session'
 import type { IStore } from '~core/store/types'
+// ⚠️ Предел длины ключа берётся из ядра, а не переобъявляется: вторая копия молча разъедется с
+// остальными публичными путями, а JSDoc рядом обещает «та же граница».
+import { MAX_SURVEY_KEY_LEN } from '~core/api/handlers'
+import type { SessionTenant } from './tenant'
 import { DASHBOARD_RATE_MESSAGE } from './dashboard-limit'
 
 /**
@@ -25,9 +29,8 @@ import { DASHBOARD_RATE_MESSAGE } from './dashboard-limit'
  * `result-view.ts`.
  */
 
-/** Что роут знает о запросе до всякой авторизации. */
+/** Что роут знает о запросе. */
 export interface DashboardInput {
-  ip: string
   surveyKey: string
   /** `?version=N` как его отдаёт `getQuery` — скаляр, массив или ничего. */
   version: unknown
@@ -37,10 +40,10 @@ export type SessionResult =
   | { ok: true; session: PortalSession; devOpen: boolean }
   | { ok: false; status: 401 | 503 }
 
-export type TenantResult = { ok: true; portalId: number | undefined } | { ok: false; status: 401 }
+/** Тот же тип, что отдаёт `resolveSessionPortal` — второй контракт разъехался бы молча. */
+export type TenantResult = SessionTenant
 
 export interface DashboardDeps {
-  allowIp(ip: string): boolean
   allowPortal(portalId: number | undefined): boolean
   session(): SessionResult
   tenant(session: PortalSession): Promise<TenantResult>
@@ -52,20 +55,11 @@ export interface DashboardOutcome {
   body: Record<string, unknown>
 }
 
-/** Ключ опроса приходит из адреса — та же граница длины, что у остальных публичных путей. */
-const MAX_SURVEY_KEY_LEN = 200
-
 export async function dashboardDecision(
   input: DashboardInput,
   deps: DashboardDeps
 ): Promise<DashboardOutcome> {
-  // 1. Потолок по адресу — ПЕРВЫМ, до разбора сессии: `resolveSessionPortal` ходит в базу, а адрес
-  // дашборда открыт из интернета.
-  if (!deps.allowIp(input.ip)) {
-    return { status: 429, body: { ok: false, error: DASHBOARD_RATE_MESSAGE } }
-  }
-
-  // 2. Гейт #47: прод без валидной сессии портала → 401/503 (срезы раскрывают имена клиентов и
+  // 1. Гейт #47: прод без валидной сессии портала → 401/503 (срезы раскрывают имена клиентов и
   // сотрудников — fail-closed); dev/гейт — открыто.
   //
   // Отвечаем ТЕЛОМ, а не броском: `createError` Nitro заворачивает в свой конверт, и текст до
@@ -80,14 +74,15 @@ export async function dashboardDecision(
     return { status: session.status, body: { ok: false, error: dashboardAuthMessage(session.status) } }
   }
 
-  // 3. Tenant-изоляция (#47): `member_id` подписанной сессии → числовой `portal.id`, которым
+  // 2. Tenant-изоляция (#47): `member_id` подписанной сессии → числовой `portal.id`, которым
   // скоуплен стор. Без этого шага дашборд читал бы портал, выбранный инстансом по умолчанию, — то
   // есть сотрудник одного заказчика видел бы срезы другого, с именами клиентов и ответственных.
   const tenant = await deps.tenant(session.session)
   if (!tenant.ok) return { status: tenant.status, body: { ok: false, error: PORTAL_GONE_MESSAGE } }
 
-  // 4. Потолок по порталу — ПОСЛЕ подтверждения тенанта (ключ подделать нельзя) и ДО чтения
-  // ответов: именно чтение и счёт стоят дорого.
+  // 3. Потолок по порталу — ПОСЛЕ подтверждения тенанта (ключ подделать нельзя) и ДО чтения
+  // ответов: именно чтение и счёт стоят дорого. Пер-IP потолка здесь нет намеренно — разбор в
+  // `dashboard-limit.ts`: на SSR-пути его ключ один на все порталы.
   if (!deps.allowPortal(tenant.portalId)) {
     return { status: 429, body: { ok: false, error: DASHBOARD_RATE_MESSAGE } }
   }
@@ -134,8 +129,8 @@ export async function dashboardDecision(
     // ⚠️ Подавление ПО ЯЧЕЙКАМ (#49) — второй уровень поверх гейта по общему N. Гейт по N говорит
     // «выборка достаточна», но внутри достаточной выборки «Отказ от услуги — 1» это один конкретный
     // клиент, а рядом на том же экране лежат срезы по компаниям и ответственным.
-    const { items, hiddenBins } = suppressSmallBins(counted)
-    distribution = { question: choiceQ.text, items, hiddenBins, threshold: ANONYMITY_THRESHOLD }
+    const { items, hiddenBins, hiddenCount } = suppressSmallBins(counted)
+    distribution = { question: choiceQ.text, items, hiddenBins, hiddenCount }
   }
 
   // Срезы по измерениям через ядровой `breakdownBy` (группировка + подавление малых N — там).
