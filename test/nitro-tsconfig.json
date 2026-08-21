@@ -10,6 +10,7 @@
     "./invitation-wiring.test.ts",
     "./install-wiring.test.ts",
     "./close-invite.test.ts",
+    "./post-result.test.ts",
     "./close-invite-wiring.test.ts",
     "./tenant-wiring.test.ts",
     "./demo-seed-wiring.test.ts",

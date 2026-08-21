@@ -21,7 +21,7 @@ import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations, allowB24Install } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { logger, resetStoreCache } from '../../utils/api'
-import { dropCachedPortalClients } from '../../utils/close-invite'
+import { dropCachedPortalClients } from '../../utils/portal-deps'
 import { installSaveOpts } from '../../utils/install-opts'
 
 // Верификационный рефреш — синхронный исходящий вызов на oauth.bitrix.info внутри install-запроса;

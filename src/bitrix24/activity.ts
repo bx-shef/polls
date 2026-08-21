@@ -36,13 +36,22 @@ export function dealDetailPath(dealId: number): string {
 }
 
 /**
- * Нейтрализация BB-кода в тексте, попадающем в таймлайн Bitrix (защита от инъекции `[url=…]`/меток/
- * кнопок): скобки `[`/`]` → полноширинные `［`/`]`. Порт live-verified паттерна соседа `ai-price-import`
- * (`chatNotify.neutralizeBb`). Наш `surveyTitle` авторит админ портала (тот же домен доверия), но это
- * ПЕРВЫЙ пишущий-в-таймлайн путь polls — нейтрализуем defense-in-depth и для паритета. Длину строки не
- * меняет (замена 1:1), поэтому применяется ДО `.slice`. */
+ * Нейтрализация разметки в тексте, попадающем в таймлайн Bitrix: скобки `[`/`]` → полноширинные
+ * `［`/`］` (BB-код: `[url=…]`, метки, кнопки) и `<`/`>` → `＜`/`＞`.
+ *
+ * Порт live-verified паттерна соседа `ai-price-import` (`chatNotify.neutralizeBb`). Длину строки не
+ * меняет (замена 1:1), поэтому применяется ДО `.slice`.
+ *
+ * ⚠️ Угловые скобки добавлены с возвратом РЕЗУЛЬТАТА в таймлайн (#18): `surveyTitle` авторит админ
+ * портала (тот же домен доверия), а вот сводка ответов несёт СВОБОДНЫЙ ТЕКСТ анонимного респондента —
+ * текстовый вопрос и «Другое». Рендерит ли Bitrix24 блок `type: 'text'` как разметку, вживую не
+ * сверено; окажись что да — `<img onerror=…>` из чужого ответа попал бы в CRM менеджера. Проверка
+ * стоит ноль, а ставка на «наверняка экранирует» — чужая CRM.
+ */
 export function neutralizeBb(text: string): string {
-  return String(text ?? '').replace(/\[/g, '［').replace(/\]/g, '］')
+  return String(text ?? '')
+    .replace(/\[/g, '［').replace(/\]/g, '］')
+    .replace(/</g, '＜').replace(/>/g, '＞')
 }
 
 export interface SurveyInviteActivityInput {
@@ -87,7 +96,11 @@ export interface ConfigurableActivityParams {
       logo: { code: string; action: { type: string; uri: string } }
       blocks: Record<string, unknown>
     }
-    footer: { buttons: Record<string, unknown> }
+    /**
+     * Футер с кнопками. Необязателен: у дела-РЕЗУЛЬТАТА кнопок нет (#18) — вести им сегодня некуда,
+     * а «мёртвая кнопка хуже отсутствующей». Вернётся вместе со страницей просмотра результата.
+     */
+    footer?: { buttons: Record<string, unknown> }
   }
 }
 
@@ -162,9 +175,9 @@ export interface SurveyResultActivityInput {
   /** Заголовок опроса — в шапку активности. */
   surveyTitle: string
   /** Сводка ответов клиента (`summarizeResponse`) — строки «вопрос → значение». */
-  lines: ResultLine[]
-  /** id записи ответа — в `actionParams` кнопки «Открыть результат» (виджет знает, что открыть). */
-  responseId: string
+  lines: readonly ResultLine[]
+  /** Маркер записи: `result:<responseId>` (`resultMarker`) — по нему дело потом находят. */
+  marker?: InviteMarker
   /** Ответственный за активность (опц.). */
   responsibleId?: number
 }
@@ -172,9 +185,10 @@ export interface SurveyResultActivityInput {
 /**
  * Собрать параметры активности «Результат опроса» для таймлайна сделки (триггер «клиент заполнил
  * опрос», #18) — симметрично `buildSurveyInviteActivity`. Отличия: `completed:'Y'` (это ЗАПИСЬ о
- * завершённом опросе, не pending-действие); тело — сводка ответов клиента (по блоку на строку); кнопка
- * «Открыть результат» → `openRestApp` (виджет откроет полный результат/PDF, #18). Пустая сводка → один
- * блок-заглушка (Bitrix требует ≥1 блок). Чистая функция — тестируется без портала.
+ * завершённом опросе, не pending-действие); тело — сводка ответов клиента (по блоку на строку);
+ * **футера нет** — вести кнопке некуда, пока нет страницы просмотра результата (разбор — в самом
+ * `layout` ниже). Пустая сводка → один блок-заглушка (Bitrix требует ≥1 блок). Чистая функция —
+ * тестируется без портала.
  */
 export function buildSurveyResultActivity(input: SurveyResultActivityInput): ConfigurableActivityParams {
   const dealPath = dealDetailPath(input.dealId)
@@ -183,7 +197,15 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
   const lineEntries = input.lines.length > 0 ? input.lines.slice(0, 20) : [{ label: 'Опрос заполнен', value: 'без ответов' }]
   const blocks: Record<string, unknown> = {}
   lineEntries.forEach((line, i) => {
-    blocks[`line${i}`] = { type: 'text', properties: { value: neutralizeBb(`${line.label}: ${line.value}`).slice(0, 500) } }
+    // ⚠️ Метку капаем ОТДЕЛЬНО. `summarizeResponse` капает только значение (300), а текст вопроса
+    // схема разрешает до 2000 — на общей обрезке в 500 вопрос длиной 500+ съедал бы ответ целиком, и
+    // в таймлайн уходила бы обрезанная формулировка без единого символа того, что клиент ответил.
+    // ⚠️ Режем по КОД-ПОИНТАМ, а не по единицам UTF-16: свободный текст с эмодзи ровно на границе
+    // дал бы одиночный суррогат — в лучшем случае «крякозябра» в карточке, в худшем портал отверг бы
+    // payload, и результат потерялся бы тихо (путь best-effort, наружу отказ не идёт).
+    const label = [...neutralizeBb(line.label)].slice(0, 180).join('')
+    const value = [...neutralizeBb(line.value)].slice(0, 300).join('')
+    blocks[`line${i}`] = { type: 'text', properties: { value: `${label}: ${value}` } }
   })
   return {
     ownerTypeId: DEAL_OWNER_TYPE_ID,
@@ -192,7 +214,8 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
       // completed=Y — активность-ЗАПИСЬ о завершённом опросе (в отличие от pending-приглашения completed=N).
       typeId: 'CONFIGURABLE',
       completed: 'Y',
-      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {})
+      ...(input.responsibleId != null ? { responsibleId: input.responsibleId } : {}),
+      ...(input.marker ? { originatorId: input.marker.originatorId, originId: input.marker.originId } : {})
     },
     layout: {
       icon: { code: SURVEY_ACTIVITY_LOGO },
@@ -200,17 +223,12 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
       body: {
         logo: { code: SURVEY_ACTIVITY_LOGO, action: { type: 'redirect', uri: dealPath } },
         blocks
-      },
-      footer: {
-        buttons: {
-          openResult: {
-            title: 'Открыть результат',
-            type: 'primary',
-            // ⚠️ `openRestApp` вживую не сверен (сосед live-verified только `redirect`) — smoke #126.
-            action: { type: 'openRestApp', actionParams: { responseId: input.responseId, dealId: input.dealId } }
-          }
-        }
       }
+      // ⚠️ Футера НЕТ намеренно. Здесь стояла кнопка «Открыть результат» (`openRestApp` с
+      // `responseId`), но открывать ей нечего: виджет `responseId` не читает (`readWidgetParams`
+      // знает только про сделку и приглашение), страницы просмотра результата ещё нет. Кнопка,
+      // ведущая в пустой экран, хуже её отсутствия — а сама сводка ответов уже в теле дела, ради неё
+      // менеджер сюда и смотрит. Вернётся вместе со страницей результата (#18, вторая половина).
     }
   }
 }

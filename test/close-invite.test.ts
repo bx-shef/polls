@@ -12,7 +12,11 @@ import type { AnsweredInfo } from '../src/api/handlers'
  */
 const INFO: AnsweredInfo = {
   surveyKey: 'csat_postdeal',
+  surveyTitle: 'Оценка после сделки',
   versionNo: 2,
+  responseId: 'r-1',
+  lines: [{ label: 'Насколько вероятно?', value: '9' }],
+  resultToTimeline: true,
   context: { dealId: 759 },
   at: new Date('2026-08-20T10:00:00Z')
 }

@@ -66,7 +66,7 @@ const AREAS = [
   // Тесты проводки приглашений загружают модули Nitro (авто-импорты Nuxt), поэтому исключены из
   // ядрового проекта — и им нужен свой, иначе типовые правила по ним молча выключатся.
   {
-    files: ['test/invitation-retention.test.ts', 'test/invitation-wiring.test.ts', 'test/install-wiring.test.ts', 'test/close-invite.test.ts', 'test/close-invite-wiring.test.ts', 'test/tenant-wiring.test.ts', 'test/demo-seed-wiring.test.ts'],
+    files: ['test/invitation-retention.test.ts', 'test/invitation-wiring.test.ts', 'test/install-wiring.test.ts', 'test/close-invite.test.ts', 'test/post-result.test.ts', 'test/close-invite-wiring.test.ts', 'test/tenant-wiring.test.ts', 'test/demo-seed-wiring.test.ts'],
     project: './test/nitro-tsconfig.json'
   },
   { files: ['app/**'], project: './.nuxt/tsconfig.app.json' },

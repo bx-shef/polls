@@ -1,4 +1,4 @@
-import type { InvitationPolicy, InviteChannel } from './schema'
+import type { CompiledVersion, InvitationPolicy, InviteChannel } from './schema'
 
 /**
  * Чистая доменная логика приглашений (invitation-flow #3). Стор и HTTP-проброс —
@@ -22,4 +22,15 @@ export function chooseChannel(
 ): InviteChannel | undefined {
   const have = new Set(available)
   return policy.channelOrder.find((c) => have.has(c))
+}
+
+/**
+ * Класть ли индивидуальный результат в таймлайн сделки (#18).
+ *
+ * ⚠️ Отдельная функция, а не чтение поля по месту: политики у версии может не быть вовсе (старые
+ * опросы), и «нет политики» обязано значить то же, что «дефолт политики» — иначе один и тот же опрос
+ * вёл бы себя по-разному до и после первого сохранения политики в конструкторе.
+ */
+export function resultToTimelineEnabled(version: Pick<CompiledVersion, 'invitationPolicy'>): boolean {
+  return version.invitationPolicy?.resultToTimeline ?? true
 }

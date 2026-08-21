@@ -191,7 +191,11 @@ describe('versionToDraft — обратная проекция для редак
   })
 
   it('опрос без invitationPolicy → остаётся undefined (не подставляет дефолт)', () => {
-    const back = versionToDraft(compile(draftV1(), 1)) // seed-черновик без политики
+    // ⚠️ Фикстура СВОЯ, а не демо-черновик. Демо теперь несёт политику (#18: чип «Анонимно» на интро
+    // и запрет записи результата в карточку обязаны совпадать), и опираться на «у демо политики нет»
+    // значило бы, что этот тест проверяет не своё утверждение, а состав фикстуры.
+    const noPolicy = { ...draftV1(), invitationPolicy: undefined }
+    const back = versionToDraft(compile(noPolicy, 1))
     expect(back.invitationPolicy).toBeUndefined()
   })
 
