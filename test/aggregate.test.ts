@@ -16,7 +16,8 @@ import {
   meetsAnonymity,
   npsFor,
   npsTrend,
-  numericValues
+  numericValues,
+  suppressSmallBins
 } from '../src/domain/aggregate'
 import { buildDemo, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
@@ -265,5 +266,134 @@ describe('npsTrend — сортировка бакетов не зависит �
     // Вставка май→апрель: компаратор должен переставить (ветвь a > b).
     const rs = [mk('b', '2026-05-10', 9), mk('a', '2026-04-10', 9)]
     expect(npsTrend(rs, NPS_Q, 'month').map((p) => p.bucket)).toEqual(['2026-04', '2026-05'])
+  })
+})
+
+describe('k-анонимность распределения по ячейкам (#49)', () => {
+  const bins = (...pairs: Array<[string, number]>) => pairs.map(([label, count]) => ({ label, count }))
+  const labels = (r: { items: Array<{ label: string }> }) => r.items.map((i) => i.label)
+
+  it('крупные ячейки проходят целиком, скрытого нет', () => {
+    const out = suppressSmallBins(bins(['Скорость', 8], ['Цена', 7]))
+    expect(out.items).toHaveLength(2)
+    expect(out.hiddenBins).toBe(0)
+    expect(out.hiddenCount, 'нечего скрывать — суммы быть не должно').toBeNull()
+  })
+
+  it('точечная ячейка скрыта, и вместе с ней — самая маленькая из показанных', () => {
+    // Скрыв ОДНУ ячейку, мы бы её же и назвали: остаток публикуется, и он был бы равен ей.
+    const out = suppressSmallBins(bins(['Скорость', 20], ['Цена', 7], ['Отказ', 1]))
+    expect(labels(out)).toEqual(['Скорость'])
+    expect(out.hiddenBins).toBe(2)
+    expect(out.hiddenCount).toBe(8)
+  })
+
+  it('добираем именно САМУЮ МАЛЕНЬКУЮ из показанных, а не первую или последнюю', () => {
+    const out = suppressSmallBins(bins(['Цена', 9], ['Скорость', 20], ['Отказ', 2]))
+    expect(labels(out)).toEqual(['Скорость'])
+  })
+
+  it('ДВЕ точечные ячейки при малом остатке — добираем дальше (#49, найдено ревью)', () => {
+    // ⚠️ Первая редакция правила добирала соседа ТОЛЬКО когда скрыта ровно одна ячейка. Здесь
+    // скрытых уже две, добор не срабатывал, остаток равнялся 2 на две ячейки — то есть «по одному
+    // ответу в каждой», и оба «конкретных человека» назывались. Выборка при этом живая: 23 ответа.
+    const out = suppressSmallBins(bins(['A', 12], ['B', 9], ['C', 1], ['D', 1]))
+    expect(labels(out)).toEqual(['A'])
+    expect(out.hiddenBins).toBe(3)
+    expect(out.hiddenCount, 'остаток обязан быть не меньше порога').toBe(11)
+  })
+
+  it('остаток из двух единиц при одной крупной ячейке → не показываем НИЧЕГО', () => {
+    // `[20, 1, 1]`: показать 20 значило бы назвать обе единицы (остаток 2 на две ячейки).
+    const out = suppressSmallBins(bins(['Скорость', 20], ['C', 1], ['D', 1]))
+    expect(out.items).toEqual([])
+    expect(out.hiddenBins).toBe(3)
+    expect(out.hiddenCount).toBe(22)
+  })
+
+  it('два варианта и у одного единица → не показываем НИЧЕГО', () => {
+    const out = suppressSmallBins(bins(['Скорость', 40], ['Отказ', 1]))
+    expect(out.items).toEqual([])
+    expect(out.hiddenBins).toBe(2)
+    expect(out.hiddenCount).toBe(41)
+  })
+
+  it('единственная малая ячейка: сумму НЕ печатаем — она назвала бы эту ячейку', () => {
+    const out = suppressSmallBins(bins(['Отказ', 1]))
+    expect(out.items).toEqual([])
+    expect(out.hiddenBins).toBe(1)
+    expect(out.hiddenCount).toBeNull()
+  })
+
+  it('инвариант остатка держится на всех входах: скрытых ≥2 и сумма ≥ порога', () => {
+    // Свойство важнее любого отдельного примера: остаток публикуется, значит по построению обязан
+    // распадаться минимум на две ячейки и быть не меньше порога — иначе он называет ячейку.
+    const cases = [
+      bins(['a', 1]), bins(['a', 1], ['b', 1]), bins(['a', 20], ['b', 1], ['c', 1]),
+      bins(['a', 12], ['b', 9], ['c', 1], ['d', 1]), bins(['a', 5], ['b', 5], ['c', 1]),
+      bins(['a', 3], ['b', 4], ['c', 4], ['d', 2], ['e', 2], ['f', 2]),
+      bins(['a', 100], ['b', 4]), bins(['a', 6], ['b', 6], ['c', 6])
+    ]
+    for (const input of cases) {
+      const out = suppressSmallBins(input)
+      const why = JSON.stringify(input)
+      const total = input.reduce((a, i) => a + i.count, 0)
+      const hiddenSum = total - out.items.reduce((a, i) => a + i.count, 0)
+      // Ни одна ПОКАЗАННАЯ ячейка не мала — это и есть первый уровень правила.
+      for (const i of out.items) expect(i.count, why).toBeGreaterThanOrEqual(ANONYMITY_THRESHOLD)
+      expect(out.hiddenBins, why).toBe(input.length - out.items.length)
+      if (out.hiddenCount === null) {
+        // Сумму не публикуем ровно по двум причинам, и обе обязаны быть настоящими.
+        expect(out.hiddenBins < 2 || hiddenSum < ANONYMITY_THRESHOLD, `${why}: сумму скрыли зря`).toBe(true)
+        continue
+      }
+      expect(out.hiddenCount, why).toBe(hiddenSum)
+      expect(out.hiddenBins, why).toBeGreaterThanOrEqual(2)
+      expect(out.hiddenCount, why).toBeGreaterThanOrEqual(ANONYMITY_THRESHOLD)
+    }
+  })
+
+  it('демо-данные проекта: все шесть ячеек малы → показываем сумму, а не пустоту', () => {
+    // ⚠️ Ровно то, что лежит в `src/demo/seed.ts` (12 ответов, вопрос «Что понравилось»). Без строки
+    // «Другие варианты» карточка на демо-дашборде оказалась бы пустой при 12 ответах — экран,
+    // который человек прочтёт как поломку.
+    const out = suppressSmallBins(bins(['quality', 4], ['support', 4], ['speed', 3], ['price', 2], ['other', 2], ['design', 2]))
+    expect(out.items).toEqual([])
+    expect(out.hiddenBins).toBe(6)
+    expect(out.hiddenCount).toBe(17)
+  })
+
+  it('порог настраиваемый и по умолчанию равен общему порогу анонимности', () => {
+    const input = bins(['a', 4], ['b', 4], ['c', 9], ['d', 9])
+    expect(ANONYMITY_THRESHOLD).toBe(5)
+    expect(labels(suppressSmallBins(input))).toEqual(['c', 'd'])
+    expect(suppressSmallBins(input, 2).hiddenBins).toBe(0)
+  })
+
+  it('ячейка с нулём — не «редкий вариант», её никто не деанонимизирует', () => {
+    // ⚠️ Сегодня `distributionFor` пустых ячеек не создаёт, но станет создавать в тот день, когда
+    // захочется печатать ВСЕ варианты вопроса, включая невыбранные. Тогда ноль потянул бы за собой
+    // живую соседнюю ячейку — правило начало бы прятать данные без единой причины.
+    const out = suppressSmallBins([{ label: 'a', count: 0 }, { label: 'b', count: 9 }, { label: 'c', count: 9 }])
+    expect(out.items.map((i) => i.label), 'ноль съел живую ячейку').toEqual(['b', 'c'])
+    expect(out.hiddenBins, 'пустая ячейка посчитана скрытой — скрывать в ней нечего').toBe(0)
+    expect(out.hiddenCount).toBeNull()
+  })
+
+  it('порог 0 не прячет ничего — вырожденный, но определённый случай', () => {
+    const out = suppressSmallBins(bins(['a', 1], ['b', 2]), 0)
+    expect(out.hiddenBins).toBe(0)
+    expect(out.items).toHaveLength(2)
+  })
+
+  it('пустой вход — пустой выход', () => {
+    expect(suppressSmallBins([])).toEqual({ items: [], hiddenBins: 0, hiddenCount: null })
+  })
+
+  it('вход НЕ мутируется — вызывающий сортирует его сам', () => {
+    const input = bins(['Скорость', 20], ['Отказ', 1])
+    suppressSmallBins(input)
+    expect(input).toHaveLength(2)
+    expect(input[0]!.count).toBe(20)
   })
 })

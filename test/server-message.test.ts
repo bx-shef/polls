@@ -132,7 +132,16 @@ describe('контракт с ядром API', () => {
  */
 // Пути — от этого файла, а не от текущего каталога: иначе тест зависел бы от того, откуда запустили.
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const SCANNED = [join(ROOT, 'src/api/handlers.ts'), ...listServerRoutes(join(ROOT, 'server/api'))]
+// ⚠️ `server/utils` сканируется НАРАВНЕ с роутами, и это не «на всякий случай». Роуты дашборда и
+// страницы результата вынесли свои решения в `server/utils/*-view.ts` вместе с текстами отказов — и
+// гард, смотревший только в `server/api`, молча перестал их видеть: порог `seen > 30` набирался
+// остальными роутами, поэтому ослабление прошло зелёным. Каталог целиком сканируется затем, чтобы
+// следующий вынос не повторил это; файлы без `error:` дают ноль выражений и ничему не мешают.
+const SCANNED = [
+  join(ROOT, 'src/api/handlers.ts'),
+  ...listServerRoutes(join(ROOT, 'server/api')),
+  ...listServerRoutes(join(ROOT, 'server/utils'))
+]
 
 function listServerRoutes(dir: string): string[] {
   // Пробы линт-гейта (`__lint-probe.*`) исключаем: они появляются и исчезают в боевых каталогах во

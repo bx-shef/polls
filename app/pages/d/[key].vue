@@ -17,7 +17,16 @@ interface Dashboard {
   threshold?: number
   nps?: NpsSummary | null
   csat?: CsatSummary | null
-  distribution?: { question: string; items: { label: string; count: number }[] } | null
+  // `hiddenBins` — сколько ячеек подавлено k-анонимностью (#49), `hiddenCount` — их СУММА. Сумма
+  // публикуется намеренно (иначе читатель вычислял бы её вычитанием, и никто не отвечал бы за её
+  // неоднозначность); отдельные метки и счётчики скрытых ячеек сервер не отдаёт. `null` — скрытых
+  // меньше двух, и сумма назвала бы единственную скрытую ячейку.
+  distribution?: {
+    question: string
+    items: { label: string; count: number }[]
+    hiddenBins: number
+    hiddenCount: number | null
+  } | null
   trend?: TrendPoint[]
   // Срезы — проекции (имя группы + метрики подвыборки), не ядровые типы; рендерятся BreakdownCard.
   services?: BreakdownRow[]
@@ -155,12 +164,16 @@ const heading = computed(() => data.value?.title ?? 'Дашборд опроса
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Топ-бокс: {{ data.csat.topBoxPct }}%</p>
       </B24Card>
 
+      <!-- ⚠️ Карточка живёт и при ПУСТОМ списке ячеек — если есть что сказать про скрытое: бывает,
+           что показать нельзя ничего (два варианта, у одного единица), и молчаливое исчезновение
+           блока читается как «вопрос не задавали». Но пустая карточка с одним заголовком и ничем
+           внутри — хуже отсутствующей, поэтому нужен хотя бы один из двух источников содержимого. -->
       <B24Card
-        v-if="data?.distribution?.items?.length"
+        v-if="data?.distribution && (data.distribution.items.length || data.distribution.hiddenBins)"
         :title="data.distribution.question"
         class="sm:col-span-2"
       >
-        <ul class="flex flex-col gap-2">
+        <ul v-if="data.distribution.items.length" class="flex flex-col gap-2">
           <li
             v-for="item in data.distribution.items"
             :key="item.label"
@@ -170,6 +183,22 @@ const heading = computed(() => data.value?.title ?? 'Дашборд опроса
             <B24Badge color="air-secondary-accent" :label="String(item.count)" />
           </li>
         </ul>
+        <!-- ⚠️ Текст НЕ говорит «в каждом меньше N ответов»: вместе с редким вариантом скрывается и
+             соседний, а он по построению крупный. Прежняя формулировка опровергалась соседней
+             строкой того же экрана («Ответов: 41» при «в каждом меньше 5»). -->
+        <div v-if="data.distribution.hiddenBins" class="mt-3">
+          <div v-if="data.distribution.hiddenCount !== null" class="flex items-center justify-between">
+            <span class="text-sm text-gray-500 dark:text-gray-400">
+              Другие варианты ({{ data.distribution.hiddenBins }})
+            </span>
+            <B24Badge color="air-secondary" :label="String(data.distribution.hiddenCount)" />
+          </div>
+          <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+            Редкие варианты не показываем по отдельности: по единичному ответу можно узнать
+            конкретного человека. Вместе с редким скрывается и соседний — иначе его значение
+            восстанавливалось бы вычитанием.
+          </p>
+        </div>
       </B24Card>
 
       <B24Card
