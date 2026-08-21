@@ -40,7 +40,7 @@
 | **8. Аналитика** | CES на дашборде; кнопка «очистить данные за период» | — |
 | **Сквозное: хранилище** | nonce в БД (приглашения ✅ сделаны) | [#4](https://github.com/bx-shef/polls/issues/4) |
 | **Сквозное: приватность** | удаление ПДн на уровне API | [#31](https://github.com/bx-shef/polls/issues/31) · [#10](https://github.com/bx-shef/polls/issues/10) |
-| **Сквозное: мультитенант** | ✅ несколько порталов в одной базе: портал — параметр запроса, изоляция чтения и записи на всех трёх входах. ⏳ осталось: SQL-агрегация дашборда и его лимит ([#49](https://github.com/bx-shef/polls/issues/49)), присвоение доустановочных данных ([#183](https://github.com/bx-shef/polls/issues/183)), публичная ссылка без приглашения на общем ключе | [#49](https://github.com/bx-shef/polls/issues/49) · [#47](https://github.com/bx-shef/polls/issues/47) |
+| **Сквозное: мультитенант** | ✅ несколько порталов в одной базе: портал — параметр запроса, изоляция чтения и записи на всех трёх входах. ⏳ осталось: SQL-агрегация дашборда и его лимит ([#49](https://github.com/bx-shef/polls/issues/49)), присвоение доустановочных данных ([#183](https://github.com/bx-shef/polls/issues/183) · [#187](https://github.com/bx-shef/polls/issues/187)), публичная ссылка без приглашения на общем ключе ([#186](https://github.com/bx-shef/polls/issues/186)), эксплуатация при десятках порталов ([#188](https://github.com/bx-shef/polls/issues/188)) | [#49](https://github.com/bx-shef/polls/issues/49) · [#47](https://github.com/bx-shef/polls/issues/47) |
 | **Сквозное: эксплуатация** | наблюдаемость на проде | [#15](https://github.com/bx-shef/polls/issues/15) |
 | **Сквозное: проверки** | визуальный гейт в CI | [#41](https://github.com/bx-shef/polls/issues/41) |
 
