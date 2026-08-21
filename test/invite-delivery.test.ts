@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createKeySerializer } from '../src/api/serial-by-key'
 import {
-  INVITE_ORIGINATOR, decideInvite, deliverInvite, inviteMarker, markerMatchesSurvey,
+  INVITE_ORIGINATOR, decideInvite, deliverInvite, inviteMarker, manualInviteMarker, markerMatchesSurvey, resultMarker,
   type DeliverInviteDeps, type MarkedActivity
 } from '../src/bitrix24/invite-delivery'
 
@@ -250,5 +250,37 @@ describe('маркер → «тот ли опрос» (закрытие дела
     expect(markerMatchesSurvey('stage:4242:a:b', 'a:b')).toBe(true)
     // И хвостовое совпадение по-прежнему отвергается.
     expect(markerMatchesSurvey('stage:4242:x:a:b', 'a:b')).toBe(false)
+  })
+
+  it('РУЧНОЙ маркер — тоже приглашение, а дело-результат — нет (#176)', () => {
+    // ⚠️ Обе формы приглашения обязаны узнаваться. Не узнавай мы ручное дело, оно не участвовало бы
+    // ни в дедупе следующего нажатия, ни в закрытии при ответе (#177): висело бы в карточке открытым
+    // вечно, а правило «уже приглашали?» о нём молчало бы.
+    expect(markerMatchesSurvey(manualInviteMarker(1787220000, 'csat').originId, 'csat')).toBe(true)
+    expect(markerMatchesSurvey(manualInviteMarker(1787220000, 'nps').originId, 'csat')).toBe(false)
+    // ⚠️ А `result:` — НЕ приглашение. Совпади префиксы, ответ клиента «закрывал» бы запись о
+    // собственном результате, и в логе это выглядело бы нормальной работой.
+    expect(markerMatchesSurvey(resultMarker('r-1').originId, 'csat')).toBe(false)
+    expect(markerMatchesSurvey('result:4242:csat', 'csat')).toBe(false)
+  })
+})
+
+describe('маркер ручного приглашения (#176)', () => {
+  it('форма — `manual:<секунды>:<опрос>`, ключ приложения тот же', () => {
+    const m = manualInviteMarker(1787220000, 'csat')
+    expect(m.originatorId).toBe(INVITE_ORIGINATOR)
+    expect(m.originId).toBe('manual:1787220000:csat')
+  })
+
+  it('не пересекается с автоматическим маркером того же опроса', () => {
+    // ⚠️ Свой префикс, а не `stage:` с выдуманным переходом: подделав ключ перехода, ручное дело
+    // начало бы съедать приглашение по НАСТОЯЩЕМУ переходу как дубль.
+    expect(manualInviteMarker(4242, 'csat').originId).not.toBe(inviteMarker('4242', 'csat').originId)
+  })
+
+  it('дробные секунды режутся: ключ — целое, без точек и лишних двоеточий', () => {
+    const id = manualInviteMarker(1787220000.9, 'csat').originId
+    expect(id).toBe('manual:1787220000:csat')
+    expect(id.split(':')).toHaveLength(3)
   })
 })

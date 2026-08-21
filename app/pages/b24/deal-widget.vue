@@ -24,6 +24,13 @@ type FrameAuth = { domain: string; member_id: string; access_token: string }
 const serverError = (e: unknown, fallback: string): string => serverMessage(e) ?? fallback
 
 const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
+/**
+ * Сервер ответил «приглашение по этой сделке уже отправлено» (#176). Отдельное состояние, а не текст
+ * ошибки: человек ничего не сделал не так, и вести его надо в таймлайн сделки, а не в «попробуйте
+ * снова». Рядом остаётся осознанное «всё равно создать новую» — ручной путь это действие человека,
+ * который смотрит на карточку, и запрещать его насовсем неправильно.
+ */
+const alreadyInvited = ref(false)
 const message = ref('Загрузка…')
 const link = ref('')
 const dealId = ref<number | undefined>()
@@ -101,17 +108,36 @@ async function copyLink() {
   }
 }
 
-async function launch() {
+async function launch(force = false) {
   if (!auth || !dealId.value) return
   phase.value = 'init'
-  message.value = 'Создаём ссылку…'
+  alreadyInvited.value = false
+  message.value = force ? 'Создаём новую ссылку…' : 'Создаём ссылку…'
   // Метка относится к КОНКРЕТНОЙ ссылке: оставшись от прошлой, «Скопировано» соврало бы про новую.
   copyLabel.value = COPY_IDLE
   try {
-    const r = await $fetch<{ ok: boolean; url?: string; error?: string }>('/api/b24/deal-invite', {
-      method: 'POST',
-      body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token, dealId: dealId.value }
-    })
+    const r = await $fetch<{ ok: boolean; url?: string; error?: string; alreadyInvited?: boolean }>(
+      '/api/b24/deal-invite',
+      {
+        method: 'POST',
+        body: {
+          DOMAIN: auth.domain,
+          member_id: auth.member_id,
+          AUTH_ID: auth.access_token,
+          dealId: dealId.value,
+          // Флаг уходит ТОЛЬКО по второму нажатию — тому, что человек делает, уже зная про первое
+          // приглашение. Слать его всегда значило бы вернуть дефект #176 под другим именем.
+          ...(force ? { force: true } : {})
+        }
+      }
+    )
+    if (!r.ok && r.alreadyInvited) {
+      // ⚠️ Это не ошибка: кнопка остаётся на месте, но подписана честно, и текст ведёт в таймлайн.
+      alreadyInvited.value = true
+      phase.value = 'ready'
+      message.value = r.error ?? 'Приглашение по этой сделке уже отправлено — оно в таймлайне сделки.'
+      return
+    }
     if (!r.ok || !r.url) throw new Error(r.error ?? 'сервер не вернул ссылку')
     link.value = r.url
     phase.value = 'done'
@@ -131,10 +157,10 @@ async function launch() {
       <p class="mb-3 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
       <B24Button
         v-if="phase === 'ready'"
-        color="air-primary"
-        label="Создать ссылку на опрос"
+        :color="alreadyInvited ? 'air-secondary' : 'air-primary'"
+        :label="alreadyInvited ? 'Всё равно создать новую ссылку' : 'Создать ссылку на опрос'"
         :disabled="!dealId"
-        @click="launch"
+        @click="launch(alreadyInvited)"
       />
       <div v-if="phase === 'done'" class="mt-2 flex flex-col gap-2">
         <a :href="link" target="_blank" class="break-all text-indigo-600 underline dark:text-indigo-400">{{ link }}</a>
@@ -145,7 +171,7 @@ async function launch() {
             color="air-tertiary"
             label="Создать новую ссылку"
             :disabled="!dealId"
-            @click="launch"
+            @click="launch(true)"
           />
         </div>
       </div>

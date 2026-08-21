@@ -215,19 +215,34 @@ export function dealIdFromDocumentId(documentId: unknown): number | undefined {
  * `CRM_DEAL_DETAIL_ACTIVITY`, охват на всех тарифах). В отличие от `handleDealTrigger` (по стадии),
  * опрос задан явно. Возвращает приглашение или `null`, если у опроса нет опубликованной версии.
  * Tenant-инвариант тот же: `store` ОБЯЗАН быть scoped на портал виджета (см. `handleDealTrigger`).
+ *
+ * ⚠️ Дедупа внутри НЕТ и быть не должно: «уже приглашали?» на ручном пути решается ДО этого вызова,
+ * поиском открытых дел по сделке (`server/utils/manual-invite.ts`, #176). Здесь выписка идёт
+ * безусловно — потому что попасть сюда можно и осознанным «всё равно создать новую ссылку».
  */
+export interface ManualInvitation extends TriggerResult {
+  /**
+   * Заголовок ЭТОЙ версии — в шапку дела таймлайна (#176).
+   *
+   * ⚠️ Не для красоты: ручной путь тоже кладёт дело в таймлайн сделки, а в шапке стоит название
+   * опроса. Версия в этот момент уже прочитана, и отдать заголовок вместе с токеном дешевле, чем
+   * читать её второй раз ради одной строки — тот же довод, что у `IssueInvitation`.
+   */
+  title: string
+}
+
 export async function createSurveyInvitation(deps: {
   store: Pick<IStore, 'currentVersion'>
   invitations: InvitationStore
   surveyKey: string
   context: CrmContext
   now?: Date
-}): Promise<TriggerResult | null> {
+}): Promise<ManualInvitation | null> {
   const version = await deps.store.currentVersion(deps.surveyKey)
   if (!version) return null
   const inv = await deps.invitations.create(
     { surveyKey: deps.surveyKey, versionNo: version.versionNo, context: deps.context, ttlMs: linkTtlMs(version.invitationPolicy) },
     deps.now ?? new Date()
   )
-  return { surveyKey: deps.surveyKey, versionNo: version.versionNo, token: inv.token }
+  return { surveyKey: deps.surveyKey, versionNo: version.versionNo, token: inv.token, title: version.title }
 }

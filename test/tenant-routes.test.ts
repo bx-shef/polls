@@ -204,6 +204,39 @@ describe('оба пути триггера доставляют приглаше
   )
 })
 
+describe('ручной путь виджета не обходит защиту от дублей (#176)', () => {
+  const PATH = 'server/api/b24/deal-invite.post.ts'
+
+  it('роут выписывает через `manualInvite`, а не голым `createSurveyInvitation`', () => {
+    // ⚠️ Именно голый `createSurveyInvitation` и был дефектом #176: он не смотрит, не висит ли уже
+    // открытое дело-приглашение по этой сделке, и дела не создаёт — вторая ссылка появлялась молча и
+    // в дедупе не участвовала вовсе. Снаружи это неотличимо от нормальной работы: ответ 200 со
+    // ссылкой в обоих случаях. Покрытия у `server/**` нет, поэтому проверка структурная.
+    const src = stripComments(read(PATH))
+    expect(src, 'выписка не идёт через manualInvite').toMatch(/\bmanualInvite\(/)
+    expect(src, 'manualInvite не из общего модуля выписки')
+      .toMatch(/import\s*\{[^}]*\bmanualInvite\b[^}]*\}\s*from\s*'[^']*utils\/manual-invite'/)
+    expect(src, 'вернулась прямая выписка мимо проверки «уже приглашали»')
+      .not.toMatch(/\bcreateSurveyInvitation\(/)
+  })
+
+  it('«всё равно создать новую» приходит ОТ КЛИЕНТА и только явным true', () => {
+    // ⚠️ Сервер не решает за человека. Но и доверять произвольному значению нельзя: `force` из тела
+    // сравнивается с `true`, иначе строка «false» из form-urlencoded включила бы обход дедупа.
+    const src = stripComments(read(PATH))
+    expect(src).toMatch(/force[\s\S]{0,160}===\s*true/)
+  })
+
+  it('клиент портала для дела — тот же, которым читается сделка', () => {
+    // Два независимых клиента разъехались бы молча: дело село бы в одну CRM, а снимок сделки пришёл
+    // бы из другой.
+    const src = stripComments(read(PATH))
+    expect(src).toMatch(/manualInvite\([\s\S]{0,400}\bclient,/)
+    expect(src).toMatch(/store:\s*tenant\.store/)
+    expect(src).toMatch(/invitations:\s*tenant\.invitations/)
+  })
+})
+
 describe('удаление приложения сбрасывает оба кэша', () => {
   it('uninstall чистит и стор, и клиентов порталов', () => {
     // Клиент портала живёт до минуты своим кэшем: без сброса удалённый портал ещё это время получал
