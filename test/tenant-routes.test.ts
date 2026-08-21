@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /**
@@ -124,19 +124,82 @@ describe('роуты Bitrix24 берут тенанта по подтвержд�
   })
 })
 
+/**
+ * Триггер-роуты, обязанные доставлять приглашение делом. Список строится ИЗ ФАЙЛОВОЙ СИСТЕМЫ, а не
+ * перечислением: `src/bitrix24/trigger.ts` прямо предупреждает, что новый вход (лид, смарт-процесс)
+ * молча унаследует фолбэк `issueWithoutDedup` и оставит тесты зелёными. Захардкоженный список этого
+ * не заметил бы — а так новый раннер роняет гард в момент появления.
+ */
+const B24_ROUTES_DIR = 'server/api/b24'
+const CORE_DIR = 'src/bitrix24'
+
+/**
+ * Ядровые раннеры триггера — те, кто зовёт `handleDealTrigger`. Имена не перечисляем: они разные
+ * (`runDealUpdate`, `runRobotTrigger`) и следующий будет третьим.
+ */
+const TRIGGER_RUNNERS = readdirSync(resolve(process.cwd(), CORE_DIR))
+  .filter((f) => f.endsWith('.ts') && f !== 'trigger.ts')
+  .flatMap((f) => {
+    const src = stripComments(read(`${CORE_DIR}/${f}`))
+    if (!/\bhandleDealTrigger\s*\(/.test(src)) return []
+    return [...src.matchAll(/export\s+async\s+function\s+(\w+)\s*\(/g)].map((m) => m[1] as string)
+  })
+
+const TRIGGER_ROUTES = readdirSync(resolve(process.cwd(), B24_ROUTES_DIR))
+  .filter((f) => f.endsWith('.ts'))
+  .map((f) => `${B24_ROUTES_DIR}/${f}`)
+  .filter((routePath) => {
+    const src = stripComments(read(routePath))
+    return TRIGGER_RUNNERS.some((fn) => new RegExp(`\\b${fn}\\s*\\(`).test(src))
+  })
+  .sort()
+
 describe('оба пути триггера доставляют приглашение делом в таймлайне (#126/#175)', () => {
-  it.each(['server/api/b24/deal-update.post.ts', 'server/api/b24/robot.post.ts'])(
+  it('список охраняемых роутов — ровно те, что зовут раннер триггера', () => {
+    // ⚠️ Assert-«перепись», а не документация: он падает, когда появляется третий вход, и заставляет
+    // осознанно решить, доставляет тот дело или нет. Пустой список означал бы гард, охраняющий ничто.
+    expect(TRIGGER_RUNNERS.sort()).toEqual(['runDealUpdate', 'runRobotTrigger'])
+    expect(TRIGGER_ROUTES).toEqual([
+      'server/api/b24/deal-update.post.ts',
+      'server/api/b24/robot.post.ts'
+    ])
+  })
+
+  it.each(TRIGGER_ROUTES)(
     '%s отдаёт ядру выписку через дело, а не фолбэк «только токен»',
     (path) => {
       // ⚠️ Без `issue` `handleDealTrigger` уходит в `issueWithoutDedup`: приглашение появляется в
       // базе, дела нет, сотрудник ссылку не видит. Ровно это и было дефектом робота (#175), и
       // снаружи оно неотличимо от «робот не сработал» — ни ошибки, ни пустого ответа.
+      //
+      // ⚠️ Имя параметра берётся ЗАХВАТОМ (`\1`), а не литералом `ctx`. Первая редакция гарда
+      // требовала буквального `(ctx) =>` и краснела на четырёх безобидных правках — `c` вместо `ctx`,
+      // стрелка без скобок (`stylistic`-пресет в проекте выключен намеренно, значит это легальная
+      // форма), тело блоком, вынос в переменную. Сообщение при этом врало о причине и учило
+      // следующего ослаблять регулярку, а не чинить код.
       const src = stripComments(read(path))
-      expect(src, `${path}: доставка не подключена`).toMatch(/issue:\s*\(ctx\)\s*=>\s*makeInviteIssue\(ctx/)
+      expect(src, `${path}: issue не строится из makeInviteIssue с тем же ctx`)
+        .toMatch(/issue:\s*\(?(\w+)\)?\s*=>\s*\{?\s*(?:return\s+)?makeInviteIssue\(\1\b/)
+      // ⚠️ Проверяем ПРОИСХОЖДЕНИЕ имени. Локальная заглушка `const makeInviteIssue = …`, возвращающая
+      // `undefined`, типобезопасна, линт-чиста и проходила прежний гард — а дела в таймлайне нет.
+      expect(src, `${path}: makeInviteIssue не из общего модуля выписки`)
+        .toMatch(/import\s*\{[^}]*\bmakeInviteIssue\b[^}]*\}\s*from\s*'[^']*utils\/invite-issue'/)
       // Выписка обязана писать в ТОТ ЖЕ портал, что и триггер: два независимых резолва разъехались
       // бы молча.
       expect(src, `${path}: выписка резолвит тенанта не тем же ключом`)
         .toMatch(/tenant:\s*async\s*\(\)\s*=>\s*\{[\s\S]{0,300}tenantFor\(ctx\.memberId\)/)
+      // ⚠️ И клиента портала — тоже мемоизированной функцией по `member_id`. Именно `portalClient`
+      // решает, в ЧЬЮ CRM ляжет дело со снимком сделки: подмена его на фиксированное замыкание
+      // прежний гард проходила, а покрытия у `server/**` нет вовсе.
+      expect(src, `${path}: клиент портала не берётся по member_id запроса`)
+        .toMatch(/makeInviteIssue\(\w+,\s*\{[\s\S]{0,200}\bportalClient,/)
+      // ⚠️ Очередь «поиск → создание» ОДНА на процесс. Заведи её внутри обработчика — у каждого
+      // события будет своя, и она перестанет что-либо значить; оба роута несут об этом абзац, но
+      // держалось это исключительно на внимательности ревьюера.
+      expect(src, `${path}: сериализатор выписки не на уровне модуля`)
+        .toMatch(/^const \w+ = createKeySerializer\(\)$/m)
+      expect(src, `${path}: сериализатор создаётся внутри обработчика`)
+        .not.toMatch(/defineEventHandler[\s\S]*createKeySerializer\(/)
     }
   )
 })

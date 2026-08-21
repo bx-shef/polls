@@ -16,6 +16,7 @@ import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { resolveTriggerMode, robotTriggerEnabled } from '~core/bitrix24/trigger-mode'
 import { createKeySerializer } from '~core/api/serial-by-key'
+import { errInfo } from '~core/obs/logger'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { makeInviteIssue } from '../../utils/invite-issue'
 import { timeoutFetch } from '../../utils/b24-fetch'
@@ -132,8 +133,12 @@ export default defineEventHandler(async (event) => {
         log: logger
       }),
       // Отказ по ОДНОМУ опросу не должен лишать приглашения остальные опросы этой же стадии.
+      // ⚠️ `errInfo`, а не `.message`: `redact` маскирует по ИМЕНИ ключа, а `detail` секретным именем
+      // не считается — сырой текст ошибки уехал бы в лог как есть. Сюда доезжают ошибки `pg`
+      // (в тексте бывает строка подключения с паролем) и SDK; `scrubSecrets` живёт именно в `errInfo`.
+      // ⚠️ `path` — потому что имя события одно на оба пути: без него по логу не сказать, чей отказ.
       onIssueError: (surveyKey, e) =>
-        logger.warn('b24_invite_fail', { surveyKey, detail: (e as Error).message })
+        logger.warn('b24_invite_fail', { path: 'robot', surveyKey, err: errInfo(e) })
     })
 
     if (outcome.kind === 'ignored') {
@@ -142,7 +147,25 @@ export default defineEventHandler(async (event) => {
     } else if (outcome.kind === 'forged') {
       logger.warn('b24_robot_reject', { reason: outcome.reason, memberId: outcome.memberId })
     } else {
-      logger.info('b24_robot', { dealId: outcome.dealId, invitations: outcome.results.length })
+      // ⚠️ Три числа, а не одно: `invitations: 0` одинаково означало «стадия не триггерит опросов»,
+      // «дедуп отсёк» и «выписка отвалилась» — событийный путь эти исходы разводит с #138.
+      // ⚠️ `keys` печатаются и на УСПЕШНОЙ ветке, не только на отбракованной: единственный вопрос,
+      // ради которого затевается живой прогон робота (#122), — что вообще приезжает в теле. Значения
+      // не логируем никогда, только имена полей.
+      // ⚠️ `tsSource`/`tsReason` показывают, взят ли ключ перехода из `ts` портала или с наших часов.
+      // Второе означает, что дедупа у робота нет вовсе (ключ меняется каждую секунду), и без этой
+      // строки такое состояние НЕВИДИМО.
+      const level = outcome.failed.length > 0 ? 'warn' : 'info'
+      logger[level]('b24_robot', {
+        dealId: outcome.dealId,
+        invitations: outcome.results.length,
+        deduped: outcome.deduped.length,
+        failed: outcome.failed.length,
+        transitionId: outcome.transition.id,
+        tsSource: outcome.transition.source,
+        ...(outcome.transition.reason ? { tsReason: outcome.transition.reason } : {}),
+        keys: Object.keys(raw).join(',')
+      })
     }
   } catch (e) {
     logger.warn('b24_robot_fail', { detail: (e as Error).message })

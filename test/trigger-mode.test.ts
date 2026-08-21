@@ -14,7 +14,20 @@ describe('resolveTriggerMode — режим авто-триггера из на�
 
   it('регистр и пробелы не важны (оператор вводит руками)', () => {
     expect(resolveTriggerMode('  ROBOT ')).toBe('robot')
-    expect(resolveTriggerMode('Both')).toBe('both')
+    expect(resolveTriggerMode(' Event')).toBe('event')
+  })
+
+  it('снятое значение `both` больше НЕ распознаётся и падает на дефолт', () => {
+    // ⚠️ Не косметика. `both` включал оба пути сразу, а ключи перехода у них разные по построению
+    // (`ID` записи истории против момента срабатывания, #175) — дедуп их не склеивает, и клиент
+    // получал два приглашения и два ответа в аналитике. Полезного состояния у настройки не было ни
+    // одного: вне триггер-стадии робот не создаёт ничего вовсе, то есть `both` был тождественен
+    // `event`. Портал, где значение осталось в окружении, безопасно уезжает на `event`, а `env:check`
+    // называет переменную и перечисляет допустимые.
+    expect(TRIGGER_MODES as readonly string[]).not.toContain('both')
+    expect(resolveTriggerMode('both')).toBe('event')
+    expect(eventTriggerEnabled(resolveTriggerMode('both'))).toBe(true)
+    expect(robotTriggerEnabled(resolveTriggerMode('both'))).toBe(false)
   })
 
   it('мусор/пусто/не-строка → дефолт event (работает на всех тарифах)', () => {
@@ -36,15 +49,13 @@ describe('какой путь включён при каждом режиме', 
     expect(robotTriggerEnabled('robot')).toBe(true)
   })
 
-  it('both — оба (осознанный выбор оператора)', () => {
-    expect(eventTriggerEnabled('both')).toBe(true)
-    expect(robotTriggerEnabled('both')).toBe(true)
-  })
-
-  it('ключевой инвариант: вне режима both одновременно два пути НЕ включены', () => {
-    // именно двойное включение даёт два приглашения на один переход стадии
-    for (const mode of ['event', 'robot'] as const) {
-      expect(eventTriggerEnabled(mode) && robotTriggerEnabled(mode)).toBe(false)
+  it('ключевой инвариант: ни при каком режиме два пути не включены одновременно', () => {
+    // Именно двойное включение даёт два приглашения на один переход стадии. Перебор идёт по ВСЕМУ
+    // списку режимов, а не по паре литералов: добавленный режим обязан пройти ту же проверку, иначе
+    // защита от дубля вернётся к «мы же помним».
+    for (const mode of TRIGGER_MODES) {
+      expect(eventTriggerEnabled(mode) && robotTriggerEnabled(mode), mode).toBe(false)
+      expect(eventTriggerEnabled(mode) || robotTriggerEnabled(mode), mode).toBe(true)
     }
   })
 })

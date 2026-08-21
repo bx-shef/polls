@@ -21,6 +21,7 @@ import {
 } from '~core/bitrix24/stage-transition'
 import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { resolveTriggerMode, eventTriggerEnabled } from '~core/bitrix24/trigger-mode'
+import { errInfo } from '~core/obs/logger'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { logger } from '../../utils/api'
@@ -63,11 +64,13 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 200)
     return 'ok'
   }
-  const body = await readBody(event).catch(() => ({}))
-  // Разбор bracket-формы Bitrix (form-urlencoded) во вложенный объект; идемпотентно на JSON-теле.
-  const raw = parseBracketForm((body && typeof body === 'object' ? body : {}) as Record<string, unknown>)
-
   try {
+    const body = await readBody(event).catch(() => ({}))
+    // Разбор bracket-формы Bitrix (form-urlencoded) во вложенный объект; идемпотентно на JSON-теле.
+    // ⚠️ ВНУТРИ `try` — как у робота. Инвариант роута «всегда 200»: бросок на разборе недоверенного
+    // тела давал бы 500, а 500 против 200 — это оракул, по которому снаружи отличают «тело мы не
+    // поняли» от «поняли и обработали».
+    const raw = parseBracketForm((body && typeof body === 'object' ? body : {}) as Record<string, unknown>)
     // Инициализация стора/конфига — ВНУТРИ try: `useStore()` может реджектнуть на холодном старте с
     // недоступной БД. Инвариант «всегда 200» держим и на этом (B24 online-события не ретраит; наружу — «ok»).
     const cfg = b24AppConfig()
@@ -184,7 +187,10 @@ export default defineEventHandler(async (event) => {
       // Отказ по ОДНОМУ опросу не должен лишать приглашения остальные опросы этой же стадии: событие
       // Bitrix24 не ретраит, значит потерянный опрос теряется навсегда. Причина — сюда, поимённо.
       onIssueError: (surveyKey, e) =>
-        logger.warn('b24_invite_fail', { surveyKey, detail: (e as Error).message }),
+        // ⚠️ `errInfo`, а не `.message`: `redact` маскирует по ИМЕНИ ключа, `detail` секретным именем не
+        // считается, а сюда доезжают ошибки `pg` (в тексте бывает строка подключения с паролем) и SDK.
+        // `path` — имя события одно на оба пути триггера, иначе по логу не сказать, чей отказ.
+        logger.warn('b24_invite_fail', { path: 'event', surveyKey, err: errInfo(e) }),
       // Выписка приглашения через дело в таймлайне (#126 + #138) — отдельным модулем: там она
       // исполняется тестами (гроздь → одно дело, отказ создания не оставляет живого токена, маркер
       // не виден поиску), а замыкание внутри роута проверить было нечем.

@@ -14,11 +14,21 @@ function store(triggered: Record<string, string[]>, versions: Record<string, num
   }
 }
 
-/** Валидный недоверенный POST робота (значения заведомо фейковые). */
+/**
+ * Валидный недоверенный POST робота (значения заведомо фейковые).
+ *
+ * ⚠️ `ts` в дефолте НЕТ намеренно. Стояло фиксированное `'1736405807'` (январь 2025) — то есть любой
+ * тест на этой фикстуре молча уходил в фолбэк «свои часы», и следующий, кто положится на «фикстурный
+ * `ts` доезжает до ключа», получил бы другое. Кому нужен момент — передаёт его явно.
+ *
+ * ⚠️ `member_id` верхнего уровня — ЧУЖОЙ и посторонний: авторитетный источник ровно один,
+ * `auth.member_id`. Без этого «злого» значения assert про `ctx.memberId` истинен при любой
+ * реализации, читающей хоть проверенную, хоть непроверенную часть тела.
+ */
 const rawRobot = (over: Record<string, unknown> = {}) => ({
   code: 'survey_launch',
   document_id: ['crm', 'CCrmDocumentDeal', 'DEAL_759'],
-  ts: '1736405807',
+  member_id: 'member-id-ATTACKER-0000000000',
   auth: {
     member_id: 'member-id-fake-0000000000000000',
     application_token: 'app-token-fake-0000000000000000'
@@ -139,7 +149,10 @@ describe('runRobotTrigger — робот автоматизации «Запус
 
   it('стадия не триггерит опросы → ok с пустым списком', async () => {
     const res = await runRobotTrigger(rawRobot(), deps({ store: store({ 'C1:LOSE': ['x'] }, { x: 1 }) }))
-    expect(res).toEqual({ kind: 'ok', results: [], dealId: 759 })
+    // ⚠️ Три числа, а не одно: `results: []` теперь означает ЧЕТЫРЕ разных исхода, и «нечего было
+    // делать» обязано отличаться от «дедуп отсёк» и «не смогли» — иначе живой прогон (#122) читает
+    // ноль и не знает, что произошло.
+    expect(res).toMatchObject({ kind: 'ok', results: [], deduped: [], failed: [], dealId: 759 })
   })
 
   it('непригодный document_id (не-строки, мусор, пусто) → ignored, без исходящих вызовов', async () => {
@@ -256,50 +269,90 @@ describe('robotTransition — ключ перехода для робота (#17
   const now = new Date('2026-08-21T10:00:00.000Z')
   const nowSec = Math.floor(now.getTime() / 1000)
 
+  it('окно правдоподобия — ЧАС, и это значение запиннено литералом', () => {
+    // ⚠️ Пин обязателен. Границы ниже считаются ОТ константы, то есть проверяют соотношение, а не
+    // величину: мутация «24 часа → 10 лет» их не роняла, хотя ровно она и возвращает дефект
+    // «прошлогодний ответ гасит сегодняшний повод спросить». Час — потому что робота зовут В МОМЕНТ
+    // входа в стадию, и легитимное расхождение измеряется секундами.
+    expect(ROBOT_TS_SKEW_MS).toBe(60 * 60_000)
+  })
+
   it('часы портала правдоподобны → ключ и момент берутся из них', () => {
     const portalSec = nowSec - 5
     const t = robotTransition(String(portalSec), now)
     expect(t.id).toBe(`robot-${portalSec}`)
     expect(t.at.toISOString()).toBe(new Date(portalSec * 1000).toISOString())
+    expect(t.source).toBe('portal')
+    expect(t.reason).toBeUndefined()
   })
 
   it('число вместо строки принимается так же (wire-формат бывает разным)', () => {
     expect(robotTransition(nowSec, now).id).toBe(`robot-${nowSec}`)
   })
 
-  it('ПОВТОРНЫЙ вызов с тем же ts даёт ТОТ ЖЕ ключ — повтор bizproc не плодит дело', () => {
-    // Ключ из момента СРАБАТЫВАНИЯ, а не из наших часов, именно поэтому: повтор вызова роботом
-    // должен упереться в поиск по маркеру, а не создать второе дело. На своих часах два вызова,
-    // разошедшиеся на секунду, дали бы РАЗНЫЕ ключи — и дубль.
+  it('ПОВТОР ДОСТАВКИ того же тела даёт ТОТ ЖЕ ключ', () => {
+    // ⚠️ Формулировка сужена намеренно. Здесь доказано ровно одно: одинаковый `ts` → одинаковый ключ,
+    // то есть повтор ДОСТАВКИ (та же секунда в теле) упрётся в поиск по маркеру. Повторное
+    // ИСПОЛНЕНИЕ активити движком bizproc принесёт новый момент — новый ключ, второе дело, вторая
+    // ссылка. Прежнее имя теста обещало «повтор bizproc не плодит дело» и читалось как доказательство
+    // того, чего тут нет: форма POST робота вживую не сверена (#122).
     const portalSec = String(nowSec - 3)
     const a = robotTransition(portalSec, now)
     const b = robotTransition(portalSec, new Date(now.getTime() + 900))
     expect(a.id).toBe(b.id)
+    expect(a.at.getTime()).toBe(b.at.getTime())
   })
 
   it('другой переход (другая секунда) → ДРУГОЙ ключ: возврат в стадию — законный повод спросить', () => {
     expect(robotTransition(String(nowSec), now).id).not.toBe(robotTransition(String(nowSec - 1), now).id)
   })
 
-  for (const [name, ts] of [
-    ['мусор', 'позавчера'], ['пусто', ''], ['нет поля', undefined],
-    ['ноль', '0'], ['отрицательное', '-5'], ['дробное', '1.5'], ['миллисекунды вместо секунд', String(nowSec * 1000)]
+  for (const [name, ts, reason] of [
+    ['мусор', 'позавчера', 'not_number'], ['пусто', '', 'missing'], ['нет поля', undefined, 'missing'],
+    ['ноль', '0', 'not_number'], ['отрицательное', '-5', 'not_number'], ['дробное', '1.5', 'not_number'],
+    ['миллисекунды вместо секунд', String(nowSec * 1000), 'future'],
+    ['объект', { a: 1 }, 'not_number'], ['массив', ['1'], 'not_number'], ['булево', true, 'not_number'],
+    ['строка длиннее капа', '2026-08-21T10:00:00+03:00', 'not_number']
   ] as const) {
     it(`негодный ts (${name}) → берём СВОИ часы, а не то, что прислали`, () => {
       const t = robotTransition(ts, now)
       expect(t.id).toBe(`robot-${nowSec}`)
       expect(t.at.getTime()).toBe(now.getTime())
+      // ⚠️ Причина фолбэка обязана быть НАЗВАНА: на своих часах ключ меняется каждую секунду, то есть
+      // дедупа у робота нет вовсе. Без этой пометки в логе такое состояние невидимо — функция чистая
+      // и молчит, а сводка печатает только число приглашений.
+      expect(t.source).toBe('clock')
+      expect(t.reason).toBe(reason)
     })
   }
 
-  it('часы портала уехали больше чем на сутки → берём свои', () => {
-    // ⚠️ Несущее: `at` решает «отвечал ли клиент ПОСЛЕ этого перехода». Момент из далёкого прошлого
-    // заставил бы прошлогодний ответ погасить сегодняшний повод спросить — приглашение молча не
-    // выписалось бы, и снаружи это неотличимо от «робот не сработал».
-    const stale = Math.floor((now.getTime() - ROBOT_TS_SKEW_MS - 1000) / 1000)
-    expect(robotTransition(String(stale), now).id).toBe(`robot-${nowSec}`)
-    const future = Math.floor((now.getTime() + ROBOT_TS_SKEW_MS + 1000) / 1000)
-    expect(robotTransition(String(future), now).id).toBe(`robot-${nowSec}`)
+  it('граница окна: ровно −1 час берётся у портала, на миллисекунду дальше — свои часы', () => {
+    // ⚠️ Границы литералами (`60 * 60_000`), а не через константу: считая от неё, тест истинен при
+    // любом её значении — ровно та тавтология, из-за которой мутация «окно в 10 лет» проходила.
+    const edge = Math.floor((now.getTime() - 60 * 60_000) / 1000)
+    expect(robotTransition(String(edge), now).id).toBe(`robot-${edge}`)
+    const beyond = Math.floor((now.getTime() - 60 * 60_000 - 2000) / 1000)
+    const t = robotTransition(String(beyond), now)
+    expect(t.id).toBe(`robot-${nowSec}`)
+    expect(t.reason).toBe('skew')
+  })
+
+  it('момент из БУДУЩЕГО клампится всегда, даже внутри окна', () => {
+    // ⚠️ Перехода в будущем не бывает — робота зовут в момент входа в стадию. Оставь мы момент
+    // впереди, `hasResponseSince(…, at)` не вернул бы `true` НИКОГДА: ветка «клиент уже ответил»
+    // мертва, и повторный вызов заново приглашает ответившего клиента новым живым токеном.
+    const soon = nowSec + 30
+    const t = robotTransition(String(soon), now)
+    expect(t.id).toBe(`robot-${nowSec}`)
+    expect(t.reason).toBe('future')
+  })
+
+  it('константный ts в пределах суток НЕ проходит как правдоподобный', () => {
+    // Живой класс дефекта: портал шлёт не время, а ДАТУ (усечение до полуночи). Суточное окно такое
+    // значение пропускало, маркер `robot-<полночь>` становился один на весь день, и после первого же
+    // ответа клиента опрос по сделке молча выключался до полуночи.
+    const midnight = Math.floor(new Date('2026-08-21T00:00:00.000Z').getTime() / 1000)
+    expect(robotTransition(String(midnight), now).reason).toBe('skew')
   })
 
   it('ключ не содержит двоеточий — иначе маркер перестанет разбираться', () => {
@@ -310,23 +363,63 @@ describe('robotTransition — ключ перехода для робота (#17
 })
 
 describe('runRobotTrigger — доставка приглашения (#175)', () => {
+  const now = new Date('2026-08-21T10:00:00.000Z')
+  const nowSec = Math.floor(now.getTime() / 1000)
+  type IssueCtx = { transition: { id?: string; at?: Date }; memberId: string }
+
   it('выписка идёт через `issue` (дело в таймлайне), а не в фолбэк «только токен»', async () => {
     // Ровно тот дефект, ради которого задача: без `issue` приглашение появлялось в базе, дела не
     // было, и сотрудник ссылку не видел.
-    type IssueCtx = { transition: { id?: string; at?: Date }; memberId: string }
     const issue = vi.fn((_ctx: IssueCtx) => async () => ({ surveyKey: 'csat_postdeal', versionNo: 2, token: 'tk' }))
-    // ⚠️ `ts` берём близким к настоящим часам: значение из прошлого сработала бы проверка
-    // правдоподобия, и тест доказывал бы её, а не проводку выписки.
-    const ts = String(Math.floor(Date.now() / 1000) - 2)
-    const res = await runRobotTrigger(rawRobot({ ts }), deps({ issue }))
+    const ts = String(nowSec - 2)
+    const res = await runRobotTrigger(rawRobot({ ts }), deps({ issue, now }))
     expect(res.kind).toBe('ok')
     expect(issue).toHaveBeenCalledTimes(1)
     const ctx = issue.mock.calls[0]![0]
     expect(ctx.transition.id).toBe(`robot-${ts}`)
+    // ⚠️ `at` проверяется НЕ для полноты. `makeInviteIssue` при `transition.at === undefined` пишет
+    // `b24_invite_undelivered` и молчит: дела нет, исход снаружи — «ok, приглашений 0». Мутация
+    // «не прокидывать `at`» типобезопасна (поле опционально) и проходила прежний набор целиком.
+    expect(ctx.transition.at?.getTime()).toBe(Number(ts) * 1000)
+    // ⚠️ Авторитетный источник ровно один: в теле лежит ещё и посторонний `member_id` верхнего уровня.
     expect(ctx.memberId).toBe('member-id-fake-0000000000000000')
   })
 
-  it('отказ выписки по ОДНОМУ опросу не роняет вызов и доезжает в лог', async () => {
+  it('ПОВТОРНЫЙ вызов с тем же ts: дедуп отсекает, второе приглашение не выписывается', async () => {
+    // Исходный тест, а не равенство ключей: `issue` держит состояние по ключу перехода, как это
+    // делает настоящая выписка через маркер дела.
+    const seen = new Set<string>()
+    const issue = (ctx: IssueCtx) => async (args: { surveyKey: string; versionNo: number }) => {
+      const key = `${ctx.transition.id}:${args.surveyKey}`
+      if (seen.has(key)) return undefined // «уже приглашали» — штатный исход, не ошибка
+      seen.add(key)
+      return { surveyKey: args.surveyKey, versionNo: args.versionNo, token: `tk-${seen.size}` }
+    }
+    const ts = String(nowSec - 2)
+    const first = await runRobotTrigger(rawRobot({ ts }), deps({ issue, now }))
+    const second = await runRobotTrigger(rawRobot({ ts }), deps({ issue, now }))
+    if (first.kind !== 'ok' || second.kind !== 'ok') throw new Error('unreachable')
+    expect(first.results).toHaveLength(1)
+    expect(second.results).toEqual([])
+    expect(second.deduped).toEqual(['csat_postdeal'])
+  })
+
+  it('негодный ts НЕ выключает робота: доставка идёт, ключ — со своих часов', async () => {
+    // ⚠️ Регрессия, которую этот PR однажды и завёз: пока `ts` разбирался схемой строго, значение не
+    // той формы валило `safeParse` ВСЕГО события — робот молча замолкал на всех порталах с одной
+    // строкой `b24_robot_ignored reason=parse`. Форма `ts` вживую не сверена, так что это не теория.
+    const issue = vi.fn((_ctx: IssueCtx) => async () => ({ surveyKey: 'csat_postdeal', versionNo: 2, token: 'tk' }))
+    for (const ts of [{}, ['x'], true, '2026-08-21T10:00:00+03:00', 'позавчера']) {
+      const res = await runRobotTrigger(rawRobot({ ts }), deps({ issue, now }))
+      expect(res.kind, JSON.stringify(ts)).toBe('ok')
+      if (res.kind !== 'ok') throw new Error('unreachable')
+      expect(res.transition.id).toBe(`robot-${nowSec}`)
+      expect(res.transition.source).toBe('clock')
+    }
+    expect(issue).toHaveBeenCalledTimes(5)
+  })
+
+  it('отказ выписки по ОДНОМУ опросу не роняет вызов и доезжает в лог И в исход', async () => {
     const onIssueError = vi.fn()
     const res = await runRobotTrigger(rawRobot(), deps({
       issue: () => async () => { throw new Error('портал недоступен') },
@@ -335,6 +428,10 @@ describe('runRobotTrigger — доставка приглашения (#175)', (
     expect(res.kind).toBe('ok')
     if (res.kind !== 'ok') throw new Error('unreachable')
     expect(res.results).toEqual([])
+    // ⚠️ `failed` — не косметика: без него `invitations: 0` в логе одинаково означает «стадия не
+    // триггерит опросов» и «выписка отказала по всем», а различить надо именно это.
+    expect(res.failed).toEqual(['csat_postdeal'])
+    expect(res.deduped).toEqual([])
     expect(onIssueError).toHaveBeenCalledWith('csat_postdeal', expect.any(Error))
   })
 })
