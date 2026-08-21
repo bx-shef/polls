@@ -36,13 +36,22 @@ export function dealDetailPath(dealId: number): string {
 }
 
 /**
- * Нейтрализация BB-кода в тексте, попадающем в таймлайн Bitrix (защита от инъекции `[url=…]`/меток/
- * кнопок): скобки `[`/`]` → полноширинные `［`/`]`. Порт live-verified паттерна соседа `ai-price-import`
- * (`chatNotify.neutralizeBb`). Наш `surveyTitle` авторит админ портала (тот же домен доверия), но это
- * ПЕРВЫЙ пишущий-в-таймлайн путь polls — нейтрализуем defense-in-depth и для паритета. Длину строки не
- * меняет (замена 1:1), поэтому применяется ДО `.slice`. */
+ * Нейтрализация разметки в тексте, попадающем в таймлайн Bitrix: скобки `[`/`]` → полноширинные
+ * `［`/`］` (BB-код: `[url=…]`, метки, кнопки) и `<`/`>` → `＜`/`＞`.
+ *
+ * Порт live-verified паттерна соседа `ai-price-import` (`chatNotify.neutralizeBb`). Длину строки не
+ * меняет (замена 1:1), поэтому применяется ДО `.slice`.
+ *
+ * ⚠️ Угловые скобки добавлены с возвратом РЕЗУЛЬТАТА в таймлайн (#18): `surveyTitle` авторит админ
+ * портала (тот же домен доверия), а вот сводка ответов несёт СВОБОДНЫЙ ТЕКСТ анонимного респондента —
+ * текстовый вопрос и «Другое». Рендерит ли Bitrix24 блок `type: 'text'` как разметку, вживую не
+ * сверено; окажись что да — `<img onerror=…>` из чужого ответа попал бы в CRM менеджера. Проверка
+ * стоит ноль, а ставка на «наверняка экранирует» — чужая CRM.
+ */
 export function neutralizeBb(text: string): string {
-  return String(text ?? '').replace(/\[/g, '［').replace(/\]/g, '］')
+  return String(text ?? '')
+    .replace(/\[/g, '［').replace(/\]/g, '］')
+    .replace(/</g, '＜').replace(/>/g, '＞')
 }
 
 export interface SurveyInviteActivityInput {
@@ -191,8 +200,11 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
     // ⚠️ Метку капаем ОТДЕЛЬНО. `summarizeResponse` капает только значение (300), а текст вопроса
     // схема разрешает до 2000 — на общей обрезке в 500 вопрос длиной 500+ съедал бы ответ целиком, и
     // в таймлайн уходила бы обрезанная формулировка без единого символа того, что клиент ответил.
-    const label = neutralizeBb(line.label).slice(0, 180)
-    const value = neutralizeBb(line.value).slice(0, 300)
+    // ⚠️ Режем по КОД-ПОИНТАМ, а не по единицам UTF-16: свободный текст с эмодзи ровно на границе
+    // дал бы одиночный суррогат — в лучшем случае «крякозябра» в карточке, в худшем портал отверг бы
+    // payload, и результат потерялся бы тихо (путь best-effort, наружу отказ не идёт).
+    const label = [...neutralizeBb(line.label)].slice(0, 180).join('')
+    const value = [...neutralizeBb(line.value)].slice(0, 300).join('')
     blocks[`line${i}`] = { type: 'text', properties: { value: `${label}: ${value}` } }
   })
   return {

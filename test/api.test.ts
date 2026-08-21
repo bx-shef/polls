@@ -525,14 +525,19 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     // `resultToTimeline: true`» оставляет весь набор зелёным: чистая функция проверена отдельно, а
     // `post-result.test.ts` работает на своём фикстурном булеве. Цена мутации — опрос, обещавший
     // «Анонимно», начинает класть индивидуальные ответы в карточки сделок при зелёном CI.
+    const store = new MemoryStore()
+    await store.publish({ ...draftV2(), invitationPolicy: { ...POLICY_BASE, resultToTimeline: true } }, 2)
     const seen: AnsweredInfo[] = []
-    const base = await freshApi({ onAnswered: (i) => { seen.push(i); return Promise.resolve() } })
-    expect((await base.api.submit({ ip: 'a', body: validPayload(await issueNonce(base.api)) })).status).toBe(200)
+    const c = clock()
+    const api = createApi({
+      store, now: c.now, idGen: () => 'srv-id-1',
+      onAnswered: (i) => { seen.push(i); return Promise.resolve() }
+    })
+    expect((await api.submit({ ip: 'a', body: validPayload(await issueNonce(api)) })).status).toBe(200)
 
     const info = seen[0]!
     expect(info.responseId).toBe('srv-id-1')
     expect(info.surveyTitle, 'заголовок берётся из версии, на которой отвечали').toBe('Постпродажный опрос')
-    // Демо-опрос политики не имеет → умолчание «кладём», и сводка посчитана.
     expect(info.resultToTimeline).toBe(true)
     expect(info.lines.length).toBeGreaterThan(0)
     expect(info.lines.map((l) => l.value)).toContain('9')
@@ -542,16 +547,10 @@ describe('POST /api/submit — приглашение #3 (снимок CRM-ко�
     // ⚠️ Пустые `lines` — не оптимизация. Они несут СВОБОДНЫЙ ТЕКСТ респондента, и у опроса,
     // обещавшего анонимность, ему незачем появляться в payload хука вообще: хук — публичный
     // контракт, его получит и следующий потребитель.
-    const store = new MemoryStore()
-    const draft = { ...draftV2(), invitationPolicy: { ...POLICY_BASE, resultToTimeline: false } }
-    await store.publish(draft, 2)
+    // Демо-опрос как раз такой: на интро чип «Анонимно», в политике `resultToTimeline: false`.
     const seen: AnsweredInfo[] = []
-    const c = clock()
-    const api = createApi({
-      store, now: c.now, idGen: () => 'srv-id-1',
-      onAnswered: (i) => { seen.push(i); return Promise.resolve() }
-    })
-    expect((await api.submit({ ip: 'a', body: validPayload(await issueNonce(api)) })).status).toBe(200)
+    const base = await freshApi({ onAnswered: (i) => { seen.push(i); return Promise.resolve() } })
+    expect((await base.api.submit({ ip: 'a', body: validPayload(await issueNonce(base.api)) })).status).toBe(200)
     expect(seen[0]!.resultToTimeline).toBe(false)
     expect(seen[0]!.lines, 'ответы клиента уехали в хук вопреки настройке опроса').toEqual([])
   })

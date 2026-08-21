@@ -117,7 +117,9 @@ export function livePortalDeps(forPortalId?: number): PortalActionDeps {
         // ⚠️ Имя НЕЙТРАЛЬНОЕ: этот отказ гасит ОБА побочных действия, а не только закрытие дела.
         // Прежнее `b24_invite_close_skip` заставляло бы искать причину пропавшего результата под
         // именем закрытия приглашения — ровно то «имя врёт», ради которого модуль и выделяли.
-        logger.warn('b24_portal_client_skip', { reason: 'нет токена или домена портала' })
+        // `portalId` в строке обязателен: на инстансе с десятком порталов иначе не понять, у какого
+        // арендатора разом пропали и закрытие дела, и запись результата. Утечки нет — id внутренний.
+        logger.warn('b24_portal_client_skip', { portalId, reason: 'нет токена или домена портала' })
         return undefined
       }
       const client = createPortalClient(

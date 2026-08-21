@@ -70,7 +70,16 @@ describe('submit → закрытие дела в таймлайне', () => {
     const { SURVEY_KEY, draftV2 } = await import('../src/demo/seed')
 
     const store = await useStore()
-    if (!(await store.currentVersion(SURVEY_KEY))) await store.publish(draftV2(), 2)
+    // ⚠️ Публикуем СВЕЖУЮ версию, РАЗРЕШАЮЩУЮ возврат результата в карточку. Демо-опрос его
+    // запрещает (на интро чип «Анонимно», #18), и на нём этот тест доказал бы только работу гейта, а
+    // не проводку второго побочного действия. Номер берём от текущей: базу засевает boot, и «если
+    // версии нет — опубликуем» тихо превращалось бы в «ничего не делаем».
+    const current = await store.currentVersion(SURVEY_KEY)
+    const versionNo = (current?.versionNo ?? 0) + 1
+    await store.publish(
+      { ...draftV2(), invitationPolicy: { ...draftV2().invitationPolicy!, resultToTimeline: true } },
+      versionNo
+    )
 
     // Портал установлен: без него закрытие штатно выходит раньше REST.
     const tokenStore = await usePortalTokenStore()
@@ -84,7 +93,7 @@ describe('submit → закрытие дела в таймлайне', () => {
     }, { adoptLocal: true })
 
     const inv = await useInvitations().create(
-      { surveyKey: SURVEY_KEY, versionNo: 2, context: { dealId: 759 } },
+      { surveyKey: SURVEY_KEY, versionNo, context: { dealId: 759 } },
       new Date()
     )
     const api = await useApi()
@@ -96,7 +105,7 @@ describe('submit → закрытие дела в таймлайне', () => {
         nonce: nonce.nonce,
         hp: '',
         surveyKey: SURVEY_KEY,
-        versionNo: 2,
+        versionNo,
         invitation: inv.token,
         answers: { q_nps: { values: ['n9'] }, q_csat: { values: ['s4'] }, q_liked: { values: ['speed'] } }
       }

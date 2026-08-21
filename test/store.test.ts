@@ -24,9 +24,11 @@ describe('MemoryStore', () => {
   })
 
   it('listSurveys — сводка по текущей версии (back-compat: без политики → undefined/[])', async () => {
+    // ⚠️ Политику снимаем ЯВНО: демо-черновик её теперь несёт (#18), и «без политики» перестало быть
+    // его свойством. Тест про back-compat старых опросов, а не про состав демо-фикстуры.
     const s = new MemoryStore()
-    await s.publish(draftV1(), 1)
-    await s.publish(draftV2(), 2)
+    await s.publish({ ...draftV1(), invitationPolicy: undefined }, 1)
+    await s.publish({ ...draftV2(), invitationPolicy: undefined }, 2)
     const list = await s.listSurveys()
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({ surveyKey: SURVEY_KEY, currentVersionNo: 2, triggerStages: [] })
