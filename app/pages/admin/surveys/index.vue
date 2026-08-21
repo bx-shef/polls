@@ -23,9 +23,18 @@ const ENTITY_LABELS: Record<NonNullable<SurveySummary['entityType']>, string> = 
   company: 'Компания'
 }
 
-const { data, error } = await useAsyncData<{ ok: boolean; surveys: SurveySummary[] }>(
+interface AdminSurveysResponse {
+  ok: boolean
+  surveys: SurveySummary[]
+}
+
+// ⚠️ Тип указан и у `useAsyncData`, и у `$fetch` — это обход предела рекурсии TypeScript, а не
+// избыточность: без второго Nuxt выводит тип ответа из АДРЕСА (типизированные маршруты), и сравнение
+// выведенного типа с объявленным падает `TS2321: Excessive stack depth`, как только роутов
+// становится больше. Разбор — в `[key].vue` рядом.
+const { data, error } = await useAsyncData<AdminSurveysResponse>(
   'admin-surveys',
-  () => $fetch('/api/admin/surveys')
+  () => $fetch<AdminSurveysResponse>('/api/admin/surveys')
 )
 
 useHead({ title: 'Опросы — управление' })

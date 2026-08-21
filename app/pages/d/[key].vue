@@ -55,8 +55,12 @@ const selectedVersion = computed(() => {
 const requestFetch = useRequestFetch()
 const { data, error } = await useAsyncData<Dashboard>(
   () => `dashboard:${surveyKey.value}:${selectedVersion.value ?? 'all'}`,
+  // ⚠️ Тип указан и здесь, и у `useAsyncData` — обход предела рекурсии TypeScript, а не
+  // избыточность: без него Nuxt выводит тип ответа из АДРЕСА (типизированные маршруты), и сравнение
+  // выведенного типа с объявленным падает `TS2321: Excessive stack depth`, как только роутов
+  // становится больше. Разбор — в `admin/surveys/[key].vue`.
   () =>
-    requestFetch(`/api/dashboard/${surveyKey.value}`, {
+    requestFetch<Dashboard>(`/api/dashboard/${surveyKey.value}`, {
       query: selectedVersion.value != null ? { version: selectedVersion.value } : {}
     }),
   { watch: [selectedVersion] }

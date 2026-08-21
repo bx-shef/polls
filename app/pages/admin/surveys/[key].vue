@@ -46,15 +46,28 @@ const METRIC_ITEMS = METRIC_VALUES.map((v) => ({ label: METRIC_LABELS[v] ?? v, v
 const route = useRoute()
 const surveyKey = computed(() => String(route.params.key))
 
-const { data, error, pending, refresh } = await useAsyncData<{
+interface AdminSurveyResponse {
   ok: boolean
   draft: Draft
   currentVersionNo: number
   /** Администратор ли текущий пользователь портала: от этого зависит доступность публикации. */
   admin: boolean
-}>(
+}
+
+/**
+ * ⚠️ Тип указан ДВАЖДЫ — и у `useAsyncData`, и у `$fetch`, — это не избыточность, а обход предела
+ * рекурсии TypeScript. Без второго Nuxt выводит тип ответа `$fetch` из АДРЕСА (типизированные
+ * маршруты), и для шаблонной строки ему приходится сопоставлять её со всеми зарегистрированными
+ * роутами, считая «оценку совпадения». Пока роутов было мало, это сходилось; новый роут
+ * (`/api/b24/result`, #18) перевалил порог, и сравнение выведенного типа с объявленным упало
+ * `TS2321: Excessive stack depth`. Явный параметр делает сравнение тривиальным.
+ *
+ * ⚠️ Ловится это ТОЛЬКО `pnpm typecheck:app` после свежего `nuxt prepare`: на устаревшем `.nuxt`
+ * нового роута в типах ещё нет, и проверка проходит зелёной.
+ */
+const { data, error, pending, refresh } = await useAsyncData<AdminSurveyResponse>(
   () => `admin-survey:${surveyKey.value}`,
-  () => $fetch(`/api/admin/surveys/${surveyKey.value}`),
+  () => $fetch<AdminSurveyResponse>(`/api/admin/surveys/${surveyKey.value}`),
   { watch: [surveyKey] }
 )
 
