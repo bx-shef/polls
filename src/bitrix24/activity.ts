@@ -2,7 +2,7 @@ import type { PortalClient } from './client'
 import { callMethod } from './client'
 import type { ResultLine } from '../domain/result-summary'
 import { INVITE_ORIGINATOR, markerMatchesSurvey, type InviteMarker, type MarkedActivity, type MarkerFix } from './invite-delivery'
-import { inviteActionParams } from '../client/widget-params'
+import { inviteActionParams, resultActionParams } from '../client/widget-params'
 
 /**
  * Доставка приглашения на опрос через НАСТРАИВАЕМОЕ ДЕЛО таймлайна сделки
@@ -178,6 +178,14 @@ export interface SurveyResultActivityInput {
   lines: readonly ResultLine[]
   /** Маркер записи: `result:<responseId>` (`resultMarker`) — по нему дело потом находят. */
   marker?: InviteMarker
+  /**
+   * Идентификатор записи ответа — уезжает в `actionParams` кнопки «Открыть результат» (#18).
+   *
+   * ⚠️ Тот же, из которого построен `marker`, но берётся ОТДЕЛЬНЫМ полем, а не разбором маркера:
+   * форма маркера — деталь дедупа, и вытаскивать из неё идентификатор значило бы связать кнопку с
+   * формой ключа. Поменяется форма (а она уже менялась дважды) — кнопка сломается молча.
+   */
+  responseId?: string
   /** Ответственный за активность (опц.). */
   responsibleId?: number
 }
@@ -223,12 +231,34 @@ export function buildSurveyResultActivity(input: SurveyResultActivityInput): Con
       body: {
         logo: { code: SURVEY_ACTIVITY_LOGO, action: { type: 'redirect', uri: dealPath } },
         blocks
-      }
-      // ⚠️ Футера НЕТ намеренно. Здесь стояла кнопка «Открыть результат» (`openRestApp` с
-      // `responseId`), но открывать ей нечего: виджет `responseId` не читает (`readWidgetParams`
-      // знает только про сделку и приглашение), страницы просмотра результата ещё нет. Кнопка,
-      // ведущая в пустой экран, хуже её отсутствия — а сама сводка ответов уже в теле дела, ради неё
-      // менеджер сюда и смотрит. Вернётся вместе со страницей результата (#18, вторая половина).
+      },
+      // ⚠️ Футер ВЕРНУЛСЯ вместе со страницей результата (#18, вторая половина). До неё кнопка
+      // стояла бы здесь мёртвой: виджет `responseId` не читал, открывать было нечего, а кнопка,
+      // ведущая в пустой экран, хуже её отсутствия. Теперь она открывает тот же виджет карточки
+      // сделки, а `responseId` в `actionParams` говорит ему показать ответ целиком.
+      //
+      // ⚠️ Кнопка появляется ТОЛЬКО когда есть и запись ответа, и сделка: без первого показывать
+      // нечего, без второй виджет не откроется в нужном месте. Сводка в теле дела остаётся в любом
+      // случае — ради неё менеджер сюда и смотрит, и она не должна зависеть от кнопки.
+      ...(input.marker && input.responseId !== undefined
+        ? {
+            footer: {
+              buttons: {
+                openResult: {
+                  title: 'Открыть результат',
+                  type: 'secondary',
+                  action: {
+                    type: 'openRestApp',
+                    // Имена параметров собирает ОБЩИЙ хелпер — их же читает виджет (см. JSDoc
+                    // `resultActionParams`): разойдясь, кнопка молча открыла бы экран выписки нового
+                    // приглашения клиенту, который только что ответил.
+                    actionParams: resultActionParams({ responseId: input.responseId, dealId: input.dealId })
+                  }
+                }
+              }
+            }
+          }
+        : {})
     }
   }
 }

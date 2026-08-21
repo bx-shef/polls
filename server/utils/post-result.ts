@@ -82,6 +82,10 @@ export async function postResult(info: AnsweredInfo, deps: PostResultDeps): Prom
       surveyTitle: info.surveyTitle,
       lines: [...info.lines],
       marker,
+      // Идентификатор записи — в кнопку «Открыть результат» (#18). Тот же, из которого построен
+      // маркер, но передаётся отдельно: форма маркера это деталь дедупа, и разбирать её ради кнопки
+      // значило бы связать их молча.
+      responseId: info.responseId,
       ...(info.context.responsibleId != null ? { responsibleId: info.context.responsibleId } : {})
     }))
 

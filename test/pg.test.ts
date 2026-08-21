@@ -487,6 +487,30 @@ describe('PgStore — hasResponseSince: «ответил ли клиент ПО�
     expect(await other.hasResponseSince(SURVEY_KEY, 5001, at('2026-04-03T09:00:00Z'))).toBe(false)
   })
 
+  it('getResponse — своя запись читается по id, ЧУЖОГО портала не видно (#18)', async () => {
+    // ⚠️ Самое дорогое здесь — вторая половина. `responseId` приезжает из параметров кнопки, то есть
+    // из недоверенной части запроса, а `id` в PgStore это bigint: перебор тривиален. Без фильтра по
+    // порталу менеджер одного заказчика прочитал бы свободный текст клиента другого.
+    const { store, portalB, db } = await seeded()
+    const mine = (await store.listResponses())[0]!
+    const got = await store.getResponse(mine.id)
+    expect(got?.id).toBe(mine.id)
+    expect(got?.answers).toHaveLength(2)
+    expect(got?.context.companyId).toBe(101)
+
+    const other = new PgStore(db, { portalId: portalB })
+    expect(await other.getResponse(mine.id), 'чужой портал прочитал ответ').toBeUndefined()
+  })
+
+  it('getResponse — несуществующий и нечисловой id не роняют запрос', async () => {
+    // `id` в схеме — строка (в памяти это `r1..r12`), и такой id может доехать сюда из чужого стора
+    // или из подделанного параметра. Падение здесь было бы 502 вместо честного «не найдено».
+    const { store } = await seeded()
+    for (const bad of ['999999999', 'r1', 'не-число', '']) {
+      expect(await store.getResponse(bad), bad).toBeUndefined()
+    }
+  })
+
   it('ответ без сделки в контексте повод не закрывает', async () => {
     const { db, portalA } = await fresh()
     const store = new PgStore(db, { portalId: portalA })

@@ -16,14 +16,19 @@ import { initializeB24Frame } from '@bitrix24/b24jssdk'
 import { serverMessage } from '~core/client/server-message'
 // Разбор параметров открытия — чистой функцией в ядре: их два способа, и перепутать их значит
 // выписать ВТОРОЕ приглашение на ту же сделку.
-import { hasIssuedInvitation, issuedLinkView, readLinkVerdict, readWidgetParams, type LinkVerdict } from '~core/client/widget-params'
+import {
+  hasIssuedInvitation, hasResultRequest, issuedLinkView, readLinkVerdict, readWidgetParams, type LinkVerdict
+} from '~core/client/widget-params'
+import type { ResultView } from '~core/domain/result-view'
 import { INVITATION_TOKEN_PARAM, surveyPath } from '~core/client/invitation-link'
 
 type FrameAuth = { domain: string; member_id: string; access_token: string }
 
 const serverError = (e: unknown, fallback: string): string => serverMessage(e) ?? fallback
 
-const phase = ref<'init' | 'ready' | 'done' | 'error'>('init')
+const phase = ref<'init' | 'ready' | 'done' | 'error' | 'result'>('init')
+/** Готовый результат клиента — виджет открыт кнопкой «Открыть результат» на деле-результате (#18). */
+const result = ref<ResultView | undefined>()
 /**
  * Сервер ответил «приглашение по этой сделке уже отправлено» (#176). Отдельное состояние, а не текст
  * ошибки: человек ничего не сделал не так, и вести его надо в таймлайн сделки, а не в «попробуйте
@@ -52,6 +57,14 @@ onMounted(async () => {
     auth = { domain: a.domain, member_id: a.member_id, access_token: a.access_token }
     const params = readWidgetParams(b24.placement.options)
     dealId.value = params.dealId
+    // ⚠️ Результат проверяется ПЕРВЫМ, и порядок несущий: дело-результат живёт на той же сделке, что
+    // и дело-приглашение. Спутав их, виджет предложил бы выписать НОВОЕ приглашение клиенту, который
+    // только что ответил.
+    if (hasResultRequest(params)) {
+      message.value = 'Загружаем результат…'
+      await loadResult(params.responseId)
+      return
+    }
     if (hasIssuedInvitation(params)) {
       // Пришли по кнопке из таймлайна: ссылка уже есть. Берём ГОТОВУЮ строку, которую сервер записал
       // в тело дела, — тогда менеджер видит и копирует одну и ту же ссылку. Сборка из
@@ -79,6 +92,26 @@ onMounted(async () => {
     message.value = 'Не удалось открыть виджет. Обновите страницу и откройте его заново из карточки сделки.'
   }
 })
+
+/**
+ * Прочитать результат по идентификатору записи. Портал подтверждает сервер — тем же фрейм-токеном,
+ * что и остальные экраны; здесь показывается то, что он вернул.
+ */
+async function loadResult(responseId: string): Promise<void> {
+  if (!auth) return
+  try {
+    const r = await $fetch<{ ok: boolean; view?: ResultView; error?: string }>('/api/b24/result', {
+      method: 'POST',
+      body: { DOMAIN: auth.domain, member_id: auth.member_id, AUTH_ID: auth.access_token, responseId }
+    })
+    if (!r.ok || !r.view) throw new Error(r.error ?? 'сервер не вернул результат')
+    result.value = r.view
+    phase.value = 'result'
+  } catch (e) {
+    phase.value = 'error'
+    message.value = serverError(e, 'Не удалось открыть результат. Попробуйте ещё раз.')
+  }
+}
 
 /**
  * Жива ли уже выписанная ссылка. Спрашиваем тот же роут, что и страница опроса, — второго источника
@@ -187,6 +220,7 @@ async function launch(force = false, reason: 'dedup' | 'reissue' = 'dedup') {
 <template>
   <main class="mx-auto max-w-xl p-4">
     <B24Alert v-if="phase === 'error'" color="air-primary-alert" :title="message" />
+    <ResultView v-else-if="phase === 'result' && result" :view="result" />
     <template v-else>
       <p class="mb-3 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
       <B24Button

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildSurveyInviteActivity } from '../src/bitrix24/activity'
-import { hasIssuedInvitation, issuedLinkView, readLinkVerdict, readWidgetParams } from '../src/client/widget-params'
+import { buildSurveyInviteActivity, buildSurveyResultActivity } from '../src/bitrix24/activity'
+import {
+  hasIssuedInvitation, hasResultRequest, issuedLinkView, readLinkVerdict, readWidgetParams
+} from '../src/client/widget-params'
 
 /**
  * Разбор параметров открытия виджета. Цена ошибки здесь конкретная: перепутав два способа открытия,
@@ -92,6 +94,45 @@ describe('проводка кнопки: дело пишет — виджет ч
       token: 'tok-1',
       url: 'https://polls.example/s/csat_postdeal?token=tok-1'
     })
+  })
+})
+
+describe('проводка кнопки РЕЗУЛЬТАТА: дело пишет — виджет читает (#18)', () => {
+  const built = (over: Record<string, unknown> = {}) => buildSurveyResultActivity({
+    dealId: 759,
+    surveyTitle: 'Оценка после сделки',
+    lines: [{ label: 'Насколько вероятно?', value: '9' }],
+    marker: { originatorId: 'bx-shef.polls', originId: 'result:r-42' },
+    responseId: 'r-42',
+    ...over
+  })
+
+  it('actionParams РЕАЛЬНОГО дела распознаются как «показать результат»', () => {
+    // Тот же гард, что у приглашения, и с той же ценой: разъедься имена — кнопка откроет виджет без
+    // `responseId`, тот примет это за открытие из карточки и предложит выписать НОВОЕ приглашение
+    // клиенту, который только что ответил.
+    const button = built().layout.footer!.buttons.openResult as {
+      action: { type: string; actionParams: Record<string, unknown> }
+    }
+    expect(button.action.type).toBe('openRestApp')
+    const params = readWidgetParams(button.action.actionParams)
+    expect(hasResultRequest(params)).toBe(true)
+    expect(params).toEqual({ responseId: 'r-42', dealId: 759 })
+  })
+
+  it('результат распознаётся РАНЬШЕ приглашения — иначе позовём отвечавшего снова', () => {
+    // ⚠️ Дело-результат живёт на той же сделке, что и дело-приглашение, и портал может добавить в
+    // options свои ключи. Порядок проверок в виджете решает, что человек увидит.
+    const both = readWidgetParams({ responseId: 'r-42', dealId: 759, surveyKey: 'csat', token: 'tk' })
+    expect(hasResultRequest(both)).toBe(true)
+  })
+
+  it('без responseId кнопки НЕТ вовсе: мёртвая кнопка хуже отсутствующей', () => {
+    // До страницы просмотра результата футер отсутствовал ровно поэтому. Сводка в теле дела остаётся
+    // в любом случае — ради неё менеджер сюда и смотрит, и от кнопки она зависеть не должна.
+    expect(built({ responseId: undefined }).layout.footer).toBeUndefined()
+    expect(built({ marker: undefined }).layout.footer).toBeUndefined()
+    expect(built().layout.body.blocks, 'сводка исчезла вместе с кнопкой').toBeDefined()
   })
 })
 

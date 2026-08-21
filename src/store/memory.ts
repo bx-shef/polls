@@ -98,6 +98,10 @@ export class MemoryStore implements IStore {
     return [...rs]
   }
 
+  async getResponse(responseId: string): Promise<ResponseRecord | undefined> {
+    return this._responses.find((r) => r.id === responseId)
+  }
+
   async hasResponseSince(surveyKey: string, dealId: number, since: Date): Promise<boolean> {
     const from = since.getTime()
     return this._responses.some((r) => {
