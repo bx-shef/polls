@@ -120,8 +120,12 @@ describe('checkEnv — половина пары', () => {
 describe('checkEnv — значения, которые молча падают на умолчание', () => {
   it('нераспознанный режим триггера → предупреждение с перечнем допустимых', () => {
     const w = prod({ TRIGGER_MODE: 'robott' }).warnings.find((i) => i.name === 'TRIGGER_MODE')
-    expect(w?.message).toMatch(/event, robot, both/)
-    for (const v of ['event', 'ROBOT', 'both']) expect(prod({ TRIGGER_MODE: v }).warnings).toEqual([])
+    expect(w?.message).toMatch(/event, robot/)
+    for (const v of ['event', 'ROBOT']) expect(prod({ TRIGGER_MODE: v }).warnings).toEqual([])
+    // ⚠️ Снятое значение `both` обязано ПРЕДУПРЕЖДАТЬ, а не молчать: портал, где оно осталось в
+    // окружении, безопасно уезжает на `event`, но узнать об этом оператор должен от предполётной
+    // проверки, а не по отсутствию приглашений.
+    expect(names(prod({ TRIGGER_MODE: 'both' }).warnings)).toContain('TRIGGER_MODE')
   })
 
   it('окно перехода вне диапазона → предупреждение', () => {

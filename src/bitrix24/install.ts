@@ -292,6 +292,12 @@ export function integrationCalls(mode: TriggerMode, baseUrl: string): Integratio
   const robotOn = robotTriggerEnabled(mode)
   const base = baseUrl.replace(/\/+$/, '')
   return [
+    // ⚠️ `soleTrigger` у пути триггера сегодня всегда `true` — режимов два, и включён ровно один
+    // (значение `both` снято вместе с #175, разбор — в `trigger-mode.ts`). Признак оставлен ВЫВОДИМЫМ
+    // (`!robotOn` / `!eventOn`), а не захардкожен: он отвечает на вопрос «держится ли авто-триггер
+    // только на этой регистрации», и появись третий путь или комбинированный режим — ответ поменяется
+    // сам. Захардкоженное `true` в этот момент соврало бы, а провал одной из двух регистраций
+    // логировался бы как «фича мертва».
     ...(eventOn
       ? [
           {

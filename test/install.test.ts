@@ -14,6 +14,7 @@ import {
   PLACEMENT_DEAL_ACTIVITY,
   PLACEMENT_ANALYTICS_MENU
 } from '../src/bitrix24/install'
+import { TRIGGER_MODES, type TriggerMode } from '../src/bitrix24/trigger-mode'
 import type { OAuthTokens } from '../src/bitrix24/oauth'
 
 const validRaw = {
@@ -159,7 +160,7 @@ describe('parsePlacementDealId (#17)', () => {
 
 describe('integrationCalls — что регистрируем по режиму триггера (#122)', () => {
   const BASE = 'https://polls.example.com'
-  const methods = (mode: 'event' | 'robot' | 'both'): string[] => integrationCalls(mode, BASE).map((c) => c.method)
+  const methods = (mode: TriggerMode): string[] => integrationCalls(mode, BASE).map((c) => c.method)
 
   it('event (дефолт) → только подписка на событие, робота нет', () => {
     expect(methods('event')).toEqual(['event.bind', 'placement.bind', 'placement.bind'])
@@ -169,20 +170,20 @@ describe('integrationCalls — что регистрируем по режиму
     expect(methods('robot')).toEqual(['bizproc.robot.add', 'placement.bind', 'placement.bind'])
   })
 
-  it('both → оба пути (осознанный выбор оператора)', () => {
-    expect(methods('both')).toEqual(['event.bind', 'bizproc.robot.add', 'placement.bind', 'placement.bind'])
-  })
-
-  it('ГЛАВНОЕ: вне режима both два пути НИКОГДА не регистрируются вместе', () => {
+  it('ГЛАВНОЕ: два пути НИКОГДА не регистрируются вместе — ни при каком режиме', () => {
     // Это и есть защита от двух приглашений на один переход — регресс здесь стоит клиенту дубля.
-    for (const mode of ['event', 'robot'] as const) {
+    // ⚠️ Перебор по ВСЕМУ списку режимов, а не по паре литералов: значение `both` снято вместе с #175
+    // (оба пути сразу = два дела с разными ключами перехода), и добавленный режим обязан пройти ту же
+    // проверку, иначе защита вернётся к «мы же помним».
+    for (const mode of TRIGGER_MODES) {
       const m = methods(mode)
-      expect(m.includes('event.bind') && m.includes('bizproc.robot.add')).toBe(false)
+      expect(m.includes('event.bind') && m.includes('bizproc.robot.add'), mode).toBe(false)
+      expect(m.includes('event.bind') || m.includes('bizproc.robot.add'), mode).toBe(true)
     }
   })
 
   it('плейсменты регистрируются при любом режиме (виджет и дашборд от триггера не зависят)', () => {
-    for (const mode of ['event', 'robot', 'both'] as const) {
+    for (const mode of TRIGGER_MODES) {
       expect(methods(mode).filter((m) => m === 'placement.bind')).toHaveLength(2)
     }
   })
@@ -190,14 +191,20 @@ describe('integrationCalls — что регистрируем по режиму
   it('единственный путь помечен soleTrigger — его провал нельзя проглотить как пропуск встройки', () => {
     expect(integrationCalls('event', BASE).find((c) => c.method === 'event.bind')?.soleTrigger).toBe(true)
     expect(integrationCalls('robot', BASE).find((c) => c.method === 'bizproc.robot.add')?.soleTrigger).toBe(true)
-    // при both ни один путь не единственный — падение одного не убивает авто-триггер
-    expect(integrationCalls('both', BASE).every((c) => !c.soleTrigger)).toBe(true)
+    // ⚠️ `soleTrigger` у пути триггера сегодня всегда `true` (режимов два, включён ровно один), но
+    // признак остаётся ВЫВОДИМЫМ: появись комбинированный режим — ответ поменяется сам, а
+    // захардкоженное `true` соврало бы, и провал одной из двух регистраций логировался бы как
+    // «авто-триггер мёртв».
+    for (const mode of TRIGGER_MODES) {
+      const trigger = integrationCalls(mode, BASE).filter((c) => c.method !== 'placement.bind')
+      expect(trigger.filter((c) => c.soleTrigger), mode).toHaveLength(1)
+    }
     // плейсменты — никогда не триггер
     expect(integrationCalls('event', BASE).filter((c) => c.method === 'placement.bind').every((c) => !c.soleTrigger)).toBe(true)
   })
 
   it('HANDLER-адреса строятся от baseUrl и переживают хвостовой слэш', () => {
-    const withSlash = integrationCalls('both', `${BASE}/`)
+    const withSlash = integrationCalls('event', `${BASE}/`)
     expect(withSlash.find((c) => c.method === 'event.bind')?.params).toMatchObject({
       handler: `${BASE}/api/b24/deal-update`
     })
