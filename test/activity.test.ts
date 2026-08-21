@@ -4,7 +4,9 @@ import {
   buildSurveyResultActivity,
   activityConfigurableAdd,
   activityListByMarker,
+  completeActivity,
   ensureActivityMarker,
+  openInviteActivities,
   dealDetailPath,
   DEAL_OWNER_TYPE_ID,
   SURVEY_ACTIVITY_LOGO,
@@ -304,5 +306,52 @@ describe('activityListByMarker — поиск наших дел', () => {
 
   it('пустой ответ портала → пусто, без падения', async () => {
     expect(await activityListByMarker(client(ok(null)), marker, 759)).toEqual([])
+  })
+})
+
+describe('закрытие дела-приглашения при ответе (#177)', () => {
+  it('ищет ОТКРЫТЫЕ дела этой сделки по коду приложения (ключа перехода тут нет)', async () => {
+    const c = client(ok([]))
+    await openInviteActivities(c, 759, 'csat_postdeal')
+    expect(c.calls[0]).toEqual(['crm.activity.list', {
+      filter: {
+        ORIGINATOR_ID: 'bx-shef.polls',
+        OWNER_TYPE_ID: DEAL_OWNER_TYPE_ID,
+        OWNER_ID: 759,
+        COMPLETED: 'N'
+      },
+      select: ['ID', 'ORIGIN_ID'],
+      start: 0
+    }])
+  })
+
+  it('отбирает дела ТОГО ЖЕ опроса, чужие оставляет висеть', async () => {
+    // На одной сделке может висеть приглашение по другому опросу — ответ по этому его не закрывает.
+    const c = client(ok([
+      { ID: 1, ORIGIN_ID: 'stage:100:csat_postdeal' },
+      { ID: 2, ORIGIN_ID: 'stage:100:nps_quarterly' },
+      { ID: 3, ORIGIN_ID: 'stage:200:csat_postdeal' }
+    ]))
+    expect(await openInviteActivities(c, 759, 'csat_postdeal')).toEqual([1, 3])
+  })
+
+  it('строки без читаемого id и без маркера отбрасываются', async () => {
+    const c = client(ok([
+      { ID: 'abc', ORIGIN_ID: 'stage:100:csat_postdeal' },
+      { ID: 0, ORIGIN_ID: 'stage:100:csat_postdeal' },
+      { ID: 5 },
+      { ID: '7', ORIGIN_ID: 'stage:100:csat_postdeal' }
+    ]))
+    expect(await openInviteActivities(c, 759, 'csat_postdeal')).toEqual([7])
+  })
+
+  it('пустой ответ портала → пусто, без падения', async () => {
+    expect(await openInviteActivities(client(ok(null)), 759, 'k')).toEqual([])
+  })
+
+  it('completeActivity ставит COMPLETED=Y', async () => {
+    const c = client(ok(true))
+    await completeActivity(c, 101)
+    expect(c.calls[0]).toEqual(['crm.activity.update', { id: 101, fields: { COMPLETED: 'Y' } }])
   })
 })

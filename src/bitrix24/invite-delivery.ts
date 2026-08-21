@@ -17,6 +17,9 @@ import type { KeySerializer } from '../api/serial-by-key'
 /** Код приложения в маркере. Отделяет наши дела от чужих, если ключи вдруг совпадут по форме. */
 export const INVITE_ORIGINATOR = 'bx-shef.polls'
 
+/** Префикс формы маркера. Строится и разбирается в одном файле — иначе они разъедутся молча. */
+const MARKER_PREFIX = 'stage:'
+
 export interface InviteMarker {
   originatorId: string
   originId: string
@@ -33,7 +36,36 @@ export interface InviteMarker {
  * клиента снова — по такому ключу второй заход навсегда съедался бы как дубль.
  */
 export function inviteMarker(transitionId: string, surveyKey: string): InviteMarker {
-  return { originatorId: INVITE_ORIGINATOR, originId: `stage:${transitionId}:${surveyKey}` }
+  return { originatorId: INVITE_ORIGINATOR, originId: `${MARKER_PREFIX}${transitionId}:${surveyKey}` }
+}
+
+/**
+ * Наше ли это дело и по ТОМУ ли опросу — по одному лишь `ORIGIN_ID`, без ключа перехода.
+ *
+ * ⚠️ Нужно закрытию дела при получении ответа ([#177](https://github.com/bx-shef/polls/issues/177)):
+ * там известны сделка и опрос, но НЕ переход — клиент отвечает по ссылке, а ключ перехода живёт
+ * только в событийном пути. Поэтому дела ищутся по владельцу и коду приложения, а «тот ли опрос»
+ * решается уже здесь, разбором маркера.
+ *
+ * Разбор, а не `endsWith(':' + surveyKey)`: ключ опроса — произвольная строка, и `csat` совпал бы
+ * хвостом с `nps_csat`. Форма маркера ровно одна (`stage:<переход>:<опрос>`), её и разбираем.
+ *
+ * ⚠️ **Разбор жёстко привязан к форме — при её смене обновлять здесь же.** В планах добавить в ключ
+ * тип сущности ([#179](https://github.com/bx-shef/polls/issues/179), лиды и смарт-процессы): после
+ * этого маркер перестанет быть трёхчастным, `markerMatchesSurvey` не узнает свои дела, и закрытие
+ * выключится МОЛЧА — без ошибки, с `b24_invite_closed closed: 0`.
+ */
+export function markerMatchesSurvey(originId: unknown, surveyKey: string): boolean {
+  // `typeof`, а не `!== undefined`: значение приходит из REST портала, и `null` вместо отсутствия
+  // поля уронил бы разбор TypeError'ом — а он выглядел бы как отказ портала, погасив закрытие ВСЕХ
+  // дел этого ответа.
+  if (typeof originId !== 'string' || !originId.startsWith(MARKER_PREFIX)) return false
+  // Режем по ВТОРОМУ разделителю, а не `split(':')` на равные части: ключ опроса — обычная строка
+  // (`z.string().min(1).max(200)`), двоеточие в нём разрешено, и `csat:2026` дал бы четыре части —
+  // мы перестали бы узнавать СВОЙ ЖЕ маркер, а дело не закрывалось бы никогда с `found: 0` в логе.
+  // Ключ перехода двоеточий не содержит по построению (`readTransitionId` — положительное целое).
+  const sep = originId.indexOf(':', MARKER_PREFIX.length)
+  return sep > MARKER_PREFIX.length - 1 && originId.slice(sep + 1) === surveyKey
 }
 
 /** Дело, каким его отдаёт поиск по маркеру: нужен только id и признак закрытости. */

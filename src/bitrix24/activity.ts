@@ -1,7 +1,7 @@
 import type { PortalClient } from './client'
 import { callMethod } from './client'
 import type { ResultLine } from '../domain/result-summary'
-import type { InviteMarker, MarkedActivity, MarkerFix } from './invite-delivery'
+import { INVITE_ORIGINATOR, markerMatchesSurvey, type InviteMarker, type MarkedActivity, type MarkerFix } from './invite-delivery'
 import { inviteActionParams } from '../client/widget-params'
 
 /**
@@ -300,4 +300,51 @@ export async function ensureActivityMarker(
   // для этого типа дела не поддерживается: раньше мы объявляли `repaired` по факту вызова, и провал
   // защиты был бы неотличим в логе от её работы.
   return (await marked()) ? 'repaired' : 'failed'
+}
+
+/**
+ * Открытые дела-приглашения ЭТОЙ сделки по ЭТОМУ опросу — для закрытия при получении ответа (#177).
+ *
+ * ⚠️ Ищем не по полному маркеру, а по владельцу и коду приложения: ключа перехода на этом пути нет
+ * (клиент отвечает по ссылке, а переход известен только событийному пути). Опрос отфильтровываем
+ * разбором `ORIGIN_ID` уже у себя — так закрытие по одному опросу не заденет дело по другому,
+ * висящее на той же сделке.
+ */
+export async function openInviteActivities(
+  client: PortalClient,
+  dealId: number,
+  surveyKey: string
+): Promise<number[]> {
+  const rows = await callMethod<Array<{ ID?: number | string; ORIGIN_ID?: string }>>(
+    client,
+    'crm.activity.list',
+    {
+      filter: {
+        ORIGINATOR_ID: INVITE_ORIGINATOR,
+        OWNER_TYPE_ID: DEAL_OWNER_TYPE_ID,
+        OWNER_ID: dealId,
+        COMPLETED: 'N'
+      },
+      select: ['ID', 'ORIGIN_ID'],
+      // ⚠️ Явный кап, а не молчаливая первая страница портала. Дел на сделке единицы; сотня означает
+      // поломку (маркер не проставился — `markerFix: failed` — и каждый переход плодит новое дело).
+      // Разница в том, что явный предел видно в коде, а обрезку страницы — только на проде.
+      start: 0
+    }
+  )
+  return (rows ?? [])
+    .filter((r) => markerMatchesSurvey(r.ORIGIN_ID, surveyKey))
+    .map((r) => Number(r.ID))
+    .filter((id) => Number.isFinite(id) && id > 0)
+}
+
+/**
+ * Закрыть дело (`COMPLETED: Y`) — «клиент ответил, звать больше незачем».
+ *
+ * ⚠️ Закрытие делает достижимыми две нижние строки правила «уже приглашали?»: до него дело висело
+ * открытым вечно, а значит на любой повторный переход правило отвечало «ждём клиента» — даже когда
+ * клиент давно ответил.
+ */
+export async function completeActivity(client: PortalClient, activityId: number): Promise<void> {
+  await callMethod(client, 'crm.activity.update', { id: activityId, fields: { COMPLETED: 'Y' } })
 }

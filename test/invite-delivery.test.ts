@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createKeySerializer } from '../src/api/serial-by-key'
 import {
-  INVITE_ORIGINATOR, decideInvite, deliverInvite, inviteMarker,
+  INVITE_ORIGINATOR, decideInvite, deliverInvite, inviteMarker, markerMatchesSurvey,
   type DeliverInviteDeps, type MarkedActivity
 } from '../src/bitrix24/invite-delivery'
 
@@ -220,5 +220,35 @@ describe('доставка приглашения целиком', () => {
     ])
     expect(timeline, 'переходы съели друг друга').toHaveLength(2)
     expect(out.filter((r) => r.kind === 'created')).toHaveLength(2)
+  })
+})
+
+describe('маркер → «тот ли опрос» (закрытие дела при ответе, #177)', () => {
+  it('свой опрос узнаётся, чужой — нет', () => {
+    expect(markerMatchesSurvey(inviteMarker('4242', 'csat').originId, 'csat')).toBe(true)
+    expect(markerMatchesSurvey(inviteMarker('4242', 'nps').originId, 'csat')).toBe(false)
+  })
+
+  it('ХВОСТ маркера не считается совпадением', () => {
+    // ⚠️ Ровно то, ради чего здесь разбор, а не `endsWith(':' + surveyKey)`: ключ опроса —
+    // произвольная строка, и ответ по `csat` закрыл бы дело по `nps_csat`, то есть погасил бы
+    // приглашение на ДРУГОЙ опрос той же сделки.
+    expect(markerMatchesSurvey(inviteMarker('4242', 'nps_csat').originId, 'csat')).toBe(false)
+  })
+
+  it('чужая форма маркера, пусто и мусор → не наше', () => {
+    for (const bad of [undefined, '', 'csat', 'stage:csat', 'other:4242:csat', 'STAGE:4242:csat']) {
+      expect(markerMatchesSurvey(bad, 'csat'), String(bad)).toBe(false)
+    }
+  })
+
+  it('ключ опроса С ДВОЕТОЧИЕМ — это НАШ маркер', () => {
+    // ⚠️ `surveyKey` — обычная строка (`z.string().min(1).max(200)`), двоеточие в нём разрешено.
+    // Разбор на равные части отверг бы `csat:2026` как чужой: дело не закрывалось бы НИКОГДА, и в
+    // логе это выглядело бы как «дел не было». Ключ перехода двоеточий не содержит по построению.
+    expect(markerMatchesSurvey(inviteMarker('4242', 'csat:2026').originId, 'csat:2026')).toBe(true)
+    expect(markerMatchesSurvey('stage:4242:a:b', 'a:b')).toBe(true)
+    // И хвостовое совпадение по-прежнему отвергается.
+    expect(markerMatchesSurvey('stage:4242:x:a:b', 'a:b')).toBe(false)
   })
 })

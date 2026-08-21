@@ -54,6 +54,28 @@ export async function resolveMemberIdByDomain(db: Queryable, domain: string): Pr
   return r.rows[0]?.member_id
 }
 
+/**
+ * `member_id` портала ПО ЕГО ЧИСЛОВОМУ id — для путей, где портал ниоткуда не приходит.
+ *
+ * Такой путь один: публичный `POST /api/submit` ([#177](https://github.com/bx-shef/polls/issues/177)).
+ * Клиент отвечает по ссылке, ни фрейма, ни события портала там нет — а закрыть дело в таймлайне надо.
+ *
+ * ⚠️ Спрашиваем ПО id того портала, под которым уже пишет стор (`pgPortalId`), а не «первый
+ * установленный». Второе правило выбора тенанта разъезжается с первым молча: удалили тестовый портал
+ * без очистки → строка осталась → поставили боевой → стор пишет в один портал, а закрытие ходит в
+ * другой, с отозванными токенами. Один и тот же id — значит расхождения быть не может по построению.
+ *
+ * `undefined` — строки нет (портал удалён под нами) либо это плейсхолдер: у него нет токенов, ходить
+ * в CRM нечем. Оба случая штатные, а не ошибка: сервис умеет работать до связки с Bitrix.
+ */
+export async function memberIdByPortalId(db: Queryable, portalId: number): Promise<string | undefined> {
+  const r = await db.query<{ member_id: string }>(
+    'select member_id from portal where id = $1 and member_id <> $2 limit 1',
+    [portalId, LOCAL_PORTAL_MEMBER_ID]
+  )
+  return r.rows[0]?.member_id
+}
+
 /** Опции сохранения токенов при установке. */
 export interface SaveTokensOpts {
   /** Часы для `updated_at` (тест фиксирует). Default: `new Date()`. */
