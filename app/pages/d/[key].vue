@@ -17,7 +17,14 @@ interface Dashboard {
   threshold?: number
   nps?: NpsSummary | null
   csat?: CsatSummary | null
-  distribution?: { question: string; items: { label: string; count: number }[] } | null
+  // `hiddenBins` — сколько ячеек подавлено k-анонимностью (#49). Метки и счётчики скрытых ячеек
+  // сервер не отдаёт: их отдача сделала бы подавление декоративным.
+  distribution?: {
+    question: string
+    items: { label: string; count: number }[]
+    hiddenBins: number
+    threshold: number
+  } | null
   trend?: TrendPoint[]
   // Срезы — проекции (имя группы + метрики подвыборки), не ядровые типы; рендерятся BreakdownCard.
   services?: BreakdownRow[]
@@ -155,12 +162,15 @@ const heading = computed(() => data.value?.title ?? 'Дашборд опроса
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Топ-бокс: {{ data.csat.topBoxPct }}%</p>
       </B24Card>
 
+      <!-- Карточка живёт и при ПУСТОМ списке: два варианта, у одного единица — показывать нечего,
+           но сказать, что распределение скрыто, обязаны. Молчаливое исчезновение блока читается как
+           «вопрос не задавали». -->
       <B24Card
-        v-if="data?.distribution?.items?.length"
+        v-if="data?.distribution"
         :title="data.distribution.question"
         class="sm:col-span-2"
       >
-        <ul class="flex flex-col gap-2">
+        <ul v-if="data.distribution.items.length" class="flex flex-col gap-2">
           <li
             v-for="item in data.distribution.items"
             :key="item.label"
@@ -170,6 +180,11 @@ const heading = computed(() => data.value?.title ?? 'Дашборд опроса
             <B24Badge color="air-secondary-accent" :label="String(item.count)" />
           </li>
         </ul>
+        <p v-if="data.distribution.hiddenBins" class="mt-3 text-sm text-gray-500 dark:text-gray-400">
+          Скрыто вариантов: {{ data.distribution.hiddenBins }} — в каждом меньше
+          {{ data.distribution.threshold }} ответов. Единичный вариант указывает на конкретного
+          человека, поэтому такие строки не показываются.
+        </p>
       </B24Card>
 
       <B24Card

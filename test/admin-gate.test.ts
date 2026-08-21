@@ -28,6 +28,22 @@ const READ_ROUTES = [
   'server/api/dashboard/[key].get.ts'
 ]
 
+/**
+ * Роут делегирует решение отдельному модулю — гард обязан идти ЗА ним.
+ *
+ * ⚠️ Иначе у вынесенного решения два исхода, и оба плохие: либо роут вылетает из списка (проверка
+ * молча исчезает вместе с самым чувствительным адресом), либо гард ищет `storeFor(tenant.portalId)`
+ * в файле, где остались только зависимости, и краснеет на верной правке — а красный гард снимают.
+ * Порядок и параметры у вынесенного решения покрыты ИСПОЛНЯЕМО (`test/dashboard-view.test.ts`),
+ * здесь остаётся текстовая страховка на случай, если решение вернут обратно в роут.
+ */
+const DECIDES_IN: Record<string, string> = {
+  'server/api/dashboard/[key].get.ts': 'server/utils/dashboard-view.ts'
+}
+
+/** Файл, где роут ПРИНИМАЕТ решение: он сам либо вынесенный модуль. */
+const decider = (path: string): string => DECIDES_IN[path] ?? path
+
 /** Код без комментариев: иначе гард удовлетворяется упоминанием имени в прозе. */
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
@@ -61,9 +77,11 @@ describe('гейт прав на роутах (#139)', () => {
     // `storeFor(`, и все три проверки стали ранним `return` — гард прошёл, ничего не проверив,
     // ровно в том PR, который менял порядок обращений. Ранний выход по «не нашли» — это способ
     // выключить проверку правкой прод-кода.
-    const src = stripComments(read(path))
-    const gate = src.search(/\b(require|resolve)PortalSession\(event\)/)
-    const store = src.search(/\b(useStore|storeFor)\(/)
+    const src = stripComments(read(decider(path)))
+    const gate = src.search(/\b(require|resolve)PortalSession\(event\)|\bdeps\.session\(\)/)
+    // ⚠️ Ищем ВЫЗОВ (`await …storeFor(`), а не имя: у вынесенного решения то же имя стоит в
+    // объявлении зависимостей — выше всех проверок, — и гард краснел бы на верном коде.
+    const store = src.search(/\bawait\s+(deps\.)?(useStore|storeFor)\(/)
     expect(store, `${path}: роут не ходит в стор — либо гард смотрит не туда`).toBeGreaterThan(-1)
     expect(gate, `${path}: обращение к хранилищу раньше гейта`).toBeLessThan(store)
   })
@@ -71,9 +89,10 @@ describe('гейт прав на роутах (#139)', () => {
   it.each(READ_ROUTES)('%s берёт стор ПО ПОРТАЛУ сессии, а не общий (#47/#49)', (path) => {
     // Гейт доказывает «какой это портал», а `useStore()` этот ответ выбрасывает: сотрудник одного
     // заказчика получил бы данные того портала, который инстанс выбрал себе по умолчанию.
-    const src = stripComments(read(path))
-    expect(src, `${path}: нет резолва портала сессии`).toContain('resolveSessionPortal(')
-    expect(src, `${path}: стор берётся мимо портала сессии`).toMatch(/storeFor\(\s*tenant\.portalId\s*\)/)
+    const src = stripComments(read(decider(path)))
+    expect(src, `${path}: нет резолва портала сессии`).toMatch(/resolveSessionPortal\(|deps\.tenant\(/)
+    expect(src, `${path}: стор берётся мимо портала сессии`)
+      .toMatch(/(deps\.)?storeFor\(\s*tenant\.portalId\s*\)/)
     expect(src, `${path}: остался общий стор на процесс`).not.toMatch(/\buseStore\(\)/)
   })
 

@@ -16,7 +16,8 @@ import {
   meetsAnonymity,
   npsFor,
   npsTrend,
-  numericValues
+  numericValues,
+  suppressSmallBins
 } from '../src/domain/aggregate'
 import { buildDemo, CSAT_Q, LIKED_Q, NPS_Q, SURVEY_KEY } from '../src/demo/seed'
 import type { ResponseRecord } from '../src/domain/schema'
@@ -265,5 +266,65 @@ describe('npsTrend — сортировка бакетов не зависит �
     // Вставка май→апрель: компаратор должен переставить (ветвь a > b).
     const rs = [mk('b', '2026-05-10', 9), mk('a', '2026-04-10', 9)]
     expect(npsTrend(rs, NPS_Q, 'month').map((p) => p.bucket)).toEqual(['2026-04', '2026-05'])
+  })
+})
+
+describe('k-анонимность распределения по ячейкам (#49)', () => {
+  const bins = (...pairs: Array<[string, number]>) => pairs.map(([label, count]) => ({ label, count }))
+
+  it('крупные ячейки проходят целиком', () => {
+    const out = suppressSmallBins(bins(['Скорость', 8], ['Цена', 7]))
+    expect(out.items).toHaveLength(2)
+    expect(out.hiddenBins).toBe(0)
+  })
+
+  it('точечная ячейка скрыта, и вместе с ней — самая маленькая из показанных', () => {
+    // ⚠️ Комплементарное подавление. У обязательного вопроса с одиночным выбором сумма ячеек равна
+    // общему N, который мы публикуем: скрыв ОДНУ ячейку, мы бы её же и назвали — вычитанием.
+    const out = suppressSmallBins(bins(['Скорость', 20], ['Цена', 7], ['Отказ', 1]))
+    expect(out.items.map((i) => i.label)).toEqual(['Скорость'])
+    expect(out.hiddenBins).toBe(2)
+  })
+
+  it('добираем именно САМУЮ МАЛЕНЬКУЮ из показанных, а не первую или последнюю', () => {
+    const out = suppressSmallBins(bins(['Цена', 9], ['Скорость', 20], ['Отказ', 2]))
+    expect(out.items.map((i) => i.label)).toEqual(['Скорость'])
+  })
+
+  it('малых ячеек уже две — добирать нечего', () => {
+    const out = suppressSmallBins(bins(['Скорость', 20], ['Цена', 3], ['Отказ', 1]))
+    expect(out.items.map((i) => i.label)).toEqual(['Скорость'])
+    expect(out.hiddenBins).toBe(2)
+  })
+
+  it('два варианта и у одного единица → не показываем НИЧЕГО', () => {
+    // Показать второй значило бы назвать первый. Пустое распределение — правильный ответ, а не сбой.
+    const out = suppressSmallBins(bins(['Скорость', 40], ['Отказ', 1]))
+    expect(out.items).toEqual([])
+    expect(out.hiddenBins).toBe(2)
+  })
+
+  it('единственная малая ячейка: добирать не из чего, и падать не должны', () => {
+    const out = suppressSmallBins(bins(['Отказ', 1]))
+    expect(out.items).toEqual([])
+    expect(out.hiddenBins).toBe(1)
+  })
+
+  it('порог настраиваемый и по умолчанию равен общему порогу анонимности', () => {
+    // Малых ячеек ДВЕ — комплементарное подавление не срабатывает и порог виден чисто.
+    const input = bins(['a', 4], ['b', 4], ['c', 9], ['d', 9])
+    expect(ANONYMITY_THRESHOLD).toBe(5)
+    expect(suppressSmallBins(input).items.map((i) => i.label)).toEqual(['c', 'd'])
+    expect(suppressSmallBins(input, 2).hiddenBins).toBe(0)
+  })
+
+  it('пустой вход — пустой выход', () => {
+    expect(suppressSmallBins([])).toEqual({ items: [], hiddenBins: 0 })
+  })
+
+  it('вход НЕ мутируется — вызывающий сортирует его сам', () => {
+    const input = bins(['Скорость', 20], ['Отказ', 1])
+    suppressSmallBins(input)
+    expect(input).toHaveLength(2)
   })
 })
