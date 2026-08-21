@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { runRobotTrigger, parseRobotEvent, type RobotDeps } from '../src/bitrix24/robot'
 import { parseBracketForm } from '../src/bitrix24/bracket-form'
-import { MemoryInvitationStore } from '../src/api/invitation'
-import type { TriggerStore } from '../src/bitrix24/trigger'
+import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
+import type { TriggerStore, TriggerTenant } from '../src/bitrix24/trigger'
 import type { CompiledVersion } from '../src/domain/schema'
 
 const ver = (n: number): CompiledVersion => ({ versionNo: n }) as CompiledVersion
@@ -28,13 +28,27 @@ const rawRobot = (over: Record<string, unknown> = {}) => ({
 
 const dealFields = { ID: '759', STAGE_ID: 'C1:WON', COMPANY_ID: '101' }
 
-function deps(over: Partial<RobotDeps> = {}): RobotDeps {
+/** Шим: тесты говорят про `store`/`invitations`, а деп — резолвер тенанта по `member_id` (#49). */
+type DepsOver = Omit<Partial<RobotDeps>, 'tenant'> & {
+  store?: TriggerStore
+  invitations?: InvitationStore
+  tenant?: RobotDeps['tenant']
+}
+
+function deps(over: DepsOver = {}): RobotDeps {
+  const { store: overStore, invitations: overInvitations, tenant: overTenant, ...rest } = over
+  if (overTenant && (overStore || overInvitations)) {
+    throw new Error('deps(): tenant задан вместе со store/invitations — они бы никуда не поехали')
+  }
+  const tenant: TriggerTenant = {
+    store: overStore ?? store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
+    invitations: overInvitations ?? new MemoryInvitationStore()
+  }
   return {
     storedApplicationToken: async () => 'app-token-fake-0000000000000000',
     fetchDeal: async () => ({ deal: { ...dealFields }, productRows: [] }),
-    store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }),
-    invitations: new MemoryInvitationStore(),
-    ...over
+    tenant: overTenant ?? (async () => tenant),
+    ...rest
   }
 }
 
@@ -206,5 +220,34 @@ describe('runRobotTrigger — робот автоматизации «Запус
       )
       expect((await invR.peek(r.results[0]!.token, now))?.context).toEqual((await invE.peek(e.results[0]!.token, now))?.context)
     }
+  })
+})
+
+describe('runRobotTrigger — портал выбирается ПОСЛЕ сверки токена (#49)', () => {
+  it('токен не сошёлся → тенант НЕ резолвится', async () => {
+    const tenant = vi.fn(async () => ({ store: store({}, {}), invitations: new MemoryInvitationStore() }))
+    const res = await runRobotTrigger(rawRobot(), deps({ storedApplicationToken: async () => 'другой', tenant }))
+    expect(res.kind).toBe('forged')
+    expect(tenant).not.toHaveBeenCalled()
+  })
+
+  it('портала уже нет → ignored/tenant, догрузки сделки нет', async () => {
+    const fetchDeal = vi.fn(deps().fetchDeal)
+    const res = await runRobotTrigger(rawRobot(), deps({ tenant: async () => undefined, fetchDeal }))
+    expect(res).toEqual({ kind: 'ignored', reason: 'tenant' })
+    expect(fetchDeal).not.toHaveBeenCalled()
+  })
+
+  it('тенант резолвится по ПОДТВЕРЖДЁННОМУ member_id, и приглашение ложится в его стор', async () => {
+    // ⚠️ Аргумент резолвера сверяем поимённо: `deps.tenant('')` вместо `deps.tenant(member_id)`
+    // выглядит рабочим кодом и делает робота молча мёртвым — каждый эвент даёт `ignored/tenant`.
+    const mine = new MemoryInvitationStore()
+    const tenant = vi.fn(async (_memberId: string) => ({
+      store: store({ 'C1:WON': ['csat_postdeal'] }, { csat_postdeal: 2 }), invitations: mine
+    }))
+    const res = await runRobotTrigger(rawRobot(), deps({ tenant }))
+    if (res.kind !== 'ok') throw new Error('unreachable')
+    expect(tenant).toHaveBeenCalledWith('member-id-fake-0000000000000000')
+    expect(await mine.peek(res.results[0]!.token, new Date())).toBeDefined()
   })
 })

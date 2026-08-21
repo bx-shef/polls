@@ -47,7 +47,27 @@ import { MemoryInvitationStore, type InvitationStore } from './invitation'
  * токен в `submit` — «проверьте заполнение». Стор при этом in-memory, то есть безвредно; но
  * durable-стор (#4) отправит это в параметр SQL-запроса.
  */
-export const invitationTokenSchema = z.string().min(1).max(200)
+/**
+ * Пределы длин публичного ввода — ОДНИ на всех.
+ *
+ * ⚠️ Вынесены в константы, потому что читателей стало двое: схема записи (`httpSubmitSchema`) и
+ * резолв тенанта (#49), который капает вход ДО обращения к базе. Разъехавшись, они дали бы вход,
+ * который проходит выбор портала и не проходит запись, — то есть лишнюю работу с базой на каждый
+ * запрос анонима.
+ */
+export const MAX_INVITATION_TOKEN_LEN = 200
+export const MAX_SURVEY_KEY_LEN = 200
+
+/**
+ * Единый текст отказа по частоте (429).
+ *
+ * ⚠️ Литерал жил в четырёх местах этого файла, а с #49 понадобился пятому — резолву тенанта в
+ * Nitro-слое, который отрабатывает ДО ядра. Пять копий одной строки — это пять шансов, что человек
+ * получит на соседних роутах разный совет об одном и том же.
+ */
+export const RATE_LIMIT_MESSAGE = 'Слишком много запросов. Подождите немного и попробуйте снова.'
+
+export const invitationTokenSchema = z.string().min(1).max(MAX_INVITATION_TOKEN_LEN)
 
 /** Payload POST /api/submit = brief §8 + пин опроса/версии (мультиопросное ядро). */
 const httpSubmitSchema = z
@@ -56,11 +76,34 @@ const httpSubmitSchema = z
     nonce: z.string().min(1).max(200),
     hp: z.string().max(200).optional(),
     invitation: invitationTokenSchema.optional(),
-    surveyKey: z.string().min(1).max(200),
+    surveyKey: z.string().min(1).max(MAX_SURVEY_KEY_LEN),
     versionNo: z.number().int().positive(),
     answers: z.record(z.string().max(200), rawAnswerSchema)
   })
   .refine((s) => Object.keys(s.answers).length <= 200, { message: 'Слишком много ответов в payload' })
+
+/**
+ * Ключ опроса и токен приглашения из СЫРОГО тела `POST /api/submit` — до полной валидации (#49).
+ *
+ * ⚠️ Нужно раньше `submit`, а не внутри: чтобы позвать `submit`, надо уже выбрать `Api` нужного
+ * портала, а выбирают его именно этими двумя полями. Отдельная схема (а не `httpSubmitSchema`)
+ * потому, что вопрос другой: тут не «валиден ли ответ» (на это отвечает `submit`, своим текстом и
+ * своим статусом), а «кому он адресован». Тело без `surveyKey` — не отказ, а «портал неизвестен»:
+ * пустой ключ никому не принадлежит, дальше отвечает обычный путь.
+ *
+ * Границы длин — те же, что у `httpSubmitSchema`: разъехавшись, они дали бы вход, который проходит
+ * выбор портала и не проходит запись (или наоборот).
+ */
+const submitTenantHintSchema = z.object({
+  surveyKey: z.string().min(1).max(MAX_SURVEY_KEY_LEN),
+  invitation: invitationTokenSchema.optional()
+})
+
+export function submitTenantHint(body: unknown): { surveyKey: string; token: string | undefined } {
+  const parsed = submitTenantHintSchema.safeParse(body)
+  if (!parsed.success) return { surveyKey: '', token: undefined }
+  return { surveyKey: parsed.data.surveyKey, token: parsed.data.invitation }
+}
 
 export const SUPPORTED_SCHEMA_VERSION = 1
 
@@ -211,7 +254,7 @@ export function createApi(deps: ApiDeps): Api {
 
   return {
     async session({ ip }: SessionInput): Promise<ApiResult> {
-      if (!limiter.allow(`s:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
+      if (!limiter.allow(`s:${ip}`, now())) return err(429, RATE_LIMIT_MESSAGE)
       const nonce = nonces.issue(now())
       if (nonce == null) return err(503, 'Сервис сейчас перегружен. Попробуйте через минуту.')
       // schema_version — клиенту для bootstrap (контракт brief §8)
@@ -220,7 +263,7 @@ export function createApi(deps: ApiDeps): Api {
 
     async survey({ ip, surveyKey }: SurveyInput): Promise<ApiResult> {
       // GET-чтение: отдельный бюджет rate-limit (анти-перебор surveyKey).
-      if (!limiter.allow(`sv:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
+      if (!limiter.allow(`sv:${ip}`, now())) return err(429, RATE_LIMIT_MESSAGE)
       const key = surveyKeySchema.safeParse(surveyKey)
       if (!key.success) return err(400, 'Неверный адрес опроса. Проверьте ссылку.')
       try {
@@ -256,7 +299,7 @@ export function createApi(deps: ApiDeps): Api {
      * на SSR-пути упирается в доверенный прокси (#6) и делается там, а не тут.
      */
     async invitationCheck({ ip, surveyKey, token }: InvitationCheckInput): Promise<ApiResult> {
-      if (!limiter.allow(`i:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
+      if (!limiter.allow(`i:${ip}`, now())) return err(429, RATE_LIMIT_MESSAGE)
       const key = surveyKeySchema.safeParse(surveyKey)
       if (!key.success) return err(400, 'Неверный адрес опроса. Проверьте ссылку.')
       // Форма токена — до похода в стор, и та же, что у `submit` (один вход → один диагноз).
@@ -291,7 +334,7 @@ export function createApi(deps: ApiDeps): Api {
 
     async submit({ ip, body }: SubmitInput): Promise<ApiResult> {
       if (honeypotTripped(body)) return err(400, 'Не удалось отправить ответ.')
-      if (!limiter.allow(`p:${ip}`, now())) return err(429, 'Слишком много запросов. Подождите немного и попробуйте снова.')
+      if (!limiter.allow(`p:${ip}`, now())) return err(429, RATE_LIMIT_MESSAGE)
 
       const parsed = httpSubmitSchema.safeParse(body)
       if (!parsed.success) return err(400, 'Ответ не отправлен: проверьте заполнение и попробуйте снова.')

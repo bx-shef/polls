@@ -1,3 +1,5 @@
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
+
 /**
  * GET /api/admin/surveys — список опросов портала для админ-экрана (фаза мульти-сущность).
  * Лёгкая сводка по текущей версии каждого опроса (`IStore.listSurveys`): ключ/заголовок/версия +
@@ -10,15 +12,19 @@
  *
  * AUTH (#47): `requirePortalSession` (синхронный throw `createError`, поэтому без `await`) — прод
  * (`DASHBOARD_AUTH_SECRET`) требует валидную подписанную сессию портала, иначе 401/503 (конфигурация
- * опросов — внутренняя, не для анонима; fail-closed). Dev/гейт — открыто. Сейчас один стор на
- * процесс (single-tenant MVP), листинг уже tenant-scoped внутри PgStore по portalId; мульти-тенант
- * (`useStore(session.portalId)`) + rate-limit этого роута — #49 (пока без лимита, как dashboard).
+ * опросов — внутренняя, не для анонима; fail-closed). Dev/гейт — открыто. Стор берётся ПО ПОРТАЛУ
+ * сессии (`resolveSessionPortal` → `storeFor`): список опросов у каждого портала свой. Rate-limit
+ * этого роута — #49 (пока без лимита, как dashboard).
  */
 export default defineEventHandler(async (event) => {
-  // session.portalId здесь пока не используется (single-tenant стор); при мульти-тенанте (#49)
-  // именно он выберет scoped-стор — поэтому гейт обязателен и сейчас (fail-closed).
+  // `session.portalId` — и есть выбор арендатора: список опросов у каждого портала свой.
   const session = requirePortalSession(event)
-  const store = await useStore()
+  const tenant = await resolveSessionPortal(session)
+  if (!tenant.ok) {
+    setResponseStatus(event, tenant.status)
+    return { ok: false, error: PORTAL_GONE_MESSAGE }
+  }
+  const store = await storeFor(tenant.portalId)
   const surveys = await store.listSurveys()
   return { ok: true as const, surveys, admin: session.admin === true }
 })

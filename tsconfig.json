@@ -39,6 +39,8 @@
     "test/invitation-wiring.test.ts",
     "test/install-wiring.test.ts",
     "test/close-invite.test.ts",
-    "test/close-invite-wiring.test.ts"
+    "test/close-invite-wiring.test.ts",
+    "test/tenant-wiring.test.ts",
+    "test/demo-seed-wiring.test.ts"
   ]
 }

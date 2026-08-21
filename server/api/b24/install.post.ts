@@ -21,6 +21,7 @@ import { errInfo } from '~core/obs/logger'
 import { b24AppConfig, usePortalTokenStore, registerIntegrations, allowB24Install } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { logger, resetStoreCache } from '../../utils/api'
+import { dropCachedPortalClients } from '../../utils/close-invite'
 import { installSaveOpts } from '../../utils/install-opts'
 
 // Верификационный рефреш — синхронный исходящий вызов на oauth.bitrix.info внутри install-запроса;
@@ -83,6 +84,8 @@ export default defineEventHandler(async (event) => {
         // переустановке нарисует «Приложение установлено», а `/api/health` останется зелёным
         // (`ping` — это `select 1`). Переустановка без рестарта не лечила бы: у новой строки НОВЫЙ id.
         resetStoreCache()
+        // Клиенты порталов живут до минуты своим кэшем — сносим вместе со стором (#49).
+        dropCachedPortalClients()
       }
       logger.info('b24_uninstall_ok', { memberId: verdict.memberId, cleaned: verdict.clean })
     } catch (e) {

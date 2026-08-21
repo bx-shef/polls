@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  * Плагин чистки — ИСПОЛНЯЕМЫЙ гард: модуль реально загружается, его таймеры реально тикают.
  *
  * ⚠️ Заведён по итогам ревью, и повод предметный: вся проводка приглашений (`useInvitations`,
- * `LazyInvitationStore`, `usePgInvitations`, этот плагин) не упоминалась НИ В ОДНОМ тесте, и восемь
+ * `LazyInvitationStore`, выбор реализации, этот плагин) не упоминалась НИ В ОДНОМ тесте, и восемь
  * мутаций подряд проходили полный набор из 1130 тестов. Самые страшные из них — бесшумные: снимите
  * гейт по БД, и чистка ПДн просто перестанет идти; выключите выбор реализации, и приглашения
  * вернутся в память, то есть весь переезд окажется несделанным. Ни лог, ни ответ, ни тест этого не
@@ -13,10 +13,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  * `defineNitroPlugin`, таймеры и `clear*` подменяются глобально (в модуле это свободные
  * идентификаторы) — прод-код ради теста не тронут ни одной строкой.
  */
-const sweepExpired = vi.fn(async () => 0)
-const usePgInvitations = vi.fn(async (): Promise<{ sweepExpired: typeof sweepExpired } | undefined> => undefined)
+const sweepAllPortalsInvitations = vi.fn(async () => 0)
+const usePortalDb = vi.fn(async (): Promise<{ query: () => Promise<unknown> } | undefined> => undefined)
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
-vi.mock('../server/utils/api', () => ({ logger, usePgInvitations }))
+vi.mock('../server/utils/api', () => ({ logger, usePortalDb }))
+// ⚠️ Мокаем ИМЕННО общепортальную чистку (#49): подмена метода стора прошла бы и при возврате к
+// чистке одного портала, то есть гард сторожил бы уже не то, что написано в плагине.
+vi.mock('~core/store/pg-invitation', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  sweepAllPortalsInvitations
+}))
 
 interface Handle { unref?: () => void }
 async function load() {
@@ -47,7 +53,7 @@ describe('плагин чистки приглашений', () => {
   it('оба таймера unref-нуты — иначе процесс не завершится', async () => {
     expect((await load()).unrefed.sort()).toEqual(['interval', 'timeout'])
   })
-  it('без БД (usePgInvitations → undefined) тик молчит и НЕ падает', async () => {
+  it('без БД (usePortalDb → undefined) тик молчит и НЕ падает', async () => {
     const { tick } = await load()
     await tick('timeout')
     expect(logger.warn).not.toHaveBeenCalled() // упади тик — здесь был бы invitation_sweep_fail
@@ -58,16 +64,18 @@ describe('плагин чистки приглашений', () => {
   })
   it('с БД тик подметает и пишет счётчик; keepDays берётся из env', async () => {
     process.env.INVITATION_KEEP_DAYS = '7'
-    usePgInvitations.mockResolvedValue({ sweepExpired })
-    sweepExpired.mockResolvedValue(3)
+    const db = { query: async () => ({ rows: [] }) }
+    usePortalDb.mockResolvedValue(db)
+    sweepAllPortalsInvitations.mockResolvedValue(3)
     const { tick } = await load()
     await tick('timeout')
-    expect(sweepExpired).toHaveBeenCalledWith(expect.any(Date), 7)
+    // Первым аргументом идёт СОЕДИНЕНИЕ, а не стор портала: фильтра по порталу у чистки нет вовсе.
+    expect(sweepAllPortalsInvitations).toHaveBeenCalledWith(db, expect.any(Date), 7)
     expect(logger.info).toHaveBeenCalledWith('invitations_swept', { count: 3, olderThanDays: 7 })
     delete process.env.INVITATION_KEEP_DAYS
   })
   it('падение чистки не роняет процесс — пишется warn', async () => {
-    usePgInvitations.mockRejectedValue(new Error('БД недоступна'))
+    usePortalDb.mockRejectedValue(new Error('БД недоступна'))
     const { tick } = await load()
     await tick('timeout')
     expect(logger.warn).toHaveBeenCalledWith('invitation_sweep_fail', { reason: 'БД недоступна' })

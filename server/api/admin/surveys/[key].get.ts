@@ -1,4 +1,5 @@
 import { versionToDraft } from '~core/domain/compile'
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
 
 /**
  * GET /api/admin/surveys/:key — текущая версия опроса как РЕДАКТИРУЕМЫЙ черновик (для админ-UI:
@@ -9,17 +10,23 @@ import { versionToDraft } from '~core/domain/compile'
  * до публикации — основа для детекта конфликта (оптимистичная блокировка в будущем).
  * Статусы: 400 (битый ключ), 401/503 (auth), 404 (опрос не найден).
  *
- * AUTH (#47): `requirePortalSession` (fail-closed) — конфигурация опроса внутренняя.
- * Tenant-scoped внутри PgStore по portalId (single-tenant MVP; мульти-тенант — #49).
+ * AUTH (#47): `requirePortalSession` (fail-closed) — конфигурация опроса внутренняя. Стор берётся
+ * ПО ПОРТАЛУ сессии (`resolveSessionPortal` → `storeFor`): чужой опрос по прямому адресу не откроется
+ * даже с валидной сессией другого портала — ответ будет 404, как для несуществующего.
  */
 export default defineEventHandler(async (event) => {
   const session = requirePortalSession(event)
+  const tenant = await resolveSessionPortal(session)
+  if (!tenant.ok) {
+    setResponseStatus(event, tenant.status)
+    return { ok: false, error: PORTAL_GONE_MESSAGE }
+  }
   const surveyKey = getRouterParam(event, 'key') ?? ''
   if (!surveyKey || surveyKey.length > 200) {
     setResponseStatus(event, 400)
     return { ok: false, error: 'Неверный адрес опроса. Проверьте ссылку.' }
   }
-  const store = await useStore()
+  const store = await storeFor(tenant.portalId)
   const version = await store.currentVersion(surveyKey)
   if (!version) {
     setResponseStatus(event, 404)

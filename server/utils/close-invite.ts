@@ -156,7 +156,14 @@ export async function closeInvite(info: AnsweredInfo, deps: CloseInviteDeps): Pr
  * ошибка клиента его тоже сбрасывает — иначе протухший грант завис бы до рестарта.
  */
 const CLIENT_TTL_MS = 60_000
-let cached: { at: number; client: PortalClient } | undefined
+/**
+ * Кэш — ПО ПОРТАЛУ (#49), а не один на процесс.
+ *
+ * ⚠️ Одна переменная на все порталы была бы не «лишним рефрешем», а закрытием дела чужим клиентом:
+ * ответ портала B попал бы в клиент портала A, если тот лежит в кэше свежим. Ключ `undefined`
+ * (режим памяти / портал по умолчанию) держим отдельной строкой того же кэша.
+ */
+const cachedByPortal = new Map<number | 'default', { at: number; client: PortalClient }>()
 
 /**
  * Очередь по порталу — ОДНА на процесс.
@@ -177,15 +184,24 @@ const portalQueue = createKeySerializer()
  * осталась → поставили боевой → ответы легли в один портал, а закрытие пошло бы в другой, с
  * отозванными токенами, и каждый ответ писал бы `close_fail`.
  */
-export function liveCloseDeps(): CloseInviteDeps {
+export function liveCloseDeps(forPortalId?: number): CloseInviteDeps {
+  // ⚠️ Ключ кэша — РЕЗОЛЬВНУТЫЙ портал, а не аргумент. Считая его до резолва, мы получали бы две
+  // записи на один портал (`liveCloseDeps(5)` и `liveCloseDeps()` при процессном портале 5), то есть
+  // два независимых leaky-bucket'а SDK — ровно то, против чего кэш и заведён.
+  let cacheKey: number | 'default' = forPortalId ?? 'default'
   return {
     log: logger,
-    onFailure: dropCachedPortalClient,
-    portalClient: () => portalQueue.run('close-invite', async () => {
-      const fresh = cached && Date.now() - cached.at < CLIENT_TTL_MS
-      if (fresh && cached) return cached.client
+    onFailure: () => { cachedByPortal.delete(cacheKey) },
+    // ⚠️ Ключ очереди — ПОРТАЛ. Общий ключ выстроил бы ответы разных заказчиков в одну цепочку:
+    // медленный рефреш одного портала держал бы закрытие дел всех остальных.
+    portalClient: () => portalQueue.run(`close-invite:${forPortalId ?? 'default'}`, async () => {
       const db = await usePortalDb()
-      const portalId = await usePortalId()
+      // Портал ответа приходит параметром (его знает `useApiFor`, собирая хук). `undefined` — режим
+      // памяти либо портал по умолчанию: тогда спрашиваем процессный, как было до мультитенанта.
+      const portalId = forPortalId ?? await usePortalId()
+      if (portalId !== undefined) cacheKey = portalId
+      const cached = cachedByPortal.get(cacheKey)
+      if (cached && Date.now() - cached.at < CLIENT_TTL_MS) return cached.client
       const cfg = b24AppConfig()
       const tokenStore = await usePortalTokenStore()
       if (!db || portalId === undefined || !cfg || !tokenStore) return undefined
@@ -208,13 +224,19 @@ export function liveCloseDeps(): CloseInviteDeps {
         frameToB24Params({ domain: tokens.domain, accessToken, memberId }),
         cfg.secret
       )
-      cached = { at: Date.now(), client }
+      cachedByPortal.set(cacheKey, { at: Date.now(), client })
       return client
     })
   }
 }
 
-/** Сбросить кэш клиента (упавший вызов, смена портала). */
-export function dropCachedPortalClient(): void {
-  cached = undefined
+/**
+ * Сбросить кэшированные клиенты порталов — ВСЕ.
+ *
+ * Зовётся на удалении приложения, рядом с `resetStoreCache()` и по той же причине: клиент живёт до
+ * минуты, и без сброса удалённый портал ещё это время получал бы вызовы по уже отозванному гранту.
+ * Отказ одного вызова кэш чистит сам (`onFailure`) — это про случай, когда вызова просто не будет.
+ */
+export function dropCachedPortalClients(): void {
+  cachedByPortal.clear()
 }

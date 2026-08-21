@@ -76,6 +76,30 @@ export async function memberIdByPortalId(db: Queryable, portalId: number): Promi
   return r.rows[0]?.member_id
 }
 
+/**
+ * Обратный резолв: числовой `portal.id` ПО `member_id` — ключ арендатора для дашборда и админки
+ * ([#47](https://github.com/bx-shef/polls/issues/47)).
+ *
+ * ⚠️ В подписанной сессии портала лежит `member_id` (его выдаёт handshake фрейма), а стор и
+ * приглашения скоуплены ЧИСЛОВЫМ id. Пока портал был один, разрыв не мешал: `portalId` из сессии
+ * никуда не передавался, стор выбирался на процесс. С несколькими порталами это ровно тот шов, где
+ * сотрудник одного заказчика увидел бы срезы другого — с именами клиентов и ответственных.
+ *
+ * `undefined` — портала с таким `member_id` в базе нет: приложение удалили, пока сессия ещё жива.
+ * Вызывающий обязан ответить отказом, а не «показать что-нибудь»: подписанная сессия доказывает, ЧЕЙ
+ * это портал, но не то, что портал ещё установлен.
+ *
+ * ⚠️ Плейсхолдер-портал (`LOCAL_PORTAL_MEMBER_ID`) исключён тем же условием, что и в
+ * {@link memberIdByPortalId}: он не арендатор, а строка-заглушка для работы без связки с Bitrix24.
+ */
+export async function portalIdByMemberId(db: Queryable, memberId: string): Promise<number | undefined> {
+  const r = await db.query<{ id: number }>(
+    'select id from portal where member_id = $1 and member_id <> $2 limit 1',
+    [memberId, LOCAL_PORTAL_MEMBER_ID]
+  )
+  return r.rows[0]?.id
+}
+
 /** Опции сохранения токенов при установке. */
 export interface SaveTokensOpts {
   /** Часы для `updated_at` (тест фиксирует). Default: `new Date()`. */

@@ -17,7 +17,8 @@ import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { resolveTriggerMode, robotTriggerEnabled } from '~core/bitrix24/trigger-mode'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
-import { useStore, useInvitations, logger } from '../../utils/api'
+import { logger } from '../../utils/api'
+import { tenantByMemberId } from '../../utils/tenant'
 
 // Публичный роут: до сверки токена каждый запрос делает SELECT (+ расшифровку blob) — режем флуд.
 // Потолок ниже, чем у deal-update: робот срабатывает на переходах стадий, а не на каждом апдейте.
@@ -58,8 +59,6 @@ export default defineEventHandler(async (event) => {
       fetch: timeoutFetch
     })
 
-    // ⚠️ TENANT (#49): SINGLE-TENANT, как и deal-update — `member_id` не выбирает стор.
-    const store = await useStore()
     const outcome = await runRobotTrigger(raw, {
       storedApplicationToken: async (memberId) => (await tokenStore.load(memberId))?.applicationToken,
       fetchDeal: async (dealId, memberId) => {
@@ -77,8 +76,10 @@ export default defineEventHandler(async (event) => {
         })
         return { deal, productRows }
       },
-      store,
-      invitations: useInvitations()
+      // ⚠️ TENANT (#49): стор и приглашения — по `member_id` события, и резолвер зовётся уже ЗА
+      // сверкой `application_token` (см. `runRobotTrigger`). Раньше стор был один на процесс, и робот
+      // одного заказчика выписывал бы приглашение в данные другого.
+      tenant: tenantByMemberId
     })
 
     if (outcome.kind === 'ignored') {

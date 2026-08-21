@@ -7,6 +7,7 @@
 // (128 КБ → 413, тело без заявленной длины → 411) — ровно для таких роутов он и сделан. Раньше `readBody`
 // здесь шёл до подтверждения фрейма вообще без ограничения.
 import { surveyPath } from '~core/client/invitation-link'
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
 import { parseFrameAuth, verifyFrameAuth } from '~core/bitrix24/frame'
 import { createPortalClient, dealGet, dealProductRows, frameToB24Params } from '~core/bitrix24/client'
 import { dealToCrmContext } from '~core/bitrix24/deal-event'
@@ -14,7 +15,8 @@ import { createSurveyInvitation } from '~core/bitrix24/trigger'
 import { surveyKeyForEntity } from '~core/bitrix24/survey-routing'
 import { allowB24Session, useB24Authenticator } from '../../utils/b24-session'
 import { b24AppConfig } from '../../utils/portal'
-import { useStore, useInvitations, useSurveyRouting, logger } from '../../utils/api'
+import { useSurveyRouting, logger } from '../../utils/api'
+import { tenantByMemberId } from '../../utils/tenant'
 
 // Какой опрос запускать по сделке — из конфигурации портала (env `SURVEY_KEY_DEAL`/`SURVEY_KEY_DEFAULT`),
 // с дефолтом. UI-маппинг entityType→surveyKey — отдельный issue.
@@ -58,14 +60,23 @@ export default defineEventHandler(async (event) => {
     })
     const context = dealToCrmContext(deal, productRows)
 
-    // ⚠️ TENANT (#49): `useStore()` сейчас SINGLE-TENANT (один PgStore на инстанс приложения) —
-    // приложение обслуживает ОДИН портал. Подтверждённый `portal.portalId` тут НЕ выбирает стор.
-    // Для мульти-портала ОБЯЗАТЕЛЕН scoped-стор по `portal.portalId` (member_id → portal.id), иначе
-    // портал A создаст приглашение в данных портала B (инвариант createSurveyInvitation). Гейт — #49.
-    const store = await useStore()
+    // TENANT (#49): стор и приглашения — портала, ПОДТВЕРЖДЁННОГО выше (`verifyFrameAuth`: домен из
+    // allowlist → живой `profile` → сверка member_id с сохранённым). Раньше стор был один на процесс,
+    // и виджет одного заказчика создавал бы приглашение в данных другого.
+    const tenant = await tenantByMemberId(portal.portalId)
+    if (!tenant) {
+      // Портал подтверждён, а строки нет: приложение удалили прямо сейчас. Отдельный текст, потому
+      // что «опрос не опубликован» здесь было бы неправдой и увело бы настраивать опрос. ⚠️ Совет
+      // адресован ТОМУ, КТО ЧИТАЕТ: виджет открывает продавец из карточки сделки, а установка
+      // приложения ему недоступна — «установите заново» он выполнить не может.
+      setResponseStatus(event, 409)
+      return { ok: false, error: PORTAL_GONE_MESSAGE }
+    }
     const { routing, fallback } = useSurveyRouting()
     const surveyKey = surveyKeyForEntity('deal', routing, fallback)
-    const res = await createSurveyInvitation({ store, invitations: useInvitations(), surveyKey, context })
+    const res = await createSurveyInvitation({
+      store: tenant.store, invitations: tenant.invitations, surveyKey, context
+    })
     if (!res) {
       setResponseStatus(event, 422)
       return { ok: false, error: 'Опрос ещё не опубликован. Опубликуйте его в разделе «Опросы» и повторите.' }

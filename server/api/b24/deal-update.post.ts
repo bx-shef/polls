@@ -23,7 +23,8 @@ import { SlidingWindowLimiter } from '~core/api/ratelimit'
 import { resolveTriggerMode, eventTriggerEnabled } from '~core/bitrix24/trigger-mode'
 import { usePortalTokenStore, b24AppConfig } from '../../utils/portal'
 import { timeoutFetch } from '../../utils/b24-fetch'
-import { useStore, useInvitations, logger } from '../../utils/api'
+import { logger } from '../../utils/api'
+import { tenantByMemberId, type PortalTenant } from '../../utils/tenant'
 import { makeInviteIssue } from '../../utils/invite-issue'
 
 // Таймаут исходящего OAuth-рефреша (accessToken портала мог протухнуть) — общий `timeoutFetch`
@@ -84,10 +85,19 @@ export default defineEventHandler(async (event) => {
       fetch: timeoutFetch
     })
 
-    // ⚠️ TENANT (#49): useStore()/useInvitations() — SINGLE-TENANT (один портал на инстанс приложения).
-    // `member_id` события НЕ выбирает стор. Для мульти-портала ОБЯЗАТЕЛЕН scoped-стор по member_id, иначе
-    // стадия одного портала триггернёт опрос данных другого (cross-tenant). Гейт — #49.
-    const store = await useStore()
+    // ⚠️ TENANT (#49): стор и приглашения выбираются ПО `member_id` события — и только после того, как
+    // ядро сверило `application_token` (резолвер зовётся уже за проверкой, см. `runDealUpdate`). Раньше
+    // стор был один на процесс, и стадия сделки одного заказчика выписывала бы приглашение в данные
+    // другого. Мемоизация — по `member_id`: одно событие про один портал, но резолвер зовут и выписка
+    // дела, и само ядро, а два независимых резолва разъехались бы молча.
+    const tenants = new Map<string, Promise<PortalTenant | undefined>>()
+    const tenantFor = (memberId: string) => {
+      const cached = tenants.get(memberId)
+      if (cached) return cached
+      const p = tenantByMemberId(memberId)
+      tenants.set(memberId, p)
+      return p
+    }
 
     // Клиент портала: токеном ПОРТАЛА (не события). Домен — из СОХРАНЁННОГО токена (валидирован
     // allowlist'ом на установке), не из недоверенного события (SSRF). ОДИН на обработку события
@@ -170,8 +180,7 @@ export default defineEventHandler(async (event) => {
         })
         return { deal, productRows }
       },
-      store,
-      invitations: useInvitations(),
+      tenant: tenantFor,
       // Отказ по ОДНОМУ опросу не должен лишать приглашения остальные опросы этой же стадии: событие
       // Bitrix24 не ретраит, значит потерянный опрос теряется навсегда. Причина — сюда, поимённо.
       onIssueError: (surveyKey, e) =>
@@ -181,8 +190,15 @@ export default defineEventHandler(async (event) => {
       // не виден поиску), а замыкание внутри роута проверить было нечем.
       issue: (ctx) => makeInviteIssue(ctx, {
         portalClient,
-        invitations: useInvitations(),
-        store,
+        // ⚠️ Тот же резолвер, что у ядра: выписка обязана писать в ТОТ ЖЕ портал, что и триггер.
+        // Резолв на этом шаге уже сделан и лежит в кэше — второго обращения к БД тут нет.
+        tenant: async () => {
+          const t = await tenantFor(ctx.memberId)
+          // Недостижимо на живом пути (ядро зовёт выписку только после успешного резолва), но
+          // молчаливый фолбэк на общий стор здесь — это ровно тот дефект, который мы и убираем.
+          if (!t) throw new Error(`портал ${ctx.memberId}: не найден`)
+          return t
+        },
         serializer: inviteSerializer,
         baseUrl: b24AppConfig()?.baseUrl ?? '',
         log: logger

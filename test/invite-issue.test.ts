@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { makeInviteIssue, type InviteIssueDeps } from '../server/utils/invite-issue'
 import { createKeySerializer } from '../src/api/serial-by-key'
-import { MemoryInvitationStore } from '../src/api/invitation'
+import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import type { PortalClient, CallResult } from '../src/bitrix24/client'
 import type { CrmContext } from '../src/domain/schema'
 
@@ -61,20 +61,31 @@ const ARGS = {
 }
 const CTX = { transition: { id: '4242', at: new Date('2026-08-20T10:00:00Z') }, memberId: 'm-1' }
 
-function deps(over: Partial<InviteIssueDeps> = {}): InviteIssueDeps & { logs: Array<[string, string, Record<string, unknown>]> } {
+/** Шим: тесты говорят про `store`/`invitations`, а деп — резолвер тенанта портала (#49). */
+type DepsOver = Omit<Partial<InviteIssueDeps>, 'tenant'> & {
+  store?: { hasResponseSince: (...args: never[]) => Promise<boolean> }
+  invitations?: InvitationStore
+  tenant?: InviteIssueDeps['tenant']
+}
+
+function deps(over: DepsOver = {}): InviteIssueDeps & { logs: Array<[string, string, Record<string, unknown>]> } {
   const logs: Array<[string, string, Record<string, unknown>]> = []
   const portal = fakePortal()
+  const { store: overStore, invitations: overInvitations, tenant: overTenant, ...rest } = over
+  const tenant = {
+    store: (overStore ?? { hasResponseSince: () => Promise.resolve(false) }) as Awaited<ReturnType<InviteIssueDeps['tenant']>>['store'],
+    invitations: overInvitations ?? new MemoryInvitationStore()
+  }
   const base: InviteIssueDeps = {
     portalClient: () => Promise.resolve(portal.client),
-    invitations: new MemoryInvitationStore(),
-    store: { hasResponseSince: () => Promise.resolve(false) },
+    tenant: overTenant ?? (() => Promise.resolve(tenant)),
     serializer: createKeySerializer(),
     baseUrl: 'https://polls.example',
     log: {
       info: (e, f) => logs.push(['info', e, f]),
       warn: (e, f) => logs.push(['warn', e, f])
     },
-    ...over
+    ...rest
   }
   return { ...base, logs }
 }

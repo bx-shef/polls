@@ -40,7 +40,7 @@ afterAll(async () => { delete process.env.DATABASE_URL; await pglite.close() })
 
 describe('проводка приглашений', () => {
   it('с DATABASE_URL useInvitations() пишет в БД под НАСТОЯЩИМ порталом', async () => {
-    const { useInvitations, usePgInvitations } = await import('../server/utils/api')
+    const { useInvitations, usePortalDb } = await import('../server/utils/api')
     const inv = await useInvitations().create(
       { surveyKey: 'csat_postdeal', versionNo: 1, context: { dealId: 42, responsibleName: 'Иванов' } },
       new Date('2026-08-15T10:00:00Z')
@@ -53,10 +53,13 @@ describe('проводка приглашений', () => {
     expect(p.rows[0]!.id).toBe(77)
     expect(rows[0]!.portal_id, 'portal_id приглашения разошёлся с реальным порталом').toBe(77)
 
-    const sweeper = await usePgInvitations()
-    expect(sweeper, 'usePgInvitations() пуст при заданном DATABASE_URL — чистка ПДн не пойдёт').toBeDefined()
-    expect(await sweeper!.sweepExpired(new Date('2026-08-20T00:00:00Z'), 30)).toBe(0) // живое не трогаем
-    expect(await sweeper!.peek(inv.token, new Date('2026-08-15T10:01:00Z'))).toBeDefined()
+    // Чистка ПДн ходит НАПРЯМУЮ соединением, без стора портала (#49): подметать надо всех
+    // арендаторов, а стор скоуплен конструктором.
+    const db = await usePortalDb()
+    expect(db, 'usePortalDb() пуст при заданном DATABASE_URL — чистка ПДн не пойдёт').toBeDefined()
+    const { sweepAllPortalsInvitations } = await import('../src/store/pg-invitation')
+    expect(await sweepAllPortalsInvitations(db!, new Date('2026-08-20T00:00:00Z'), 30)).toBe(0) // живое не трогаем
+    expect(await useInvitations().peek(inv.token, new Date('2026-08-15T10:01:00Z'))).toBeDefined()
   }, 60_000)
 
   it('провал резолва НЕ кэшируется — следующий вызов пробует снова', async () => {

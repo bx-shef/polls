@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createApi, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
+import { createApi, submitTenantHint, SUPPORTED_SCHEMA_VERSION, type Api } from '../src/api/handlers'
 import { nullLogger } from '../src/obs/logger'
 import { MemoryNonceStore } from '../src/api/nonce'
 import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
@@ -981,5 +981,29 @@ describe('анти-абьюз: примитивы', () => {
     expect(l.allow('ip-1', c.now())).toBe(true) // существующий ключ работает
     c.advance(1001) // окно ip-1 протухло → sweep при переполнении освободит место
     expect(l.allow('ip-2', c.now())).toBe(true)
+  })
+})
+
+describe('submitTenantHint — кому адресован ответ (#49)', () => {
+  it('читает ключ опроса и токен приглашения из сырого тела', () => {
+    expect(submitTenantHint({ surveyKey: 'csat_postdeal', invitation: 'tok-1', answers: {} }))
+      .toEqual({ surveyKey: 'csat_postdeal', token: 'tok-1' })
+  })
+
+  it('токена нет → undefined (публичная ссылка), ключ остаётся', () => {
+    expect(submitTenantHint({ surveyKey: 'csat_postdeal' })).toEqual({ surveyKey: 'csat_postdeal', token: undefined })
+  })
+
+  it('тело без ключа/битое → пустой ключ, а НЕ отказ', () => {
+    // ⚠️ Отвечать «не отправлено» на этом шаге нельзя: диагноз заполнения ставит `submit`, своим
+    // текстом и своим статусом. Здесь вопрос один — «чей это ответ», и «ничей» законный ответ.
+    for (const body of [null, 'мусор', 42, {}, { surveyKey: '' }, { surveyKey: 123 }]) {
+      expect(submitTenantHint(body)).toEqual({ surveyKey: '', token: undefined })
+    }
+  })
+
+  it('границы длин те же, что у схемы записи — иначе вход прошёл бы выбор портала и не прошёл запись', () => {
+    expect(submitTenantHint({ surveyKey: 'k'.repeat(201) }).surveyKey).toBe('')
+    expect(submitTenantHint({ surveyKey: 'k', invitation: 't'.repeat(201) })).toEqual({ surveyKey: '', token: undefined })
   })
 })

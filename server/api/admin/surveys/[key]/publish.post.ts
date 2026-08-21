@@ -1,5 +1,6 @@
 import { publishableDraftSchema, draftTooLargeIssue } from '~core/domain/schema'
 import { isSameOriginWrite, CROSS_ORIGIN_MESSAGE } from '~core/api/csrf'
+import { PORTAL_GONE_MESSAGE } from '~core/api/session'
 import { logger } from '../../../../utils/api'
 
 /**
@@ -29,8 +30,8 @@ import { logger } from '../../../../utils/api'
  * AUTH: `resolveAdminAccess` (fail-closed) — мало быть авторизованным порталом, нужна роль
  * АДМИНИСТРАТОРА портала (`profile.ADMIN`, снят при handshake и лежит в подписанной сессии).
  * Публикация меняет текст, который увидит клиент заказчика, поэтому право на неё уже не то же,
- * что право посмотреть дашборд. Не админ → 403. Tenant-scoped внутри PgStore по portalId
- * (single-tenant MVP; мульти-тенант — #49).
+ * что право посмотреть дашборд. Не админ → 403. Портал — из подписанной сессии
+ * (`resolveSessionPortal` → `storeFor`), не из тела и не из URL.
  */
 const MAX_BODY_BYTES = 64 * 1024
 
@@ -92,10 +93,15 @@ export default defineEventHandler(async (event) => {
     return { ok: false, error: 'Адрес опроса не совпадает. Обновите страницу и повторите.' }
   }
 
-  // TENANT (#49): publish идёт в стор ПРОЦЕССА (single-tenant MVP — один процесс = один портал).
-  // При мульти-тенанте сюда придёт `useStore(session.portalId)` — портал берётся из авторитетной
-  // сессии (session.portalId), не из тела/URL.
-  const store = await useStore()
+  // TENANT (#49): портал берётся из АВТОРИТЕТНОЙ сессии (`access.session.portalId` — `member_id`,
+  // проверенный при handshake), а не из тела или URL. Иначе публикация под чужим ключом означала бы
+  // публикацию в чужой портал: текст, который увидит клиент другого заказчика.
+  const tenant = await resolveSessionPortal(access.session)
+  if (!tenant.ok) {
+    setResponseStatus(event, tenant.status)
+    return { ok: false, error: PORTAL_GONE_MESSAGE }
+  }
+  const store = await storeFor(tenant.portalId)
   const current = await store.currentVersion(surveyKey)
   const currentNo = current?.versionNo ?? 0
   // Оптимистичная блокировка: клиент загружал currentNo'; если реальная текущая ушла вперёд — конфликт.

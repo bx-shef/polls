@@ -20,6 +20,26 @@ function linkTtlMs(policy: InvitationPolicy | undefined): number | undefined {
 /** Из стора нужны только эти два метода — облегчает мок в тестах. */
 export type TriggerStore = Pick<IStore, 'surveysTriggeredBy' | 'currentVersion'>
 
+/** Стор и приглашения ОДНОГО портала — тенант событийного пути (#49). */
+export interface TriggerTenant {
+  store: TriggerStore
+  invitations: InvitationStore
+}
+
+/**
+ * Резолвер тенанта по `member_id` события.
+ *
+ * ⚠️ Существует ради ПОРЯДКА, а не ради удобства. Пока стор приходил в зависимости готовым значением,
+ * он выбирался ДО сверки `application_token` — то есть до того, как мы вообще знали, чей это запрос.
+ * Пока портал был один, это ничего не значило; с несколькими стадия одного заказчика запускала бы
+ * рассылку по данным другого. Функция от `member_id` делает эту последовательность невозможной:
+ * позвать её раньше проверки нечем — до неё `member_id` не подтверждён.
+ *
+ * `undefined` — портала с таким `member_id` уже нет (приложение удалили между сверкой токена и
+ * выбором стора). Триггерить нечего.
+ */
+export type TriggerTenantResolver = (memberId: string) => Promise<TriggerTenant | undefined>
+
 export interface TriggerResult {
   surveyKey: string
   versionNo: number

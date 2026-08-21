@@ -1,6 +1,8 @@
 import { parseDealUpdateEvent, verifyApplicationToken, dealToCrmContext } from './deal-event'
-import { handleDealTrigger, type IssueInvitation, type TriggerResult, type TriggerStore } from './trigger'
-import type { InvitationStore } from '../api/invitation'
+import {
+  handleDealTrigger,
+  type IssueInvitation, type TriggerResult, type TriggerTenantResolver
+} from './trigger'
 
 /**
  * Оркестрация авто-триггера `ONCRMDEALUPDATE` (event.bind, ISSUE #17) — ЯДРО-рантайм, без HTTP/портала.
@@ -22,8 +24,11 @@ import type { InvitationStore } from '../api/invitation'
  */
 
 export type DealUpdateOutcome =
-  /** Не наш/битый POST — портал online-события не ретраит, наружу отвечаем 200. */
-  | { kind: 'ignored'; reason: 'parse' }
+  /**
+   * Не наш/битый POST (`parse`) либо портал исчез между сверкой токена и выбором стора (`tenant`:
+   * приложение удалили прямо сейчас). Портал online-события не ретраит, наружу отвечаем 200.
+   */
+  | { kind: 'ignored'; reason: 'parse' | 'tenant' }
   /**
    * `application_token` не сошёлся (подделка) либо портал не установлен / у него нет сохранённого
    * `application_token` — ничего не триггерим. `memberId` (заявленный, недоверенный) — для диагностики лога.
@@ -54,8 +59,13 @@ export interface DealUpdateDeps {
     dealId: number,
     memberId: string
   ) => Promise<{ deal: Record<string, unknown>; productRows: Array<Record<string, unknown>> }>
-  store: TriggerStore
-  invitations: InvitationStore
+  /**
+   * Стор и приглашения ПОРТАЛА события (#49) — резолвятся ПО подтверждённому `member_id`.
+   *
+   * ⚠️ Функция, а не пара значений: значение пришлось бы выбрать до сверки `application_token`, то
+   * есть до того, как известно, чей это запрос. См. {@link TriggerTenantResolver}.
+   */
+  tenant: TriggerTenantResolver
   /**
    * Подтверждение РЕАЛЬНОГО перехода в стадию (история портала, `crm.stagehistory.list`): `true` — переход
    * произошёл только что, приглашаем. **Не задана** → проверки нет (путь робота автоматизации: он и так
@@ -99,7 +109,11 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
     return { kind: 'forged', reason: expected === undefined ? 'unknown_portal' : 'token_mismatch', memberId: ev.auth.member_id }
   }
 
-  // Токен сошёлся → догружаем АВТОРИТЕТНЫЕ поля сделки токеном портала и строим снимок контекста.
+  // Токен сошёлся — только теперь `member_id` подтверждён, и только теперь выбирается тенант (#49).
+  const tenant = await deps.tenant(ev.auth.member_id)
+  if (!tenant) return { kind: 'ignored', reason: 'tenant' }
+
+  // Догружаем АВТОРИТЕТНЫЕ поля сделки токеном портала и строим снимок контекста.
   const { deal, productRows } = await deps.fetchDeal(ev.data.FIELDS.ID, ev.auth.member_id)
   const context = dealToCrmContext(deal, productRows)
 
@@ -112,7 +126,7 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   let triggeredSurveyKeys: readonly string[] | undefined
   let transition: { id?: string; at?: Date } = {}
   if (deps.confirmStageEntry && context.dealStageId) {
-    triggeredSurveyKeys = await deps.store.surveysTriggeredBy(context.dealStageId)
+    triggeredSurveyKeys = await tenant.store.surveysTriggeredBy(context.dealStageId)
     if (triggeredSurveyKeys.length > 0) {
       const entry = await deps.confirmStageEntry(ev.data.FIELDS.ID, context.dealStageId, ev.auth.member_id)
       if (!entry.fresh) {
@@ -124,8 +138,8 @@ export async function runDealUpdate(raw: unknown, deps: DealUpdateDeps): Promise
   }
 
   const outcome = await handleDealTrigger({
-    store: deps.store,
-    invitations: deps.invitations,
+    store: tenant.store,
+    invitations: tenant.invitations,
     context,
     now: deps.now,
     // Список уже получен гейтом выше — не спрашиваем БД повторно за одно событие.

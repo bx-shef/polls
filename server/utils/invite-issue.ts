@@ -20,9 +20,15 @@ import { surveyPath } from '~core/client/invitation-link'
 export interface InviteIssueDeps {
   /** Клиент нужного портала по `member_id` (из проверенной части события). */
   portalClient: (memberId: string) => Promise<PortalClient>
-  invitations: InvitationStore
-  /** Из стора нужен один вопрос: отвечал ли клиент по сделке после перехода. */
-  store: Pick<IStore, 'hasResponseSince'>
+  /**
+   * Стор и приглашения ПОРТАЛА события (#49) — функцией, а не значениями.
+   *
+   * ⚠️ Пара значений означала бы, что портал выбран при СБОРКЕ выписки, то есть до того, как событие
+   * прошло сверку `application_token`. Здесь же выписка собирается на каждое подтверждённое событие,
+   * и портал у неё ровно один — свой. Из стора нужен один вопрос: отвечал ли клиент по сделке после
+   * перехода.
+   */
+  tenant: () => Promise<{ store: Pick<IStore, 'hasResponseSince'>; invitations: InvitationStore }>
   /** Очередь «поиск → создание» — ОДНА на процесс, иначе она ничего не значит. */
   serializer: KeySerializer
   /** База абсолютной ссылки (`APP_DOMAIN`/`DOMAIN`); пустая — ссылка выйдет относительной. */
@@ -61,6 +67,7 @@ export function makeInviteIssue(
     const transitionAt = transition.at
 
     const client = await deps.portalClient(memberId)
+    const { store, invitations } = await deps.tenant()
     let issued: { token: string } | undefined
     const out = await deliverInvite(transition.id, args.surveyKey, {
       serializer: deps.serializer,
@@ -71,9 +78,9 @@ export function makeInviteIssue(
       findByMarker: (marker) => activityListByMarker(client, marker, dealId),
       // Точка отсчёта — момент ЭТОГО перехода: прошлогодний ответ не должен закрывать новый повод
       // спросить, если сделка прошла стадию второй раз.
-      answeredAfterTransition: () => deps.store.hasResponseSince(args.surveyKey, dealId, transitionAt),
+      answeredAfterTransition: () => store.hasResponseSince(args.surveyKey, dealId, transitionAt),
       createInvite: async (marker) => {
-        const inv = await deps.invitations.create(
+        const inv = await invitations.create(
           { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
           args.now
         )
@@ -97,7 +104,7 @@ export function makeInviteIssue(
           // (там ПДн), которую никто никогда не увидит, и по одной на КАЖДОЕ событие грозди. Гасим
           // сразу: `consume` помечает токен использованным, ссылка мертва. Ошибку гашения глотаем —
           // исходную важнее не потерять.
-          await deps.invitations
+          await invitations
             .consume(inv.token, { surveyKey: args.surveyKey, versionNo: args.versionNo }, args.now)
             .catch(() => undefined)
           deps.log.warn('b24_invite_activity_fail', {
