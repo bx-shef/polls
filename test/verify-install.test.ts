@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { decideInstallAccess, parsePortalMode } from '../src/bitrix24/portal'
 import {
   verifyInstallMember,
   applyVerifiedTokens,
@@ -188,5 +189,36 @@ describe('decideInstallDoubleDispatch (идемпотентность двойн
     expect(decideInstallDoubleDispatch('refresh_unavailable', true)).toBe('reject')
     expect(decideInstallDoubleDispatch('refresh_unavailable_429', true)).toBe('reject')
     expect(decideInstallDoubleDispatch('no_member_id', true)).toBe('reject')
+  })
+})
+
+describe('гейт установки частного контура (#183)', () => {
+  const allow = (memberId: string, expected: string | undefined, mode: 'single' | 'multi') =>
+    decideInstallAccess({ memberId, expectedMemberId: expected, mode }).allow
+
+  it('single: свой портал проходит, чужой отклоняется ЦЕЛИКОМ', () => {
+    // До гейта чужой портал устанавливался: присвоение ему отказывало, но строка портала заводилась,
+    // встройки регистрировались — посторонний получал рабочий тенант на частном инстансе.
+    expect(allow('m-своя', 'm-своя', 'single')).toBe(true)
+    expect(allow('m-чужая', 'm-своя', 'single')).toBe(false)
+  })
+
+  it('multi (Маркет): чужая установка легитимна', () => {
+    expect(allow('m-чужая', 'm-своя', 'multi')).toBe(true)
+  })
+
+  it('expected не задан или пуст → пускаем (dev/память; обязательность форсит env-check)', () => {
+    // Отказ здесь значил бы «забытая переменная молча выключила установку вовсе».
+    expect(allow('m-любая', undefined, 'single')).toBe(true)
+    expect(allow('m-любая', '   ', 'single')).toBe(true)
+  })
+
+  it('parsePortalMode: незнакомое значение падает в single, НЕ в multi', () => {
+    // Опечатка не должна молча открывать установку всем; громкость — обязанность env-check.
+    expect(parsePortalMode('multi')).toBe('multi')
+    expect(parsePortalMode('single')).toBe('single')
+    expect(parsePortalMode('both')).toBe('single')
+    expect(parsePortalMode(undefined)).toBe('single')
+    expect(parsePortalMode(' multi ')).toBe('multi')
   })
 })

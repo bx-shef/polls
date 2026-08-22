@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 /**
  * Проводка присвоения портала (#171) — ИСПОЛНЯЕМЫЙ гард, а не греп по исходнику.
@@ -83,4 +85,34 @@ describe('проводка присвоения портала при устан
     const after = await pglite.query<{ n: number }>('select count(*)::int as n from response')
     expect(after.rows[0]!.n).toBe(before.rows[0]!.n)
   }, 60_000)
+})
+
+describe('гейт чужой установки стоит В РОУТЕ (#183)', () => {
+  // Решение (`decideInstallAccess`) покрыто исполняемо в verify-install.test.ts; здесь сторожим
+  // ПРОВОДКУ: роут — единственное место, где решение соединяется с env и HTTP, и у server/** нет
+  // порога покрытия. Мутация «убрать вызов гейта из роута» без этих строк не роняла ничего.
+  const src = readFileSync(resolve(process.cwd(), 'server/api/b24/install.post.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
+  it('решение зовётся с authoritative member_id и БОЕВЫМИ env-переменными', () => {
+    expect(src, 'гейт снят с роута').toContain('decideInstallAccess({')
+    expect(src, 'сверяется присланный member_id, а не подтверждённый')
+      .toMatch(/memberId:\s*verifiedAuth\.memberId/)
+    expect(src).toMatch(/expectedMemberId:\s*process\.env\.B24_EXPECTED_MEMBER_ID/)
+    expect(src).toMatch(/mode:\s*parsePortalMode\(process\.env\.B24_PORTAL_MODE\)/)
+  })
+
+  it('отказ гейта — 403 ДО сохранения токенов и регистрации встроек', () => {
+    const gate = src.indexOf('decideInstallAccess({')
+    expect(gate).toBeGreaterThan(-1)
+    expect(src.indexOf('403', gate), 'отказ не отвечает 403').toBeGreaterThan(gate)
+    // Порядок: гейт раньше handleInstall — иначе чужой портал успевает сохраниться.
+    expect(gate, 'гейт стоит ПОСЛЕ сохранения — чужой тенант уже заведён')
+      .toBeLessThan(src.indexOf('handleInstall('))
+    // И раньше SSRF-проверки домена ничего страшного, но ПОСЛЕ верификации member_id — обязательно.
+    expect(gate, 'гейт стоит до верификации member_id — решает присланное значение')
+      .toBeGreaterThan(src.indexOf('verifyInstallMember('))
+    expect(src, 'отказ проходит молча').toContain('b24_install_foreign_reject')
+  })
 })

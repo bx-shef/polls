@@ -17,6 +17,8 @@ const GOOD: Record<string, string> = {
   NUXT_B24_CLIENT_ID: 'local.abc',
   NUXT_B24_CLIENT_SECRET: 'secret',
   DOMAIN: 'polls.bx-shef.by',
+  // #183: боевой контур обязан знать, чей он, — иначе накопленное присвоит первый установившийся.
+  B24_EXPECTED_MEMBER_ID: 'member-id-fake-0000000000000000',
   // Прод у нас стоит за обратным прокси; без этого лимиты по IP считаются одним счётчиком на всех.
   TRUSTED_PROXIES: '1'
 }
@@ -42,6 +44,27 @@ describe('checkEnv — здоровое окружение', () => {
 })
 
 describe('checkEnv — симптомы из таблицы «Если что-то пошло не так»', () => {
+  it('#183: связка настроена, а B24_EXPECTED_MEMBER_ID нет → ОШИБКА, не предупреждение', () => {
+    // Цена — чужие ПДн: без переменной накопленные до установки данные присвоит ПЕРВЫЙ
+    // установившийся портал (в Маркете это кто угодно с install-URL) и сможет их стереть.
+    expect(names(prod({ B24_EXPECTED_MEMBER_ID: undefined }).errors)).toContain('B24_EXPECTED_MEMBER_ID')
+    // Пустая строка и пробелы — то же «не задано»: раскомментированная пустая строка из примера.
+    expect(names(prod({ B24_EXPECTED_MEMBER_ID: '  ' }).errors)).toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('#183: без связки с порталом переменная НЕ требуется (dev/память)', () => {
+    const r = prod({ NUXT_B24_CLIENT_ID: undefined, NUXT_B24_CLIENT_SECRET: undefined, B24_EXPECTED_MEMBER_ID: undefined })
+    expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('#183: B24_PORTAL_MODE принимает ровно два значения, опечатка — ошибка', () => {
+    // Рантайм на незнакомом значении молча падает в single — безопасно, но «включил Маркет»
+    // выяснилось бы отказом первой же чужой установки. Громкость — обязанность предполётной проверки.
+    expect(prod({ B24_PORTAL_MODE: 'single' }).errors).toEqual([])
+    expect(prod({ B24_PORTAL_MODE: 'multi' }).errors).toEqual([])
+    expect(names(prod({ B24_PORTAL_MODE: 'both' }).errors)).toContain('B24_PORTAL_MODE')
+  })
+
   it('нет секрета дашборда → ошибка (в бою это молчаливый 503)', () => {
     expect(names(prod({ DASHBOARD_AUTH_SECRET: undefined }).errors)).toContain('DASHBOARD_AUTH_SECRET')
   })

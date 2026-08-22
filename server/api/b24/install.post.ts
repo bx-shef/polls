@@ -15,6 +15,7 @@ import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitr
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
+import { decideInstallAccess, parsePortalMode } from '~core/bitrix24/portal'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { isAllowedPortalDomain } from '~core/bitrix24/frame'
 import { errInfo } from '~core/obs/logger'
@@ -159,6 +160,24 @@ export default defineEventHandler(async (event) => {
   // Сборка вынесена в чистую applyVerifiedTokens (пересчёт expiresIn, сброс stale expires, authoritative
   // domain; clientEndpoint деривится из domain, application_token сохранён из install-auth).
   const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
+
+  // Гейт частного контура (#183): инстанс с заданным `B24_EXPECTED_MEMBER_ID` в режиме `single`
+  // обслуживает РОВНО ОДИН портал — установка с любого другого отклоняется ЦЕЛИКОМ, а не только
+  // присвоение данных. До этого чужой портал устанавливался: получал строку в базе, встройки и
+  // рабочий тенант на инстансе, который владелец считает своим. Сверяем authoritative `member_id`
+  // (после `verifyInstallMember`), присланному верить нельзя.
+  const access = decideInstallAccess({
+    memberId: verifiedAuth.memberId,
+    expectedMemberId: process.env.B24_EXPECTED_MEMBER_ID,
+    mode: parsePortalMode(process.env.B24_PORTAL_MODE)
+  })
+  if (!access.allow) {
+    logger.warn('b24_install_foreign_reject', {
+      memberId: verifiedAuth.memberId,
+      msg: 'установка с постороннего портала отклонена: инстанс обслуживает один портал (B24_PORTAL_MODE=single)'
+    })
+    return html(event, 403, errorHtml('этот сервер обслуживает другой портал Bitrix24'))
+  }
 
   // SSRF-гард (§2.3 follow-up): domain станет host'ом исходящих REST (registerIntegrations → clientEndpoint).
   // Если грант не вернул authoritative domain — в verifiedAuth.domain присланное значение. Пускаем на REST
