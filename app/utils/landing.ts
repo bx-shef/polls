@@ -109,7 +109,6 @@ export const LANDING_PAIN_RESULT = {
 /** Код приложения в Маркете Битрикс24 — заготовка, слаг ещё не занят. */
 export const LANDING_MARKET_CODE = 'shef.polls'
 
-
 /**
  * Адрес карточки приложения в Маркете.
  *

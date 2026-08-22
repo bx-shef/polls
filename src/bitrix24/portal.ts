@@ -111,7 +111,7 @@ export interface SaveTokensOpts {
    * тестов, где гард не нужен (поведение как раньше — обычный upsert).
    */
   eventTs?: number
-  }
+}
 
 /**
  * Опции подбора порталов у истечения refresh_token (keep-alive). Инвариант: `skewDays < ttlDays`
@@ -142,7 +142,6 @@ export function resolveTombstoneDays(raw: string | undefined): number {
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_TOMBSTONE_DAYS
   return Math.min(MAX_TOMBSTONE_DAYS, Math.max(MIN_TOMBSTONE_DAYS, Math.trunc(n)))
 }
-
 
 export class PortalTokenStore {
   constructor(

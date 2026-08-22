@@ -76,12 +76,12 @@ export default defineEventHandler(async (event) => {
       }
       if (verdict.clean) {
         await store.deletePortal(verdict.memberId, verdict.deletedTs)
-        // ⚠️ ОБЯЗАТЕЛЬНО после удаления. С присвоением плейсхолдера (#171) `deletePortal` сносит РОВНО
-        // ту строку `portal`, на числовой id которой прибиты закэшированные на процесс `PgStore` и
-        // `PgInvitationStore`. Раньше плейсхолдер uninstall переживал, и инстанс работал дальше;
-        // теперь без сброса каждая следующая запись падала бы на FK — и тихо: install-страница при
-        // переустановке нарисует «Приложение установлено», а `/api/health` останется зелёным
-        // (`ping` — это `select 1`). Переустановка без рестарта не лечила бы: у новой строки НОВЫЙ id.
+        // ⚠️ ОБЯЗАТЕЛЬНО после удаления. `deletePortal` сносит строку-тенант, на числовой id которой
+        // могут быть прибиты закэшированные на процесс `PgStore` и `PgInvitationStore` (в т.ч. как
+        // портал по умолчанию). Без сброса каждая следующая запись падала бы на FK — и тихо:
+        // install-страница при переустановке нарисует «Приложение установлено», а `/api/health`
+        // останется зелёным (`ping` — это `select 1`). Переустановка без рестарта не лечила бы:
+        // у новой строки НОВЫЙ id.
         resetStoreCache()
         // Клиенты порталов живут до минуты своим кэшем — сносим вместе со стором (#49).
         dropCachedPortalClients()
@@ -159,7 +159,6 @@ export default defineEventHandler(async (event) => {
   // domain; clientEndpoint деривится из domain, application_token сохранён из install-auth).
   const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
 
-
   // SSRF-гард (§2.3 follow-up): domain станет host'ом исходящих REST (registerIntegrations → clientEndpoint).
   // Если грант не вернул authoritative domain — в verifiedAuth.domain присланное значение. Пускаем на REST
   // ТОЛЬКО облачные хосты Bitrix (`*.bitrix24.<tld>`), иначе владелец портала увёл бы вызовы на внутренний URL.
@@ -184,8 +183,10 @@ export default defineEventHandler(async (event) => {
         // автономных данных установке НЕ присваивается (см. `saveIn` — там разбор, почему присвоение
         // снято). `eventTs` необязателен: формат install-СТРАНИЦЫ его не несёт — тумбстоун-гард
         // тогда не включается (как и раньше).
-        const opts = verifiedAuth.eventTs !== undefined ? { eventTs: verifiedAuth.eventTs } : {}
-        if (!(await tokenStore.save(tokens, opts))) {
+        // ⚠️ Без ветвления НАМЕРЕННО: `eventTs: undefined` для `save` то же, что отсутствие поля
+        // (гард смотрит `!== undefined`), а условная сборка опций жила бы вне тестов — server/**
+        // покрытием не гейтится, и инверсию условия не поймал бы никто (находка ревью #207).
+        if (!(await tokenStore.save(tokens, { eventTs: verifiedAuth.eventTs }))) {
           throw new InstallStale(verifiedAuth.memberId)
         }
       },

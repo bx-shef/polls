@@ -10,7 +10,7 @@ import { PGlite } from '@electric-sql/pglite'
  *
  * Мокается один модуль — драйвер `pg`: вместо сокета к Postgres пул ходит в pglite. Всё остальное —
  * настоящие `server/utils/api.ts` и `server/utils/portal.ts`: миграции, `ensureDefaultPortal`,
- * `PortalTokenStore` с боевыми хуками логирования.
+ * `PortalTokenStore` как в бою.
  */
 const pglite = new PGlite()
 class FakePool {

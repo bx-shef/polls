@@ -144,9 +144,13 @@ describe('удаление приложения стирает данные ПО
     expect(rows.rows.map((r) => r.member_id), 'установка тронула строку плейсхолдера')
       .toEqual([LOCAL_PORTAL_MEMBER_ID, MEMBER])
 
-    // Удаление ПОРТАЛА данные плейсхолдера не трогает: они не его.
+    // Удаление ПОРТАЛА данные плейсхолдера не трогает: они не его. Сравниваем ПОЛНЫЙ снимок счётчиков,
+    // а не одну таблицу: unscoped-удаление (например, `delete from app_user` без сужения по porталу)
+    // FK-сеть не поймает — у автономных данных `owner_user_id` бывает null (находка ревью #207).
+    const before = await counts()
     await store.deletePortal(MEMBER, Math.floor(NOW.getTime() / 1000))
-    expect((await counts()).response, 'uninstall чужого портала стёр автономные данные владельца').toBe(1)
+    expect(await counts(), 'uninstall чужого портала задел автономные данные владельца')
+      .toEqual({ ...before, portal: before.portal! - 1 })
     const local = await db.query('select 1 from portal where member_id = $1', [LOCAL_PORTAL_MEMBER_ID])
     expect(local.rows.length).toBe(1)
   })
@@ -164,51 +168,56 @@ describe('удаление приложения стирает данные ПО
     expect((await store.load(MEMBER))?.accessToken).toBe('at2')
   })
 
-  it('после clean-uninstall процесс не остаётся с мёртвым portalId (привязка пересобирается)', async () => {
+  it('clean-uninstall тенанта не задевает фолбэк-привязку, переустановка работает', async () => {
     const store = new PortalTokenStore(db, new TokenCipher(key))
+    const fallback = await ensureDefaultPortal(db) // фолбэк — всегда плейсхолдер
     await store.save(tokens())
-    const before = await ensureDefaultPortal(db)
-    await accumulate(before)
+    const tenantId = (await db.query<{ id: number }>(
+      'select id from portal where member_id = $1', [MEMBER]
+    )).rows[0]!.id
+    await accumulate(tenantId)
     await store.deletePortal(MEMBER, Math.floor(NOW.getTime() / 1000))
-    expect((await counts()).portal).toBe(0)
+    expect((await counts()).portal, 'должен остаться только плейсхолдер').toBe(1)
 
-    // Переустановка (тумбстоун снимается более новым событием) + пересборка привязки.
+    // Фолбэк живёт на плейсхолдере, uninstall тенанта его не задел — запись работает без пересборки.
+    expect(await ensureDefaultPortal(db)).toBe(fallback)
+    await expect(accumulate(fallback), 'запись в фолбэк после uninstall бьётся об FK').resolves.toBeUndefined()
+
+    // Переустановка (тумбстоун снимается более новым событием) заводит НОВУЮ строку тенанта.
     await store.save(tokens(), { eventTs: Math.floor(NOW.getTime() / 1000) + 60 })
-    const after = await ensureDefaultPortal(db)
-    expect(after, 'привязка осталась на удалённой строке').not.toBe(before)
-    await expect(accumulate(after), 'запись после переустановки бьётся об FK').resolves.toBeUndefined()
+    const reinstalled = (await db.query<{ id: number }>(
+      'select id from portal where member_id = $1', [MEMBER]
+    )).rows[0]!.id
+    expect(reinstalled, 'переустановка воскресила старый id').not.toBe(tenantId)
+    await expect(accumulate(reinstalled), 'запись после переустановки бьётся об FK').resolves.toBeUndefined()
   })
 
-  it('НАСТОЯЩИЙ портал приоритетнее плейсхолдера при выборе на старте', async () => {
-    // Правило выбора портала по умолчанию (фолбэк для путей без резолва): установленный портал
-    // старше плейсхолдера по смыслу, даже если плейсхолдер старше по времени.
-    const localId = await ensureDefaultPortal(db) // плейсхолдер создан ПЕРВЫМ
+  it('фолбэк — ВСЕГДА плейсхолдер, даже когда настоящий портал уже установлен', async () => {
+    // ⚠️ Отмена прежнего правила «настоящий приоритетнее» (оно обслуживало присвоение): фолбэком
+    // не может стать чей-то боевой тенант — иначе автономные записи после рестарта уезжали бы в
+    // данные клиента, а засев демо блокировался навсегда (находка ревью #207).
     await db.query(`insert into portal (member_id, domain, tokens) values ($1, 'acme.b24', '{}'::jsonb)`, [MEMBER])
-    const chosen = await ensureDefaultPortal(db)
-    expect(chosen, 'выбран плейсхолдер вместо установленного портала').not.toBe(localId)
+    const chosen = await ensureDefaultPortal(db) // настоящий портал уже есть — выбран НЕ он
     const row = await db.query<{ member_id: string }>('select member_id from portal where id = $1', [chosen])
-    expect(row.rows[0]!.member_id).toBe(MEMBER)
+    expect(row.rows[0]!.member_id, 'фолбэком стал боевой тенант').toBe(LOCAL_PORTAL_MEMBER_ID)
   })
 
-  it('несколько НАСТОЯЩИХ порталов → сообщаем списком, а не молча выбираем', async () => {
-    await db.query(`insert into portal (member_id, domain, tokens) values ('m-a', 'a.b24', '{}'::jsonb)`)
-    await db.query(`insert into portal (member_id, domain, tokens) values ('m-b', 'b.b24', '{}'::jsonb)`)
-    const seen: Array<{ chosen: string; all: readonly string[] }> = []
-    await ensureDefaultPortal(db, { onAmbiguous: (chosen, all) => seen.push({ chosen, all }) })
-    expect(seen).toHaveLength(1)
-    expect(seen[0]!.chosen).toBe('m-a')
-    expect(seen[0]!.all, 'без списка непонятно, кого с кем спутали').toEqual(['m-a', 'm-b'])
-  })
-
-  it('установка ЛЮБОГО портала не трогает ни плейсхолдер, ни чужие строки', async () => {
+  it('установка ЛЮБОГО портала не трогает ни плейсхолдер, ни чужие строки И ЧУЖИЕ ДАННЫЕ', async () => {
     // ⚠️ Главная гарантия после снятия присвоения: upsert идёт строго по СВОЕМУ member_id.
-    // Мутация «переименовать какую-нибудь строку» (ровно то, что делало присвоение) видна сразу.
+    // Мутация «переименовать какую-нибудь строку» (ровно то, что делало присвоение) видна сразу;
+    // снимок счётчиков ловит и задетые ДАННЫЕ чужого тенанта, не только состав строк portal.
     await ensureDefaultPortal(db)
-    await db.query(`insert into portal (member_id, domain, tokens) values ('AAA', 'a.b24', '{}'::jsonb)`)
+    const aaa = (await db.query<{ id: number }>(
+      `insert into portal (member_id, domain, tokens) values ('AAA', 'a.b24', '{}'::jsonb) returning id`
+    )).rows[0]!.id
+    await accumulate(aaa)
+    const before = await counts()
     const store = new PortalTokenStore(db, new TokenCipher(key))
     await store.save(tokens({ memberId: 'BBB' }))
     const rows = await db.query<{ member_id: string }>('select member_id from portal order by id')
     expect(rows.rows.map((r) => r.member_id)).toEqual([LOCAL_PORTAL_MEMBER_ID, 'AAA', 'BBB'])
+    expect(await counts(), 'установка BBB задела данные чужого тенанта')
+      .toEqual({ ...before, portal: before.portal! + 1 })
   })
 
   it('ТУМБСТОУН старше события → токены не сохраняются, строка не заводится', async () => {

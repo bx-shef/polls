@@ -309,9 +309,10 @@ describe('parseInstallEvent — момент события для тумбст�
     // Гард по исходнику: `server/**` юнит-тестами не покрывается. Сам гард (`eventTs` против
     // тумбстоуна) проверяется исполнением в `uninstall-erases-pii.test.ts`; здесь — связка «роут
     // действительно им пользуется». Опций присвоения больше НЕТ (снято, см. шапку того же файла).
+    // ⚠️ Регекс пинит вызов ЦЕЛИКОМ, без ветвления: условная сборка опций в роуте жила бы вне
+    // тестов, и инверсия условия молча выключала бы тумбстоун-гард (находка ревью #207).
     const src = await routeSource()
-    expect(src).toMatch(/eventTs: verifiedAuth\.eventTs/)
-    expect(src).toMatch(/tokenStore\.save\(tokens,\s*opts\)/)
+    expect(src).toMatch(/tokenStore\.save\(tokens,\s*\{\s*eventTs:\s*verifiedAuth\.eventTs\s*\}\)/)
     // И то, что отказ гарда ОСТАНАВЛИВАЕТ установку: иначе получается хуже, чем без гарда —
     // токенов нет, а встройки регистрируются и в лог идёт «установка завершена».
     expect(src).toMatch(/throw new InstallStale/)
