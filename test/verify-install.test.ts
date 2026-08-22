@@ -222,3 +222,14 @@ describe('гейт установки частного контура (#183)', (
     expect(parsePortalMode(' multi ')).toBe('multi')
   })
 })
+
+describe('регистр member_id (#183, найдено ревью)', () => {
+  it('скопированное в верхнем регистре значение НЕ отклоняет собственную установку', () => {
+    // Bitrix отдаёт member_id нижним hex; строгое сравнение давало fail-closed без диагностики.
+    expect(decideInstallAccess({
+      memberId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      expectedMemberId: 'A1B2C3D4E5F60718293A4B5C6D7E8F90',
+      mode: 'single'
+    }).allow).toBe(true)
+  })
+})

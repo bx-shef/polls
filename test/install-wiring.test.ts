@@ -99,7 +99,10 @@ describe('гейт чужой установки стоит В РОУТЕ (#183)
     expect(src, 'гейт снят с роута').toContain('decideInstallAccess({')
     expect(src, 'сверяется присланный member_id, а не подтверждённый')
       .toMatch(/memberId:\s*verifiedAuth\.memberId/)
-    expect(src).toMatch(/expectedMemberId:\s*process\.env\.B24_EXPECTED_MEMBER_ID/)
+    // env читается в `expectedRaw` строкой выше (она же питает лог инертного гейта) — сверяем всю
+    // цепочку: чтение боевой переменной И передачу именно её в решение.
+    expect(src).toMatch(/const expectedRaw = process\.env\.B24_EXPECTED_MEMBER_ID/)
+    expect(src).toMatch(/expectedMemberId:\s*expectedRaw/)
     expect(src).toMatch(/mode:\s*parsePortalMode\(process\.env\.B24_PORTAL_MODE\)/)
   })
 
@@ -114,5 +117,7 @@ describe('гейт чужой установки стоит В РОУТЕ (#183)
     expect(gate, 'гейт стоит до верификации member_id — решает присланное значение')
       .toBeGreaterThan(src.indexOf('verifyInstallMember('))
     expect(src, 'отказ проходит молча').toContain('b24_install_foreign_reject')
+    // Инертный гейт (переменная не дошла до контейнера) обязан кричать В МОМЕНТ прохода установки.
+    expect(src, 'инертный гейт молчит').toContain('b24_install_gate_inert')
   })
 })

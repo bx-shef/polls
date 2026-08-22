@@ -262,7 +262,9 @@ export class PortalTokenStore {
       // накопленное НЕ присваивает. Без гейта (значение не задано) — сегодняшнее поведение частного
       // развёртывания: приложение локальное, install-URL знает только владелец. Перед публикацией в
       // Маркете гейт обязателен — там URL один на всех, см. §Ключевые решения.
-      if (opts.expectedMemberId !== undefined && opts.expectedMemberId !== tokens.memberId) {
+      // Регистр — как в гейте установки (`decideInstallAccess`): разные правила в двух гейтах дали
+      // бы портал, который установиться может, а присвоить накопленное — нет.
+      if (opts.expectedMemberId !== undefined && opts.expectedMemberId.toLowerCase() !== tokens.memberId.toLowerCase()) {
         adoption = { kind: 'refused', memberId: tokens.memberId }
       } else {
         // Плейсхолдер становится настоящим порталом. Условия в самом SQL, а не в коде: строка
@@ -519,6 +521,12 @@ export interface InstallAccessInput {
  */
 export function decideInstallAccess(input: InstallAccessInput): { allow: true } | { allow: false; reason: 'foreign-portal' } {
   const expected = input.expectedMemberId?.trim()
-  if (!expected || input.mode === 'multi' || input.memberId === expected) return { allow: true }
+  // Сравнение без учёта регистра: Bitrix отдаёт member_id нижним hex, но скопированное владельцем в
+  // верхнем регистре значение иначе молча отклонило бы ЕГО СОБСТВЕННУЮ установку — fail-closed без
+  // диагностики. member_id не секрет, constant-time здесь не нужен (сравниваемое значение атакующий
+  // не выбирает — оно authoritative из OAuth-гранта его же портала).
+  if (!expected || input.mode === 'multi' || input.memberId.toLowerCase() === expected.toLowerCase()) {
+    return { allow: true }
+  }
   return { allow: false, reason: 'foreign-portal' }
 }

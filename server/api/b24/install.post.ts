@@ -166,9 +166,20 @@ export default defineEventHandler(async (event) => {
   // присвоение данных. До этого чужой портал устанавливался: получал строку в базе, встройки и
   // рабочий тенант на инстансе, который владелец считает своим. Сверяем authoritative `member_id`
   // (после `verifyInstallMember`), присланному верить нельзя.
+  // ⚠️ Гейт ИНЕРТЕН (переменная не задана), а установка через него реально проходит — это надо
+  // видеть В МОМЕНТ прохода, а не постфактум в предполёте: env-check читает `.env.prod`, но не
+  // доказывает, что контейнер переменную получил (ровно так гейт присвоения #171 не работал на
+  // прод-compose при зелёном предполёте). Установок — единицы за жизнь инстанса, шума не будет.
+  const expectedRaw = process.env.B24_EXPECTED_MEMBER_ID
+  if (!expectedRaw?.trim() && process.env.NODE_ENV === 'production') {
+    logger.error('b24_install_gate_inert', {
+      memberId: verifiedAuth.memberId,
+      msg: 'B24_EXPECTED_MEMBER_ID не задан — установка пропущена БЕЗ гейта частного контура, накопленное присвоит этот портал'
+    })
+  }
   const access = decideInstallAccess({
     memberId: verifiedAuth.memberId,
-    expectedMemberId: process.env.B24_EXPECTED_MEMBER_ID,
+    expectedMemberId: expectedRaw,
     mode: parsePortalMode(process.env.B24_PORTAL_MODE)
   })
   if (!access.allow) {
