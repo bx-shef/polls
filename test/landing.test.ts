@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   DESCRIPTION_MAX,
   DESCRIPTION_MIN,
@@ -9,7 +11,6 @@ import {
   LANDING_SECTIONS,
   LANDING_SITE_URL,
   LANDING_STEPS,
-  MARKET_PUBLISHED,
   marketUrl
 } from '../app/utils/landing'
 import { SURVEY_KEY } from '../src/demo/seed'
@@ -47,10 +48,15 @@ describe('константы витрины', () => {
     expect(LANDING_SITE_URL.endsWith('/')).toBe(false)
   })
 
-  it('приложение не объявлено опубликованным, пока не закрыты гейты Маркета', () => {
-    // Гард от случайного флипа: включать кнопку можно только вместе с пересъёмкой эталонов и
-    // закрытием инженерных гейтов (см. JSDoc MARKET_PUBLISHED и #146). Тест обязан покраснеть.
-    expect(MARKET_PUBLISHED).toBe(false)
+  it('кнопки «Установить из Маркета» на лендинге НЕТ, пока слаг не занят', () => {
+    // Флага под кнопку больше нет (решение владельца, 2026-08-22: прежний `MARKET_PUBLISHED` снят
+    // как лишняя ручка). Сторожим само отсутствие: кнопка на незанятый слаг вела бы в 404 Маркета —
+    // первое, что увидел бы заинтересовавшийся человек, была бы наша ошибка. В день публикации этот
+    // тест меняется вместе с добавлением кнопки (адрес — `marketUrl()`), с пересъёмкой эталонов.
+    const src = readFileSync(resolve(process.cwd(), 'app/pages/index.vue'), 'utf8')
+      .replace(/<!--[\s\S]*?-->/g, '')
+    expect(src).not.toContain('Установить из Маркета')
+    expect(src).not.toContain('marketUrl(')
   })
 
   it('витрина не обещает того, что ещё не отгружено', () => {

@@ -15,7 +15,6 @@ import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitr
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
-import { installAccessGate } from '../../utils/install-gate'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { isAllowedPortalDomain } from '~core/bitrix24/frame'
 import { errInfo } from '~core/obs/logger'
@@ -23,7 +22,6 @@ import { b24AppConfig, usePortalTokenStore, registerIntegrations, allowB24Instal
 import { timeoutFetch } from '../../utils/b24-fetch'
 import { logger, resetStoreCache } from '../../utils/api'
 import { dropCachedPortalClients } from '../../utils/portal-deps'
-import { installSaveOpts } from '../../utils/install-opts'
 
 // Верификационный рефреш — синхронный исходящий вызов на oauth.bitrix.info внутри install-запроса;
 // `timeoutFetch` (общий, server/utils/b24-fetch) ограничивает его: зависший OAuth-сервер иначе держал бы
@@ -161,18 +159,6 @@ export default defineEventHandler(async (event) => {
   // domain; clientEndpoint деривится из domain, application_token сохранён из install-auth).
   const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
 
-  // Гейт частного контура (#183): решение и лог инертности — в исполняемо покрытой
-  // `installAccessGate` (см. её JSDoc: блок в роуте держали только регексы, и инверсия условия,
-  // потерянный return и опечатка env проходили полный `pnpm check`). Здесь остаются вызов и
-  // `return` — их держит регекс со смежностью в `test/install-wiring.test.ts`.
-  const gate = installAccessGate(verifiedAuth.memberId, process.env, logger)
-  if (gate.verdict === 'reject') {
-    logger.warn('b24_install_foreign_reject', {
-      memberId: verifiedAuth.memberId,
-      msg: 'установка с постороннего портала отклонена: инстанс обслуживает один портал (B24_PORTAL_MODE=single)'
-    })
-    return html(event, gate.status, errorHtml(gate.message))
-  }
 
   // SSRF-гард (§2.3 follow-up): domain станет host'ом исходящих REST (registerIntegrations → clientEndpoint).
   // Если грант не вернул authoritative domain — в verifiedAuth.domain присланное значение. Пускаем на REST
@@ -194,13 +180,12 @@ export default defineEventHandler(async (event) => {
       // зарегистрированы» (ложная тревога) и «установка завершена». Человек видел бы «Приложение
       // установлено» при мёртвом приложении.
       saveTokens: async (tokens) => {
-        // `adoptLocal` — плейсхолдер-портал становится ЭТИМ порталом переименованием строки (#171).
-        // До связки с Bitrix весь трафик контура A пишется под плейсхолдер, и там же копятся ответы
-        // со снимками CRM. Без присвоения установка заводила ВТОРУЮ строку портала, и удаление
-        // приложения чистило её — пустую: `deletePortal` рапортовал об успехе, а ПДн оставались.
-        // Решение принимает SQL: присваиваем, только если плейсхолдер — единственный портал.
-        const saveOpts = installSaveOpts(verifiedAuth.eventTs, process.env.B24_EXPECTED_MEMBER_ID)
-        if (!(await tokenStore.save(tokens, saveOpts))) {
+        // Обычный мультипортальный upsert: каждый портал — своя строка-тенант (#47/#49), плейсхолдер
+        // автономных данных установке НЕ присваивается (см. `saveIn` — там разбор, почему присвоение
+        // снято). `eventTs` необязателен: формат install-СТРАНИЦЫ его не несёт — тумбстоун-гард
+        // тогда не включается (как и раньше).
+        const opts = verifiedAuth.eventTs !== undefined ? { eventTs: verifiedAuth.eventTs } : {}
+        if (!(await tokenStore.save(tokens, opts))) {
           throw new InstallStale(verifiedAuth.memberId)
         }
       },
