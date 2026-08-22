@@ -11,6 +11,7 @@ import {
 } from '~core/bitrix24/activity'
 import { errInfo } from '~core/obs/logger'
 import { valueByDeadline } from './deadline'
+import { enrichWithCrmNames } from './crm-names'
 import type { PortalClient } from '~core/bitrix24/client'
 import { deliverInvite } from '~core/bitrix24/invite-delivery'
 import type { KeySerializer } from '~core/api/serial-by-key'
@@ -115,8 +116,13 @@ export function makeInviteIssue(
         })
       ),
       createInvite: async (marker) => {
+        // ⚠️ Имена для срезов дашборда спрашиваются ЗДЕСЬ, а не при построении снимка. На событийном
+        // пути снимок строится раньше дешёвого гейта «запускает ли эта стадия опросы», и обогащение
+        // там стоило бы трёх запросов к порталу на КАЖДОЕ изменение любой сделки. Здесь мы уже точно
+        // выписываем приглашение.
+        const context = await enrichWithCrmNames(client, args.context, deps.log, { surveyKey: args.surveyKey, dealId })
         const inv = await invitations.create(
-          { surveyKey: args.surveyKey, versionNo: args.versionNo, context: args.context, ttlMs: args.ttlMs },
+          { surveyKey: args.surveyKey, versionNo: args.versionNo, context, ttlMs: args.ttlMs },
           args.now
         )
         try {

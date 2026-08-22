@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { manualInvite, MAX_EXISTING_IDS, type ManualInviteDeps } from '../server/utils/manual-invite'
-import { MemoryInvitationStore } from '../src/api/invitation'
+import { MemoryInvitationStore, type InvitationStore } from '../src/api/invitation'
 import { INVITE_ORIGINATOR, markerMatchesSurvey } from '../src/bitrix24/invite-delivery'
 import { DEAL_OWNER_TYPE_ID } from '../src/bitrix24/activity'
 import type { PortalClient, CallResult } from '../src/bitrix24/client'
@@ -57,6 +57,12 @@ function fakePortal(existing: Array<Record<string, unknown>> = [], over: {
         ...(over.dropMarker ? {} : { ORIGINATOR_ID: p.fields?.originatorId, ORIGIN_ID: p.fields?.originId })
       })
       result = id
+    } else if (opts.method === 'crm.company.get') {
+      result = { TITLE: 'ООО «Ромашка»' }
+    } else if (opts.method === 'crm.dealcategory.default.get') {
+      result = { ID: 0, NAME: 'Общая воронка' }
+    } else if (opts.method === 'user.get') {
+      result = [{ NAME: 'Игорь', LAST_NAME: 'Шевчик' }]
     } else if (opts.method === 'crm.activity.get') {
       result = rows.get((opts.params as { id: number }).id) ?? null
     } else if (opts.method === 'crm.activity.update') {
@@ -209,6 +215,31 @@ describe('ручной запуск из карточки сделки: «уже
 })
 
 describe('ручной запуск: что именно создаётся (#176)', () => {
+  it('снимок приглашения обогащается ИМЕНАМИ из справочников портала', async () => {
+    // ⚠️ Единственная боевая точка обогащения на ручном пути. Мутация «выкинуть
+    // `enrichWithCrmNames`» без этого теста не роняла ничего: форма снимка не меняется, меняется
+    // только содержимое, а срез дашборда на живом портале показывал бы `#9` вместо «Ромашка».
+    const p = fakePortal()
+    const inner = new MemoryInvitationStore()
+    const seen: unknown[] = []
+    const invitations: InvitationStore = {
+      ...inner,
+      create: (input, now) => { seen.push(input.context); return inner.create(input, now) },
+      peek: (t, now) => inner.peek(t, now),
+      consume: (t, k, now) => inner.consume(t, k, now)
+    }
+    const d = deps(p.client, { invitations })
+    const res = await manualInvite(
+      { dealId: 759, surveyKey: SURVEY, context: { ...CONTEXT, companyId: 9, dealCategoryId: 0, responsibleId: 1 } }, d
+    )
+    expect(res?.kind).toBe('created')
+    expect(seen[0], 'имена справочников не доехали до снимка').toMatchObject({
+      companyName: 'ООО «Ромашка»',
+      dealCategoryName: 'Общая воронка',
+      responsibleName: 'Игорь Шевчик'
+    })
+  })
+
   it('приглашение + дело в таймлайне с маркером `manual:`, и маркер узнаётся своими же', async () => {
     const p = fakePortal()
     const d = deps(p.client)

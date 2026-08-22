@@ -63,7 +63,11 @@ const presentEntities = computed<string[]>(() => {
 <template>
   <main class="mx-auto max-w-4xl p-6">
     <header class="mb-6">
-      <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">Опросы</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">Опросы</h1>
+        <!-- Пояснение по месту: слайдер справки, не уводящий из конструктора. -->
+        <HelpButton topic="surveys" />
+      </div>
       <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
         Опросы портала и их привязка к сущности и стадиям-триггерам.
       </p>

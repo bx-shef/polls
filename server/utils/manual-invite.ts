@@ -18,6 +18,7 @@ import {
 import { manualInviteMarker } from '~core/bitrix24/invite-delivery'
 import { createSurveyInvitation } from '~core/bitrix24/trigger'
 import { createKeySerializer } from '~core/api/serial-by-key'
+import { enrichWithCrmNames } from './crm-names'
 import type { PortalClient } from '~core/bitrix24/client'
 import type { InvitationStore } from '~core/api/invitation'
 import type { IStore } from '~core/store/types'
@@ -188,8 +189,12 @@ async function manualInviteInner(
     }
   }
 
+  // ⚠️ Имена для срезов дашборда — здесь же, где и на автопути: снимок уходит в приглашение, и
+  // обогащать его надо ровно в момент выписки. Fail-open: не ответил справочник — срез упадёт на
+  // `#id`, приглашение всё равно уйдёт.
+  const context = await enrichWithCrmNames(deps.client, input.context, deps.log, { surveyKey, dealId })
   const res = await createSurveyInvitation({
-    store: deps.store, invitations: deps.invitations, surveyKey, context: input.context, now
+    store: deps.store, invitations: deps.invitations, surveyKey, context, now
   })
   if (!res) return { kind: 'unpublished' }
   const url = `${deps.baseUrl}${surveyPath(res.surveyKey, res.token)}`

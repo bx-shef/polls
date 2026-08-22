@@ -155,7 +155,10 @@ useHead({ link: [{ rel: 'canonical', href: LANDING_SITE_URL }] })
        кнопка Маркета. Публичное демо аналитики — отдельная задача (#146). -->
   <footer class="border-t border-gray-200 py-8 dark:border-gray-800">
     <B24Container class="flex flex-col items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-      <B24Link :to="demoSurvey">Посмотреть демо-опрос</B24Link>
+      <div class="flex items-center gap-4">
+        <B24Link :to="demoSurvey">Посмотреть демо-опрос</B24Link>
+        <B24Link to="/docs">Справка</B24Link>
+      </div>
       <p>{{ LANDING_TITLE }} · {{ siteHost }}</p>
     </B24Container>
   </footer>
