@@ -171,7 +171,10 @@ async function publish() {
   <main class="mx-auto max-w-3xl p-6">
     <header class="mb-6">
       <B24Button color="air-tertiary" size="sm" label="К списку" @click="navigateTo('/admin/surveys')" />
-      <h1 class="mt-3 text-2xl font-semibold text-gray-900 dark:text-white">Конструктор опроса</h1>
+      <div class="mt-3 flex items-center gap-2">
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">Конструктор опроса</h1>
+        <HelpButton topic="surveys" />
+      </div>
       <p v-if="data?.ok" class="mt-1 text-sm text-gray-500 dark:text-gray-400">
         Текущая версия v{{ baseVersionNo }} · публикация создаёт новую версию.
       </p>

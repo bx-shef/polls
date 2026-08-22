@@ -236,6 +236,8 @@ async function launch(force = false, reason: 'dedup' | 'reissue' = 'dedup') {
 
 <template>
   <main class="mx-auto max-w-xl p-4">
+    <!-- Справка по месту: виджет — первая точка контакта сотрудника с сервисом. -->
+    <div class="mb-2 flex justify-end"><HelpButton topic="launch" /></div>
     <B24Alert v-if="phase === 'error'" color="air-primary-alert" :title="message" />
     <ResultView v-else-if="phase === 'result' && result" :view="result" />
     <template v-else>

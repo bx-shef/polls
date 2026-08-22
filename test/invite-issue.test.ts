@@ -54,6 +54,12 @@ function fakePortal(over: { failAdd?: boolean; listReturns?: (f: Record<string, 
         : activities.filter((a) => Object.entries(f).every(([k, v]) => a[k] === v))
     } else if (opts.method === 'crm.activity.get') {
       result = activities.find((a) => a.ID === (p as unknown as { id: number }).id) ?? null
+    } else if (opts.method === 'crm.company.get') {
+      result = { TITLE: 'ООО «Ромашка»' }
+    } else if (opts.method === 'crm.dealcategory.default.get') {
+      result = { ID: 0, NAME: 'Общая воронка' }
+    } else if (opts.method === 'user.get') {
+      result = [{ NAME: 'Игорь', LAST_NAME: 'Шевчик' }]
     } else if (opts.method === 'crm.activity.update') {
       const { id, fields } = p as unknown as { id: number; fields: { ORIGINATOR_ID: string; ORIGIN_ID: string } }
       const row = activities.find((a) => a.ID === id)
@@ -420,6 +426,30 @@ describe('выписка приглашения — проводка с фейк
     const d = deps({ serializer: { ...inner, run: (k, fn) => { keys.push(k); return inner.run(k, fn) } } })
     await makeInviteIssue(CTX, d)(ARGS)
     expect(keys).toEqual([`m-1:deal:759:${ARGS.surveyKey}`])
+  })
+
+  it('снимок приглашения обогащается ИМЕНАМИ из справочников портала', async () => {
+    // ⚠️ Единственная боевая точка обогащения на автопути. До неё имена жили только в демо-сиде, и
+    // срезы дашборда на живом портале показывали `#9` вместо «Ромашка» — срез работал, читать его
+    // было нельзя. Мутация «выкинуть `enrichWithCrmNames` из createInvite» без этого теста не
+    // роняла ничего: форма снимка не меняется, меняется только его содержимое.
+    const portal = fakePortal()
+    const inner = new MemoryInvitationStore()
+    const seen: unknown[] = []
+    const invitations: InvitationStore = {
+      ...inner,
+      create: (input, now) => { seen.push(input.context); return inner.create(input, now) },
+      peek: (t, now) => inner.peek(t, now),
+      consume: (t, k, now) => inner.consume(t, k, now)
+    }
+    const d = deps({ portalClient: () => Promise.resolve(portal.client), invitations })
+    await makeInviteIssue(CTX, d)({ ...ARGS, context: { ...CONTEXT, companyId: 9, responsibleId: 1, dealCategoryId: 0 } })
+    expect(seen).toHaveLength(1)
+    expect(seen[0], 'имена справочников не доехали до снимка приглашения').toMatchObject({
+      companyName: 'ООО «Ромашка»',
+      dealCategoryName: 'Общая воронка',
+      responsibleName: 'Игорь Шевчик'
+    })
   })
 
   it('ссылка в деле строится от НАСТРОЕННОГО домена приложения', async () => {

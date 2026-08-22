@@ -117,6 +117,10 @@ export const B24_METHODS = [
   'crm.activity.list',
   'crm.activity.get',
   'crm.activity.update',
+  // Справочники имён для срезов дашборда (обогащение снимка при выписке приглашения).
+  'crm.dealcategory.get',
+  'crm.dealcategory.default.get',
+  'user.get',
   'event.bind',
   'placement.bind',
   'bizproc.robot.add'

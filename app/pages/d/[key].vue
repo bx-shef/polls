@@ -107,7 +107,10 @@ const heading = computed(() => data.value?.title ?? 'Дашборд опроса
   <main class="mx-auto max-w-4xl p-6">
     <header class="mb-6">
       <p v-if="!error" class="text-sm text-gray-500 dark:text-gray-400">Результаты опроса</p>
-      <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ heading }}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ heading }}</h1>
+        <HelpButton topic="dashboard" />
+      </div>
       <p v-if="data?.n !== undefined" class="mt-1 text-sm text-gray-500 dark:text-gray-400">
         Ответов: {{ data.n }}
       </p>
