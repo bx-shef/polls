@@ -57,6 +57,20 @@ describe('checkEnv — симптомы из таблицы «Если что-т
     expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
   })
 
+  it('#183: обязательность привязана к ПОЛНОЙ паре client_id+secret — полупара не даёт второй ошибки', () => {
+    // Полупара уже ошибка сама по себе; вторая строка про expected была бы шумом о следствии.
+    const r = prod({ NUXT_B24_CLIENT_SECRET: undefined, B24_EXPECTED_MEMBER_ID: undefined })
+    // Полупара называет НЕДОСТАЮЩУЮ переменную (secret снят — ошибка по secret).
+    expect(names(r.errors)).toContain('NUXT_B24_CLIENT_SECRET')
+    expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('#183: регистр режима значим — MULTI это опечатка, а не Маркет', () => {
+    // Рантайм на `MULTI` падает в single (см. install-gate.test.ts) — env-check обязан сказать об
+    // этом громко, иначе «включил Маркет» выяснилось бы отказом первой же чужой установки.
+    expect(names(prod({ B24_PORTAL_MODE: 'MULTI' }).errors)).toContain('B24_PORTAL_MODE')
+  })
+
   it('#183: B24_PORTAL_MODE принимает ровно два значения, опечатка — ошибка', () => {
     // Рантайм на незнакомом значении молча падает в single — безопасно, но «включил Маркет»
     // выяснилось бы отказом первой же чужой установки. Громкость — обязанность предполётной проверки.
