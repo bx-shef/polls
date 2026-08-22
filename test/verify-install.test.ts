@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { decideInstallAccess, parsePortalMode } from '../src/bitrix24/portal'
 import {
   verifyInstallMember,
   applyVerifiedTokens,
@@ -188,5 +189,47 @@ describe('decideInstallDoubleDispatch (идемпотентность двойн
     expect(decideInstallDoubleDispatch('refresh_unavailable', true)).toBe('reject')
     expect(decideInstallDoubleDispatch('refresh_unavailable_429', true)).toBe('reject')
     expect(decideInstallDoubleDispatch('no_member_id', true)).toBe('reject')
+  })
+})
+
+describe('гейт установки частного контура (#183)', () => {
+  const allow = (memberId: string, expected: string | undefined, mode: 'single' | 'multi') =>
+    decideInstallAccess({ memberId, expectedMemberId: expected, mode }).allow
+
+  it('single: свой портал проходит, чужой отклоняется ЦЕЛИКОМ', () => {
+    // До гейта чужой портал устанавливался: присвоение ему отказывало, но строка портала заводилась,
+    // встройки регистрировались — посторонний получал рабочий тенант на частном инстансе.
+    expect(allow('m-своя', 'm-своя', 'single')).toBe(true)
+    expect(allow('m-чужая', 'm-своя', 'single')).toBe(false)
+  })
+
+  it('multi (Маркет): чужая установка легитимна', () => {
+    expect(allow('m-чужая', 'm-своя', 'multi')).toBe(true)
+  })
+
+  it('expected не задан или пуст → пускаем (dev/память; обязательность форсит env-check)', () => {
+    // Отказ здесь значил бы «забытая переменная молча выключила установку вовсе».
+    expect(allow('m-любая', undefined, 'single')).toBe(true)
+    expect(allow('m-любая', '   ', 'single')).toBe(true)
+  })
+
+  it('parsePortalMode: незнакомое значение падает в single, НЕ в multi', () => {
+    // Опечатка не должна молча открывать установку всем; громкость — обязанность env-check.
+    expect(parsePortalMode('multi')).toBe('multi')
+    expect(parsePortalMode('single')).toBe('single')
+    expect(parsePortalMode('both')).toBe('single')
+    expect(parsePortalMode(undefined)).toBe('single')
+    expect(parsePortalMode(' multi ')).toBe('multi')
+  })
+})
+
+describe('регистр member_id (#183, найдено ревью)', () => {
+  it('скопированное в верхнем регистре значение НЕ отклоняет собственную установку', () => {
+    // Bitrix отдаёт member_id нижним hex; строгое сравнение давало fail-closed без диагностики.
+    expect(decideInstallAccess({
+      memberId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      expectedMemberId: 'A1B2C3D4E5F60718293A4B5C6D7E8F90',
+      mode: 'single'
+    }).allow).toBe(true)
   })
 })

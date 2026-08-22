@@ -36,6 +36,13 @@ services:
       # OAuth-приложение портала (client_id/secret из настроек приложения Bitrix24) — для установки.
       NUXT_B24_CLIENT_ID: ${NUXT_B24_CLIENT_ID:-}
       NUXT_B24_CLIENT_SECRET: ${NUXT_B24_CLIENT_SECRET:-}
+      # Какой портал обслуживает инстанс (#183): присвоение доустановочных данных — только ему, а в
+      # режиме single установка с чужого портала отклоняется целиком. Обязателен при связке выше.
+      B24_EXPECTED_MEMBER_ID: ${B24_EXPECTED_MEMBER_ID:-}
+      # Режим порталов (#183): single (дефолт, частный контур) | multi (контур Маркета).
+      B24_PORTAL_MODE: ${B24_PORTAL_MODE:-}
+      # Базовый URL приложения для встроек и ссылок, если отличается от DOMAIN (обычно не нужен).
+      APP_DOMAIN: ${APP_DOMAIN:-}
       # PostgreSQL: постоянное хранение. Миграции применяются приложением на старте.
       # Без DATABASE_URL приложение падает обратно на эфемерный MemoryStore.
       DATABASE_URL: postgres://polls:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/polls
@@ -63,6 +70,11 @@ services:
       # Канал отзывов: токен + ПРИВАТНЫЙ репозиторий-приёмник. Без обоих канал выключен.
       GITHUB_FEEDBACK_TOKEN: ${GITHUB_FEEDBACK_TOKEN:-}
       GITHUB_FEEDBACK_REPO: ${GITHUB_FEEDBACK_REPO:-}
+      # Сколько суток держать тумбстоун удалённого портала (дефолт 30, клэмп 1–365).
+      TOMBSTONE_TTL_DAYS: ${TOMBSTONE_TTL_DAYS:-}
+      # Адрес OTLP-коллектора трейсов; пусто — телеметрия no-op (в проде не задавать до станции приёма).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
     restart: unless-stopped
     depends_on:
       db:

@@ -262,7 +262,9 @@ export class PortalTokenStore {
       // накопленное НЕ присваивает. Без гейта (значение не задано) — сегодняшнее поведение частного
       // развёртывания: приложение локальное, install-URL знает только владелец. Перед публикацией в
       // Маркете гейт обязателен — там URL один на всех, см. §Ключевые решения.
-      if (opts.expectedMemberId !== undefined && opts.expectedMemberId !== tokens.memberId) {
+      // Регистр — как в гейте установки (`decideInstallAccess`): разные правила в двух гейтах дали
+      // бы портал, который установиться может, а присвоить накопленное — нет.
+      if (opts.expectedMemberId !== undefined && opts.expectedMemberId.toLowerCase() !== tokens.memberId.toLowerCase()) {
         adoption = { kind: 'refused', memberId: tokens.memberId }
       } else {
         // Плейсхолдер становится настоящим порталом. Условия в самом SQL, а не в коде: строка
@@ -469,4 +471,62 @@ export class PortalTokenStore {
     if (!(await this.updateOnRefresh(refreshed, now))) return undefined
     return refreshed.accessToken
   }
+}
+
+/**
+ * Режим обслуживания порталов (#183): кого этот инстанс вообще пускает УСТАНОВИТЬСЯ.
+ *
+ * `single` (дефолт) — частное развёртывание: инстанс обслуживает РОВНО ОДИН портал, названный в
+ * `B24_EXPECTED_MEMBER_ID`, установка с любого другого отклоняется целиком (403).
+ * `multi` — контур Маркета: install-URL один на всех, ставиться может любой портал, каждый живёт в
+ * своём тенанте (#47/#49); накопленное ДО установки по-прежнему присваивается только ожидаемому.
+ *
+ * ⚠️ Почему это ДВЕ разные ручки, а не одна. `expectedMemberId` отвечает на вопрос «чьи данные лежат
+ * под плейсхолдером», режим — на вопрос «пускаем ли посторонние порталы вовсе». В Маркете обе нужны
+ * одновременно: чужая установка легитимна, но чужое присвоение — нет.
+ */
+export type PortalMode = 'single' | 'multi'
+
+/**
+ * Разобрать `B24_PORTAL_MODE`. Незнакомое значение → `single`, НЕ `multi`: опечатка в переменной не
+ * должна молча открывать установку всем. Громкость обеспечивает `env-check` — он на том же значении
+ * даёт ошибку, то есть тихий фолбэк живёт только у запуска мимо предполётной проверки.
+ */
+export function parsePortalMode(raw: string | undefined): PortalMode {
+  return raw?.trim() === 'multi' ? 'multi' : 'single'
+}
+
+export interface InstallAccessInput {
+  /** Authoritative `member_id` (ПОСЛЕ `verifyInstallMember` — присланному верить нельзя). */
+  memberId: string
+  /** `B24_EXPECTED_MEMBER_ID` (сырое значение env; пустая строка = не задано). */
+  expectedMemberId: string | undefined
+  mode: PortalMode
+}
+
+/**
+ * Пускать ли установку (#183). Отдельно от присвоения: гейт присвоения защищает ДАННЫЕ плейсхолдера,
+ * этот — сам факт появления чужого тенанта на частном инстансе.
+ *
+ * ⚠️ До этого решения чужой портал УСТАНАВЛИВАЛСЯ: присвоение ему отказывало
+ * (`portal_adopt_failed`), но строка портала заводилась, встройки регистрировались, и посторонний —
+ * модератор Маркета, партнёр с тестового портала, кто угодно с install-URL — получал рабочий тенант
+ * на инстансе, который владелец считает своим. С мультитенантом чужой тенант изолирован, но на
+ * ЧАСТНОМ контуре он не легитимен в принципе: это чужие ПДн на инфраструктуре, за которую отвечает
+ * владелец.
+ *
+ * ⚠️ `expected` не задан → пускаем. Это dev/память и старые развёртывания; обязательность переменной
+ * на боевом контуре форсит `env-check` (ошибка при заданном `NUXT_B24_CLIENT_ID`), а не этот гейт:
+ * здесь отказ значил бы «забытая переменная молча выключила установку вовсе».
+ */
+export function decideInstallAccess(input: InstallAccessInput): { allow: true } | { allow: false; reason: 'foreign-portal' } {
+  const expected = input.expectedMemberId?.trim()
+  // Сравнение без учёта регистра: Bitrix отдаёт member_id нижним hex, но скопированное владельцем в
+  // верхнем регистре значение иначе молча отклонило бы ЕГО СОБСТВЕННУЮ установку — fail-closed без
+  // диагностики. member_id не секрет, constant-time здесь не нужен (сравниваемое значение атакующий
+  // не выбирает — оно authoritative из OAuth-гранта его же портала).
+  if (!expected || input.mode === 'multi' || input.memberId.toLowerCase() === expected.toLowerCase()) {
+    return { allow: true }
+  }
+  return { allow: false, reason: 'foreign-portal' }
 }

@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 /**
  * Проводка присвоения портала (#171) — ИСПОЛНЯЕМЫЙ гард, а не греп по исходнику.
@@ -72,7 +74,10 @@ describe('проводка присвоения портала при устан
         refreshToken: 'rt',
         expiresAt: '2026-08-20T11:00:00.000Z'
       },
-      installSaveOpts(1_766_000_000, process.env.B24_EXPECTED_MEMBER_ID)
+      // ⚠️ НЕ `process.env.B24_EXPECTED_MEMBER_ID`: экспортированная в среде раннера переменная
+      // молча переворачивала бы смысл теста (присвоение отказывало бы, тест падал бы «не там»).
+      // Тест проверяет присвоение при НЕзаданном гейте — и говорит это явно.
+      installSaveOpts(1_766_000_000, undefined)
     )
     expect(saved).toBe(true)
 
@@ -83,4 +88,38 @@ describe('проводка присвоения портала при устан
     const after = await pglite.query<{ n: number }>('select count(*)::int as n from response')
     expect(after.rows[0]!.n).toBe(before.rows[0]!.n)
   }, 60_000)
+})
+
+describe('гейт чужой установки стоит В РОУТЕ (#183)', () => {
+  // Решение, лог инертности и чтение env — в исполняемо покрытой `installAccessGate`
+  // (test/install-gate.test.ts): мутационный прогон показал, что регексы не видят исполнимости —
+  // инверсия условия, потерянный `return` и опечатка env проходили полный `pnpm check`. Роуту
+  // остались вызов и `return`; их держим регексом со СМЕЖНОСТЬЮ, которую эти мутации ломают.
+  const src = readFileSync(resolve(process.cwd(), 'server/api/b24/install.post.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
+  it('гейт зовётся с authoritative member_id и БОЕВЫМ process.env', () => {
+    // `process.env` целиком: имя переменной читает сама функция, и опечатка в нём ловится
+    // исполнением, а не регексом по префиксу.
+    expect(src, 'гейт снят с роута или отвязан от боевого окружения')
+      .toMatch(/const gate = installAccessGate\(verifiedAuth\.memberId, process\.env, logger\)/)
+  })
+
+  it('отказ гейта НЕМЕДЛЕННО отвечает 403 и телом ошибки', () => {
+    // Смежность `=== 'reject'` → … → `return html(event, gate.status, errorHtml(` в одном блоке:
+    // инверсия (`!== 'reject'`) ломает первую скобку, потерянный `return` — вторую, подмена тела на
+    // FINISH_HTML — третью.
+    expect(src).toMatch(/if \(gate\.verdict === 'reject'\) \{[\s\S]{0,400}?return html\(event, gate\.status, errorHtml\(gate\.message\)\)/)
+    expect(src, 'отказ проходит молча').toContain('b24_install_foreign_reject')
+  })
+
+  it('гейт стоит ПОСЛЕ верификации member_id и ДО сохранения токенов', () => {
+    const gate = src.indexOf('installAccessGate(')
+    expect(gate).toBeGreaterThan(-1)
+    expect(gate, 'гейт стоит до верификации member_id — решает присланное значение')
+      .toBeGreaterThan(src.indexOf('verifyInstallMember('))
+    expect(gate, 'гейт стоит ПОСЛЕ сохранения — чужой тенант уже заведён')
+      .toBeLessThan(src.indexOf('handleInstall('))
+  })
 })

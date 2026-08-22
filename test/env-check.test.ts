@@ -17,6 +17,8 @@ const GOOD: Record<string, string> = {
   NUXT_B24_CLIENT_ID: 'local.abc',
   NUXT_B24_CLIENT_SECRET: 'secret',
   DOMAIN: 'polls.bx-shef.by',
+  // #183: боевой контур обязан знать, чей он, — иначе накопленное присвоит первый установившийся.
+  B24_EXPECTED_MEMBER_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
   // Прод у нас стоит за обратным прокси; без этого лимиты по IP считаются одним счётчиком на всех.
   TRUSTED_PROXIES: '1'
 }
@@ -42,6 +44,41 @@ describe('checkEnv — здоровое окружение', () => {
 })
 
 describe('checkEnv — симптомы из таблицы «Если что-то пошло не так»', () => {
+  it('#183: связка настроена, а B24_EXPECTED_MEMBER_ID нет → ОШИБКА, не предупреждение', () => {
+    // Цена — чужие ПДн: без переменной накопленные до установки данные присвоит ПЕРВЫЙ
+    // установившийся портал (в Маркете это кто угодно с install-URL) и сможет их стереть.
+    expect(names(prod({ B24_EXPECTED_MEMBER_ID: undefined }).errors)).toContain('B24_EXPECTED_MEMBER_ID')
+    // Пустая строка и пробелы — то же «не задано»: раскомментированная пустая строка из примера.
+    expect(names(prod({ B24_EXPECTED_MEMBER_ID: '  ' }).errors)).toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('#183: без связки с порталом переменная НЕ требуется (dev/память)', () => {
+    const r = prod({ NUXT_B24_CLIENT_ID: undefined, NUXT_B24_CLIENT_SECRET: undefined, B24_EXPECTED_MEMBER_ID: undefined })
+    expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('#183: обязательность привязана к ПОЛНОЙ паре client_id+secret — полупара не даёт второй ошибки', () => {
+    // Полупара уже ошибка сама по себе; вторая строка про expected была бы шумом о следствии.
+    const r = prod({ NUXT_B24_CLIENT_SECRET: undefined, B24_EXPECTED_MEMBER_ID: undefined })
+    // Полупара называет НЕДОСТАЮЩУЮ переменную (secret снят — ошибка по secret).
+    expect(names(r.errors)).toContain('NUXT_B24_CLIENT_SECRET')
+    expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('#183: регистр режима значим — MULTI это опечатка, а не Маркет', () => {
+    // Рантайм на `MULTI` падает в single (см. install-gate.test.ts) — env-check обязан сказать об
+    // этом громко, иначе «включил Маркет» выяснилось бы отказом первой же чужой установки.
+    expect(names(prod({ B24_PORTAL_MODE: 'MULTI' }).errors)).toContain('B24_PORTAL_MODE')
+  })
+
+  it('#183: B24_PORTAL_MODE принимает ровно два значения, опечатка — ошибка', () => {
+    // Рантайм на незнакомом значении молча падает в single — безопасно, но «включил Маркет»
+    // выяснилось бы отказом первой же чужой установки. Громкость — обязанность предполётной проверки.
+    expect(prod({ B24_PORTAL_MODE: 'single' }).errors).toEqual([])
+    expect(prod({ B24_PORTAL_MODE: 'multi' }).errors).toEqual([])
+    expect(names(prod({ B24_PORTAL_MODE: 'both' }).errors)).toContain('B24_PORTAL_MODE')
+  })
+
   it('нет секрета дашборда → ошибка (в бою это молчаливый 503)', () => {
     expect(names(prod({ DASHBOARD_AUTH_SECRET: undefined }).errors)).toContain('DASHBOARD_AUTH_SECRET')
   })
@@ -439,5 +476,56 @@ describe('телеметрия: форма адреса коллектора', (
     expect(e, 'форма адреса должна проваливать предполётную проверку').toBeDefined()
     expect(e?.message).not.toContain('collector:4318')
     expect(r.warnings.some((x) => x.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')).toBe(false)
+  })
+})
+
+describe('контракт деплоя: env-check ↔ docker-compose.prod.yml (#183, найдено ревью)', () => {
+  // ⚠️ Прод-стек передаёт контейнеру окружение ЯВНЫМ белым списком в `environment:` compose-файла;
+  // `--env-file` кормит только интерполяцию, не контейнер. Переменная, о которой env-check умеет
+  // говорить, но которой нет в whitelist, даёт ХУДШИЙ из исходов: владелец вписывает её в
+  // `.env.prod`, предполёт зелёный (он читает файл), а контейнер её не видит — гейт молча инертен.
+  // Ровно так на прод-контуре НЕ РАБОТАЛ гейт присвоения #171/#183: `B24_EXPECTED_MEMBER_ID` не был
+  // проведён в compose. Этот тест делает whitelist частью контракта env-check.
+  it('каждая переменная, которую проверяет env-check, проведена в environment: приложения', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/obs/env-check.ts'), 'utf8')
+    const checked = new Set(
+      [...src.matchAll(/(?:val|set)\('([A-Z0-9_]+)'\)|env\['([A-Z0-9_]+)'\]/g)]
+        .map((m) => m[1] ?? m[2]!)
+    )
+    // Именованные исключения — каждое с причиной:
+    //  POSTGRES_PASSWORD — уходит контейнеру БД и в DATABASE_URL, приложению отдельно не нужен;
+    //  DASHBOARD_DEV_OPEN — дев-ручка; в проде env-check считает её ОШИБКОЙ, проводить её в прод-compose
+    //    значило бы облегчить именно ту конфигурацию, от которой проверка защищает.
+    const exempt = new Set(['POSTGRES_PASSWORD', 'DASHBOARD_DEV_OPEN'])
+    const compose = readFileSync(resolve(process.cwd(), 'docker-compose.prod.yml'), 'utf8')
+    for (const name of checked) {
+      if (exempt.has(name)) continue
+      expect(compose, `${name}: env-check её проверяет, а контейнер приложения её НЕ получает — на проде она молча инертна`)
+        .toMatch(new RegExp(`^\\s+${name}:`, 'm'))
+    }
+    // Сам список не пуст и содержит новую пару #183 — иначе регекс-сбор молча выродился бы.
+    expect(checked.has('B24_EXPECTED_MEMBER_ID')).toBe(true)
+    expect(checked.has('B24_PORTAL_MODE')).toBe(true)
+    expect(checked.size).toBeGreaterThan(15)
+  })
+})
+
+describe('B24_EXPECTED_MEMBER_ID — значение, а не только наличие (#183, найдено ревью)', () => {
+  it('заглушка из примера → ОШИБКА: гейт отклонил бы все порталы, включая свой', () => {
+    expect(names(prod({ B24_EXPECTED_MEMBER_ID: 'changeme' }).errors)).toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('не похоже на member_id (не 32 hex) → предупреждение с симптомом', () => {
+    const r = prod({ B24_EXPECTED_MEMBER_ID: 'мой-портал' })
+    expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
+    expect(names(r.warnings)).toContain('B24_EXPECTED_MEMBER_ID')
+  })
+
+  it('настоящая форма — ни ошибки, ни предупреждения; регистр не важен', () => {
+    for (const v of ['a1b2c3d4e5f60718293a4b5c6d7e8f90', 'A1B2C3D4E5F60718293A4B5C6D7E8F90']) {
+      const r = prod({ B24_EXPECTED_MEMBER_ID: v })
+      expect(names(r.errors)).not.toContain('B24_EXPECTED_MEMBER_ID')
+      expect(names(r.warnings)).not.toContain('B24_EXPECTED_MEMBER_ID')
+    }
   })
 })

@@ -43,6 +43,7 @@
     "test/result-view-route.test.ts",
     "test/dashboard-view.test.ts",
     "test/crm-names.test.ts",
+    "test/install-gate.test.ts",
     "test/post-result.test.ts",
     "test/close-invite-wiring.test.ts",
     "test/tenant-wiring.test.ts",

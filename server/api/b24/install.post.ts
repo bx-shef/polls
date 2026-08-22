@@ -15,6 +15,7 @@ import { parseInstallEvent, installToB24Params, handleInstall } from '~core/bitr
 import { parseUninstallEvent, decideUninstall } from '~core/bitrix24/uninstall'
 import { parseBracketForm } from '~core/bitrix24/bracket-form'
 import { verifyInstallMember, applyVerifiedTokens, decideInstallDoubleDispatch } from '~core/bitrix24/verify-install'
+import { installAccessGate } from '../../utils/install-gate'
 import { Bitrix24OAuth } from '~core/bitrix24/oauth'
 import { isAllowedPortalDomain } from '~core/bitrix24/frame'
 import { errInfo } from '~core/obs/logger'
@@ -159,6 +160,19 @@ export default defineEventHandler(async (event) => {
   // Сборка вынесена в чистую applyVerifiedTokens (пересчёт expiresIn, сброс stale expires, authoritative
   // domain; clientEndpoint деривится из domain, application_token сохранён из install-auth).
   const verifiedAuth = applyVerifiedTokens(auth, memberVerdict.tokens)
+
+  // Гейт частного контура (#183): решение и лог инертности — в исполняемо покрытой
+  // `installAccessGate` (см. её JSDoc: блок в роуте держали только регексы, и инверсия условия,
+  // потерянный return и опечатка env проходили полный `pnpm check`). Здесь остаются вызов и
+  // `return` — их держит регекс со смежностью в `test/install-wiring.test.ts`.
+  const gate = installAccessGate(verifiedAuth.memberId, process.env, logger)
+  if (gate.verdict === 'reject') {
+    logger.warn('b24_install_foreign_reject', {
+      memberId: verifiedAuth.memberId,
+      msg: 'установка с постороннего портала отклонена: инстанс обслуживает один портал (B24_PORTAL_MODE=single)'
+    })
+    return html(event, gate.status, errorHtml(gate.message))
+  }
 
   // SSRF-гард (§2.3 follow-up): domain станет host'ом исходящих REST (registerIntegrations → clientEndpoint).
   // Если грант не вернул authoritative domain — в verifiedAuth.domain присланное значение. Пускаем на REST
