@@ -305,13 +305,14 @@ describe('parseInstallEvent — момент события для тумбст�
     expect(src).toMatch(/parseInstallEvent\(parseBracketForm\(/)
   })
 
-  it('роут install строит опции сохранения общей функцией и передаёт их в save', async () => {
-    // Гард по исходнику: `server/**` юнит-тестами не покрывается. САМИ опции (тумбстоун-гард `eventTs`
-    // и присвоение плейсхолдера `adoptLocal`) проверяются исполнением — `installSaveOpts` ниже;
-    // здесь остаётся только связка «роут действительно ими пользуется».
+  it('роут install передаёт `eventTs` в save — тумбстоун-гард живёт на боевом пути', async () => {
+    // Гард по исходнику: `server/**` юнит-тестами не покрывается. Сам гард (`eventTs` против
+    // тумбстоуна) проверяется исполнением в `uninstall-erases-pii.test.ts`; здесь — связка «роут
+    // действительно им пользуется». Опций присвоения больше НЕТ (снято, см. шапку того же файла).
+    // ⚠️ Регекс пинит вызов ЦЕЛИКОМ, без ветвления: условная сборка опций в роуте жила бы вне
+    // тестов, и инверсия условия молча выключала бы тумбстоун-гард (находка ревью #207).
     const src = await routeSource()
-    expect(src).toMatch(/installSaveOpts\(verifiedAuth\.eventTs/)
-    expect(src).toMatch(/tokenStore\.save\(tokens,\s*saveOpts\)/)
+    expect(src).toMatch(/tokenStore\.save\(tokens,\s*\{\s*eventTs:\s*verifiedAuth\.eventTs\s*\}\)/)
     // И то, что отказ гарда ОСТАНАВЛИВАЕТ установку: иначе получается хуже, чем без гарда —
     // токенов нет, а встройки регистрируются и в лог идёт «установка завершена».
     expect(src).toMatch(/throw new InstallStale/)
@@ -350,20 +351,3 @@ async function routeSource(): Promise<string> {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 }
-
-describe('опции сохранения токенов при установке (#171)', () => {
-  it('`adoptLocal` передаётся ВСЕГДА', async () => {
-    // Пропади флаг из роута — весь фикс #171 выключится, а `pnpm check` останется зелёным.
-    const { installSaveOpts } = await import('../server/utils/install-opts')
-    expect(installSaveOpts(1736405807, undefined)).toEqual({ eventTs: 1736405807, adoptLocal: true })
-  })
-
-  it('ожидаемый портал доезжает; пустая переменная считается «не задано»', async () => {
-    const { installSaveOpts } = await import('../server/utils/install-opts')
-    expect(installSaveOpts(1, ' m-1 ')).toMatchObject({ expectedMemberId: 'm-1' })
-    // Забытая в .env пустая переменная не должна тихо запретить присвоение вообще.
-    for (const raw of ['', '   ', undefined]) {
-      expect(installSaveOpts(1, raw), String(raw)).not.toHaveProperty('expectedMemberId')
-    }
-  })
-})

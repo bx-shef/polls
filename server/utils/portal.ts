@@ -64,25 +64,7 @@ export async function usePortalTokenStore(): Promise<PortalTokenStore | null> {
     logger.warn('b24_token_key_invalid', { msg: (e as Error).message })
     return null
   }
-  return new PortalTokenStore(db, cipher, {
-    // ⚠️ Логируем ВСЕ три исхода, а не только удачный: `skipped`/`refused` означают, что накопленные
-    // ПДн остались за плейсхолдером и удаление приложения их НЕ сотрёт — то есть #171 в этой базе
-    // открыт и лечится руками (см. карту проекта, §«Удаление данных за период»).
-    onAdopt: (o) => {
-      if (o.kind === 'adopted') {
-        logger.info('portal_adopted_local', {
-          msg: `Плейсхолдер-портал присвоен ${o.memberId} (portal.id=${o.portalId}): накопленные данные теперь принадлежат ему`
-        })
-        return
-      }
-      logger.warn('portal_adopt_failed', {
-        reason: o.kind,
-        msg: o.kind === 'refused'
-          ? `Установка от ${o.memberId} не совпала с B24_EXPECTED_MEMBER_ID — накопленное НЕ присвоено`
-          : `Настоящий портал в базе уже был — накопленное осталось за плейсхолдером и uninstall его не сотрёт (#171)`
-      })
-    }
-  })
+  return new PortalTokenStore(db, cipher)
 }
 
 /**

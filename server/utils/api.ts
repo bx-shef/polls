@@ -130,26 +130,20 @@ async function buildStore(): Promise<IStore> {
   const db: Queryable = queryableFromPool(pool)
   pgDb = db // доступен для PortalTokenStore (установка #17)
   await applyMigrations(db, readMigrationSqls())
-  // Портал ПО УМОЛЧАНИЮ — фолбэк для путей, где портала нет вовсе (см. `ensureDefaultPortal`).
-  // Портал запроса выбирают `storeFor`/`invitationsFor`/`useApiFor` (#49).
-  const portalId = await ensureDefaultPortal(db, {
-    onAmbiguous: (chosen, all) =>
-      logger.info('store_default_portal', {
-        // ⚠️ Второй аргумент — СПИСОК member_id, а не число. Первая редакция подставляла его как
-        // количество («Порталов в базе m-a,m-b»), и лог, заведённый ради предсказуемости выбора,
-        // сам врал про то, что печатает.
-        msg: `Порталов в базе ${all.length} (${all.join(', ')}); фолбэк-стор (запрос без портала) пишет под ${chosen}`
-      })
-  })
+  // Портал ПО УМОЛЧАНИЮ — фолбэк для путей, где портала нет вовсе, и это ВСЕГДА плейсхолдер
+  // `__local__` (см. `ensureDefaultPortal`: тенант клиента фолбэком быть не может). Портал запроса
+  // выбирают `storeFor`/`invitationsFor`/`useApiFor` (#49). Прежний лог `store_default_portal`
+  // (выбор из настоящих порталов) снят вместе с самим выбором.
+  const portalId = await ensureDefaultPortal(db)
   pgPortalId = portalId
   // `requireTransaction` — не педантизм: без транзакции отказ между вставкой `response` и
   // `response_answer` оставит пустой ответ, а повтор упрётся в дедуп по токену и получит 409 «опрос
   // пройден» (#170). Флаг падает на старте, если драйвер транзакций не умеет, — вместо тихой
   // неатомарной записи. `queryableFromPool` их умеет, так что это страховка от будущей подмены.
   const store = new PgStore(db, { portalId, requireTransaction: true })
-  // ⚠️ Демо — ТОЛЬКО в плейсхолдер (#47/#49). Портал по умолчанию с мультитенантом это самый ранний
-  // НАСТОЯЩИЙ портал: без гейта удаление первого арендатора превращало бы второго в получателя
-  // демо-опроса и дюжины выдуманных ответов. Разбор — `seedDemoIfEmpty`.
+  // ⚠️ Демо — ТОЛЬКО в плейсхолдер (#47/#49). С фолбэком «всегда плейсхолдер» гейт при штатном
+  // старте истинен всегда; остаётся страховкой от регресса выбора фолбэка — демо в чужой боевой
+  // тенант нельзя ни при каком раскладе. Разбор — `seedDemoIfEmpty`.
   if (await isPlaceholderPortal(db, portalId) && await seedDemoIfEmpty(store)) {
     logger.info('store_seeded', { msg: 'Демо-опрос засеян в пустую БД под плейсхолдер-портал (#6)' })
   }

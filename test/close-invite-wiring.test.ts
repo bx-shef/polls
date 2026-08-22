@@ -65,23 +65,14 @@ afterAll(async () => {
 
 describe('submit → закрытие дела в таймлайне', () => {
   it('успешный ответ по приглашению со сделкой доходит до CRM', async () => {
-    const { useApi, useStore, useInvitations } = await import('../server/utils/api')
+    const { storeFor } = await import('../server/utils/api')
     const { usePortalTokenStore } = await import('../server/utils/portal')
     const { SURVEY_KEY, draftV2 } = await import('../src/demo/seed')
 
-    const store = await useStore()
-    // ⚠️ Публикуем СВЕЖУЮ версию, РАЗРЕШАЮЩУЮ возврат результата в карточку. Демо-опрос его
-    // запрещает (на интро чип «Анонимно», #18), и на нём этот тест доказал бы только работу гейта, а
-    // не проводку второго побочного действия. Номер берём от текущей: базу засевает boot, и «если
-    // версии нет — опубликуем» тихо превращалось бы в «ничего не делаем».
-    const current = await store.currentVersion(SURVEY_KEY)
-    const versionNo = (current?.versionNo ?? 0) + 1
-    await store.publish(
-      { ...draftV2(), invitationPolicy: { ...draftV2().invitationPolicy!, resultToTimeline: true } },
-      versionNo
-    )
-
-    // Портал установлен: без него закрытие штатно выходит раньше REST.
+    // Портал установлен ПЕРВЫМ: в новой модели (присвоение снято) опрос, приглашение и ответ живут
+    // в ТЕНАНТЕ портала — как на живом пути, где админ публикует опрос из фрейма УЖЕ установленного
+    // приложения. Прежний порядок «опубликовать в фолбэк-стор, потом установка присвоит» описывал
+    // снятое поведение.
     const tokenStore = await usePortalTokenStore()
     expect(tokenStore, 'стор токенов не поднялся — тест ничего не проверит').toBeTruthy()
     await tokenStore!.save({
@@ -90,13 +81,35 @@ describe('submit → закрытие дела в таймлайне', () => {
       accessToken: 'at',
       refreshToken: 'rt',
       expiresAt: new Date(Date.now() + 3_600_000).toISOString()
-    }, { adoptLocal: true })
+    })
+    const portalId = (await pglite.query<{ id: number }>(
+      'select id from portal where member_id = $1', [MEMBER]
+    )).rows[0]!.id
 
-    const inv = await useInvitations().create(
+    const store = await storeFor(portalId)
+    // ⚠️ Публикуем СВЕЖУЮ версию, РАЗРЕШАЮЩУЮ возврат результата в карточку. Демо-опрос его
+    // запрещает (на интро чип «Анонимно», #18), и на нём этот тест доказал бы только работу гейта, а
+    // не проводку второго побочного действия.
+    const current = await store.currentVersion(SURVEY_KEY)
+    const versionNo = (current?.versionNo ?? 0) + 1
+    await store.publish(
+      { ...draftV2(), invitationPolicy: { ...draftV2().invitationPolicy!, resultToTimeline: true } },
+      versionNo
+    )
+
+    // ⚠️ Приглашение — ТЕНАНТОМ установленного портала, как это делают виджет и робот
+    // (`invitationsFor(tenant.portalId)`). Раньше тест звал фолбэк `useInvitations()` и работал
+    // только потому, что присвоение переименовывало строку плейсхолдера под кэшем; присвоение
+    // снято, а фолбэк без портала — это путь плейсхолдера, у которого токенов нет по построению.
+    const { invitationsFor } = await import('../server/utils/api')
+    const inv = await (await invitationsFor(portalId)).create(
       { surveyKey: SURVEY_KEY, versionNo, context: { dealId: 759 } },
       new Date()
     )
-    const api = await useApi()
+    // Api — тоже портала: HTTP-роут резолвит тенанта по токену приглашения сам, а здесь мы зовём
+    // `Api` напрямую, минуя роут.
+    const { useApiFor } = await import('../server/utils/api')
+    const api = await useApiFor(portalId)
     const nonce = (await api.session({ ip: 'a' })).body as { nonce: string }
     const r = await api.submit({
       ip: 'a',

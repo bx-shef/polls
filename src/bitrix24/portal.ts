@@ -111,40 +111,6 @@ export interface SaveTokensOpts {
    * тестов, где гард не нужен (поведение как раньше — обычный upsert).
    */
   eventTs?: number
-  /**
-   * Присвоить плейсхолдер-порталу (`__local__`) настоящий `member_id` — ПЕРЕИМЕНОВАНИЕМ строки, а
-   * не созданием новой ([#171](https://github.com/bx-shef/polls/issues/171)).
-   *
-   * ⚠️ Зачем. До связки с Bitrix весь трафик контура A пишется под плейсхолдер (`ensureDefaultPortal`),
-   * и там же копятся ответы со снимками CRM — то есть ПДн. При установке появлялась ВТОРАЯ строка
-   * портала, с настоящим `member_id`, и удаление приложения чистило именно её: `deletePortal`
-   * находил портал без единого ответа, рапортовал об успехе, а персональные данные оставались в базе.
-   * Требование Маркета «uninstall стирает PII» при этом формально выполнялось, фактически — нет.
-   *
-   * Переименование сохраняет числовой `portal.id`, поэтому уже открытый `PgStore` (он держит
-   * `portalId`, а не `member_id`) продолжает работать без перезапуска, а все накопленные данные
-   * разом становятся данными установленного портала.
-   *
-   * ⚠️ Присваиваем ТОЛЬКО когда плейсхолдер — единственная строка портала. Иначе непонятно, чьи это
-   * данные, и присвоение отдало бы накопленное портала A порталу B. Роут установки передаёт флаг
-   * всегда; решение принимает SQL.
-   */
-  adoptLocal?: boolean
-  /**
-   * Какой портал этот инстанс обслуживает (env `B24_EXPECTED_MEMBER_ID`). Задан — присваиваем
-   * накопленное ТОЛЬКО ему; чужая установка получит `refused`.
-   *
-   * ⚠️ Зачем гейт. `verifyInstallMember` доказывает, что POST пришёл от настоящего портала X, но не
-   * то, что X имеет отношение к данным под плейсхолдером. В частном развёртывании этого хватает:
-   * приложение локальное, install-URL знает только владелец. В Маркете URL один на всех — и тогда
-   * приложение может поставить кто угодно, включая модератора или партнёра с тестового портала. Без
-   * гейта он присвоит чужие ПДн и сможет их стереть (uninstall с «очистить данные»).
-   *
-   * Не задан — присвоение работает как раньше. Дефолт выбран так, а не «выключено», потому что
-   * выключенное по умолчанию присвоение оставило бы #171 открытым на самом обычном пути: владелец
-   * ставит приложение, забыв про переменную, — и удаление данных снова ничего не стирает.
-   */
-  expectedMemberId?: string
 }
 
 /**
@@ -177,37 +143,10 @@ export function resolveTombstoneDays(raw: string | undefined): number {
   return Math.min(MAX_TOMBSTONE_DAYS, Math.max(MIN_TOMBSTONE_DAYS, Math.trunc(n)))
 }
 
-/** Наблюдатели за событиями стора. Ядро про логгер не знает — событие отдаётся наружу колбэком. */
-/**
- * Чем кончилась попытка присвоить плейсхолдер-портал.
- *
- * ⚠️ Наружу отдаются ВСЕ три исхода, а не только удачный. `skipped` и `refused` означают, что
- * накопленные ПДн остались за плейсхолдером и удаление приложения их не сотрёт — то есть #171 в этой
- * базе открыт и лечится руками. Молчание на этих ветках было бы худшим вариантом: работающим
- * выглядел бы именно провал.
- */
-export type AdoptOutcome =
-  /** Присвоено: строка плейсхолдера теперь принадлежит порталу. */
-  | { kind: 'adopted'; memberId: string; portalId: number }
-  /** Плейсхолдер есть, но настоящий портал в базе уже был — присваивать нельзя, чьи данные неясно. */
-  | { kind: 'skipped'; memberId: string }
-  /** Установка не от ожидаемого портала (`expectedMemberId`) — присвоение запрещено гейтом. */
-  | { kind: 'refused'; memberId: string }
-
-export interface PortalTokenStoreHooks {
-  /**
-   * Итог присвоения плейсхолдера (см. `SaveTokensOpts.adoptLocal`). Событие разовое и важное: на
-   * `adopted` накопленные данные с этого момента принадлежат порталу и удаление приложения их сотрёт;
-   * на `skipped`/`refused` — НЕ сотрёт, и это надо увидеть.
-   */
-  onAdopt?: (outcome: AdoptOutcome) => void
-}
-
 export class PortalTokenStore {
   constructor(
     private readonly db: Queryable,
-    private readonly cipher: TokenCipher,
-    private readonly hooks: PortalTokenStoreHooks = {}
+    private readonly cipher: TokenCipher
   ) {}
 
   /** Шифрует токены в blob-строку для колонки `tokens` (единый формат для save/updateOnRefresh). */
@@ -234,19 +173,14 @@ export class PortalTokenStore {
     // Гонка check-then-act (SELECT тумбстоуна → upsert → DELETE) до активации гарда была теоретической,
     // теперь путь живой: параллельный uninstall между чтением и записью воскресил бы портал. Три
     // запроса идут одной транзакцией, если драйвер её умеет.
-    const r = await this.inTx((db) => this.saveIn(db, tokens, opts))
-    // ⚠️ Хук — ПОСЛЕ коммита, а не внутри транзакции. Изнутри он сообщал бы о присвоении, которого
-    // могло не случиться: упади следующий запрос той же транзакции, всё откатится, а строка
-    // «присвоено» уже лежала бы в логе — и разбор инцидента поехал бы по ложному следу.
-    if (r.adoption) this.hooks.onAdopt?.(r.adoption)
-    return r.saved
+    return this.inTx((db) => this.saveIn(db, tokens, opts))
   }
 
   private async saveIn(
     db: Queryable,
     tokens: OAuthTokens,
     opts: SaveTokensOpts
-  ): Promise<{ saved: boolean; adoption?: AdoptOutcome }> {
+  ): Promise<boolean> {
     const stampedAt = (opts.now ?? new Date()).toISOString()
     if (opts.eventTs !== undefined) {
       const blocked = await db.query(
@@ -254,48 +188,14 @@ export class PortalTokenStore {
         [tokens.memberId, opts.eventTs]
       )
       // out-of-order install после uninstall — не воскрешаем
-      if (blocked.rows.length > 0) return { saved: false }
+      if (blocked.rows.length > 0) return false
     }
-    let adoption: AdoptOutcome | undefined
-    if (opts.adoptLocal) {
-      // ⚠️ Опциональный гейт: если инстанс знает, какой портал он обслуживает, чужая установка
-      // накопленное НЕ присваивает. Без гейта (значение не задано) — сегодняшнее поведение частного
-      // развёртывания: приложение локальное, install-URL знает только владелец. Перед публикацией в
-      // Маркете гейт обязателен — там URL один на всех, см. §Ключевые решения.
-      // Регистр — как в гейте установки (`decideInstallAccess`): разные правила в двух гейтах дали
-      // бы портал, который установиться может, а присвоить накопленное — нет.
-      if (opts.expectedMemberId !== undefined && opts.expectedMemberId.toLowerCase() !== tokens.memberId.toLowerCase()) {
-        adoption = { kind: 'refused', memberId: tokens.memberId }
-      } else {
-        // Плейсхолдер становится настоящим порталом. Условия в самом SQL, а не в коде: строка
-        // плейсхолдера есть И настоящих порталов нет ни одного. Второе обязательно: при уже
-        // установленном портале непонятно, чьи данные лежат под плейсхолдером, и присвоение отдало
-        // бы накопленное одного портала другому.
-        // `domain`/`updated_at`/`tokens` тут не трогаем: их всё равно перезапишет upsert ниже, в той
-        // же транзакции. Меняем ровно то, что upsert выставить не может: владельца строки и дату
-        // установки (иначе у присвоенного портала там навсегда осталась бы дата развёртывания).
-        const adopted = await db.query<{ id: number }>(
-          // `member_id = $3` формально избыточен (при живом `not exists` других строк и быть не может),
-          // но оставлен намеренно: он выражает НАМЕРЕНИЕ «присваиваем именно плейсхолдер». Без него
-          // ослабление `not exists` в будущем молча превратило бы это в «присвоить любой портал».
-          `update portal set member_id = $1, installed_at = $2
-            where member_id = $3
-              and not exists (select 1 from portal p2 where p2.member_id <> $3)
-            returning id`,
-          [tokens.memberId, stampedAt, LOCAL_PORTAL_MEMBER_ID]
-        )
-        const id = adopted.rows[0]?.id
-        if (id !== undefined) {
-          adoption = { kind: 'adopted', memberId: tokens.memberId, portalId: id }
-        } else {
-          // Присвоения НЕ случилось. Молчать тут нельзя: это ровно тот исход, при котором
-          // накопленные ПДн остаются за плейсхолдером и удаление приложения их не сотрёт, — то есть
-          // #171 в этой базе остался открытым, и лечится он только руками.
-          const stale = await db.query('select 1 from portal where member_id = $1 limit 1', [LOCAL_PORTAL_MEMBER_ID])
-          if (stale.rows.length > 0) adoption = { kind: 'skipped', memberId: tokens.memberId }
-        }
-      }
-    }
+    // ⚠️ Плейсхолдер (`__local__`) НЕ присваивается установившемуся порталу — намеренно, и это
+    // отмена прежнего решения #171/#183. Данные, накопленные ДО установки, — это автономное
+    // использование владельцем (демо-опрос, публичные ссылки), а не данные будущего портала: с
+    // тенант-изоляцией (#47/#49) каждый портал пишет и читает только своё, и «присвоить накопленное
+    // первому установившемуся» само по себе было дырой — в Маркете install-URL один на всех.
+    // Плейсхолдер живёт своим тенантом; чистит его владелец, а не uninstall чужого портала.
     await db.query(
       `insert into portal (member_id, domain, tokens, updated_at) values ($1, $2, $3, $4)
        on conflict (member_id) do update
@@ -309,7 +209,7 @@ export class PortalTokenStore {
         [tokens.memberId, opts.eventTs]
       )
     }
-    return adoption !== undefined ? { saved: true, adoption } : { saved: true }
+    return true
   }
 
   /**
@@ -471,62 +371,4 @@ export class PortalTokenStore {
     if (!(await this.updateOnRefresh(refreshed, now))) return undefined
     return refreshed.accessToken
   }
-}
-
-/**
- * Режим обслуживания порталов (#183): кого этот инстанс вообще пускает УСТАНОВИТЬСЯ.
- *
- * `single` (дефолт) — частное развёртывание: инстанс обслуживает РОВНО ОДИН портал, названный в
- * `B24_EXPECTED_MEMBER_ID`, установка с любого другого отклоняется целиком (403).
- * `multi` — контур Маркета: install-URL один на всех, ставиться может любой портал, каждый живёт в
- * своём тенанте (#47/#49); накопленное ДО установки по-прежнему присваивается только ожидаемому.
- *
- * ⚠️ Почему это ДВЕ разные ручки, а не одна. `expectedMemberId` отвечает на вопрос «чьи данные лежат
- * под плейсхолдером», режим — на вопрос «пускаем ли посторонние порталы вовсе». В Маркете обе нужны
- * одновременно: чужая установка легитимна, но чужое присвоение — нет.
- */
-export type PortalMode = 'single' | 'multi'
-
-/**
- * Разобрать `B24_PORTAL_MODE`. Незнакомое значение → `single`, НЕ `multi`: опечатка в переменной не
- * должна молча открывать установку всем. Громкость обеспечивает `env-check` — он на том же значении
- * даёт ошибку, то есть тихий фолбэк живёт только у запуска мимо предполётной проверки.
- */
-export function parsePortalMode(raw: string | undefined): PortalMode {
-  return raw?.trim() === 'multi' ? 'multi' : 'single'
-}
-
-export interface InstallAccessInput {
-  /** Authoritative `member_id` (ПОСЛЕ `verifyInstallMember` — присланному верить нельзя). */
-  memberId: string
-  /** `B24_EXPECTED_MEMBER_ID` (сырое значение env; пустая строка = не задано). */
-  expectedMemberId: string | undefined
-  mode: PortalMode
-}
-
-/**
- * Пускать ли установку (#183). Отдельно от присвоения: гейт присвоения защищает ДАННЫЕ плейсхолдера,
- * этот — сам факт появления чужого тенанта на частном инстансе.
- *
- * ⚠️ До этого решения чужой портал УСТАНАВЛИВАЛСЯ: присвоение ему отказывало
- * (`portal_adopt_failed`), но строка портала заводилась, встройки регистрировались, и посторонний —
- * модератор Маркета, партнёр с тестового портала, кто угодно с install-URL — получал рабочий тенант
- * на инстансе, который владелец считает своим. С мультитенантом чужой тенант изолирован, но на
- * ЧАСТНОМ контуре он не легитимен в принципе: это чужие ПДн на инфраструктуре, за которую отвечает
- * владелец.
- *
- * ⚠️ `expected` не задан → пускаем. Это dev/память и старые развёртывания; обязательность переменной
- * на боевом контуре форсит `env-check` (ошибка при заданном `NUXT_B24_CLIENT_ID`), а не этот гейт:
- * здесь отказ значил бы «забытая переменная молча выключила установку вовсе».
- */
-export function decideInstallAccess(input: InstallAccessInput): { allow: true } | { allow: false; reason: 'foreign-portal' } {
-  const expected = input.expectedMemberId?.trim()
-  // Сравнение без учёта регистра: Bitrix отдаёт member_id нижним hex, но скопированное владельцем в
-  // верхнем регистре значение иначе молча отклонило бы ЕГО СОБСТВЕННУЮ установку — fail-closed без
-  // диагностики. member_id не секрет, constant-time здесь не нужен (сравниваемое значение атакующий
-  // не выбирает — оно authoritative из OAuth-гранта его же портала).
-  if (!expected || input.mode === 'multi' || input.memberId.toLowerCase() === expected.toLowerCase()) {
-    return { allow: true }
-  }
-  return { allow: false, reason: 'foreign-portal' }
 }

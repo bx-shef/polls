@@ -1,5 +1,5 @@
 {
-  // Проект ТОЛЬКО для тестов проводки (приглашения + присвоение портала): они загружают модули Nitro, живущие на
+  // Проект ТОЛЬКО для тестов проводки (приглашения + установка портала): они загружают модули Nitro, живущие на
   // авто-импортах Nuxt (`defineNitroPlugin`, `getRequestIP`, `import.meta.prerender`). Ядровой
   // `tsconfig.json` framework-agnostic и этих имён не знает — там эти файлы исключены. Без своего
   // проекта типовые правила ESLint по ним молча выродились бы (ровно тот отказ, из-за которого у
@@ -14,7 +14,6 @@
     "./result-view-route.test.ts",
     "./dashboard-view.test.ts",
     "./crm-names.test.ts",
-    "./install-gate.test.ts",
     "./post-result.test.ts",
     "./close-invite-wiring.test.ts",
     "./tenant-wiring.test.ts",
