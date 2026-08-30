@@ -11,6 +11,12 @@
 #
 # Порядок первого развёртывания — в `deploy/README.md`.
 
+# Имя проекта задано явно. По умолчанию compose берёт его из имени каталога — то есть
+# «deploy», — и на общем хосте любой сосед со своим `deploy/` получил бы те же имена
+# сетей и томов. Postgres, поднятый на чужом томе, молча проигнорирует POSTGRES_*
+# и не создаст роль `survey`, а `make prod-down` снёс бы соседу сеть.
+name: polls
+
 # Ротация логов: без неё docker пишет json-file без предела и однажды забивает диск.
 x-logging: &default-logging
   driver: json-file
@@ -37,7 +43,9 @@ services:
 
       DATABASE_URL: postgres://survey:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/survey
       REDIS_URL: redis://redis:6379
-      PUBLIC_BASE_URL: https://${DOMAIN}
+      # Отдельно от DOMAIN: VIRTUAL_HOST допускает несколько имён через запятую,
+      # и подстановка списка уехала бы внутрь каждой выданной ссылки на анкету.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://${DOMAIN}}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     networks:
       - proxy-net   # перед нами общий nginx-proxy; через эту же сеть идёт выход в REST портала
