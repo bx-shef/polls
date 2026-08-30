@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down dev check image prod-pull prod-up prod-down prod-logs prod-migrate cert
+.PHONY: help up down dev check image prod-pull prod-up prod-down prod-logs prod-migrate cert cert-renew
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -48,12 +48,30 @@ prod-migrate: ## Накатить миграции одноразовым зап
 
 # --- Сертификат --------------------------------------------------------------
 
-cert: ## Выпустить сертификат Let's Encrypt (домен: DOMAIN=..., почта: EMAIL=...)
-	@test -n "$(DOMAIN)" || (echo "Укажите DOMAIN=polls.example.by" && exit 1)
-	@test -n "$(EMAIL)" || (echo "Укажите EMAIL=admin@example.by" && exit 1)
+ACME := $(abspath deploy/acme)
+
+# Первый выпуск. Боевой nginx.conf без файлов сертификата не стартует, поэтому
+# на время проверки поднимается временный nginx с nginx-bootstrap.conf — только
+# 80 порт и каталог проверки. Дальше `make prod-up` поднимает настоящий стек.
+cert: ## Выпустить первый сертификат (DOMAIN=..., EMAIL=...)
+	@test -n "$(DOMAIN)" || (echo "Укажите DOMAIN=polls.bx-shef.by" && exit 1)
+	@test -n "$(EMAIL)" || (echo "Укажите EMAIL=admin@bx-shef.by" && exit 1)
+	mkdir -p $(ACME)
+	-docker rm -f survey-acme
+	docker run -d --name survey-acme -p 80:80 \
+		-v $(abspath deploy/nginx-bootstrap.conf):/etc/nginx/nginx.conf:ro \
+		-v $(ACME):/var/www/certbot \
+		nginx:1.29-alpine
 	docker run --rm \
 		-v /etc/letsencrypt:/etc/letsencrypt \
-		-v deploy_certbot-webroot:/var/www/certbot \
+		-v $(ACME):/var/www/certbot \
 		certbot/certbot certonly --webroot -w /var/www/certbot \
-		-d $(DOMAIN) --email $(EMAIL) --agree-tos --no-eff-email
+		-d $(DOMAIN) --email $(EMAIL) --agree-tos --no-eff-email; \
+		status=$$?; docker rm -f survey-acme > /dev/null; exit $$status
+
+cert-renew: ## Продлить сертификат на работающем стеке (в cron раз в сутки)
+	docker run --rm \
+		-v /etc/letsencrypt:/etc/letsencrypt \
+		-v $(ACME):/var/www/certbot \
+		certbot/certbot renew --webroot -w /var/www/certbot
 	$(PROD) exec nginx nginx -s reload

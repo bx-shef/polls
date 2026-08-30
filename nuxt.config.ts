@@ -23,7 +23,6 @@ export default defineNuxtConfig({
   // Отключено намеренно: девтулзы просят доустановить пакет при первом запуске,
   // а нам нужен предсказуемый старт в CI и в контейнере.
   devtools: { enabled: false },
-  compatibilityDate: '2026-08-30',
 
   // Гибридный рендеринг. Публичная страница анкеты — единственное, что видит внешний
   // респондент, поэтому SSR и запрет индексации; всё остальное живёт в iframe портала
@@ -32,12 +31,7 @@ export default defineNuxtConfig({
     '/s/**': { ssr: true, headers: { 'X-Robots-Tag': 'noindex, nofollow' } },
     '/**': { ssr: false },
   },
-
-  eslint: {
-    // Стилевые правила включены, чтобы не тащить в проект второй инструмент ради
-    // форматирования: `eslint --fix` делает то же, что сделал бы prettier.
-    config: { stylistic: true },
-  },
+  compatibilityDate: '2026-08-30',
 
   nitro: {
     // Явный пресет: в контейнере запускается .output/server/index.mjs.
@@ -58,5 +52,11 @@ export default defineNuxtConfig({
     nodeTsConfig: {
       include: ['../tests/unit/**/*', '../vitest.config.ts', '../drizzle.config.ts'],
     },
+  },
+
+  eslint: {
+    // Стилевые правила включены, чтобы не тащить в проект второй инструмент ради
+    // форматирования: `eslint --fix` делает то же, что сделал бы prettier.
+    config: { stylistic: true },
   },
 })

@@ -33,13 +33,21 @@ const label: Record<Check['status'], string> = {
         сборка <code>{{ health.version }}</code>
       </p>
       <ul>
-        <li v-for="(check, name) in health.checks" :key="name">
+        <li
+          v-for="(check, name) in health.checks"
+          :key="name"
+        >
           {{ name }} — <span :class="check.status === 'down' ? 'bad' : ''">{{ label[check.status] }}</span>
-          <template v-if="check.latencyMs !== undefined"> ({{ check.latencyMs }} мс)</template>
+          <template v-if="check.latencyMs !== undefined">
+            ({{ check.latencyMs }} мс)
+          </template>
         </li>
       </ul>
     </template>
-    <p v-else-if="error" class="bad">
+    <p
+      v-else-if="error"
+      class="bad"
+    >
       Проверка состояния недоступна.
     </p>
   </main>

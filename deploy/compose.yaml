@@ -73,16 +73,24 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./proxy-headers.conf:/etc/nginx/proxy-headers.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
-      - certbot-webroot:/var/www/certbot
+      # Каталог проверки Let's Encrypt — привязкой, а не томом: под тем же путём его
+      # монтирует certbot из `make cert`, и имя тома там не пришлось бы угадывать.
+      - ./acme:/var/www/certbot
     networks: [edge]
     depends_on: [app]
 
   # Обновление по метке: Watchtower трогает только сервисы с
   # com.centurylinklabs.watchtower.enable=true, чтобы не подменить базу под нагрузкой.
   watchtower:
-    image: containrrr/watchtower:latest
+    # Версия зафиксирована: сервис смотрит в сокет Docker, и подменять его тегом
+    # `latest` — ровно та беспечность, от которой он же и защищает.
+    image: containrrr/watchtower:1.7.1
     restart: unless-stopped
     command: ['--label-enable', '--cleanup', '--interval', '300']
+    environment:
+      # Watchtower 1.7.1 просит версию API 1.25, а Docker 25+ такую уже не обслуживает
+      # и сервис уходит в цикл перезапусков. Без этой строки обновление молча не работает.
+      DOCKER_API_VERSION: '1.44'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [edge]
@@ -97,4 +105,3 @@ networks:
 volumes:
   db-data:
   redis-data:
-  certbot-webroot:
