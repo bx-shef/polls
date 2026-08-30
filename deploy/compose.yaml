@@ -1,0 +1,100 @@
+# Прод-стек. Наружу смотрит только nginx: база и Redis сидят во внутренней сети
+# без портов на хост и без выхода в интернет. Порядок первого развёртывания —
+# в `deploy/README.md`.
+
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/bx-shef/polls:latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://survey:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/survey
+      REDIS_URL: redis://redis:6379
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://polls.bx-shef.by}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    networks: [edge, internal]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      com.centurylinklabs.watchtower.enable: 'true'
+
+  # Одноразовый запуск того же образа: `docker compose run --rm migrate`.
+  # Профиль нужен, чтобы сервис не поднимался вместе со стеком.
+  migrate:
+    image: ${APP_IMAGE:-ghcr.io/bx-shef/polls:latest}
+    profiles: [tools]
+    command: ['node', '.output/server/migrate.mjs']
+    environment:
+      DATABASE_URL: postgres://survey:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/survey
+    networks: [internal]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: survey
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+      POSTGRES_DB: survey
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U survey -d survey']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    # Состояние очередей переживает перезапуск: задание на запись в портал терять нельзя.
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    networks: [internal]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  nginx:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./proxy-headers.conf:/etc/nginx/proxy-headers.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot
+    networks: [edge]
+    depends_on: [app]
+
+  # Обновление по метке: Watchtower трогает только сервисы с
+  # com.centurylinklabs.watchtower.enable=true, чтобы не подменить базу под нагрузкой.
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    command: ['--label-enable', '--cleanup', '--interval', '300']
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [edge]
+
+networks:
+  edge:
+  internal:
+    # internal: true — база и Redis не имеют выхода наружу вообще.
+    # Приложение выходит в интернет через сеть edge.
+    internal: true
+
+volumes:
+  db-data:
+  redis-data:
+  certbot-webroot:
