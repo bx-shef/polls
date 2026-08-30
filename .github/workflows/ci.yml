@@ -1,8 +1,12 @@
 name: CI
 
+# push только для main, всё остальное ловит pull_request. При `branches: ['**']`
+# каждый пуш в ветку с открытым PR запускал workflow дважды: у событий разный
+# `github.ref`, поэтому и группа `concurrency` разная, и вторая сборка не отменялась.
+# Ветка без PR остаётся без CI сознательно — в main всё равно только через PR.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 concurrency:
