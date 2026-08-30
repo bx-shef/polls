@@ -25,10 +25,13 @@ export default defineNuxtConfig({
   devtools: { enabled: false },
 
   // Гибридный рендеринг. Публичная страница анкеты — единственное, что видит внешний
-  // респондент, поэтому SSR и запрет индексации; всё остальное живёт в iframe портала
-  // и рендерится на клиенте.
+  // респондент, поэтому SSR; всё остальное живёт в iframe портала и рендерится
+  // на клиенте.
+  //
+  // Заголовков безопасности здесь намеренно нет: их ставит `server/plugins/security-headers.ts`,
+  // потому что заголовки из `routeRules` обработчик ошибок Nitro перезаписывает своими.
   routeRules: {
-    '/s/**': { ssr: true, headers: { 'X-Robots-Tag': 'noindex, nofollow' } },
+    '/s/**': { ssr: true },
     '/**': { ssr: false },
   },
   compatibilityDate: '2026-08-30',
