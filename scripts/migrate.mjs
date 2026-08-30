@@ -6,11 +6,18 @@
  * запуском того же контейнера — поэтому папка с миграциями задаётся переменной,
  * а не выводится из рабочего каталога.
  */
+import { existsSync } from 'node:fs'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
+
+// `.env` читает Nuxt, но не голый Node. Без этого описанный в README первый запуск
+// (`cp .env.example .env` → `pnpm db:migrate`) падает на «DATABASE_URL не задан».
+// В контейнере файла нет — переменные приходят из окружения, и это не ошибка.
+const envFile = fileURLToPath(new URL('../.env', import.meta.url))
+if (existsSync(envFile)) process.loadEnvFile(envFile)
 
 const url = process.env.DATABASE_URL
 if (!url) {

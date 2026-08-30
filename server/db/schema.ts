@@ -85,6 +85,9 @@ export const linkIndex = pgTable('link_index', {
   id: uuid('id').primaryKey().defaultRandom(),
   portalId: uuid('portal_id').notNull().references(() => portals.id, { onDelete: 'cascade' }),
   tokenHash: text('token_hash').notNull(),
+  // bigint, а не integer: идентификаторы элементов смарт-процессов выдаёт портал,
+  // а не мы, и запас тут дешевле, чем миграция типа на живых данных. `mode: 'number'`
+  // безопасен, пока значения не перешагнули 2^53 — для идентификаторов CRM это не сценарий.
   itemId: bigint('item_id', { mode: 'number' }).notNull(),
   surveyCode: text('survey_code').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),

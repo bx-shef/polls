@@ -3,13 +3,13 @@
  * Заглушка каркаса: показывает, что приложение поднялось и что оно думает о базе и Redis.
  * Нужна ровно до задачи 4 — дальше здесь живёт список опросов внутри портала.
  */
-interface Check { status: 'ok' | 'down' | 'off', latencyMs?: number, error?: string }
+// ignoreResponseError — эндпоинт отвечает 503, когда зависимость лежит. Без этого
+// useFetch отбрасывает тело, и панель пустеет ровно тогда, когда она нужнее всего.
+const { data: health, error } = await useFetch('/api/health', { ignoreResponseError: true })
 
-const { data: health, error } = await useFetch<{
-  status: string
-  version: string
-  checks: Record<string, Check>
-}>('/api/health')
+// Тип выводится из самого хендлера, а не переписывается руками: дубль расходится
+// с сервером молча, и первым это заметит не разработчик, а пользователь.
+type Check = NonNullable<typeof health.value>['checks']['db']
 
 useHead({ title: 'Опросы клиентов' })
 

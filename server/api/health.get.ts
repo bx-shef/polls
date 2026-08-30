@@ -2,14 +2,18 @@ import { sql } from 'drizzle-orm'
 import { getDb, isDatabaseConfigured } from '../db/client'
 import { appVersion } from '../utils/env'
 import { logger } from '../utils/logger'
-import { getRedis, isRedisConfigured } from '../utils/redis'
+import { getRedis, isRedisConfigured, whenRedisReady } from '../utils/redis'
 
 /**
- * Liveness/readiness probe: одна точка, по которой и Docker, и человек после деплоя
+ * Liveness/readiness probe: одна точка, по которой и Docker, и человек после выкатки
  * видят, поднялось ли приложение и достучалось ли оно до базы и Redis.
  *
  * `off` — зависимость не настроена, это не ошибка: каркас обязан подниматься до того,
  * как поднята инфраструктура. `down` — настроена и не отвечает, вот это 503.
+ *
+ * Наружу отдаём только состояния. Текст ошибки драйвера несёт имена хостов, порты и
+ * причины отказа аутентификации, а эндпоинт открыт анонимно — подробности уезжают
+ * в лог, где их вычищает pino.
  */
 
 type CheckStatus = 'ok' | 'down' | 'off'
@@ -17,14 +21,19 @@ type CheckStatus = 'ok' | 'down' | 'off'
 interface Check {
   status: CheckStatus
   latencyMs?: number
-  error?: string
 }
 
-const PROBE_TIMEOUT_MS = 2000
+/** Таймаут пробы держим больше `connect_timeout` драйвера, чтобы в лог попадала его ошибка, а не наша. */
+const PROBE_TIMEOUT_MS = 4000
 
-/** Ошибка подключения несёт строку подключения с паролем — вырезаем до того, как отдать наружу. */
+/**
+ * Removes credentials from a connection-string-shaped message.
+ *
+ * Жадная звёздочка до последней `@` — пароль сам может содержать `@`,
+ * и нежадная версия обрезала бы только его начало.
+ */
 function scrub(message: string): string {
-  return message.replace(/\/\/[^@\s/]*@/g, '//***@')
+  return message.replace(/\/\/[^/\s]*@/g, '//***@')
 }
 
 async function withTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -42,7 +51,7 @@ async function withTimeout<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-async function probe(configured: boolean, run: () => Promise<unknown>): Promise<Check> {
+async function probe(name: string, configured: boolean, run: () => Promise<unknown>): Promise<Check> {
   if (!configured) return { status: 'off' }
   const startedAt = performance.now()
   try {
@@ -50,16 +59,23 @@ async function probe(configured: boolean, run: () => Promise<unknown>): Promise<
     return { status: 'ok', latencyMs: Math.round(performance.now() - startedAt) }
   }
   catch (error) {
-    const message = scrub(error instanceof Error ? error.message : String(error))
-    logger.warn({ probeError: message }, 'health probe failed')
-    return { status: 'down', latencyMs: Math.round(performance.now() - startedAt), error: message }
+    logger.warn(
+      { dependency: name, probeError: scrub(error instanceof Error ? error.message : String(error)) },
+      'health probe failed',
+    )
+    return { status: 'down', latencyMs: Math.round(performance.now() - startedAt) }
   }
 }
 
 export default defineEventHandler(async (event) => {
   const [db, redis] = await Promise.all([
-    probe(isDatabaseConfigured(), () => getDb().execute(sql`select 1`)),
-    probe(isRedisConfigured(), () => getRedis().ping()),
+    probe('db', isDatabaseConfigured(), () => getDb().execute(sql`select 1`)),
+    probe('redis', isRedisConfigured(), async () => {
+      // Дожидаемся готовности соединения и только потом шлём команду: иначе при
+      // `maxRetriesPerRequest: null` она осядет в офлайн-очереди и не вернётся никогда.
+      await whenRedisReady(PROBE_TIMEOUT_MS - 500)
+      return await getRedis().ping()
+    }),
   ])
 
   const checks = { db, redis }
@@ -69,7 +85,6 @@ export default defineEventHandler(async (event) => {
   return {
     status: degraded ? 'degraded' : 'ok',
     version: appVersion(),
-    uptimeSeconds: Math.round(process.uptime()),
     checks,
   }
 })

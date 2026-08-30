@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fails when anything under `app/` imports a module from `server/`.
+ * Fails when client-side code (`app/`, `shared/`) imports a module from `server/`.
  *
  * Инвариант из `CLAUDE.md`: `app/` не импортирует серверные модули, и проверяется это
  * скриптом, а не договорённостью. Цена нарушения — ключи и SQL, уехавшие в клиентский
@@ -21,13 +21,15 @@ const SOURCE_EXTENSIONS = ['.vue', '.ts', '.tsx', '.js', '.mjs', '.cjs']
 /** Псевдонимы, ведущие в корень проекта: `~~/server/...` и его синонимы. */
 const ROOT_ALIASES = ['~~/', '@@/', '~/', '@/']
 
+// Обратные кавычки здесь наравне с обычными: `import(`~~/server/...`)` — рабочий
+// способ протащить импорт, и без них гейт его молча пропускал.
 const SPECIFIER_PATTERNS = [
   // import x from 'y' / export { x } from 'y'
-  /\b(?:import|export)\b[^'"();]*?\bfrom\s*['"]([^'"]+)['"]/g,
+  /\b(?:import|export)\b[^'"`();]*?\bfrom\s*['"`]([^'"`]+)['"`]/g,
   // import 'y'
-  /\bimport\s*['"]([^'"]+)['"]/g,
+  /\bimport\s*['"`]([^'"`]+)['"`]/g,
   // import('y') / require('y')
-  /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  /\b(?:import|require)\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g,
 ]
 
 function walk(dir) {
@@ -79,17 +81,27 @@ function lineOf(source, specifier) {
   return index < 0 ? 1 : source.slice(0, index).split('\n').length
 }
 
+/**
+ * Каталоги, попадающие в клиентский бандл.
+ *
+ * `shared/` наравне с `app/`: Nuxt 4 отдаёт его и на клиент тоже, поэтому модуль
+ * оттуда утащит ключи и SQL в браузер ровно так же, а гейт, который смотрит
+ * в один только `app/`, этого не увидит.
+ */
+const CLIENT_DIRS = ['app', 'shared']
+
 function findLayerViolations(root) {
-  const appDir = resolve(root, 'app')
   const serverDir = resolve(root, 'server')
   const violations = []
 
-  for (const file of walk(appDir)) {
-    const source = readFileSync(file, 'utf8')
-    const fileDir = resolve(file, '..')
-    for (const specifier of specifiersOf(source)) {
-      if (pointsAtServer(specifier, fileDir, serverDir)) {
-        violations.push({ file: relative(root, file), line: lineOf(source, specifier), specifier })
+  for (const dir of CLIENT_DIRS) {
+    for (const file of walk(resolve(root, dir))) {
+      const source = readFileSync(file, 'utf8')
+      const fileDir = resolve(file, '..')
+      for (const specifier of specifiersOf(source)) {
+        if (pointsAtServer(specifier, fileDir, serverDir)) {
+          violations.push({ file: relative(root, file), line: lineOf(source, specifier), specifier })
+        }
       }
     }
   }
@@ -104,7 +116,7 @@ if (invokedDirectly) {
   const violations = findLayerViolations(root)
 
   if (violations.length > 0) {
-    console.error(`Граница слоёв нарушена: app/ импортирует server/ (${violations.length}).\n`)
+    console.error(`Граница слоёв нарушена: клиентский код импортирует server/ (${violations.length}).\n`)
     for (const { file, line, specifier } of violations) {
       console.error(`  ${file}:${line} → ${specifier}`)
     }
@@ -112,5 +124,5 @@ if (invokedDirectly) {
     process.exit(1)
   }
 
-  console.log('Граница слоёв цела: app/ не импортирует server/.')
+  console.log(`Граница слоёв цела: ${CLIENT_DIRS.join('/ и ')}/ не импортируют server/.`)
 }

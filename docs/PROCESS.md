@@ -370,15 +370,22 @@ iframe и внешний респондент на публичной стран
 
 ### Минимальная своя схема
 
+Источник истины — `server/db/schema.ts`; здесь набросок, чтобы модель данных была понятна
+до чтения кода.
+
 ```
-portals        member_id, domain, access/refresh (шифр), scopes, license, status, installed_at
+portals        member_id, domain, public_host, access/refresh (шифр), token_expires_at,
+               scopes, license, status, installed_at, updated_at
 inbox          portal_id, token_hash, payload jsonb, received_at, status, attempts, last_error
-outbox         portal_id, kind, payload jsonb, dedup_key, status, attempts, last_error
-link_index     portal_id, token_hash, item_id, survey_code, expires_at, status
+outbox         portal_id, kind, payload jsonb, dedup_key, status, attempts, last_error, created_at
+link_index     portal_id, token_hash, item_id, survey_code, expires_at, status, created_at
 stage_cache    portal_id, entity_type, entity_id, last_stage, checked_at
 ```
 
 Всё. Ни одного поля с ответом клиента, живущего дольше, чем нужно для доставки.
+
+`public_host` — тот самый архитектурный след договорённости о домене (раздел 8): ссылка
+генерируется от поля портала, а не от глобальной константы. Пусто — берётся `PUBLIC_BASE_URL`.
 
 ---
 

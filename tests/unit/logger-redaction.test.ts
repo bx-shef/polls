@@ -39,6 +39,24 @@ describe('логгер прячет секреты', () => {
     expect(line).not.toContain('всё плохо')
   })
 
+  // Гвард: поля CRM Битрикс24 приходят ЗАГЛАВНЫМИ, а `fast-redact` сравнивает имена
+  // буквально. Список из одних строчных пропускал сырой REST-ответ целиком.
+  it('вырезает поля Битрикс24 в их родном написании', () => {
+    const line = captureLine({
+      result: {
+        ID: '42',
+        NAME: 'СЕКРЕТ',
+        LAST_NAME: 'СЕКРЕТ',
+        EMAIL: [{ VALUE: 'СЕКРЕТ' }],
+        PHONE: [{ VALUE: 'СЕКРЕТ' }],
+      },
+    })
+
+    expect(line).not.toContain('СЕКРЕТ')
+    // идентификатор элемента — не персональные данные, по нему и ищут в портале
+    expect(line).toContain('42')
+  })
+
   it('оставляет то, ради чего лог и пишется', () => {
     const line = captureLine({ portalId: 'p-1', kind: 'timeline.comment', attempts: 2 })
 

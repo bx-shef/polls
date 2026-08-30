@@ -25,15 +25,21 @@ describe('граница слоёв: app/ не импортирует server/', 
 
   // Приманка: без неё «проверка зелёная» ничего не доказывает — сломанный скрипт,
   // который молча ничего не находит, выглядит ровно так же, как работающий.
-  it('на приманке падает и называет все три способа протащить импорт', async () => {
+  it('на приманке падает и называет каждый способ протащить импорт', async () => {
     const failure: FailedRun = await run(process.execPath, [script, baitRoot]).then(
       () => ({}),
       (error: FailedRun) => error,
     )
+    const stderr = failure.stderr ?? ''
 
     expect(failure.code).toBe(1)
-    expect(failure.stderr).toContain('~~/server/db/client')
-    expect(failure.stderr).toContain('../../server/utils/logger')
-    expect(failure.stderr).toContain('~~/server/db/schema')
+    // псевдоним корня, относительный путь, динамический import()
+    expect(stderr).toContain('app/pages/alias-import.vue')
+    expect(stderr).toContain('app/composables/relative-import.ts')
+    expect(stderr).toContain('app/composables/dynamic-import.ts')
+    // обратные кавычки — гейт их однажды не видел
+    expect(stderr).toContain('app/composables/backtick-import.ts')
+    // shared/ уезжает на клиент наравне с app/
+    expect(stderr).toContain('shared/from-shared.ts')
   })
 })

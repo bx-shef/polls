@@ -24,20 +24,34 @@ const SECRET_FIELDS = [
   'answer',
   'answers',
   'payload',
-  // кто отвечал
+  // кто отвечал — в написании, в котором эти поля приходят из REST Битрикс24
   'email',
   'phone',
   'contact',
+  'name',
+  'last_name',
+  'second_name',
+  'title',
 ]
+
+/**
+ * `fast-redact` под капотом pino сравнивает имена буквально, регистр в расчёт не берёт.
+ * Поля CRM и смарт-процессов Битрикс24 приходят ЗАГЛАВНЫМИ (`EMAIL`, `PHONE`, `NAME`),
+ * и сырой REST-ответ, залогированный при разборе ошибки, прошёл бы мимо списка целиком.
+ */
+const CASE_VARIANTS = (field: string): string[] =>
+  [...new Set([field, field.toUpperCase(), field.toLowerCase()])]
+
+const ALL_SECRET_FIELDS = SECRET_FIELDS.flatMap(CASE_VARIANTS)
 
 /**
  * Пути redaction: имя поля в корне и на двух уровнях вложенности. Глубже не идём
  * сознательно — вместо бесконечных звёздочек логируем плоские объекты.
  */
 export const redactPaths: string[] = [
-  ...SECRET_FIELDS,
-  ...SECRET_FIELDS.map(field => `*.${field}`),
-  ...SECRET_FIELDS.map(field => `*.*.${field}`),
+  ...ALL_SECRET_FIELDS,
+  ...ALL_SECRET_FIELDS.map(field => `*.${field}`),
+  ...ALL_SECRET_FIELDS.map(field => `*.*.${field}`),
   'req.headers.authorization',
   'req.headers.cookie',
 ]

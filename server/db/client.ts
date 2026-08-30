@@ -15,24 +15,24 @@ let db: PostgresJsDatabase<typeof schema> | undefined
 
 export const isDatabaseConfigured = (): boolean => databaseUrl() !== ''
 
-export function getSql() {
+function getSql() {
   if (!isDatabaseConfigured()) {
     throw new Error('DATABASE_URL is not set')
   }
-  sql ??= postgres(databaseUrl(), { max: 10, onnotice: () => {} })
+  sql ??= postgres(databaseUrl(), {
+    max: 10,
+    onnotice: () => {},
+    // Таймауты обязательны: без них зависшая база держит соединение из пула до
+    // бесконечности, и десяток health-проверок исчерпывает пул под боевыми запросами.
+    connect_timeout: 5,
+    idle_timeout: 30,
+  })
   return sql
 }
 
 export function getDb(): PostgresJsDatabase<typeof schema> {
   db ??= drizzle(getSql(), { schema })
   return db
-}
-
-/** Closes the pool; used by tests and graceful shutdown. */
-export async function closeDb(): Promise<void> {
-  await sql?.end({ timeout: 5 })
-  sql = undefined
-  db = undefined
 }
 
 export { schema }
