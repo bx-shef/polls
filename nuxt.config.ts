@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { portalCsp, publicPageCsp } from './server/utils/security-headers'
 
 const require = createRequire(import.meta.url)
 
@@ -27,9 +28,27 @@ export default defineNuxtConfig({
   // Гибридный рендеринг. Публичная страница анкеты — единственное, что видит внешний
   // респондент, поэтому SSR и запрет индексации; всё остальное живёт в iframe портала
   // и рендерится на клиенте.
+  //
+  // Заголовки безопасности ставит приложение, а не край: перед нами общий на все проекты
+  // `nginx-proxy`, который занимается TLS и маршрутизацией и про Битрикс24 не знает.
+  // HSTS оставлен ему же — TLS терминируется там.
   routeRules: {
-    '/s/**': { ssr: true, headers: { 'X-Robots-Tag': 'noindex, nofollow' } },
-    '/**': { ssr: false },
+    '/s/**': {
+      ssr: true,
+      headers: {
+        'X-Robots-Tag': 'noindex, nofollow',
+        'Content-Security-Policy': publicPageCsp,
+        'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    },
+    '/**': {
+      ssr: false,
+      headers: {
+        'Content-Security-Policy': portalCsp,
+        'X-Content-Type-Options': 'nosniff',
+      },
+    },
   },
   compatibilityDate: '2026-08-30',
 
