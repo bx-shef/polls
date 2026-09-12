@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -113,5 +113,67 @@ describe('цели разработки на сервере', () => {
 
     expect(code).toBe(0)
     expect(out).toContain('docker compose -f compose.yaml up -d')
+  })
+})
+
+/**
+ * Гвард под дефект, найденный на живом хосте.
+ *
+ * `doctor` искал контейнеры прокси по всей строке `имя образ` и по шаблону `nginxproxy`.
+ * На хосте контейнер `acme-companion` называется `letsencrypt`, а его образ —
+ * `nginxproxy/acme-companion`: под оба шаблона он подошёл, и диагностика объявила его
+ * и прокси, и acme одновременно. Дальше она искала vhost и сертификат внутри не того
+ * контейнера и выдавала два ложных «ПЛОХО» при исправном прокси.
+ *
+ * Шаблоны берутся из самого `Makefile`, иначе тест проверял бы копию, а не код.
+ */
+describe('поиск прокси и acme среди контейнеров хоста', () => {
+  const makefile = readFileSync(MAKEFILE, 'utf8')
+
+  /** Вытащить awk-программу из строки вида `<имя>=$(docker ps … | awk -F'\t' '<программа>')`. */
+  function program(varName: string): string {
+    const line = makefile.split('\n').find(l => l.includes(`${varName}=$$(docker ps`))
+    expect(line, `в Makefile нет строки ${varName}=…`).toBeDefined()
+    const match = line!.match(/awk -F'\\t' '(.+?)'\)/)
+    expect(match, `в строке ${varName} не нашлась awk-программа`).not.toBeNull()
+    // В Makefile `$$` — это экранированный для make доллар; шеллу достаётся один.
+    return match![1]!.replaceAll('$$', '$')
+  }
+
+  /** Прогнать программу по строкам `имя<TAB>образ`, как их отдаёт `docker ps`. */
+  function pick(varName: string, rows: string[]): string {
+    const out = execFileSync('awk', ['-F', '\t', program(varName)], {
+      input: `${rows.join('\n')}\n`,
+      encoding: 'utf8',
+    })
+    return out.trim()
+  }
+
+  // Ровно та раскладка, что на хосте: имя контейнера ничего не говорит о его роли.
+  const HOST = [
+    'letsencrypt\tnginxproxy/acme-companion:2.6',
+    'webproxy\tnginxproxy/nginx-proxy:1.7',
+    'polls\tghcr.io/bx-shef/polls:latest',
+  ]
+
+  it('находит прокси по образу, а не по имени контейнера', () => {
+    expect(pick('proxy', HOST)).toBe('webproxy')
+  })
+
+  it('не принимает acme-companion за прокси', () => {
+    // Это и был дефект: без контейнера прокси диагностика всё равно «находила» его.
+    expect(pick('proxy', [HOST[0]!])).toBe('')
+  })
+
+  it('находит acme отдельно от прокси', () => {
+    expect(pick('acme', HOST)).toBe('letsencrypt')
+  })
+
+  it('знает и старый образ companion, не путая его с прокси', () => {
+    // `jrcs/letsencrypt-nginx-proxy-companion` содержит «nginx-proxy» в имени образа.
+    const old = ['le\tjrcs/letsencrypt-nginx-proxy-companion:v1.13']
+
+    expect(pick('proxy', old)).toBe('')
+    expect(pick('acme', old)).toBe('le')
   })
 })

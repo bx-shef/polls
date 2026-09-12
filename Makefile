@@ -120,7 +120,7 @@ doctor: compose-found ## Диагностика на сервере: почем�
 	g() { printf '  \033[32mОК\033[0m    %s\n' "$$1"; }; \
 	b() { printf '  \033[31mПЛОХО\033[0m %s\n' "$$1"; }; \
 	i() { printf '  \033[33m?\033[0m     %s\n' "$$1"; }; \
-	probe() { o=$$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$$2" 2>&1) \
+	probe() { o=$$(curl -sS -m 10 -o /dev/null -w '%{http_code}' $$2 2>&1) \
 		&& { [ "$$o" = 200 ] && g "$$1 -> 200" || $$3 "$$1 -> $$o"; } \
 		|| b "$$1 -> $$(printf '%s' "$$o" | tr '\n' ' ' | sed 's/ *000 *$$//')"; }; \
 	echo 'Файлы'; \
@@ -149,10 +149,12 @@ doctor: compose-found ## Диагностика на сервере: почем�
 	echo 'Инфраструктура хоста'; \
 	if docker network inspect proxy-net >/dev/null 2>&1; then g 'сеть proxy-net есть'; \
 		else b 'сети proxy-net нет: docker network create proxy-net'; fi; \
-	proxy=$$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk '/nginx-proxy|nginxproxy/ {print $$1; exit}'); \
-	acme=$$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk '/acme-companion|letsencrypt/ {print $$1; exit}'); \
-	if [ -n "$$proxy" ]; then g "nginx-proxy: $$proxy"; else b 'nginx-proxy в docker не найден'; fi; \
-	if [ -n "$$acme" ]; then g "acme-companion: $$acme"; else b 'acme-companion в docker не найден — сертификат выпускать некому'; fi; \
+	proxy=$$(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null | awk -F'\t' '$$2 ~ /nginx-proxy/ && $$2 !~ /companion|acme/ {print $$1; exit}'); \
+	acme=$$(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null | awk -F'\t' '$$2 ~ /acme-companion|letsencrypt-nginx-proxy-companion/ {print $$1; exit}'); \
+	if [ -n "$$proxy" ]; then g "nginx-proxy: $$proxy ($$(docker inspect -f '{{.Config.Image}}' $$proxy))"; \
+		else b 'nginx-proxy в docker не найден'; fi; \
+	if [ -n "$$acme" ]; then g "acme-companion: $$acme ($$(docker inspect -f '{{.Config.Image}}' $$acme))"; \
+		else b 'acme-companion в docker не найден — сертификат выпускать некому'; fi; \
 	if [ -z "$$proxy" ]; then \
 		i 'кто-то всё же слушает 443, иначе браузер не дошёл бы до TLS. Кандидаты:'; \
 		systemctl is-active --quiet nginx 2>/dev/null && i 'системный nginx на хосте активен (схема bitrix-env, а не proxy-net)'; \
@@ -166,16 +168,24 @@ doctor: compose-found ## Диагностика на сервере: почем�
 			&& g 'сертификат на месте' \
 			|| b "сертификата нет: /etc/nginx/certs/$$dom.crt — снаружи это и есть ERR_SSL_UNRECOGNIZED_NAME_ALERT"; \
 	fi; \
+	echo 'Маршрут через прокси, с петли'; \
+	if [ -n "$$dom" ]; then \
+		h=$${dom%%,*}; \
+		probe 'http  по имени хоста' "--header Host:$$h http://127.0.0.1/api/health" i; \
+		probe 'https через SNI     ' "--resolve $$h:443:127.0.0.1 https://$$h/api/health" b; \
+	fi; \
 	echo 'Снаружи'; \
 	if [ -n "$$dom" ]; then \
 		ip=$$(getent hosts "$$dom" 2>/dev/null | awk '{print $$1; exit}'); \
 		if [ -n "$$ip" ]; then g "DNS: $$dom -> $$ip"; else b "DNS: $$dom не резолвится"; fi; \
 		probe 'http ' "http://$$dom/api/health" i; \
-		probe 'https' "https://$$dom/api/health" b; \
+		probe 'https' "https://$$dom/api/health" i; \
+		i 'обе строки выше сняты С САМОГО ХОСТА: обращение к своему публичному адресу часто'; \
+		i 'не проходит (hairpin NAT), и это не диагноз. Верить надо блоку выше.'; \
 	fi; \
 	if [ -z "$$app" ]; then \
-		i 'вывод: 503 по http и unrecognized_name по https — это штатный ответ nginx-proxy'; \
-		i 'на домен, для которого он не видит контейнера. Начинать надо с make prod-up.'; \
+		i 'вывод: контейнера нет, поэтому прокси и не создал vhost — всё про маршрут ниже'; \
+		i 'следствие, а не причина. Начинать надо с make prod-up.'; \
 	fi; \
 	:
 
