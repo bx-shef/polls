@@ -69,7 +69,21 @@ CI публикует `ghcr.io/bx-shef/polls` только с `main`. С вет�
    подъёма: `acme-companion` выпустит сертификат сразу, и на неготовом DNS попытка
    сгорит вместе с лимитом.
 
-2. **Файлы на хост.** Каталог `deploy/`, `Makefile` и `deploy/.env`:
+2. **Файлы на хост.** Репозитория на сервере нет и не будет: там лежат ровно три файла
+   в одном каталоге — `compose.yaml`, `Makefile` и `.env`. Имя каталога роли не играет,
+   имя проекта задано внутри `compose.yaml` (`name: polls`).
+
+   ```bash
+   mkdir -p ~/polls && cd ~/polls
+   curl -fsSO https://raw.githubusercontent.com/bx-shef/polls/main/deploy/compose.yaml
+   curl -fsSO https://raw.githubusercontent.com/bx-shef/polls/main/Makefile
+   ```
+
+   `Makefile` один и тот же в репозитории и на сервере: он сам находит `./compose.yaml`
+   рядом с собой, а цели разработки на сервере отказываются работать. Дальше обновлять
+   оба файла — `make host-update`.
+
+   Рядом с ними `.env`:
 
    ```
    DOMAIN=polls.bx-shef.by            # обязательно
@@ -79,14 +93,26 @@ CI публикует `ghcr.io/bx-shef/polls` только с `main`. С вет�
    LOG_LEVEL=info
    ```
 
-   Проверить, что compose видит переменные: `docker compose -f deploy/compose.yaml config`.
+   Compose читает `.env` из каталога compose-файла, а не из текущего — проверено запросом.
+   Значит на сервере это `~/polls/.env`, в репозитории — `deploy/.env`.
+
+   Проверить, что переменные видны: `docker compose config`.
+
+   ⚠ **Проверить, что каталог пуст от прототипа.** Старое решение звалось так же, и на
+   хосте от него остаются контейнеры `polls`, `polls-db-1` и том `polls_db-data`. Имена
+   совпадают с нашими: Postgres, поднятый на чужом томе, молча проигнорирует `POSTGRES_*`
+   и не создаст роль `survey`.
 
 3. **Убедиться, что сеть на месте.**
 
    ```bash
    docker network ls | grep proxy-net
-   docker ps --filter name=nginx-proxy --filter name=acme --filter name=watchtower
+   docker ps --format '{{.Names}}\t{{.Image}}' | grep -Ei 'nginx-proxy|acme|watchtower'
    ```
+
+   Искать надо **по образу, а не по имени контейнера**. Имя прокси на хосте может быть
+   любым: поиск `--filter name=nginx-proxy` дал пустой вывод при полностью работающем
+   прокси, и это выглядело как «инфраструктуры нет», хотя она была.
 
    Всё это поднимается один раз на хост и не нами: `nginx-proxy`, `acme-companion` и
    Watchtower приехали вместе с первым проектом на этом сервере (у `client-bank-alfa-by`
@@ -108,6 +134,18 @@ CI публикует `ghcr.io/bx-shef/polls` только с `main`. С вет�
 5. **Проверка.**
 
    ```bash
+   make doctor
+   ```
+
+   Печатает по строке на каждую развилку: найден ли compose-файл и `.env`, поднят ли
+   контейнер, подключён ли он к `proxy-net`, доехали ли `VIRTUAL_HOST`/`LETSENCRYPT_HOST`,
+   видит ли прокси наш домен, выпущен ли сертификат, что отвечает домен снаружи. Она же
+   отвечает на вопрос «приложение сломано или маршрут», отдельно опрашивая здоровье
+   изнутри контейнера.
+
+   Отдельно, если нужен сырой ответ:
+
+   ```bash
    curl -s https://polls.bx-shef.by/api/health
    ```
 
@@ -115,17 +153,18 @@ CI публикует `ghcr.io/bx-shef/polls` только с `main`. С вет�
 
    | Что видно | Что это значит |
    |---|---|
-   | `db: down` | база не отвечает: не поднялся контейнер или пароль разошёлся с `deploy/.env` |
-   | `redis: down` | контейнер Redis не поднялся, смотреть `docker compose -f deploy/compose.yaml logs redis` |
+   | `db: down` | база не отвечает: не поднялся контейнер или пароль разошёлся с `.env` |
+   | `redis: down` | контейнер Redis не поднялся, смотреть `docker compose logs redis` |
    | `db: off` / `redis: off` | переменная окружения не доехала до контейнера приложения |
    | 502 от прокси | приложение ещё поднимается либо упало, смотреть `make prod-logs` |
+   | 503 от nginx по http, `ERR_SSL_UNRECOGNIZED_NAME_ALERT` по https | штатный ответ `nginx-proxy` на домен, для которого он не видит контейнера: стек не поднят, либо контейнер не в `proxy-net`. Это **не** про TLS и не про DNS |
    | сертификат не выпустился | смотреть логи `acme-companion` на хосте; чаще всего DNS ещё не разошёлся |
 
    **`status: ok` не означает, что миграции накачены.** Проверка выполняет `select 1`,
    а он проходит и на пустой базе. Сверяйтесь по списку таблиц:
 
    ```bash
-   docker compose -f deploy/compose.yaml exec db psql -U survey -d survey -c '\dt'
+   docker compose exec db psql -U survey -d survey -c '\dt'
    ```
 
    Причину состояния `down` наружу не отдаём намеренно: текст ошибки драйвера несёт
@@ -153,7 +192,7 @@ CI публикует `ghcr.io/bx-shef/polls` только с `main`. С вет�
 в `DOMAIN` через запятую (его берут и `VIRTUAL_HOST`, и `LETSENCRYPT_HOST`), плюс
 `portals.public_host` у нужного портала.
 
-**В этом случае обязательно задать `PUBLIC_BASE_URL` в `deploy/.env` явно.** По умолчанию
+**В этом случае обязательно задать `PUBLIC_BASE_URL` в `.env` явно.** По умолчанию
 он выводится из `DOMAIN`, и список через запятую уехал бы прямо внутрь каждой выданной
 ссылки на анкету.
 
