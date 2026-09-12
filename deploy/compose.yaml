@@ -1,40 +1,82 @@
-# Прод-стек. Наружу смотрит только nginx: база и Redis сидят во внутренней сети
-# без портов на хост и без выхода в интернет. Порядок первого развёртывания —
-# в `deploy/README.md`.
+# Прод-стек для ОБЩЕГО хоста, устроенного как у `client-bank-alfa-by`.
+#
+# На хосте уже работают, поднятые один раз и общие на все проекты:
+#   * `nginx-proxy` + `acme-companion` на внешней сети `proxy-net` — TLS и маршрутизация
+#     по `VIRTUAL_HOST`, сертификаты по `LETSENCRYPT_HOST`;
+#   * один Watchtower с `--label-enable` — подхватывает контейнеры по метке.
+#
+# Поэтому здесь нет ни своего nginx, ни своего Watchtower, ни certbot. Второй экземпляр
+# Watchtower конфликтует по `container_name` и плодит двойные перезапуски; второй nginx
+# просто не займёт уже занятые 80 и 443.
+#
+# Порядок первого развёртывания — в `deploy/README.md`.
+
+# Имя проекта задано явно. По умолчанию compose берёт его из имени каталога — то есть
+# «deploy», — и на общем хосте любой сосед со своим `deploy/` получил бы те же имена
+# сетей и томов. Postgres, поднятый на чужом томе, молча проигнорирует POSTGRES_*
+# и не создаст роль `survey`, а `make prod-down` снёс бы соседу сеть.
+name: polls
+
+# Ротация логов: без неё docker пишет json-file без предела и однажды забивает диск.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+    compress: 'true'
 
 services:
   app:
+    logging: *default-logging
     image: ${APP_IMAGE:-ghcr.io/bx-shef/polls:latest}
+    container_name: polls
     restart: unless-stopped
+    # Наружу не публикуем ни одного порта: до приложения ходит только nginx-proxy.
+    expose:
+      - '3000'
     environment:
+      # Подхватывается nginx-proxy и acme-companion.
+      VIRTUAL_HOST: ${DOMAIN:?DOMAIN не задан}
+      VIRTUAL_PORT: 3000
+      LETSENCRYPT_HOST: ${DOMAIN}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+
       DATABASE_URL: postgres://survey:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/survey
       REDIS_URL: redis://redis:6379
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://polls.bx-shef.by}
+      # Отдельно от DOMAIN: VIRTUAL_HOST допускает несколько имён через запятую,
+      # и подстановка списка уехала бы внутрь каждой выданной ссылки на анкету.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://${DOMAIN}}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    networks: [edge, internal]
+    networks:
+      - proxy-net   # перед нами общий nginx-proxy; через эту же сеть идёт выход в REST портала
+      - dbnet       # к базе и Redis
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     labels:
-      com.centurylinklabs.watchtower.enable: 'true'
+      # Подхватывается общим на хост Watchtower. Свой мы не поднимаем.
+      - 'com.centurylinklabs.watchtower.enable=true'
 
-  # Одноразовый запуск того же образа: `docker compose run --rm migrate`.
+  # Одноразовый запуск того же образа: `make prod-migrate`.
   # Профиль нужен, чтобы сервис не поднимался вместе со стеком.
   migrate:
+    logging: *default-logging
     image: ${APP_IMAGE:-ghcr.io/bx-shef/polls:latest}
     profiles: [tools]
     command: ['node', '.output/server/migrate.mjs']
     environment:
       DATABASE_URL: postgres://survey:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}@db:5432/survey
-    networks: [internal]
+    networks: [dbnet]
     depends_on:
       db:
         condition: service_healthy
 
   db:
+    logging: *default-logging
     image: postgres:17-alpine
+    container_name: polls-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: survey
@@ -42,7 +84,7 @@ services:
       POSTGRES_DB: survey
     volumes:
       - db-data:/var/lib/postgresql/data
-    networks: [internal]
+    networks: [dbnet]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U survey -d survey']
       interval: 10s
@@ -50,56 +92,27 @@ services:
       retries: 10
 
   redis:
+    logging: *default-logging
     image: redis:8-alpine
+    container_name: polls-redis
     restart: unless-stopped
     # Состояние очередей переживает перезапуск: задание на запись в портал терять нельзя.
     command: ['redis-server', '--appendonly', 'yes']
     volumes:
       - redis-data:/data
-    networks: [internal]
+    networks: [dbnet]
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 3s
       retries: 10
 
-  nginx:
-    image: nginx:1.29-alpine
-    restart: unless-stopped
-    ports:
-      - '80:80'
-      - '443:443'
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./proxy-headers.conf:/etc/nginx/proxy-headers.conf:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      # Каталог проверки Let's Encrypt — привязкой, а не томом: под тем же путём его
-      # монтирует certbot из `make cert`, и имя тома там не пришлось бы угадывать.
-      - ./acme:/var/www/certbot
-    networks: [edge]
-    depends_on: [app]
-
-  # Обновление по метке: Watchtower трогает только сервисы с
-  # com.centurylinklabs.watchtower.enable=true, чтобы не подменить базу под нагрузкой.
-  watchtower:
-    # Версия зафиксирована: сервис смотрит в сокет Docker, и подменять его тегом
-    # `latest` — ровно та беспечность, от которой он же и защищает.
-    image: containrrr/watchtower:1.7.1
-    restart: unless-stopped
-    command: ['--label-enable', '--cleanup', '--interval', '300']
-    environment:
-      # Watchtower 1.7.1 просит версию API 1.25, а Docker 25+ такую уже не обслуживает
-      # и сервис уходит в цикл перезапусков. Без этой строки обновление молча не работает.
-      DOCKER_API_VERSION: '1.44'
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks: [edge]
-
 networks:
-  edge:
-  internal:
-    # internal: true — база и Redis не имеют выхода наружу вообще.
-    # Приложение выходит в интернет через сеть edge.
+  # Создаётся один раз вместе с nginx-proxy, не нами.
+  proxy-net:
+    external: true
+  # База и Redis: `internal: true` — выхода в интернет нет вообще.
+  dbnet:
     internal: true
 
 volumes:

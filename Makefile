@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down dev check image prod-pull prod-up prod-down prod-logs prod-migrate cert cert-renew
+.PHONY: help up down dev check image prod-pull prod-up prod-down prod-logs prod-migrate prod-ps
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -25,11 +25,15 @@ check: ## Единый гейт перед пушем: слои, линт, ти�
 
 # --- Образ -------------------------------------------------------------------
 
-image: ## Собрать образ приложения
+image: ## Собрать образ приложения локально
 	docker build -f deploy/Dockerfile -t $(IMAGE):$(TAG) \
 		--build-arg APP_VERSION=$(shell git rev-parse --short HEAD) .
 
 # --- Прод --------------------------------------------------------------------
+#
+# TLS, сертификаты и обновление образов — забота общей инфраструктуры хоста
+# (nginx-proxy, acme-companion и один Watchtower на все проекты), поэтому целей
+# вроде `cert` здесь нет: сертификат выпускается сам по LETSENCRYPT_HOST.
 
 prod-pull: ## Забрать свежий образ
 	$(PROD) pull
@@ -40,38 +44,11 @@ prod-up: ## Поднять прод-стек
 prod-down: ## Погасить прод-стек
 	$(PROD) down
 
+prod-ps: ## Состояние контейнеров стека
+	$(PROD) ps
+
 prod-logs: ## Смотреть логи приложения
 	$(PROD) logs -f app
 
 prod-migrate: ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate
-
-# --- Сертификат --------------------------------------------------------------
-
-ACME := $(abspath deploy/acme)
-
-# Первый выпуск. Боевой nginx.conf без файлов сертификата не стартует, поэтому
-# на время проверки поднимается временный nginx с nginx-bootstrap.conf — только
-# 80 порт и каталог проверки. Дальше `make prod-up` поднимает настоящий стек.
-cert: ## Выпустить первый сертификат (DOMAIN=..., EMAIL=...)
-	@test -n "$(DOMAIN)" || (echo "Укажите DOMAIN=polls.bx-shef.by" && exit 1)
-	@test -n "$(EMAIL)" || (echo "Укажите EMAIL=admin@bx-shef.by" && exit 1)
-	mkdir -p $(ACME)
-	-docker rm -f survey-acme
-	docker run -d --name survey-acme -p 80:80 \
-		-v $(abspath deploy/nginx-bootstrap.conf):/etc/nginx/nginx.conf:ro \
-		-v $(ACME):/var/www/certbot \
-		nginx:1.29-alpine
-	docker run --rm \
-		-v /etc/letsencrypt:/etc/letsencrypt \
-		-v $(ACME):/var/www/certbot \
-		certbot/certbot certonly --webroot -w /var/www/certbot \
-		-d $(DOMAIN) --email $(EMAIL) --agree-tos --no-eff-email; \
-		status=$$?; docker rm -f survey-acme > /dev/null; exit $$status
-
-cert-renew: ## Продлить сертификат на работающем стеке (в cron раз в сутки)
-	docker run --rm \
-		-v /etc/letsencrypt:/etc/letsencrypt \
-		-v $(ACME):/var/www/certbot \
-		certbot/certbot renew --webroot -w /var/www/certbot
-	$(PROD) exec nginx nginx -s reload
