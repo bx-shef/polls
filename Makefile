@@ -114,6 +114,16 @@ prod-migrate: compose-found ## Накатить миграции однораз�
 # нет compose-файла · нет DOMAIN · контейнер не поднят · контейнер не в proxy-net ·
 # прокси не создал vhost · нет сертификата (снаружи это выглядит как
 # ERR_SSL_UNRECOGNIZED_NAME_ALERT, и на приложение не указывает ничем).
+#
+# Отдельно — миграции. `/api/health` их не видит: он делает `select 1`, а тот проходит и
+# на пустой базе, поэтому «status: ok» при отсутствующей схеме выглядит как исправность.
+# Сверяем учёт drizzle (схема `drizzle`, таблица `__drizzle_migrations` — имена взяты из
+# исходника `drizzle-orm`, не по памяти) с числом файлов миграций в самом образе: так
+# видно и «не накатывали вовсе», и «накатили не всё», и «образ старее базы».
+#
+# Имя роли и базы (`survey`) продублировано из `compose.yaml`. Дублирование осознанное:
+# альтернатива — вытаскивать его из DATABASE_URL контейнера, то есть разбирать строку
+# с паролем в шелле ради значения, которое меняется раз в жизни проекта.
 
 doctor: compose-found ## Диагностика на сервере: почему домен не отвечает
 	@set -u; \
@@ -145,6 +155,21 @@ doctor: compose-found ## Диагностика на сервере: почем�
 	else \
 		b 'контейнер приложения не запущен — дальше про маршрут смотреть нечего'; \
 		i 'поднять: make prod-pull && make prod-up, потом make prod-logs'; \
+	fi; \
+	echo 'Схема базы'; \
+	applied=$$($(PROD) exec -T db psql -U survey -d survey -tAc \
+		'select count(*) from drizzle.__drizzle_migrations' 2>/dev/null | tr -d '[:space:]'); \
+	files=''; \
+	if [ -n "$$app" ]; then \
+		files=$$(docker exec "$$app" sh -c 'ls -1 $${MIGRATIONS_DIR:-/app/migrations}/*.sql 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]'); \
+	fi; \
+	if [ -z "$$applied" ]; then \
+		b 'учёта миграций в базе нет — их не накатывали ни разу: make prod-migrate'; \
+		i 'пустая база отвечает на select 1, поэтому status: ok этого не ловит'; \
+	elif [ -z "$$files" ]; then g "накачено миграций: $$applied (сверить не с чем — контейнер не поднят)"; \
+	elif [ "$$applied" -eq "$$files" ]; then g "миграции накачены полностью: $$applied из $$files"; \
+	elif [ "$$applied" -lt "$$files" ]; then b "накачены не все: $$applied из $$files — make prod-migrate"; \
+	else b "в базе миграций больше, чем в образе ($$applied против $$files): образ старее базы"; \
 	fi; \
 	echo 'Инфраструктура хоста'; \
 	if docker network inspect proxy-net >/dev/null 2>&1; then g 'сеть proxy-net есть'; \
