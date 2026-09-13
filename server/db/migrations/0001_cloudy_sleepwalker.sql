@@ -1,0 +1,1 @@
+ALTER TABLE "portals" ADD COLUMN "application_token" text;

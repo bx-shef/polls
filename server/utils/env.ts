@@ -20,3 +20,13 @@ export const logLevel = (): string => process.env.LOG_LEVEL ?? 'info'
 
 /** Версия сборки: проставляется в образ, локально её нет. */
 export const appVersion = (): string => process.env.APP_VERSION ?? 'dev'
+
+/**
+ * Пара приложения из партнёрского кабинета.
+ *
+ * `client_secret` участвует только в запросах к серверу авторизации и не должен попадать
+ * в код, который выполняется в браузере, — поэтому читается здесь, на сервере, и нигде
+ * не отдаётся наружу.
+ */
+export const b24ClientId = (): string => process.env.B24_CLIENT_ID ?? ''
+export const b24ClientSecret = (): string => process.env.B24_CLIENT_SECRET ?? ''
