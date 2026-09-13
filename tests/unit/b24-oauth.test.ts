@@ -116,6 +116,15 @@ describe('обмен refresh_token', () => {
     expect(outcome).toEqual({ ok: false, kind: 'unavailable', code: 'no_member_id' })
   })
 
+  it.each([0, -60, 'ерунда'])('подставляет час жизни вместо негодного expires_in (%s)', async (value) => {
+    // Ноль и отрицательное значение опаснее отсутствующего: с ними токен считается
+    // истёкшим сразу, и приложение полезет продлевать его на первом же вызове —
+    // за такое частое продление документация обещает блокировку.
+    const outcome = await refreshTokens({ ...CREDENTIALS, fetchFn: answering({ ...SUCCESS, expires_in: value }) })
+
+    expect(outcome.ok && outcome.tokens.expiresIn).toBe(3600)
+  })
+
   it('подставляет документированный час жизни, когда сервер его не назвал', async () => {
     const { expires_in: _dropped, ...withoutExpiry } = SUCCESS
     const outcome = await refreshTokens({ ...CREDENTIALS, fetchFn: answering(withoutExpiry) })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { eventCode, parseBracketForm } from '../../server/b24/event-body'
+import { parseBracketForm } from '../../server/b24/event-body'
 
 /**
  * Тело события приходит формой со скобочными ключами — это прямо сказано в документации
@@ -44,18 +44,5 @@ describe('разбор скобочной формы', () => {
   it('не падает на пустом и мусорном теле', () => {
     expect(parseBracketForm('')).toEqual({})
     expect(parseBracketForm('просто строка')).toEqual({ 'просто строка': '' })
-  })
-})
-
-describe('код события', () => {
-  it('приводит к верхнему регистру', () => {
-    // Портал пишет `OnAppInstall`, документация — `ONAPPINSTALL`.
-    expect(eventCode({ event: 'OnAppInstall' })).toBe('ONAPPINSTALL')
-  })
-
-  it('пусто, когда кода нет', () => {
-    expect(eventCode({})).toBe('')
-    expect(eventCode(null)).toBe('')
-    expect(eventCode({ event: 42 })).toBe('')
   })
 })

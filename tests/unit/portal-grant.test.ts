@@ -29,12 +29,20 @@ describe('разбор гранта установки', () => {
     expect(result.grant.domain).toBe('shef.bitrix24.ru')
     expect(result.grant.memberId).toBe(REAL.member_id)
     expect(result.grant.scope).toEqual(['crm', 'im', 'imbot', 'placement', 'bizproc', 'pull'])
-    expect(result.grant.expiresIn).toBe(3600)
-    // Без этих двух строк присвоения можно поменять местами, и тест остаётся зелёным —
+    // Без этих строк присвоения можно поменять местами, и тест остаётся зелёным —
     // а перепутанные токены уедут в базу и в портал.
-    expect(result.grant.accessToken).toBe(REAL.access_token)
     expect(result.grant.refreshToken).toBe(REAL.refresh_token)
     expect(result.grant.applicationToken).toBe(REAL.application_token)
+  })
+
+  it('не разбирает поля, которые приезжают подтверждёнными с обмена токена', () => {
+    // `access_token`, `expires_in`, `client_endpoint` и `status` из события не читаются:
+    // первые три приходят подтверждёнными в ответе сервера авторизации, `status` ни на что
+    // не влияет. Разобранное и никем не используемое поле — лишний повод отказать установке.
+    const result = readPortalGrant(REAL)
+
+    expect(result.ok && Object.keys(result.grant).sort())
+      .toEqual(['applicationToken', 'domain', 'memberId', 'refreshToken', 'scope'])
   })
 
   it('режет права и по запятой: так их отдаёт сервер авторизации', () => {
@@ -48,10 +56,8 @@ describe('разбор гранта установки', () => {
   it.each<[keyof typeof REAL, string]>([
     ['domain', 'bad-domain'],
     ['member_id', 'missing-member-id'],
-    ['access_token', 'missing-access-token'],
     ['refresh_token', 'missing-refresh-token'],
     ['application_token', 'missing-application-token'],
-    ['client_endpoint', 'bad-endpoint'],
   ])('без %s отказывает с причиной %s', (field, reason) => {
     expect(readPortalGrant(without(field))).toEqual({ ok: false, reason })
   })
@@ -63,32 +69,18 @@ describe('разбор гранта установки', () => {
       .toEqual({ ok: false, reason: 'missing-application-token' })
   })
 
-  it('не принимает client_endpoint на чужом хосте', () => {
-    // Иначе первый же вызов метода уйдёт вместе с токеном туда, куда указал отправитель.
-    expect(readPortalGrant({ ...REAL, client_endpoint: 'https://attacker.tld/rest/' }))
-      .toEqual({ ok: false, reason: 'bad-endpoint' })
-    expect(readPortalGrant({ ...REAL, client_endpoint: 'https://other.bitrix24.ru/rest/' }))
-      .toEqual({ ok: false, reason: 'bad-endpoint' })
-  })
-
-  it('не принимает client_endpoint без https', () => {
-    expect(readPortalGrant({ ...REAL, client_endpoint: 'http://shef.bitrix24.ru/rest/' }))
-      .toEqual({ ok: false, reason: 'bad-endpoint' })
-  })
-
-  it('не разбирает server_endpoint вовсе', () => {
-    // Адрес сервера авторизации у нас константой; принимать его из запроса значит
-    // согласиться отправить туда client_secret.
-    const result = readPortalGrant({ ...REAL, server_endpoint: 'https://attacker.tld/rest/' })
+  it('не разбирает адреса из события вовсе', () => {
+    // Адрес сервера авторизации у нас константой, адрес портала берётся из ответа
+    // на обмен токена. Принимать их из запроса значит согласиться сходить туда,
+    // куда указал отправитель, — с секретом приложения или с токеном портала.
+    const result = readPortalGrant({
+      ...REAL,
+      server_endpoint: 'https://attacker.tld/rest/',
+      client_endpoint: 'https://attacker.tld/rest/',
+    })
 
     expect(result.ok).toBe(true)
     expect(JSON.stringify(result)).not.toContain('attacker.tld')
-  })
-
-  it('читает expires_in, пришедший строкой из формы', () => {
-    const result = readPortalGrant({ ...REAL, expires_in: '3600' })
-
-    expect(result.ok && result.grant.expiresIn).toBe(3600)
   })
 
   it('не падает на мусоре вместо объекта', () => {

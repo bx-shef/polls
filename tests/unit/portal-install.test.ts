@@ -71,6 +71,22 @@ describe('подтверждённая установка', () => {
     expect(decision.action?.refreshToken).toBe('обменянный-refresh')
   })
 
+  it('берёт срок жизни токена из переавторизации', async () => {
+    // В событии это поле тоже есть, но оно относится к уже сожжённому токену.
+    const shortLived = { ...CONFIRMED, tokens: { ...CONFIRMED.tokens, expiresIn: 1800 } }
+    const decision = await decideInstall(payload({ expires_in: '999999' }), answering(shortLived))
+
+    expect(decision.action?.expiresInSeconds).toBe(1800)
+  })
+
+  it('записывает домен из ПОДТВЕРЖДЁННОГО адреса, а не из события', async () => {
+    // `client_endpoint` посчитал сервер авторизации; `auth.domain` прислал тот же,
+    // кто прислал всё остальное. Регистр в событии не должен доезжать до базы.
+    const decision = await decideInstall(payload({ domain: 'SHEF.bitrix24.ru' }), answering(CONFIRMED))
+
+    expect(decision.action?.domain).toBe('shef.bitrix24.ru')
+  })
+
   it('сохраняет application_token из события — у сервера авторизации его нет', async () => {
     const decision = await decideInstall(payload(), answering(CONFIRMED))
 
@@ -121,6 +137,13 @@ describe('отклонённая установка', () => {
 
     const unavailable = await decideInstall(payload(), answering({ ok: false, kind: 'unavailable', code: 'transport' }))
     expect(unavailable).toEqual({ status: 503, reason: 'transport' })
+  })
+
+  it('не разбирает регистр кода события', async () => {
+    // Портал пишет `OnAppInstall`, документация — `ONAPPINSTALL`.
+    const decision = await decideInstall({ ...payload(), event: 'OnAppInstall' }, answering(CONFIRMED))
+
+    expect(decision.status).toBe(200)
   })
 
   it('чужое событие — 400 и без единого исходящего запроса', async () => {

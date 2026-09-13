@@ -1,3 +1,5 @@
+import { createError, defineEventHandler } from 'h3'
+
 /**
  * 404 for anything under `/api/` that no handler claims.
  *
@@ -14,6 +16,10 @@
  *
  * Nitro предпочитает конкретный маршрут catch-all, поэтому существующие обработчики
  * этот файл не перехватывает.
+ *
+ * `createError` и `defineEventHandler` импортируются явно, а не берутся автоимпортом.
+ * Так файл импортируется в обычный юнит-тест без подмены глобалей — а гвард здесь нужен:
+ * дефект, который этот маршрут чинит, уже случался на боевом домене.
  */
 export default defineEventHandler((event) => {
   throw createError({

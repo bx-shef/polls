@@ -1,4 +1,3 @@
-import { eventCode } from '../../b24/event-body'
 import { readPortalGrant, type PortalGrant } from './grant'
 
 /**
@@ -9,10 +8,12 @@ import { readPortalGrant, type PortalGrant } from './grant'
  * разбор, проверка подлинности и выбор действия живут в функции, которую можно вызвать
  * из теста без поднятого сервера.
  *
- * У нас причина та же и ещё одна сверху: обработчик Nitro держится на автоимпорте
- * `defineEventHandler`, которого нет ни в одном из двух окружений `vitest`, — то есть
- * файл роута физически нельзя импортировать в тест. Логика, оставленная в нём, не
- * проверяется ничем. А проверяется здесь ровно то, ради чего написан весь модуль.
+ * ⚠ Сначала я обосновывал это тем, что роут Nitro «физически нельзя импортировать в тест»:
+ * он держится на автоимпорте `defineEventHandler`. Ревью это опровергло — достаточно
+ * подставить два глобальных имени, и роут импортируется (`tests/unit/api-catch-all.test.ts`
+ * так и делает). Настоящая причина проще и от этого не слабее: решение, живущее в роуте,
+ * проверяется только вместе с HTTP, базой и сетью, то есть дорого и редко. Здесь оно
+ * проверяется вызовом функции — и проверяется ровно то, ради чего написан весь модуль.
  */
 
 /** Что вернула переавторизация. Тип объявлен в домене, реализация — в `server/b24/oauth.ts`. */
@@ -60,10 +61,26 @@ export interface InstallDecision {
   action?: RegisterPortal
 }
 
-/** Хост из адреса REST: `https://shef.bitrix24.ru/rest/` → `shef.bitrix24.ru`. */
+/**
+ * Код события в верхнем регистре: портал пишет `OnAppInstall`, документация — `ONAPPINSTALL`.
+ *
+ * Живёт здесь, а не в `server/b24/`, хотя пришёл оттуда вместе с разбором тела. Причина
+ * не стилистическая: доменный слой не должен зависеть от интеграционного, а единственный
+ * потребитель этой функции — решение об установке. У соседа обе функции лежат рядом,
+ * потому что у него нет такого разделения.
+ */
+function eventCode(payload: unknown): string {
+  const code = (payload as { event?: unknown } | null)?.event
+  return typeof code === 'string' ? code.toUpperCase() : ''
+}
+
+/**
+ * Хост из адреса REST: `https://shef.bitrix24.ru/rest/` → `shef.bitrix24.ru`.
+ * Приводить регистр не нужно: `URL.hostname` делает это сам по спецификации.
+ */
 function hostOf(endpoint: string): string {
   try {
-    return new URL(endpoint).hostname.toLowerCase()
+    return new URL(endpoint).hostname
   }
   catch {
     return ''
@@ -121,7 +138,11 @@ export async function decideInstall(payload: unknown, deps: InstallDeps): Promis
     action: {
       type: 'register',
       memberId: tokens.memberId.toLowerCase(),
-      domain: grant.domain,
+      // Домен берём из ПОДТВЕРЖДЁННОГО адреса, когда он есть: `client_endpoint` посчитал
+      // сервер авторизации, а `auth.domain` прислал тот же, кто прислал всё остальное.
+      // Пустой адрес — единственный случай, когда в базу уезжает непроверенное значение,
+      // и ровно поэтому он отдельно назван в причине.
+      domain: endpointHost === '' ? grant.domain : endpointHost,
       // ⚠ Обмен ВРАЩАЕТ токен: присланный в событии `refresh_token` уже мёртв.
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,

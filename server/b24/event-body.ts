@@ -50,12 +50,3 @@ export function parseBracketForm(raw: string): Record<string, unknown> {
 
   return out
 }
-
-/**
- * Код события, приведённый к верхнему регистру: маршрутизация не должна зависеть
- * от того, написал портал `OnAppInstall` или `ONAPPINSTALL`.
- */
-export function eventCode(payload: unknown): string {
-  const code = (payload as { event?: unknown } | null)?.event
-  return typeof code === 'string' ? code.toUpperCase() : ''
-}
