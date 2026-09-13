@@ -38,6 +38,13 @@ describe('домен облачного портала', () => {
     expect(isPortalDomain(domain)).toBe(false)
   })
 
+  it('не зависит от регистра', () => {
+    // Функция публичная, и регистронезависимость заявлена в её комментарии как решение.
+    // Сейчас она держалась бы только тем, что единственный вызывающий уже привёл строку.
+    expect(isPortalDomain('SHEF.BITRIX24.RU')).toBe(true)
+    expect(isPortalDomain('Shef.Bitrix24.Com.Br')).toBe(true)
+  })
+
   it('не падает на не-строке', () => {
     // Значение приходит из JSON внешнего запроса: там бывает что угодно.
     expect(isPortalDomain(undefined)).toBe(false)

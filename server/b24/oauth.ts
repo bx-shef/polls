@@ -1,3 +1,5 @@
+import type { ReauthOutcome } from '../domain/portals/install'
+
 /**
  * Talks to the Bitrix24 authorization server — not to a portal.
  *
@@ -38,36 +40,25 @@ const TIMEOUT_MS = 15_000
 /** Документированное время жизни `access_token`, когда сервер его не назвал. */
 const DEFAULT_EXPIRES_IN = 3600
 
-export interface RefreshedTokens {
-  accessToken: string
-  refreshToken: string
-  /** Идентификатор портала по версии сервера авторизации — то, ради чего всё и затевалось. */
-  memberId: string
-  expiresIn: number
-  scope: string[]
-  clientEndpoint: string
-}
-
 /**
- * Чем закончилась попытка обменять токен.
- *
- * Разделение `rejected` и `unavailable` — не украшение: первое означает, что грант
- * поддельный или мёртвый, второе — что мы сейчас не можем это выяснить. Ответы наружу
- * у них разные, и лечение тоже: в первом случае установку надо отклонить навсегда,
- * во втором — дать повторить.
+ * Результат объявлен в доменном слое (`ReauthOutcome`), а не здесь: решение о том, что
+ * делать с установкой, принимает домен, и типы принадлежат ему. Разделение `rejected`
+ * и `unavailable` — не украшение: первое означает, что грант поддельный или мёртвый,
+ * второе — что мы сейчас не можем это выяснить, и лечение у них разное.
  */
-export type RefreshOutcome
-  = | { ok: true, tokens: RefreshedTokens }
-    | { ok: false, kind: 'rejected' | 'unavailable', code: string }
-
 /**
  * Коды, означающие «предъявленный refresh_token — не настоящий грант».
  *
  * Список намеренно узкий. Всё неперечисленное (`wrong_client` — это наша конфигурация,
  * сетевые сбои, пятисотки) уезжает в `unavailable`, то есть в сторону «повторяемо».
  * Ошибиться в эту сторону безопасно: установка всё равно не сохраняется.
+ *
+ * ⚠ `invalid_request` сюда НЕ входит, хотя выглядит подходящим. По документации это
+ * «передан некорректно сформированный авторизационный запрос» — то есть про форму НАШЕГО
+ * запроса, а не про подлинность гранта. Наш баг в сборке тела не должен превращаться
+ * в вечный отказ настоящей установке.
  */
-const REJECTION_CODES = new Set(['invalid_grant', 'invalid_token', 'expired_token', 'invalid_request'])
+const REJECTION_CODES = new Set(['invalid_grant', 'invalid_token', 'expired_token'])
 
 /**
  * Обменять `refresh_token` на новую пару токенов.
@@ -93,7 +84,7 @@ export async function refreshTokens(options: {
   clientSecret: string
   /** Подменяется в тестах; в бою всегда глобальный `fetch`. */
   fetchFn?: typeof fetch
-}): Promise<RefreshOutcome> {
+}): Promise<ReauthOutcome> {
   // ⚠ Секреты едут в теле POST, а не в query. Документация показывает GET со всеми
   // параметрами в адресе — а адрес попадает в access-лог прокси, в Referer и в историю.
   // Тело не попадает никуда.

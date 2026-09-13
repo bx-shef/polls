@@ -33,6 +33,14 @@ describe('логгер прячет секреты', () => {
     expect(line).not.toContain('СЕКРЕТ')
   })
 
+  it('вырезает токен приложения в обоих написаниях', () => {
+    // `CASE_VARIANTS` меняет регистр, но не snake↔camel. Приём установки завёл поле
+    // `applicationToken`, и без отдельной строки в списке оно уехало бы в лог целиком.
+    const line = captureLine({ application_token: 'СЕКРЕТ', grant: { applicationToken: 'СЕКРЕТ' } })
+
+    expect(line).not.toContain('СЕКРЕТ')
+  })
+
   it('вырезает текст ответа клиента', () => {
     const line = captureLine({ response: { answers: ['всё плохо'], payload: { text: 'всё плохо' } } })
 

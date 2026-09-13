@@ -30,6 +30,19 @@ describe('разбор гранта установки', () => {
     expect(result.grant.memberId).toBe(REAL.member_id)
     expect(result.grant.scope).toEqual(['crm', 'im', 'imbot', 'placement', 'bizproc', 'pull'])
     expect(result.grant.expiresIn).toBe(3600)
+    // Без этих двух строк присвоения можно поменять местами, и тест остаётся зелёным —
+    // а перепутанные токены уедут в базу и в портал.
+    expect(result.grant.accessToken).toBe(REAL.access_token)
+    expect(result.grant.refreshToken).toBe(REAL.refresh_token)
+    expect(result.grant.applicationToken).toBe(REAL.application_token)
+  })
+
+  it('режет права и по запятой: так их отдаёт сервер авторизации', () => {
+    // Зафиксированное наблюдаемое расхождение: событие установки разделяет пробелом,
+    // ответ на обмен токена — запятой.
+    const result = readPortalGrant({ ...REAL, scope: 'crm,im,imbot' })
+
+    expect(result.ok && result.grant.scope).toEqual(['crm', 'im', 'imbot'])
   })
 
   it.each<[keyof typeof REAL, string]>([

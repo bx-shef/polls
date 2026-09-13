@@ -33,6 +33,12 @@ describe('обмен refresh_token', () => {
     if (!outcome.ok) return
     expect(outcome.tokens.memberId).toBe(SUCCESS.member_id)
     expect(outcome.tokens.scope).toEqual(['crm', 'im', 'imbot'])
+    // Сами токены — то, ради чего весь обмен; без этих строк их можно было поменять
+    // местами, и тесты оставались зелёными.
+    expect(outcome.tokens.accessToken).toBe('новый-access')
+    expect(outcome.tokens.refreshToken).toBe('новый-refresh')
+    // `client_endpoint` — второе доказательство подлинности, по нему сверяется домен.
+    expect(outcome.tokens.clientEndpoint).toBe('https://shef.bitrix24.ru/rest/')
   })
 
   it('отдаёт НОВЫЙ refresh_token: обмен вращает токен, старый уже мёртв', async () => {
@@ -70,6 +76,15 @@ describe('обмен refresh_token', () => {
       expect(outcome).toEqual({ ok: false, kind: 'rejected', code })
     },
   )
+
+  it('не считает invalid_request отказом: это про форму НАШЕГО запроса', async () => {
+    // По документации `invalid_request` — «передан некорректно сформированный
+    // авторизационный запрос». Наш баг в сборке тела не должен становиться вечным
+    // отказом настоящей установке.
+    const outcome = await refreshTokens({ ...CREDENTIALS, fetchFn: answering({ error: 'invalid_request' }) })
+
+    expect(outcome).toEqual({ ok: false, kind: 'unavailable', code: 'invalid_request' })
+  })
 
   it('считает ошибку нашей конфигурации не отказом, а невозможностью проверить', async () => {
     // `wrong_client` — это про наши client_id/client_secret. Отказать установке
