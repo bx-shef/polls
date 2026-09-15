@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs } from '../../server/b24/provision'
+import { isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 
 /**
@@ -112,6 +112,17 @@ describe('повторный запуск', () => {
     expect(p.of('crm.type.add')).toHaveLength(0)
     expect(result.template).toEqual(TEMPLATE)
     expect(result.createdSurvey).toBe(false)
+    // Найденное по заголовку помечается отдельно: заголовок не признак владения,
+    // и вызывающий обязан оставить след в журнале — вдруг смарт-процесс чужой.
+    expect([result.adoptedTemplate, result.adoptedSurvey]).toEqual([true, true])
+  })
+
+  it('не считает усыновлением ни созданное нами, ни известное по идентификатору', async () => {
+    const fresh = await provisionSmartProcesses(portal().call)
+    expect([fresh.adoptedTemplate, fresh.adoptedSurvey]).toEqual([false, false])
+
+    const known = await provisionSmartProcesses(portal().call, { template: TEMPLATE, survey: SURVEY })
+    expect([known.adoptedTemplate, known.adoptedSurvey]).toEqual([false, false])
   })
 
   it('до-лечивает частично созданный смарт-процесс', async () => {
@@ -207,5 +218,39 @@ describe('идентификаторы на портале', () => {
 
     const written = p.of('app.option.set')[0]!.params.options as Record<string, string>
     expect(JSON.parse(written[SP_REFS_OPTION]!)).toEqual({ template: TEMPLATE, survey: SURVEY })
+  })
+})
+
+describe('общий бюджет времени', () => {
+  it('пропускает вызовы, пока бюджет не исчерпан', async () => {
+    const p = portal()
+    const call = withDeadline(p.call, 1000, () => 0)
+
+    await provisionSmartProcesses(call)
+
+    expect(p.of('crm.type.add')).toHaveLength(2)
+  })
+
+  it('останавливает цепочку, а не просто перестаёт ждать ответа', async () => {
+    // Холодная установка — 17–19 вызовов подряд под троттлингом SDK. Предел на один
+    // вызов такую цепочку не ограничивает: важно, что бюджет проверяется ПЕРЕД вызовом
+    // и портал перестаёт получать запросы, а не что мы отвернулись от ответа.
+    const p = portal()
+    let clock = 0
+    const call = withDeadline(p.call, 50, () => clock)
+
+    clock = 50
+    await expect(provisionSmartProcesses(call)).rejects.toThrow(/общему пределу 50 мс/)
+    expect(p.calls).toHaveLength(0)
+  })
+
+  it('исчерпание бюджета на середине не делает лишних вызовов', async () => {
+    const p = portal()
+    let clock = 0
+    // Бюджета хватает ровно на два вызова: время идёт на каждом обращении к часам.
+    const call = withDeadline(p.call, 3, () => clock++)
+
+    await expect(provisionSmartProcesses(call)).rejects.toThrow(/обустройство прервано/)
+    expect(p.calls.length).toBeLessThan(TEMPLATE_FIELDS.length + SURVEY_FIELDS.length)
   })
 })

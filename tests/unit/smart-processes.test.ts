@@ -25,7 +25,7 @@ import {
 
 describe('имена и адреса полей', () => {
   it('поле создаётся под id ТИПА, а не под entityTypeId', () => {
-    // Форма с entityTypeId отвергается порталом: «not allowed to view custom field settings».
+    // Форма с entityTypeId отвергается порталом: «Вы не можете создавать пользовательские поля».
     expect(buildFieldEntityId(13)).toBe('CRM_13')
     expect(buildFieldName(13, 'SCORE')).toBe('UF_CRM_13_SCORE')
   })
@@ -87,6 +87,26 @@ describe('состав смарт-процессов', () => {
     expect(call.method).toBe('crm.type.add')
   })
 
+  it('фиксирует состав флагов смарт-процесса целиком', () => {
+    // Гвард из мутационного прогона на ревью PR #11: все шесть флагов можно было
+    // перевернуть разом, и ни один тест не краснел. А каждый из них — решение:
+    // выключенные стадии (состояние держим своим полем, чужие стадии переименуют),
+    // включённый клиент (без него «Опрос» не привяжется к сделке и контакту),
+    // включённые роботы (ради них всё и затевается). Сверяем объект целиком,
+    // а не отсутствие одного ключа.
+    expect(buildCreateSmartProcessCall(SURVEY_SP_TITLE).params).toEqual({
+      fields: {
+        title: SURVEY_SP_TITLE,
+        isStagesEnabled: false,
+        isCategoriesEnabled: false,
+        isClientEnabled: true,
+        isAutomationEnabled: true,
+        isBizProcEnabled: false,
+        isRecyclebinEnabled: true,
+      },
+    })
+  })
+
   it('балл создаётся с точностью до сотых', () => {
     // Без PRECISION `double` округляется до целого — балл 7,5 стал бы 8.
     const score = SURVEY_FIELDS.find(f => f.postfix === 'SCORE')
@@ -131,6 +151,14 @@ describe('разбор ответов портала', () => {
   it('не путает похожий заголовок', () => {
     // Иначе чужой «Опросник» стал бы нашим, и мы начали бы писать в него.
     expect(findTypeByTitle([{ id: 7, entityTypeId: 1044, title: 'Опросник' }], 'Опрос')).toBeNull()
+  })
+
+  it('узнаёт заголовок с пробелами по краям', () => {
+    // Гвард из мутационного прогона на ревью PR #11: снятие `.trim()` не краснило ничего.
+    // Заголовок вводит человек, и хвостовой пробел сделал бы существующий смарт-процесс
+    // «ненайденным» — мы создали бы дубликат при лимите 150 на весь портал.
+    expect(findTypeByTitle([{ id: 7, entityTypeId: 1044, title: '  Опрос  ' }], 'Опрос'))
+      .toEqual({ entityTypeId: 1044, id: 7 })
   })
 
   it('читает имена существующих полей', () => {

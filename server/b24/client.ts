@@ -1,4 +1,5 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
+import { b24ClientId, b24ClientSecret } from '../utils/env'
 import type { RestCall } from './provision'
 
 /**
@@ -11,10 +12,27 @@ import type { RestCall } from './provision'
  * ⚠ Встроенный ретрай ВЫКЛЮЧЕН (`maxRetries: 1`). Вызовы создания не идемпотентны:
  * `crm.type.add`, повторённый транспортом после таймаута, создаёт второй смарт-процесс —
  * при лимите 150 на весь портал. Повторяет задачу очередь, а не транспорт.
+ *
+ * ⚠ Домен портала здесь НЕ проверяется. `makePortalCall` доверяет `auth.domain` как есть
+ * и строит из него `clientEndpoint`, то есть адрес, куда уедет токен. Сегодня единственный
+ * вызывающий — `server/api/install.post.ts`, а там домен уже прошёл `isPortalDomain()`
+ * в `server/domain/portals/grant.ts` (аллоулист `*.bitrix24.<зона>`). Следующий вызывающий —
+ * воркер доставки, берущий домен из БД, — обязан обеспечить то же самое сам.
  */
 
 /** Адрес сервера авторизации. Тот же, что у обмена токена, и он же в примерах самого SDK. */
 const SERVER_ENDPOINT = 'https://oauth.bitrix.info/rest/'
+
+/**
+ * Предел одного вызова портала.
+ *
+ * Тот же приём, что в `server/b24/oauth.ts`: зависший запрос не должен превращаться
+ * в зависший обработчик. Транспорт SDK своего таймаута не обещает, а обустройство делает
+ * полтора десятка вызовов подряд — без предохранителя одна не отвечающая сеть держала бы
+ * HTTP-запрос установки до таймаута прокси. Двадцать секунд с запасом покрывают
+ * и троттлинг, и медленный портал.
+ */
+const CALL_TIMEOUT_MS = 20_000
 
 export interface PortalAuth {
   memberId: string
@@ -51,13 +69,21 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
       domain: auth.domain,
       clientEndpoint: `https://${auth.domain}/rest/`,
       serverEndpoint: SERVER_ENDPOINT,
-      status: 'F',
+      // Тариф портала. Ни вызовы, ни троттлинг, ни лицензия его не читают — при первом
+      // обновлении токена SDK перезапишет значение настоящим, пришедшим с портала.
+      // Ставим `'L'` (local), а не `'F'` (free): заявлять чужой тариф, которого может
+      // и не быть, — врать в поле, которое нам всё равно не принадлежит.
+      status: 'L',
     },
-    { clientId: process.env.B24_CLIENT_ID ?? '', clientSecret: process.env.B24_CLIENT_SECRET ?? '' },
+    { clientId: b24ClientId(), clientSecret: b24ClientSecret() },
     {
       restrictionParams: {
         // ⚠ Одна попытка, без повторов: см. шапку файла.
         maxRetries: 1,
+        // Избыточно при `maxRetries: 1` — ветка повтора при нём недостижима. Стоит явно,
+        // чтобы поднятие числа попыток не включило заодно и повтор по сетевой ошибке:
+        // именно он и создаёт второй смарт-процесс после таймаута.
+        retryOnNetworkError: false,
       },
     },
   )
@@ -73,12 +99,29 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
   }
 
   return async (method, params = {}) => {
-    const response = await client.actions.v2.call.make({ method, params })
+    const response = await withTimeout(client.actions.v2.call.make({ method, params }), method)
     if (!response.isSuccess) {
       // Текст ошибки портала нужен целиком: по нему различаются нет прав, нет метода
-      // и исчерпан лимит смарт-процессов. Токенов в нём не бывает.
+      // и исчерпан лимит смарт-процессов. Токенов в нём не бывает: SDK пропускает текст
+      // через свой `redactSensitiveParams`, а сырую транспортную ошибку не сериализует.
       throw new Error(response.getErrorMessages().join('; '))
     }
     return response.getData()
+  }
+}
+
+/** Ограничить ожидание одного вызова. Таймер снимается, чтобы не держать процесс живым. */
+async function withTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${method}: портал не ответил за ${CALL_TIMEOUT_MS} мс`)), CALL_TIMEOUT_MS)
+      }),
+    ])
+  }
+  finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }

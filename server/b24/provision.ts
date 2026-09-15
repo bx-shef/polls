@@ -25,10 +25,35 @@ import {
  * Блокировки здесь нет: два одновременных запуска оба не найдут смарт-процесс по заголовку
  * и создадут дубликат, а лимит на Базовом тарифе — 150 на весь портал. Установка приходит
  * одним событием, так что сегодня это выполняется само.
+ *
+ * ⚠ Вызывающий обязан обернуть `call` в `withDeadline`. Холодная установка — это 17–19
+ * последовательных вызовов под троттлингом SDK; без общего предела одна медленная сеть
+ * держит HTTP-запрос установки до таймаута прокси. Предел на один вызов есть в клиенте,
+ * но он не ограничивает цепочку целиком.
  */
 
 /** Минимальный вызов портала. Реализация — SDK-клиент, привязанный к порталу. */
 export type RestCall = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+
+/**
+ * Обернуть вызов общим бюджетом времени на всю цепочку.
+ *
+ * Предел одного вызова живёт в клиенте, но обустройство делает их полтора десятка подряд:
+ * девятнадцать вызовов по девятнадцать секунд — это шесть минут в одном HTTP-запросе,
+ * которого давно уже никто не ждёт. Здесь бюджет проверяется ПЕРЕД каждым вызовом, то есть
+ * цикл действительно останавливается, а не просто перестаёт ждать ответа. Исчерпание —
+ * обычная ошибка: она поднимется до `install.post.ts`, портал уйдёт в `degraded`,
+ * а уже созданные смарт-процессы найдутся при следующем запуске по заголовку.
+ */
+export function withDeadline(call: RestCall, budgetMs: number, now: () => number = Date.now): RestCall {
+  const deadline = now() + budgetMs
+  return async (method, params) => {
+    if (now() >= deadline) {
+      throw new Error(`обустройство прервано по общему пределу ${budgetMs} мс, не дойдя до ${method}`)
+    }
+    return call(method, params)
+  }
+}
 
 /** Ключ в `app.option`, под которым портал хранит идентификаторы наших смарт-процессов. */
 export const SP_REFS_OPTION = 'shef_survey_sp'
@@ -49,6 +74,16 @@ export interface SmartProcessRefs {
 export interface ProvisionResult extends SmartProcessRefs {
   createdTemplate: boolean
   createdSurvey: boolean
+  /**
+   * Смарт-процесс не создан нами, а найден на портале по заголовку.
+   *
+   * Вызывающий обязан это залогировать: заголовки «Опрос» и «Шаблон опроса» — обычные
+   * слова, и совпасть может чужой смарт-процесс, заведённый клиентом руками. Отличить
+   * его от нашего, потерявшего идентификатор, нечем — а дальше мы допишем в него свои
+   * поля. Пока признака владения нет, единственная защита — видимый след в журнале.
+   */
+  adoptedTemplate: boolean
+  adoptedSurvey: boolean
   /** Сколько полей создано этим запуском. Ноль — всё уже было на месте. */
   addedFields: number
 }
@@ -126,24 +161,28 @@ async function listAllFieldNames(call: RestCall, spTypeId: number): Promise<stri
  * Порядок: сохранённый идентификатор → поиск по заголовку → создание. Средний шаг
  * не для красоты: приложение переустановили, `app.option` почистили, а смарт-процесс
  * на портале остался — без поиска мы создали бы второй и съели лимит тарифа.
+ *
+ * ⚠ Средний шаг и есть слабое место: заголовок — не признак владения. Совпавший
+ * смарт-процесс может оказаться чужим, и тогда мы допишем в него свои поля. Поэтому
+ * такой исход помечается `adopted` и обязан быть виден в журнале — см. `ProvisionResult`.
  */
 async function ensureSmartProcess(
   call: RestCall,
   known: SmartProcessRef | undefined,
   types: readonly Record<string, unknown>[],
   title: string,
-): Promise<{ ref: SmartProcessRef, created: boolean }> {
-  if (known !== undefined) return { ref: known, created: false }
+): Promise<{ ref: SmartProcessRef, created: boolean, adopted: boolean }> {
+  if (known !== undefined) return { ref: known, created: false, adopted: false }
 
   const found = findTypeByTitle(types, title)
-  if (found !== null) return { ref: found, created: false }
+  if (found !== null) return { ref: found, created: false, adopted: true }
 
   const create = buildCreateSmartProcessCall(title)
   const ref = readCreatedRef(await call(create.method, create.params))
   if (ref === null) {
     throw new Error(`crm.type.add не вернул идентификаторы для «${title}»`)
   }
-  return { ref, created: true }
+  return { ref, created: true, adopted: false }
 }
 
 /**
@@ -207,6 +246,8 @@ export async function provisionSmartProcesses(
     survey: survey.ref,
     createdTemplate: template.created,
     createdSurvey: survey.created,
+    adoptedTemplate: template.adopted,
+    adoptedSurvey: survey.adopted,
     addedFields: addedTemplate + addedSurvey,
   }
 }
