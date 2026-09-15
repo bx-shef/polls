@@ -33,6 +33,12 @@ export const portals = pgTable('portals', {
   /** Шифротекст; ключ живёт в окружении, в логи не попадает никогда. */
   accessToken: text('access_token'),
   refreshToken: text('refresh_token'),
+  /**
+   * Постоянный токен приложения из события установки. Тоже шифротекст.
+   * По нему сверяется каждое последующее событие портала: без него обработчик событий
+   * принимает что угодно от кого угодно, а адрес обработчика доступен из интернета.
+   */
+  applicationToken: text('application_token'),
   tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
   scopes: text('scopes').array(),
   license: text('license'),

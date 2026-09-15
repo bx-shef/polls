@@ -20,6 +20,9 @@ const SECRET_FIELDS = [
   // токен ссылки на анкету и токен приложения
   'token',
   'application_token',
+  // camelCase-имя завелось вместе с приёмом установки; `CASE_VARIANTS` меняет регистр,
+  // но не snake↔camel, поэтому без этой строки поле уехало бы в лог целиком.
+  'applicationToken',
   // содержимое ответа клиента
   'answer',
   'answers',

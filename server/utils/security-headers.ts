@@ -1,3 +1,5 @@
+import { BITRIX24_ZONES } from '../domain/portals/zones'
+
 /**
  * Content-Security-Policy for the three kinds of response this app produces.
  *
@@ -9,34 +11,6 @@
  * Проставляет их `server/plugins/security-headers.ts`, а не `routeRules` — почему
  * именно так, объяснено там.
  */
-
-/**
- * Bitrix24 regional zones.
- *
- * Список неочевиден и стоит того, чтобы лежать в одном месте: у части зон адрес
- * двухсегментный (`com.br`, `com.tr`), а без нужной зоны в `frame-ancestors` портал
- * покажет пустой iframe и ничего не объяснит.
- */
-export const BITRIX24_ZONES = [
-  'ru',
-  'by',
-  'kz',
-  'ua',
-  'com',
-  'eu',
-  'de',
-  'fr',
-  'it',
-  'es',
-  'pl',
-  'in',
-  'jp',
-  'vn',
-  'mx',
-  'id',
-  'com.br',
-  'com.tr',
-] as const
 
 const bitrix24Origins = BITRIX24_ZONES.map(zone => `https://*.bitrix24.${zone}`).join(' ')
 
