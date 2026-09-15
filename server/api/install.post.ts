@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
+import { makePortalCall } from '../b24/client'
 import { parseBracketForm } from '../b24/event-body'
 import { refreshTokens } from '../b24/oauth'
+import { isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs } from '../b24/provision'
 import { decideInstall } from '../domain/portals/install'
 import { getDb, isDatabaseConfigured, schema } from '../db/client'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
@@ -102,5 +104,80 @@ export default defineEventHandler(async (event) => {
     })
 
   logger.info({ domain: portal.domain, reason: decision.reason }, 'портал установлен')
-  return { ok: true }
+
+  // Смарт-процессы создаём ПОСЛЕ сохранения токенов и не роняем ими установку.
+  // Токены — то, без чего нельзя вообще ничего; смарт-процессы можно создать повторно,
+  // а вот второго события установки не будет. Поэтому здесь портал уже установлен,
+  // а неудача обустройства переводит его в `degraded`, о чём знает проверка здоровья.
+  const outcome = await provisionPortal(portal)
+  if (outcome !== 'ok') {
+    await getDb()
+      .update(schema.portals)
+      .set({ status: 'degraded', updatedAt: new Date() })
+      .where(eq(schema.portals.memberId, portal.memberId))
+    logger.warn({ domain: portal.domain, outcome }, 'портал установлен, но не обустроен')
+  }
+
+  return { ok: true, provisioned: outcome === 'ok' }
 })
+
+/**
+ * Создать на портале смарт-процессы и поля.
+ *
+ * Права администратора проверяются ЗДЕСЬ, при установке, а не когда метод понадобится:
+ * без них не создать ни смарт-процесс, ни поле, ни записать настройки (`app.option.set`
+ * отвечает «Administrator authorization required»). Узнать об этом в момент, когда
+ * сотрудник уже ждёт ссылку, — худший из вариантов.
+ */
+async function provisionPortal(portal: {
+  memberId: string
+  domain: string
+  accessToken: string
+  refreshToken: string
+  applicationToken: string
+  expiresInSeconds: number
+  scope: string[]
+}): Promise<'ok' | 'not-admin' | 'failed'> {
+  const call = makePortalCall(
+    {
+      memberId: portal.memberId,
+      domain: portal.domain,
+      accessToken: portal.accessToken,
+      refreshToken: portal.refreshToken,
+      applicationToken: portal.applicationToken,
+      expiresIn: portal.expiresInSeconds,
+      scope: portal.scope,
+    },
+    // SDK обновил токены сам — сохраняем. Только UPDATE: операция идемпотентна
+    // при нескольких репликах и не воскресит удалённый портал.
+    async (next) => {
+      await getDb()
+        .update(schema.portals)
+        .set({
+          accessToken: encryptSecret(next.accessToken),
+          refreshToken: encryptSecret(next.refreshToken),
+          tokenExpiresAt: new Date(Date.now() + next.expiresIn * 1000),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.portals.memberId, portal.memberId))
+    },
+  )
+
+  try {
+    if (!await isPortalAdmin(call)) return 'not-admin'
+
+    const known = await readStoredRefs(call)
+    const result = await provisionSmartProcesses(call, known)
+    await storeRefs(call, { template: result.template, survey: result.survey })
+
+    logger.info(
+      { domain: portal.domain, created: [result.createdTemplate, result.createdSurvey], addedFields: result.addedFields },
+      'смарт-процессы обустроены',
+    )
+    return 'ok'
+  }
+  catch (error) {
+    logger.error({ domain: portal.domain, reason: (error as Error).message }, 'обустройство портала не удалось')
+    return 'failed'
+  }
+}
