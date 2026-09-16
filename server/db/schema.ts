@@ -86,24 +86,6 @@ export const inbox = pgTable('inbox', {
   index('inbox_due_idx').on(table.status, table.nextAttemptAt),
 ])
 
-/** Исходящие записи в портал: идемпотентны по `dedup_key`. */
-export const outbox = pgTable('outbox', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  portalId: uuid('portal_id').notNull().references(() => portals.id, { onDelete: 'cascade' }),
-  /** Что именно пишем: элемент смарт-процесса, комментарий в таймлайн, поле сущности. */
-  kind: text('kind').notNull(),
-  payload: jsonb('payload').notNull(),
-  dedupKey: text('dedup_key').notNull(),
-  /** pending | done | dead — исчерпал попытки и уехал в отчёт о здоровье, а не потерялся. */
-  status: text('status').notNull().default('pending'),
-  attempts: integer('attempts').notNull().default(0),
-  lastError: text('last_error'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, table => [
-  uniqueIndex('outbox_portal_dedup_key').on(table.portalId, table.dedupKey),
-  index('outbox_status_created_idx').on(table.status, table.createdAt),
-])
-
 /**
  * Кэш «хеш токена → элемент смарт-процесса».
  * Это кэш: теряется — восстанавливается из портала. В хранилище только хеш, никогда сам токен.

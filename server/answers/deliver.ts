@@ -4,6 +4,7 @@ import { readStoredRefs } from '../b24/provision'
 import type { RestCall } from '../b24/provision'
 import { getDb, schema } from '../db/client'
 import { buildAnswerComment } from '../domain/answers/comment'
+import { safeRefusal } from '../domain/answers/portal-errors'
 import {
   buildCompleteSurveyCall,
   buildReadSurveyItemCall,
@@ -37,6 +38,15 @@ import { logger } from '../utils/logger'
  * планировщика у Postgres нет, и писать его самим — как раз то, чего делать не надо.
  */
 
+/**
+ * ⚠ Часть функций ниже экспортируется РАДИ ТЕСТОВ, и это осознанный выбор, а не забывчивость.
+ * Тот же приём, что в `server/b24/provision.ts`: они принимают `RestCall` параметром, значит
+ * проверяются подделкой вызова, без сети и без базы. Панель ревью PR #22 нашла этот файл
+ * с нулём тестов при том, что это единственный канал, которым ответ клиента попадает в CRM.
+ * Альтернатива — прятать их и не проверять — дороже: дефект в этом файле уже случился один раз
+ * (см. `requeueStuck` и время захвата) и уехал без гварда.
+ */
+
 /** Сколько ответов берём за один заход. Объём крошечный, гнаться не за чем. */
 const BATCH = 10
 
@@ -51,7 +61,7 @@ const BATCH = 10
 const MAX_ATTEMPTS = 8
 
 /** Пауза перед следующей попыткой: 1, 2, 4… минуты, не больше часа. */
-function backoffMinutes(attempts: number): number {
+export function backoffMinutes(attempts: number): number {
   return Math.min(60, 2 ** Math.max(0, attempts - 1))
 }
 
@@ -176,12 +186,13 @@ export async function deliverOne(row: BufferedAnswer): Promise<DeliveryOutcome> 
     return await writeToPortal(call, link.itemId, template, answers)
   }
   catch (error) {
-    // ⚠ В журнал уходит причина отказа портала и НИ ОДНОГО слова из ответа клиента.
-    return { ok: false, retry: true, reason: (error as Error).message }
+    // ⚠ Наружу уходит НАШ код отказа, а не текст портала. Текст портала цитирует присланное
+    // значение — а присланное значение здесь и есть ответ клиента. См. `portal-errors.ts`.
+    return { ok: false, retry: true, reason: safeRefusal(error) }
   }
 }
 
-async function writeToPortal(
+export async function writeToPortal(
   call: RestCall,
   itemId: number,
   template: SurveyTemplate,
@@ -213,7 +224,7 @@ async function writeToPortal(
  * комментария, мы получили бы в сделке столько копий, сколько было попыток, — а ответ
  * к тому моменту уже записан и никуда не денется.
  */
-async function tryComment(
+export async function tryComment(
   call: RestCall,
   survey: { entityTypeId: number, id: number },
   itemId: number,
@@ -235,7 +246,7 @@ async function tryComment(
     return true
   }
   catch (error) {
-    logger.warn({ reason: (error as Error).message }, 'комментарий в таймлайн не записан; ответ в портале')
+    logger.warn({ reason: safeRefusal(error) }, 'комментарий в таймлайн не записан; ответ в портале')
     return false
   }
 }
@@ -252,7 +263,15 @@ async function forget(id: string): Promise<void> {
   await getDb().delete(schema.inbox).where(eq(schema.inbox.id, id))
 }
 
-/** Вернуть строку в очередь или сдаться. Причина пишется в строку и в журнал — без текста ответа. */
+/**
+ * Вернуть строку в очередь или сдаться.
+ *
+ * ⚠ `reason` сюда приходит уже пропущенным через `safeRefusal` либо составленным нами —
+ * то есть в нём по построению нет ничего из ответа клиента. Это важно вдвойне: строка пишется
+ * не только в журнал, но и в колонку `inbox.last_error`, которая переживёт саму строку
+ * в бэкапах. Обрезка оставлена как страховка от длины, а не как защита от содержимого:
+ * защищать обрезкой то, что нельзя показывать, — это показывать первые пятьсот символов.
+ */
 async function release(row: BufferedAnswer, reason: string, exhausted: boolean): Promise<void> {
   const attempts = row.attempts + 1
   await getDb()
@@ -310,7 +329,7 @@ export async function inboxDepth(): Promise<{ pending: number, failed: number }>
 }
 
 /** Разобрать тело буфера. Форму кладёт `saveAnswer`, но читаем мы её как чужую. */
-function readAnswers(payload: unknown): Record<string, AnswerValue> | null {
+export function readAnswers(payload: unknown): Record<string, AnswerValue> | null {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null
   const bag = (payload as { answers?: unknown }).answers
   if (bag === null || bag === undefined || typeof bag !== 'object' || Array.isArray(bag)) return null

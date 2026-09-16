@@ -40,9 +40,14 @@ export default defineNitroPlugin(() => {
       const result = await drainInbox()
       if (result.delivered > 0 || result.failed > 0) logger.info(result, 'разбор буфера ответов')
     }
-    catch (error) {
+    catch {
       // Упавший тик не должен уносить цикл: следующий разберётся.
-      logger.error({ reason: (error as Error).message }, 'разбор буфера ответов сорвался')
+      //
+      // ⚠ Причина не записывается, и это не лень. Ниже по стеку лежат вызовы портала,
+      // в параметрах которых едет ответ клиента, а Битрикс24 любит цитировать присланное
+      // значение в тексте ошибки валидации. Свои отказы разбор записывает сам и безопасно
+      // (`server/domain/answers/portal-errors.ts`); сюда доходит только то, что он не поймал.
+      logger.error({}, 'разбор буфера ответов сорвался')
     }
     finally {
       running = false
