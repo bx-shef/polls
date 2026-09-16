@@ -273,6 +273,11 @@ export async function provisionSmartProcesses(
  *
  * Отказ `unbind` игнорируется: на первой установке снимать нечего, и это норма.
  *
+ * ⚠ Снимаем БЕЗ адреса обработчика. С адресом снялась бы регистрация только на него, а снять
+ * надо ровно ту, адреса которой мы не знаем, — старую. Первая версия передавала сюда НОВЫЙ
+ * адрес, то есть снимала вхолостую и оставляла портал на старом обработчике, отчитавшись
+ * об успехе.
+ *
  * Возвращает `false`, когда вкладку зарегистрировать не удалось по настоящей причине. Установку
  * это не роняет: без вкладки приложение работает, ссылку можно выпустить и роботом, а вот без
  * токенов не работает ничего.
@@ -284,7 +289,7 @@ export async function ensureDealTabPlacement(call: RestCall, baseUrl: string): P
   const bind = buildBindDealTabCall(handlerUrl)
   if (bind === null) return false
 
-  const unbind = buildUnbindDealTabCall(handlerUrl)
+  const unbind = buildUnbindDealTabCall()
   try {
     await call(unbind.method, unbind.params)
   }

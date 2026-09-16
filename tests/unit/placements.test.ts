@@ -40,10 +40,13 @@ describe('регистрация вкладки', () => {
     expect(buildBindDealTabCall(url)).toBeNull()
   })
 
-  it('снимает регистрацию с адресом и без него', () => {
-    expect(buildUnbindDealTabCall('https://polls.bx-shef.by/portal/deal-tab').params)
-      .toEqual({ PLACEMENT: DEAL_TAB_PLACEMENT, HANDLER: 'https://polls.bx-shef.by/portal/deal-tab' })
+  it('снимает регистрацию БЕЗ адреса обработчика', () => {
+    // Гвард под собственный дефект: с `HANDLER` метод снимает регистрацию только на этот
+    // адрес, а снять надо ту, адреса которой мы не знаем, — старую. Первая версия передавала
+    // сюда НОВЫЙ адрес: снятие вхолостую, `bind` следом падает с `ERROR_PLACEMENT_MAX_COUNT`,
+    // портал остаётся на старом обработчике, а установка отчитывается успехом.
     expect(buildUnbindDealTabCall().params).toEqual({ PLACEMENT: DEAL_TAB_PLACEMENT })
+    expect(buildUnbindDealTabCall().params).not.toHaveProperty('HANDLER')
   })
 })
 

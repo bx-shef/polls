@@ -55,13 +55,21 @@ export function buildBindDealTabCall(handlerUrl: string): PortalCall | null {
   }
 }
 
-/** Снять регистрацию — единственный способ сменить адрес обработчика (см. шапку). */
-export function buildUnbindDealTabCall(handlerUrl?: string): PortalCall {
-  const url = (handlerUrl ?? '').trim()
-  return {
-    method: 'placement.unbind',
-    params: { PLACEMENT: DEAL_TAB_PLACEMENT, ...(url === '' ? {} : { HANDLER: url }) },
-  }
+/**
+ * Снять регистрацию — единственный способ сменить адрес обработчика (см. шапку).
+ *
+ * ⚠ БЕЗ `HANDLER`, и это принципиально. С адресом `placement.unbind` снимает только
+ * регистрацию НА ЭТОТ адрес; без него — все регистрации точки, сделанные приложением
+ * (подтверждено документацией метода). А снимать нам надо ровно то, чего мы не знаем:
+ * СТАРЫЙ адрес. Передав сюда новый, получаем снятие вхолостую, следом `bind`, падающий
+ * с `ERROR_PLACEMENT_MAX_COUNT`, — и портал продолжает открывать старый адрес, при том что
+ * установка отчиталась успехом. Именно так и было написано сначала.
+ *
+ * Чужие регистрации этим не тронуть: метод работает в контексте приложения и видит только
+ * свои. Параметра тут нет намеренно — передать в него нечего, кроме как ошибку.
+ */
+export function buildUnbindDealTabCall(): PortalCall {
+  return { method: 'placement.unbind', params: { PLACEMENT: DEAL_TAB_PLACEMENT } }
 }
 
 /**
