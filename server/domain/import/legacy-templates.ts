@@ -1,14 +1,12 @@
 import { htmlToText, looksLikeHtml } from './html-text'
+import type { ImportedTemplates, ImportWarning, ImportWarningCode } from './warnings'
 import type {
-  ImportedBand,
-  ImportedQuestion,
-  ImportedQuestionType,
-  ImportedSection,
-  ImportedTemplate,
-  ImportedTemplates,
-  ImportWarning,
-  ImportWarningCode,
-} from './normalized'
+  SurveyBand,
+  SurveyQuestion,
+  SurveyQuestionType,
+  SurveySection,
+  SurveyTemplate,
+} from '../surveys/model'
 
 /**
  * Turns the legacy module's `b_option` rows into normalized survey templates.
@@ -66,7 +64,7 @@ export function readLegacyTemplates(
   const warnings: ImportWarning[] = []
   const titles = readRegistry(options)
   const titleOf = indexLabels(labels)
-  const templates: ImportedTemplate[] = []
+  const templates: SurveyTemplate[] = []
 
   for (const option of options) {
     if (!option.name.startsWith(OPTION_GROUP_PREFIX)) continue
@@ -153,8 +151,8 @@ function readSections(
   rawSections: readonly unknown[],
   titleOf: (template: string, field: string) => string,
   warnings: ImportWarning[],
-): ImportedSection[] {
-  const sections: ImportedSection[] = []
+): SurveySection[] {
+  const sections: SurveySection[] = []
   const seenKeys = new Map<string, number>()
 
   // Первый проход — собрать вопросы; расщепление возможно только когда видны все секции.
@@ -200,7 +198,7 @@ function readSections(
  */
 function splitDuplicateKeys(
   template: string,
-  sections: readonly ImportedSection[],
+  sections: readonly SurveySection[],
   seenKeys: ReadonlyMap<string, number>,
   warnings: ImportWarning[],
 ): void {
@@ -238,7 +236,7 @@ function uniqueKey(candidate: string, taken: ReadonlySet<string>): string {
 }
 
 /** Сумма весов в секции. Проверка, а не исправление: подгонять чужие числа мы не вправе. */
-function checkWeights(template: string, sections: readonly ImportedSection[], warnings: ImportWarning[]): void {
+function checkWeights(template: string, sections: readonly SurveySection[], warnings: ImportWarning[]): void {
   for (const section of sections) {
     if (!section.scored) continue
 
@@ -260,9 +258,9 @@ function readQuestions(
   rawFields: unknown,
   titleOf: (template: string, field: string) => string,
   warnings: ImportWarning[],
-): ImportedQuestion[] {
+): SurveyQuestion[] {
   if (!Array.isArray(rawFields)) return []
-  const questions: ImportedQuestion[] = []
+  const questions: SurveyQuestion[] = []
 
   for (const rawField of rawFields) {
     const field = rawField as { CODE?: unknown, TYPE?: unknown, SETTING?: unknown }
@@ -325,9 +323,9 @@ function readBands(
   rawTerms: unknown,
   scale: { min: number, max: number } | null,
   warnings: ImportWarning[],
-): ImportedBand[] {
+): SurveyBand[] {
   if (!Array.isArray(rawTerms)) return []
-  const bands: ImportedBand[] = []
+  const bands: SurveyBand[] = []
 
   for (const rawTerm of rawTerms) {
     const term = rawTerm as { MIN?: unknown, MAX?: unknown, TEXT?: unknown, NAME?: unknown }
@@ -353,7 +351,7 @@ function readBands(
  * наборе шкала везде `0…10`, но брать её константой значит поверить в это навсегда.
  * `null` — считать нечем: в секции нет балльных вопросов, и диапазонам там взяться неоткуда.
  */
-function sectionScale(questions: readonly ImportedQuestion[]): { min: number, max: number } | null {
+function sectionScale(questions: readonly SurveyQuestion[]): { min: number, max: number } | null {
   const scales = questions.map(q => q.scale).filter((s): s is { min: number, max: number } => s !== undefined)
   if (scales.length === 0) return null
   return {
@@ -377,7 +375,7 @@ function sectionScale(questions: readonly ImportedQuestion[]): { min: number, ma
 function reportGaps(
   template: string,
   section: string,
-  bands: readonly ImportedBand[],
+  bands: readonly SurveyBand[],
   scale: { min: number, max: number } | null,
   warnings: ImportWarning[],
 ): void {
@@ -415,7 +413,7 @@ function sectionKey(field: unknown): string {
  * алфавиту: неизвестный тип, принятый за балльный, попал бы в оценку и молча сдвинул балл
  * секции, а принятый за текстовый — просто не попадёт никуда.
  */
-function questionType(type: unknown): ImportedQuestionType {
+function questionType(type: unknown): SurveyQuestionType {
   if (type === 'POINT') return 'scale'
   if (type === 'DATE') return 'date'
   return 'text'

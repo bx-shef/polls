@@ -96,6 +96,13 @@ export const linkIndex = pgTable('link_index', {
   // безопасен, пока значения не перешагнули 2^53 — для идентификаторов CRM это не сценарий.
   itemId: bigint('item_id', { mode: 'number' }).notNull(),
   surveyCode: text('survey_code').notNull(),
+  /**
+   * Версия шаблона на момент выпуска ссылки.
+   * Без неё показать анкету нельзя: опубликованная версия неизменяема, а вот КАКАЯ именно
+   * версия была отправлена этому человеку — знает только ссылка. Через полгода по коду
+   * без версии нашлась бы третья редакция вопросов, и ответ лёг бы не к тем формулировкам.
+   */
+  surveyVersion: integer('survey_version').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   /** created | sent | opened | completed | revoked | expired. */
   status: text('status').notNull().default('created'),
@@ -103,6 +110,35 @@ export const linkIndex = pgTable('link_index', {
 }, table => [
   uniqueIndex('link_index_token_hash_key').on(table.tokenHash),
   index('link_index_expires_idx').on(table.expiresAt),
+])
+
+/**
+ * Кэш опубликованных версий шаблона опроса.
+ *
+ * Это кэш в том же смысле, что и `link_index`: источник истины — смарт-процесс «Шаблон опроса»
+ * на портале, а здесь копия, которую можно выбросить и собрать заново. Держать её обязательно
+ * по двум причинам, и обе из правил проекта.
+ *
+ * Первая: публичная страница анкеты не знает о REST вообще — это инвариант, а не оптимизация.
+ * Ходить за шаблоном в портал на каждый показ значит поселить знание о портале ровно там,
+ * где его не должно быть, и заодно посадить страницу постороннего человека на доступность
+ * чужого API.
+ *
+ * Вторая: версия неизменяема по инварианту («Опубликованная версия опроса неизменяема;
+ * правка порождает новую»), поэтому кэш по паре «код + версия» не может протухнуть — он может
+ * только отсутствовать. Заполняется при выпуске ссылки, то есть заведомо раньше, чем
+ * понадобится.
+ */
+export const surveyTemplates = pgTable('survey_templates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  portalId: uuid('portal_id').notNull().references(() => portals.id, { onDelete: 'cascade' }),
+  code: text('code').notNull(),
+  version: integer('version').notNull(),
+  /** Схема анкеты целиком: секции, вопросы, веса, шкалы, диапазоны интерпретации. */
+  schema: jsonb('schema').notNull(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('survey_templates_portal_code_version_key').on(table.portalId, table.code, table.version),
 ])
 
 /**
