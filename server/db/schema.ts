@@ -62,12 +62,28 @@ export const inbox = pgTable('inbox', {
   tokenHash: text('token_hash').notNull(),
   payload: jsonb('payload').notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
-  /** pending | delivered | failed. Запись удаляется после подтверждённой записи в портал. */
+  /**
+   * pending | sending | failed. Запись УДАЛЯЕТСЯ после подтверждённой записи в портал,
+   * поэтому состояния «доставлено» тут нет: доставленного ответа у нас не остаётся.
+   *
+   * `sending` — строку взял воркер. Умер между «взял» и «доставил» — её вернёт `requeueStuck`,
+   * иначе один перезапуск в неудачный момент тихо теряет ответ.
+   */
   status: text('status').notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0),
   lastError: text('last_error'),
+  /**
+   * Не раньше этого момента пробовать снова.
+   *
+   * Отдельная колонка, а не вычисление из `attempts` и `received_at`: иначе выборка
+   * «что пора доставить» превращается в арифметику внутри WHERE, которую не накроет индекс,
+   * и на первой же тысяче отложенных строк разбор буфера начнёт читать таблицу целиком.
+   */
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   index('inbox_status_received_idx').on(table.status, table.receivedAt),
+  // Индекс ровно под выборку воркера: «pending, чей срок подошёл, в порядке поступления».
+  index('inbox_due_idx').on(table.status, table.nextAttemptAt),
 ])
 
 /** Исходящие записи в портал: идемпотентны по `dedup_key`. */

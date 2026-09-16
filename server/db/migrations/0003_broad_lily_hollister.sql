@@ -1,0 +1,2 @@
+ALTER TABLE "inbox" ADD COLUMN "next_attempt_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
+CREATE INDEX "inbox_due_idx" ON "inbox" USING btree ("status","next_attempt_at");

@@ -1,0 +1,57 @@
+import { drainInbox, requeueStuck } from '../answers/deliver'
+import { isDatabaseConfigured } from '../db/client'
+import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
+import { logger } from '../utils/logger'
+
+/**
+ * Runs the answer-delivery loop inside the app process.
+ *
+ * Отдельного воркера пока нет намеренно. Объём работы — единицы ответов в день на портал,
+ * и второй контейнер ради этого означал бы второй образ, второй деплой и второе место,
+ * где кончаются токены. `FOR UPDATE SKIP LOCKED` делает цикл безопасным при нескольких
+ * экземплярах приложения, поэтому вынести его в отдельный процесс можно будет позже,
+ * не переписывая: достаточно поднять тот же образ с `ANSWER_DELIVERY=off` у веб-части.
+ *
+ * ⚠ Цикл не ждёт своего срабатывания после приёма ответа: страница дёргает разбор сразу,
+ * и в норме ответ уезжает в портал за секунды. Интервал здесь — страховка на случай,
+ * когда портал был недоступен и попытку отложили.
+ */
+export default defineNitroPlugin(() => {
+  if (deliveryDisabled()) {
+    logger.info({}, 'доставка ответов выключена в этом процессе (ANSWER_DELIVERY=off)')
+    return
+  }
+  if (!isDatabaseConfigured()) {
+    // Без базы буфера нет вовсе. Молчать нельзя: снаружи это выглядит как «ответы копятся».
+    logger.warn({}, 'доставка ответов не запущена: база не настроена')
+    return
+  }
+
+  const intervalMs = deliveryIntervalSeconds() * 1000
+  let running = false
+
+  const tick = async () => {
+    // Захода на заход не наслаиваем: медленный портал иначе накопил бы столько параллельных
+    // разборов, сколько прошло тиков, и добил бы себя же.
+    if (running) return
+    running = true
+    try {
+      await requeueStuck()
+      const result = await drainInbox()
+      if (result.delivered > 0 || result.failed > 0) logger.info(result, 'разбор буфера ответов')
+    }
+    catch (error) {
+      // Упавший тик не должен уносить цикл: следующий разберётся.
+      logger.error({ reason: (error as Error).message }, 'разбор буфера ответов сорвался')
+    }
+    finally {
+      running = false
+    }
+  }
+
+  const timer = setInterval(() => void tick(), intervalMs)
+  // `unref` — чтобы таймер не держал процесс живым при остановке контейнера.
+  timer.unref?.()
+
+  logger.info({ intervalSeconds: deliveryIntervalSeconds() }, 'доставка ответов запущена')
+})

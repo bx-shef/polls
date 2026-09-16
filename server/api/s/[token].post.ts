@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { createError, defineEventHandler, getRequestHeader, getRouterParam, readRawBody, setResponseStatus } from 'h3'
 import { checkAnswers, MAX_TOTAL_BYTES } from '../../domain/surveys/answer'
+import { drainInbox } from '../../answers/deliver'
 import { saveAnswer } from '../../links/store'
 import { logger } from '../../utils/logger'
 import { denied, resolveSurveyAccess } from './-access'
@@ -75,6 +76,15 @@ export default defineEventHandler(async (event) => {
   }
 
   logger.info({ code: access.link.surveyCode, version: access.link.surveyVersion }, 'анкета: ответ принят в буфер')
+
+  // ⚠ Разбор дёргается, но НЕ ожидается. Респондент уже всё сделал; заставлять его смотреть
+  // на крутилку, пока мы ходим в портал, значит поставить его ответ в зависимость от чужой
+  // доступности — при том что ответ уже сохранён и доедет в любом случае. Ошибку глотаем
+  // здесь же: наверх ей идти некуда, а цикл в плагине разберёт буфер и без этого дёрганья.
+  void drainInbox().catch(error =>
+    logger.warn({ reason: (error as Error).message }, 'разбор буфера после приёма ответа не удался'),
+  )
+
   return { ok: true as const }
 })
 
