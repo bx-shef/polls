@@ -71,10 +71,20 @@ export function decideRateLimit(
  * ⚠ Адрес в ключ уходит хешем, а не как есть. IP посетителя анкеты — персональные данные
  * постороннего человека, и хранить их у себя, даже на минуту и даже в Redis, мы не обязаны:
  * для счёта достаточно различать адреса, а не знать их.
+ *
+ * ⚠ `scope` разделяет счёт публичной анкеты и портальных экранов. Общий ключ при РАЗНЫХ
+ * пределах (60 и 120) даёт неочевидную беду: сотрудники наработали за минуту 70 обращений
+ * из офиса — портальный предел не тронут, а респондент с того же адреса получает
+ * «слишком много попыток» за чужую активность и не может ответить на анкету вовсе.
+ * Отдельные пространства убирают этот класс целиком.
  */
-export function addressKey(address: string, hash: (value: string) => string): string {
+export function addressKey(
+  address: string,
+  hash: (value: string) => string,
+  scope: 'public' | 'portal' = 'public',
+): string {
   const normalized = address.trim().toLowerCase().replace(/^::ffff:/, '')
-  return `rate:addr:${hash(normalized)}`
+  return `rate:addr:${scope === 'portal' ? 'portal:' : ''}${hash(normalized)}`
 }
 
 /** Ключ счётчика по токену. Токен и здесь не хранится — только его хеш. */
@@ -102,4 +112,30 @@ export function tokenKey(tokenHash: string): string {
 export function trustedAddress(forwardedFor: string | undefined, socketAddress: string): string {
   const hops = (forwardedFor ?? '').split(',').map(hop => hop.trim()).filter(hop => hop !== '')
   return hops.length > 0 ? hops[hops.length - 1]! : socketAddress
+}
+
+/**
+ * Пределы для портальных экранов приложения.
+ *
+ * Выше публичных и считаются иначе: здесь не аноним с улицы, а сотрудник с подтверждённой
+ * порталом сессией. Предел нужен не от него, а от того, что КАЖДЫЙ запрос сюда — это исходящий
+ * вызов в портал клиента: проверка токена, чтение шаблонов, создание элемента. Похищенный
+ * фреймовый токен живёт час, и без предела он превращается в усилитель нагрузки на чужой
+ * портал. Нашла панель ревью PR #18.
+ */
+export const PORTAL_LIMITS = {
+  perAddress: 120,
+  perToken: 60,
+} as const
+
+/**
+ * Ключ счётчика по порталу.
+ *
+ * Считаем по порталу, а не по сотруднику: нагрузка ложится на портал целиком, и десять
+ * сотрудников одного клиента, дружно открывшие вкладку, — это десять вызовов в один
+ * и тот же Битрикс24. `member_id` хешируется по той же причине, что и адрес: различать
+ * порталы достаточно, знать их идентификаторы для счёта не нужно.
+ */
+export function portalKey(memberId: string, hash: (value: string) => string): string {
+  return `rate:portal:${hash(memberId.trim().toLowerCase())}`
 }

@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto'
-import { addressKey, decideRateLimit, tokenKey, WINDOW_SECONDS, type RateDecision } from '../domain/links/rate-limit'
+import {
+  addressKey,
+  decideRateLimit,
+  PORTAL_LIMITS,
+  portalKey,
+  tokenKey,
+  WINDOW_SECONDS,
+  type RateDecision,
+} from '../domain/links/rate-limit'
 import { getRedis, isRedisConfigured } from '../utils/redis'
 import { logger } from '../utils/logger'
 
@@ -80,4 +88,41 @@ function countAt(results: [Error | null, unknown][], index: number): number {
   if (entry === undefined || entry[0] !== null) return 0
   const value = Number(entry[1])
   return Number.isFinite(value) ? value : 0
+}
+
+/**
+ * Посчитать обращение к портальному экрану и решить, пускать ли.
+ *
+ * Тот же механизм, что у публичной страницы, но ключи и пределы другие: считаем по адресу
+ * и по ПОРТАЛУ, потому что нагрузка от этих эндпоинтов ложится на портал клиента целиком.
+ */
+export async function countAndDecidePortal(address: string, memberId: string): Promise<RateDecision> {
+  if (!isRedisConfigured()) return failOpen('redis не настроен')
+
+  // Пространство `portal`: у публичной анкеты предел вдвое ниже, и общий ключ означал бы,
+  // что офисный трафик сотрудников выедает бюджет респондента с того же адреса.
+  const byAddress = addressKey(address, sha256, 'portal')
+  const byPortal = portalKey(memberId, sha256)
+
+  try {
+    const redis = getRedis()
+    const results = await redis
+      .multi()
+      .incr(byAddress)
+      .expire(byAddress, WINDOW_SECONDS, 'NX')
+      .incr(byPortal)
+      .expire(byPortal, WINDOW_SECONDS, 'NX')
+      .exec()
+
+    if (results === null) return failOpen('конвейер redis не выполнился')
+
+    return decideRateLimit(
+      { perAddress: countAt(results, 0), perToken: countAt(results, 2) },
+      WINDOW_SECONDS,
+      PORTAL_LIMITS,
+    )
+  }
+  catch (error) {
+    return failOpen((error as Error).message)
+  }
 }

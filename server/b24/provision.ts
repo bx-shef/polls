@@ -1,4 +1,10 @@
 import {
+  buildBindDealTabCall,
+  buildDealTabHandlerUrl,
+  buildUnbindDealTabCall,
+  isPlacementAlreadyBound,
+} from '../domain/portals/placements'
+import {
   buildCreateSmartProcessCall,
   findTypeByTitle,
   planMissingFields,
@@ -249,5 +255,53 @@ export async function provisionSmartProcesses(
     adoptedTemplate: template.adopted,
     adoptedSurvey: survey.adopted,
     addedFields: addedTemplate + addedSurvey,
+  }
+}
+
+/**
+ * Зарегистрировать вкладку приложения в карточке сделки.
+ *
+ * ⚠ Отдельным вызовом, не в батче: `placement.bind` в батче отвечает
+ * `ERROR_BATCH_METHOD_NOT_ALLOWED`.
+ *
+ * ⚠ Сначала `unbind`, потом `bind`, и это не перестраховка. Точка с одной регистрацией
+ * на повторный `bind` отвечает `ERROR_PLACEMENT_MAX_COUNT`, то есть сменить АДРЕС обработчика
+ * повторной регистрацией нельзя — портал продолжит открывать старый, и снаружи это выглядит
+ * как «вкладка ведёт не туда» на свежем выкате. Снятие делает переустановку настоящим
+ * способом починки: адрес всегда становится текущим. Панель ревью PR #18 указала, что иначе
+ * ошибка в публичном адресе на первой установке неисправима штатными средствами.
+ *
+ * Отказ `unbind` игнорируется: на первой установке снимать нечего, и это норма.
+ *
+ * ⚠ Снимаем БЕЗ адреса обработчика. С адресом снялась бы регистрация только на него, а снять
+ * надо ровно ту, адреса которой мы не знаем, — старую. Первая версия передавала сюда НОВЫЙ
+ * адрес, то есть снимала вхолостую и оставляла портал на старом обработчике, отчитавшись
+ * об успехе.
+ *
+ * Возвращает `false`, когда вкладку зарегистрировать не удалось по настоящей причине. Установку
+ * это не роняет: без вкладки приложение работает, ссылку можно выпустить и роботом, а вот без
+ * токенов не работает ничего.
+ */
+export async function ensureDealTabPlacement(call: RestCall, baseUrl: string): Promise<boolean> {
+  const handlerUrl = buildDealTabHandlerUrl(baseUrl)
+  if (handlerUrl === null) return false
+
+  const bind = buildBindDealTabCall(handlerUrl)
+  if (bind === null) return false
+
+  const unbind = buildUnbindDealTabCall()
+  try {
+    await call(unbind.method, unbind.params)
+  }
+  catch {
+    // Снимать было нечего — обычное дело на первой установке.
+  }
+
+  try {
+    await call(bind.method, bind.params)
+    return true
+  }
+  catch (error) {
+    return isPlacementAlreadyBound(error) || isPlacementAlreadyBound((error as Error).message)
   }
 }
