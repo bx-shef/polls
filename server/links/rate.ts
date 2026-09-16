@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { addressKey, decideRateLimit, tokenKey, WINDOW_SECONDS, type RateDecision } from '../domain/links/rate-limit'
 import { getRedis, isRedisConfigured } from '../utils/redis'
+import { logger } from '../utils/logger'
 
 /**
  * Counts public-page hits in Redis and asks the domain what to do about it.
@@ -14,9 +15,16 @@ import { getRedis, isRedisConfigured } from '../utils/redis'
  *
  * Пускаем. Ограничение частоты защищает от перебора, а не от катастрофы; отказывать всем
  * посетителям анкеты из-за того, что у НАС упал Redis, значит превратить свою аварию
- * в недоступность клиентского опроса. Отказ логируется, чтобы это не прошло незамеченным.
+ * в недоступность клиентского опроса.
+ *
+ * ⚠ Каждый такой случай пишется в журнал ЗДЕСЬ. Сначала это было обещано комментарием
+ * и не сделано: вызывающий логирует только отказ, а при fail-open отказа нет — и снятое
+ * ограничение оставалось полностью беззвучным. Нашла панель ревью PR #15.
  */
-const FAIL_OPEN: RateDecision = { allow: true }
+function failOpen(reason: string): RateDecision {
+  logger.warn({ reason }, 'анкета: ограничение частоты не сработало, пропускаем обращение')
+  return { allow: true }
+}
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex')
 
@@ -30,7 +38,7 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
  * — это заметно, а порядок между ними всё равно не важен.
  */
 export async function countAndDecide(address: string, tokenHash: string): Promise<RateDecision> {
-  if (!isRedisConfigured()) return FAIL_OPEN
+  if (!isRedisConfigured()) return failOpen('redis не настроен')
 
   const byAddress = addressKey(address, sha256)
   const byToken = tokenKey(tokenHash)
@@ -47,17 +55,16 @@ export async function countAndDecide(address: string, tokenHash: string): Promis
 
     // `exec` возвращает null, когда транзакция не выполнилась целиком. Считать это
     // нулями значило бы тихо снять ограничение.
-    if (results === null) return FAIL_OPEN
+    if (results === null) return failOpen('конвейер redis не выполнился')
 
     return decideRateLimit({
       perAddress: countAt(results, 0),
       perToken: countAt(results, 2),
     })
   }
-  catch {
-    // Молча пускаем, но не молча: вызывающий логирует. Сюда попадают только отказы
-    // самого Redis — решение домена исключений не бросает.
-    return FAIL_OPEN
+  catch (error) {
+    // Сюда попадают только отказы самого Redis: решение домена исключений не бросает.
+    return failOpen((error as Error).message)
   }
 }
 

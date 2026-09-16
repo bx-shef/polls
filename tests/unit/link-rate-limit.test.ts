@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { addressKey, decideRateLimit, LIMITS, tokenKey, WINDOW_SECONDS } from '../../server/domain/links/rate-limit'
+import { addressKey, decideRateLimit, LIMITS, tokenKey, trustedAddress, WINDOW_SECONDS } from '../../server/domain/links/rate-limit'
 
 /**
  * Ограничение частоты на публичной странице. Раньше оно жило зонами nginx и исчезло вместе
@@ -79,5 +79,37 @@ describe('ключи счётчиков', () => {
     // Иначе адрес, совпавший с хешем токена, обнулил бы чужой счёт.
     expect(addressKey('203.0.113.7', sha256).startsWith('rate:addr:')).toBe(true)
     expect(tokenKey(sha256('x')).startsWith('rate:link:')).toBe(true)
+  })
+})
+
+describe('чей адрес считаем', () => {
+  it('берёт последний хоп, а не первый', () => {
+    // Гвард от дыры, найденной панелью ревью PR #15. `$proxy_add_x_forwarded_for`
+    // ДОПИСЫВАЕТ реальный адрес в конец, а `getRequestIP` из h3 берёт первый — то есть
+    // тот, который прислал сам обращающийся. Считать по нему значит не считать вовсе:
+    // предел по адресу снимается одной строкой в запросе.
+    expect(trustedAddress('203.0.113.1, 198.51.100.9', '10.0.0.2')).toBe('198.51.100.9')
+  })
+
+  it('не верит подделанному значению, сколько бы его ни прислали', () => {
+    const forged = '1.1.1.1, 2.2.2.2, 3.3.3.3, 198.51.100.9'
+
+    expect(trustedAddress(forged, '10.0.0.2')).toBe('198.51.100.9')
+  })
+
+  it('работает и когда прокси заменяет заголовок, а не дописывает', () => {
+    // Тогда в списке одно значение — первое и есть последнее.
+    expect(trustedAddress('198.51.100.9', '10.0.0.2')).toBe('198.51.100.9')
+  })
+
+  it('без заголовка берёт адрес сокета', () => {
+    // Прямое обращение в обход прокси: доверять нечему, кроме соединения.
+    expect(trustedAddress(undefined, '198.51.100.9')).toBe('198.51.100.9')
+    expect(trustedAddress('', '198.51.100.9')).toBe('198.51.100.9')
+    expect(trustedAddress('  ,  ', '198.51.100.9')).toBe('198.51.100.9')
+  })
+
+  it('обрезает пробелы вокруг значения', () => {
+    expect(trustedAddress('1.1.1.1 ,   198.51.100.9  ', '10.0.0.2')).toBe('198.51.100.9')
   })
 })

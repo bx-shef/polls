@@ -51,16 +51,6 @@ export function decideLinkAccess(link: LinkRecord | null, now: Date): LinkAccess
 }
 
 /**
- * Состояние, в которое переходит ссылка, когда её открыли.
- *
- * `sent → opened` и больше ничего: повторное открытие уже открытой ссылки состояние не меняет,
- * иначе в отчёте «открыта» превратилась бы в счётчик перезагрузок страницы.
- */
-export function statusAfterOpen(status: LinkStatus): LinkStatus {
-  return status === 'sent' ? 'opened' : status
-}
-
-/**
  * Тексты для посетителя.
  *
  * Лежат в домене, а не в разметке, потому что это часть поведения: что именно узнаёт человек,

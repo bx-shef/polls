@@ -1,12 +1,9 @@
 import { Buffer } from 'node:buffer'
-import { createError, defineEventHandler, getRouterParam, getRequestIP, readRawBody, setResponseStatus } from 'h3'
-import { DENIAL_MESSAGES, decideLinkAccess } from '../../domain/links/access'
-import { hashToken, isTokenShaped } from '../../domain/links/token'
+import { createError, defineEventHandler, getRequestHeader, getRouterParam, readRawBody, setResponseStatus } from 'h3'
 import { checkAnswers, MAX_TOTAL_BYTES } from '../../domain/surveys/answer'
-import { countAndDecide } from '../../links/rate'
-import { findLinkByTokenHash, findTemplate, saveAnswer } from '../../links/store'
-import { isDatabaseConfigured } from '../../db/client'
+import { saveAnswer } from '../../links/store'
 import { logger } from '../../utils/logger'
+import { denied, resolveSurveyAccess } from './-access'
 
 /**
  * Accepts a filled-in survey.
@@ -23,30 +20,24 @@ import { logger } from '../../utils/logger'
 /**
  * Предел тела запроса, в байтах.
  *
- * Считаем с запасом к пределу самой анкеты: JSON вокруг значений тоже весит. Проверка стоит
- * ДО разбора — тот же приём и та же причина, что в обработчике установки: разбор мегабайтного
- * тела съедает процесс раньше, чем до него дойдёт хоть одна осмысленная проверка.
+ * Считаем с запасом к пределу самой анкеты: JSON вокруг значений тоже весит.
+ *
+ * ⚠ Заявленный размер проверяется по `Content-Length` ДО чтения тела, и это не придирка
+ * к порядку. `readRawBody` копит весь поток в памяти и только потом отдаёт строку — то есть
+ * проверка после него срабатывает, когда дорогое уже случилось. Панель ревью PR #15 указала,
+ * что комментарий обещал проверку «до разбора», а по факту защищал только от разбора,
+ * не от чтения. Заголовку верить нельзя, поэтому фактический размер проверяется тоже.
  */
 const MAX_BODY_BYTES = MAX_TOTAL_BYTES * 2
 
 export default defineEventHandler(async (event) => {
-  if (!isDatabaseConfigured()) {
-    throw createError({ statusCode: 503, statusMessage: 'Not configured' })
+  const declared = Number(getRequestHeader(event, 'content-length'))
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    throw createError({ statusCode: 413, statusMessage: 'Body too large' })
   }
 
-  const token = getRouterParam(event, 'token') ?? ''
-  if (!isTokenShaped(token)) {
-    return refusal('unknown')
-  }
-
-  const tokenHash = hashToken(token)
-  const rate = await countAndDecide(getRequestIP(event, { xForwardedFor: true }) ?? '', tokenHash)
-  if (!rate.allow) {
-    logger.warn({ by: rate.by }, 'анкета: превышена частота отправок')
-    setResponseStatus(event, 429)
-    event.node.res.setHeader('Retry-After', String(rate.retryAfterSeconds))
-    return { ok: false as const, reason: 'rate-limited' as const }
-  }
+  const access = await resolveSurveyAccess(event, getRouterParam(event, 'token') ?? '')
+  if (!access.ok) return access.body
 
   const raw = await readRawBody(event)
   if (typeof raw !== 'string' || raw === '') {
@@ -57,19 +48,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 413, statusMessage: 'Body too large' })
   }
 
-  const link = await findLinkByTokenHash(tokenHash)
-  const access = decideLinkAccess(link, new Date())
-  if (!access.allow) {
-    return refusal(access.reason)
-  }
-
-  const template = await findTemplate(link!.portalId, link!.surveyCode, link!.surveyVersion)
-  if (template === null) {
-    logger.error({ code: link!.surveyCode, version: link!.surveyVersion }, 'анкета: схема версии не найдена в кэше')
-    throw createError({ statusCode: 503, statusMessage: 'Survey unavailable' })
-  }
-
-  const checked = checkAnswers(template, parseJson(raw))
+  const checked = checkAnswers(access.template, parseJson(raw))
   if (!checked.ok) {
     // Наружу уходят коды и ключи вопросов, но НЕ присланные значения: эхо чужого ввода
     // в ответе — лишний путь для того, кто ищет, что мы с этим вводом делаем.
@@ -81,10 +60,10 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  const saved = await saveAnswer(link!, tokenHash, {
-    surveyCode: link!.surveyCode,
-    surveyVersion: link!.surveyVersion,
-    itemId: link!.itemId,
+  const saved = await saveAnswer(access.link, access.tokenHash, {
+    surveyCode: access.link.surveyCode,
+    surveyVersion: access.link.surveyVersion,
+    itemId: access.link.itemId,
     answers: checked.answers,
     submittedAt: new Date().toISOString(),
   })
@@ -92,16 +71,12 @@ export default defineEventHandler(async (event) => {
   if (!saved) {
     // Ссылку закрыли между проверкой и записью — например, человек отправил анкету дважды.
     // Повторная отправка отбивается, и это проверяется живой проверкой `pnpm verify:link`.
-    return refusal('completed')
+    return denied('completed').body
   }
 
-  logger.info({ code: link!.surveyCode, version: link!.surveyVersion }, 'анкета: ответ принят в буфер')
+  logger.info({ code: access.link.surveyCode, version: access.link.surveyVersion }, 'анкета: ответ принят в буфер')
   return { ok: true as const }
 })
-
-function refusal(reason: keyof typeof DENIAL_MESSAGES) {
-  return { ok: false as const, reason, ...DENIAL_MESSAGES[reason] }
-}
 
 function parseJson(raw: string): unknown {
   try {

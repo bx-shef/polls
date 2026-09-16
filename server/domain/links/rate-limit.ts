@@ -81,3 +81,25 @@ export function addressKey(address: string, hash: (value: string) => string): st
 export function tokenKey(tokenHash: string): string {
   return `rate:link:${tokenHash}`
 }
+
+/**
+ * Адрес обращающегося из заголовка прокси.
+ *
+ * ⚠ Берём ПОСЛЕДНЕЕ значение `X-Forwarded-For`, а не первое, и это не вкусовщина.
+ * Стандартный `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` не заменяет
+ * заголовок, а ДОПИСЫВАЕТ реальный адрес в конец. Значит доверенное значение — последнее,
+ * а первое прислал сам обращающийся. `getRequestIP` из h3 берёт именно первое
+ * (`split(',').shift()`), то есть считает по значению, которое подделывается одной строкой
+ * в запросе, — и весь предел по адресу снимается. Нашла панель ревью PR #15.
+ *
+ * Когда прокси не дописывает, а заменяет заголовок, в списке одно значение — первое и есть
+ * последнее, так что для обеих топологий верно одно правило: перед нами ровно один
+ * доверенный прокси, и его слово последнее.
+ *
+ * Пусто — значит заголовка нет вовсе (прямое обращение в обход прокси): тогда адрес берётся
+ * из сокета, и решает это вызывающий.
+ */
+export function trustedAddress(forwardedFor: string | undefined, socketAddress: string): string {
+  const hops = (forwardedFor ?? '').split(',').map(hop => hop.trim()).filter(hop => hop !== '')
+  return hops.length > 0 ? hops[hops.length - 1]! : socketAddress
+}

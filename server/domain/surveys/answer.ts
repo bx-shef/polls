@@ -22,9 +22,10 @@ export const MAX_TEXT_BYTES = 8 * 1024
 /**
  * Предел на всю анкету, в байтах.
  *
- * Самая длинная анкета источника — 13 вопросов. Даже если все текстовые и все заполнены
- * до предела, до этого числа не дотянуть. Предел нужен не от честного респондента,
- * а от того, кто пришёл с готовым телом на сто мегабайт.
+ * Самая длинная анкета источника — 13 вопросов, из них текстовых не больше трёх. Развёрнутый
+ * ответ в разобранном наборе — сотни байт, так что честному респонденту этих 64 КБ хватает
+ * с запасом в сотни раз. Предел нужен не от него, а от того, кто пришёл с готовым телом
+ * на сто мегабайт: предел на одно поле такого не ловит, если полей много.
  */
 export const MAX_TOTAL_BYTES = 64 * 1024
 
@@ -80,9 +81,14 @@ export function checkAnswers(template: SurveyTemplate, submitted: unknown): Answ
 
   for (const [key, question] of questions) {
     const value = raw[key]
-    if (value === undefined || value === null || value === '') {
-      // Пустая строка приравнена к «не ответил» намеренно: пустое текстовое поле — это
-      // пропуск, а не ответ длиной ноль, и хранить их по-разному не за чем.
+    // ⚠ Строка из одних пробелов — тоже пропуск. Без `trim` она дошла бы до балльного
+    // вопроса, где `Number(' ')` даёт ноль, и пропуск молча превратился бы в честную
+    // нулевую оценку — ровно та путаница, ради которой весь файл и написан.
+    const blank = value === undefined || value === null
+      || (typeof value === 'string' && value.trim() === '')
+    if (blank) {
+      // Пустое текстовое поле — это пропуск, а не ответ длиной ноль:
+      // хранить их по-разному не за чем.
       answers[key] = null
       continue
     }
@@ -125,42 +131,4 @@ export function checkAnswers(template: SurveyTemplate, submitted: unknown): Answ
   }
 
   return problems.length > 0 ? { ok: false, problems } : { ok: true, answers }
-}
-
-/**
- * Балл секции по ответам.
- *
- * Формула источника, перенесённая один в один: сумма `значение × вес / 100` по вопросам,
- * идущим в оценку, округление до двух знаков. Она детерминирована и известна — именно
- * поэтому сверка перенесённых баллов с историческими вообще возможна.
- *
- * Неотвеченный вопрос не добавляет к сумме ничего. Это то же самое, что делал источник
- * (там пропуск считался нулём, а ноль на вес даёт ноль), — расхождения на сверке не будет.
- *
- * ⚠ Секция, где не отвечено НИЧЕГО, даёт `null`, а не ноль. Ноль означал бы худшую
- * возможную оценку там, где оценки просто нет, — та же ошибка, что предустановленное
- * значение у ползунка. Пересчёт истории, где источник в этом случае писал ноль, читает
- * `null` как ноль у себя: это его дело, а не свойство формулы.
- */
-export function sectionScore(
-  template: SurveyTemplate,
-  sectionKey: string,
-  answers: Readonly<Record<string, AnswerValue>>,
-): number | null {
-  const section = template.sections.find(s => s.key === sectionKey)
-  if (section === undefined || !section.scored) return null
-
-  let total = 0
-  let answered = 0
-
-  for (const question of section.questions) {
-    if (!question.scored) continue
-    const value = answers[question.key]
-    if (typeof value !== 'number') continue
-    total += value * question.weight / 100
-    answered++
-  }
-
-  if (answered === 0) return null
-  return Math.round(total * 100) / 100
 }

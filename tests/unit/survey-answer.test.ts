@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkAnswers, MAX_TEXT_BYTES, sectionScore } from '../../server/domain/surveys/answer'
+import { checkAnswers, MAX_TEXT_BYTES } from '../../server/domain/surveys/answer'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
 /**
@@ -54,6 +54,16 @@ describe('проверка присланных ответов', () => {
     expect(check.ok && check.answers.T1).toBe(null)
   })
 
+  it('строка из пробелов в балльном вопросе не становится честным нулём', () => {
+    // Гвард от дефекта, найденного панелью ревью PR #15: без `trim` строка из пробелов
+    // доходила до `Number(' ')`, а это ноль. Пропуск молча превращался в оценку «0» —
+    // ровно та путаница, отличить которую потом уже нельзя.
+    const check = checkAnswers(TEMPLATE, { Q1: '   ', T1: '\n\t ' })
+
+    expect(check.ok && check.answers.Q1).toBe(null)
+    expect(check.ok && check.answers.T1).toBe(null)
+  })
+
   it('принимает число, присланное строкой', () => {
     // Форма отправляет значение ползунка строкой; отказывать по типу значило бы
     // ломать анкету на ровном месте.
@@ -96,44 +106,5 @@ describe('проверка присланных ответов', () => {
 
   it.each([[null], ['строка'], [[1, 2]], [42]])('отвергает тело, которое не объект (%#)', (body) => {
     expect(checkAnswers(TEMPLATE, body).ok).toBe(false)
-  })
-})
-
-describe('балл секции', () => {
-  it('считает по формуле источника', () => {
-    // 8 × 30/100 + 9 × 70/100 = 2.4 + 6.3 = 8.7
-    expect(sectionScore(TEMPLATE, 'product', { Q1: 8, Q2: 9 })).toBe(8.7)
-  })
-
-  it('округляет до двух знаков, а не до целого', () => {
-    // Гвард от того же дефекта, что и PRECISION у поля на портале: балл 7,5 не должен
-    // превращаться в 8.
-    expect(sectionScore(TEMPLATE, 'product', { Q1: 7, Q2: 7.5 })).toBe(7.35)
-  })
-
-  it('не считает вопрос, выключенный из оценки', () => {
-    // У Q3 вес 0 и scored: false — его значение на балл не влияет никак.
-    expect(sectionScore(TEMPLATE, 'product', { Q1: 10, Q2: 10, Q3: 0 })).toBe(10)
-  })
-
-  it('неотвеченный вопрос не добавляет к сумме ничего', () => {
-    // То же, что делал источник: там пропуск считался нулём, а ноль на вес даёт ноль.
-    // Значит на сверке баллов расхождения не будет.
-    expect(sectionScore(TEMPLATE, 'product', { Q1: 10 })).toBe(3)
-  })
-
-  it('секция без единого ответа даёт null, а не ноль', () => {
-    // Ноль означал бы худшую оценку там, где оценки просто нет, — та же ошибка,
-    // что предустановленное значение у ползунка.
-    expect(sectionScore(TEMPLATE, 'product', {})).toBe(null)
-    expect(sectionScore(TEMPLATE, 'product', { Q1: null, Q2: null })).toBe(null)
-  })
-
-  it('не считает балл по секции открытых вопросов', () => {
-    expect(sectionScore(TEMPLATE, 'open', { T1: 'текст' })).toBe(null)
-  })
-
-  it('не падает на несуществующей секции', () => {
-    expect(sectionScore(TEMPLATE, 'нет такой', {})).toBe(null)
   })
 })

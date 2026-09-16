@@ -20,7 +20,7 @@ interface PublicQuestion {
 }
 
 interface SurveyResponse {
-  ok: boolean
+  ok?: boolean
   reason?: string
   title?: string
   detail?: string
@@ -29,6 +29,14 @@ interface SurveyResponse {
     sections: { key: string, title: string, questions: PublicQuestion[] }[]
   }
 }
+
+interface SubmitResponse {
+  ok?: boolean
+  detail?: string
+  problems?: { key: string, detail: string }[]
+}
+
+const GENERIC_FAILURE = 'Не удалось отправить ответы. Проверьте связь и попробуйте ещё раз.'
 
 const route = useRoute()
 const token = String(route.params.token ?? '')
@@ -39,7 +47,17 @@ useHead({
   meta: [{ name: 'robots', content: 'noindex, nofollow' }],
 })
 
-const { data, error } = await useFetch<SurveyResponse>(`/api/s/${token}`)
+/**
+ * ⚠ `ignoreResponseError` обязателен. Без него `useFetch` считает любой не-2xx ошибкой
+ * и ВЫБРАСЫВАЕТ тело — а именно телом мы объясняем человеку, что ссылка истекла или что
+ * он частит. Ровно эта ловушка уже ловилась в `app/pages/index.vue`; здесь её нашла панель
+ * ревью PR #15: ветка с разбором ответа была недостижима.
+ *
+ * Обратная сторона: сюда же попадают стандартные ошибки Nitro (503, когда у нас нет базы
+ * или схемы анкеты). У них нет ни `ok`, ни `title` — поэтому ниже проверяется форма тела,
+ * а не только код.
+ */
+const { data, error } = await useFetch<SurveyResponse>(`/api/s/${token}`, { ignoreResponseError: true })
 
 /**
  * Ответы. Значение `null` — «не ответил», и оно НЕ равно нулю.
@@ -56,7 +74,19 @@ const problems = ref<{ key: string, detail: string }[]>([])
 const failure = ref('')
 
 const survey = computed(() => data.value?.survey)
-const denial = computed(() => (data.value && !data.value.ok ? data.value : null))
+
+/** Отказ, который мы умеем объяснить. Тело без `title` — это чужая ошибка, а не наш отказ. */
+const denial = computed(() => {
+  const body = data.value
+  if (body === null || body === undefined) return null
+  if (body.ok === true) return null
+  return typeof body.title === 'string' && body.title !== '' ? body : null
+})
+
+/** Показать общую карточку: сеть отвалилась либо сервер ответил тем, чего мы не ждали. */
+const broken = computed(() => error.value !== null && error.value !== undefined
+  ? true
+  : data.value !== null && data.value !== undefined && data.value.ok !== true && denial.value === null)
 
 /** Абзацы формулировки. Заголовок вопроса — абзац, а не ярлык: в разобранном наборе они длинные. */
 function paragraphs(text: string): string[] {
@@ -85,24 +115,31 @@ async function submit() {
   failure.value = ''
 
   try {
-    const result = await $fetch<{ ok: boolean, reason?: string, title?: string, detail?: string, problems?: { key: string, detail: string }[] }>(
-      `/api/s/${token}`,
-      { method: 'POST', body: answers },
-    )
-    if (result.ok) {
+    // ⚠ `ignoreResponseError` и здесь по той же причине: 422 (ответы не прошли проверку)
+    // и 429 (частит) — это не сбой, а разговор с человеком, и весь смысл в теле ответа.
+    const result = await $fetch<SubmitResponse>(`/api/s/${token}`, {
+      method: 'POST',
+      body: answers,
+      ignoreResponseError: true,
+    })
+    if (result?.ok === true) {
       sent.value = true
       return
     }
-    if (result.problems !== undefined) {
+    if (result?.problems !== undefined && result.problems.length > 0) {
       problems.value = result.problems
       return
     }
-    failure.value = result.detail ?? 'Не удалось отправить ответы.'
+    if (typeof result?.detail === 'string' && result.detail !== '') {
+      failure.value = result.detail
+      return
+    }
+    failure.value = GENERIC_FAILURE
   }
   catch {
-    // Что именно сломалось, респонденту знать незачем и неинтересно: ему нужно понять,
-    // что делать дальше. Подробности — в журнале сервера.
-    failure.value = 'Не удалось отправить ответы. Проверьте связь и попробуйте ещё раз.'
+    // Сюда доходит только то, что не доехало до сервера: сеть, обрыв. Что именно сломалось,
+    // респонденту знать незачем — ему нужно понять, что делать дальше.
+    failure.value = GENERIC_FAILURE
   }
   finally {
     sending.value = false
@@ -113,7 +150,7 @@ async function submit() {
 <template>
   <main class="page">
     <div
-      v-if="error"
+      v-if="broken"
       class="card"
     >
       <h1>Анкета недоступна</h1>

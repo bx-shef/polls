@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   DENIAL_MESSAGES,
   decideLinkAccess,
-  statusAfterOpen,
   type LinkDenial,
   type LinkStatus,
 } from '../../server/domain/links/access'
@@ -61,24 +60,6 @@ describe('кого пускаем в анкету', () => {
   it('не пускает по несуществующей ссылке', () => {
     expect(decideLinkAccess(null, NOW)).toEqual({ allow: false, reason: 'unknown' })
   })
-})
-
-describe('переход при открытии', () => {
-  it('отправленная становится открытой', () => {
-    expect(statusAfterOpen('sent')).toBe('opened')
-  })
-
-  it('повторное открытие ничего не меняет', () => {
-    // Иначе «открыта» в отчёте превратится в счётчик перезагрузок страницы.
-    expect(statusAfterOpen('opened')).toBe('opened')
-  })
-
-  it.each<[LinkStatus]>([['created'], ['completed'], ['revoked'], ['expired']])(
-    'не воскрешает статус %s',
-    (status) => {
-      expect(statusAfterOpen(status)).toBe(status)
-    },
-  )
 })
 
 describe('что читает посетитель', () => {

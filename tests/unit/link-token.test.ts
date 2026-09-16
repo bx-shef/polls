@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hashesEqual, hashToken, isTokenShaped, mintToken } from '../../server/domain/links/token'
+import { hashToken, isTokenShaped, mintToken } from '../../server/domain/links/token'
 
 /**
  * Токен — единственный ключ доступа к чужой анкете. В разобранном решении заказчика это был
@@ -65,25 +65,5 @@ describe('проверка формы токена', () => {
     [`${'a'.repeat(42)}!`, 'посторонний символ'],
   ])('отвергает негодное (%#: %s)', (candidate) => {
     expect(isTokenShaped(candidate)).toBe(false)
-  })
-})
-
-describe('сравнение хешей', () => {
-  it('признаёт равные', () => {
-    const hash = hashToken(mintToken())
-
-    expect(hashesEqual(hash, hash)).toBe(true)
-  })
-
-  it('различает разные', () => {
-    expect(hashesEqual(hashToken(mintToken()), hashToken(mintToken()))).toBe(false)
-  })
-
-  it('не падает на значении неверной длины', () => {
-    // `timingSafeEqual` бросает на буферах разной длины — до него дело доходить не должно.
-    const hash = hashToken(mintToken())
-
-    expect(hashesEqual(hash, 'коротко')).toBe(false)
-    expect(hashesEqual('', hash)).toBe(false)
   })
 })

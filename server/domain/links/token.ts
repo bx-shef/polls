@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 
 /**
  * Survey link tokens: how they are minted and how they are stored.
@@ -20,9 +20,6 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
  * потом нельзя, а укоротить никто и не попросит.
  */
 const TOKEN_BYTES = 32
-
-/** Длина hex-хеша SHA-256. По ней узнаётся, что в колонке лежит хеш, а не сам токен. */
-const HASH_HEX_LENGTH = 64
 
 /**
  * Форма токена в адресе: base64url без набивки.
@@ -57,17 +54,4 @@ export function hashToken(token: string): string {
  */
 export function isTokenShaped(token: string): boolean {
   return TOKEN_PATTERN.test(token)
-}
-
-/**
- * Сравнить два хеша за постоянное время.
- *
- * Обычное `===` на строках выходит из сравнения на первом различии, и по времени ответа
- * можно восстанавливать хеш по байту. Здесь это скорее гигиена, чем горящая дыра — искать
- * мы всё равно будем индексом по колонке, — но там, где сравнение секрета всё-таки пишется
- * руками, оно должно быть постоянным по времени.
- */
-export function hashesEqual(left: string, right: string): boolean {
-  if (left.length !== HASH_HEX_LENGTH || right.length !== HASH_HEX_LENGTH) return false
-  return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'))
 }

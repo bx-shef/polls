@@ -1,4 +1,4 @@
-import type { SurveyTemplate } from '../../domain/surveys/model'
+import type { SurveyQuestionType, SurveyTemplate } from '../../domain/surveys/model'
 
 /**
  * The survey as the respondent is allowed to see it.
@@ -18,7 +18,8 @@ import type { SurveyTemplate } from '../../domain/surveys/model'
 export interface PublicQuestion {
   key: string
   title: string
-  type: 'scale' | 'text' | 'date'
+  /** Тот же набор, что в модели: расхождение здесь тайпчек ловит на маппинге, но лучше не заводить. */
+  type: SurveyQuestionType
   /** Границы шкалы — только у балльных вопросов. */
   scale?: { min: number, max: number }
 }
