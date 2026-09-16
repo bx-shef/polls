@@ -18,7 +18,8 @@ import type {
  * и диапазонами интерпретации. Это прямой донор для шаблонов, другого места с формой анкеты
  * в источнике нет.
  *
- * Формулировок вопросов здесь НЕТ: в конфигурации `NAME` пустой у всех 119 полей, а настоящий
+ * Формулировок вопросов здесь НЕТ: в конфигурации `NAME` пустой у КАЖДОГО поля (проверено
+ * на всех 114 полях реконструкции), а настоящий
  * текст лежит подписями полей (`b_user_field_lang`). Поэтому подписи передаются отдельно —
  * без них шаблон переносится с пустыми заголовками, и это видно в отчёте, а не молча.
  *
@@ -74,7 +75,7 @@ export function readLegacyTemplates(
 
     const raw = parseJson(option.value)
     if (!Array.isArray(raw)) {
-      warnings.push(warn('field-mismatch', code, option.name, 'конфигурация анкеты не разобралась как список секций'))
+      warnings.push(warn('template-unreadable', code, option.name, 'конфигурация анкеты не разобралась как список секций'))
       continue
     }
 
@@ -95,6 +96,12 @@ export function readLegacyTemplates(
  * Форма реестра в источнике не одна — встречается и объект `{код: название}`, и список.
  * Разбираем обе и не падаем ни на одной: отсутствие названия стоит пустого заголовка,
  * а не потерянного шаблона.
+ *
+ * Защиты от `__proto__` в ключах здесь нет намеренно, в отличие от `server/b24/event-body.ts`,
+ * где она обязательна. Разница в том, ЧТО записывается: там в цепочку кладутся объекты
+ * (`node[segment] = {}`), и загрязнение прототипа реально; здесь значение всегда строка,
+ * отсеянная `typeof`, а присваивание строки в `__proto__` — пустая операция. Если однажды
+ * сюда начнут писать объект, защиту придётся завести.
  */
 function readRegistry(options: readonly LegacyOption[]): Record<string, string> {
   const row = options.find(o => o.name === OPTION_REGISTRY)
@@ -121,6 +128,13 @@ function readRegistry(options: readonly LegacyOption[]): Record<string, string> 
   return titles
 }
 
+/**
+ * Индекс подписей: пара «анкета + поле» → формулировка.
+ *
+ * Регистр приводится с обеих сторон намеренно. Подписи приезжают выгрузкой из MySQL, где
+ * разнобой регистра обычное дело, а промах по индексу здесь ничего не ломает — он оставляет
+ * заголовок пустым. Тихо, без предупреждения, и заметить это можно только на настоящем снимке.
+ */
 function indexLabels(labels: readonly LegacyFieldLabel[]): (template: string, field: string) => string {
   const index = new Map<string, string>()
   for (const label of labels) {
@@ -158,7 +172,7 @@ function readSections(
       title: typeof source.NAME === 'string' ? source.NAME : '',
       scored: key !== OPEN_SECTION_KEY,
       questions,
-      bands: readBands(template, key, source.TERMS, warnings),
+      bands: readBands(template, key, source.TERMS, sectionScale(questions), warnings),
     })
   }
 
@@ -174,6 +188,15 @@ function readSections(
  * спрятать пару: в списке вопросов он выглядел бы обычным, и связь с близнецом видел бы только
  * тот, кто помнит про этот случай. Обоим при пересчёте отдаётся одно значение (`sourceKey`
  * у них общий) — именно так баллы сходятся с историческими.
+ *
+ * ⚠ Функция правит `question.key` НА МЕСТЕ. `readonly` в сигнатуре запрещает менять сам массив,
+ * но не его элементы, и это здесь не лазейка: объекты только что построены соседней функцией,
+ * наружу до `return` не уходят, других ссылок на них нет.
+ *
+ * Суффикса по секции недостаточно, если один код встретился дважды ВНУТРИ одной секции: тогда
+ * оба получили бы одинаковый ключ, и уникальность, ради которой всё затевалось, не наступила бы.
+ * В одиннадцати разобранных анкетах такого нет, но `digital` мы не видели — поэтому ключ
+ * дополняется порядковым номером, а не проверяется надеждой.
  */
 function splitDuplicateKeys(
   template: string,
@@ -182,11 +205,14 @@ function splitDuplicateKeys(
   warnings: ImportWarning[],
 ): void {
   const split = new Set<string>()
+  const taken = new Set(sections.flatMap(s => s.questions).map(q => q.key))
 
   for (const section of sections) {
     for (const question of section.questions) {
       if ((seenKeys.get(question.sourceKey) ?? 0) < 2) continue
-      question.key = `${question.sourceKey}__${section.key}`
+      taken.delete(question.key)
+      question.key = uniqueKey(`${question.sourceKey}__${section.key}`, taken)
+      taken.add(question.key)
       split.add(question.sourceKey)
     }
   }
@@ -199,6 +225,15 @@ function splitDuplicateKeys(
       'вопрос стоял в нескольких секциях с разными весами: ключ расщеплён по секциям, '
       + 'значение ответа при пересчёте отдаётся каждому',
     ))
+  }
+}
+
+/** Ключ, которого ещё нет. Номер приписывается только при столкновении, а не всем подряд. */
+function uniqueKey(candidate: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(candidate)) return candidate
+  for (let n = 2; ; n++) {
+    const next = `${candidate}_${n}`
+    if (!taken.has(next)) return next
   }
 }
 
@@ -284,7 +319,13 @@ function readQuestions(
  * Дыры в покрытии не заделываются: у `digital` нижняя граница начиналась с 4, и клиент
  * с плохой оценкой не видел ничего. Чинить чужие данные догадкой нельзя — это в отчёт.
  */
-function readBands(template: string, section: string, rawTerms: unknown, warnings: ImportWarning[]): ImportedBand[] {
+function readBands(
+  template: string,
+  section: string,
+  rawTerms: unknown,
+  scale: { min: number, max: number } | null,
+  warnings: ImportWarning[],
+): ImportedBand[] {
   if (!Array.isArray(rawTerms)) return []
   const bands: ImportedBand[] = []
 
@@ -301,23 +342,62 @@ function readBands(template: string, section: string, rawTerms: unknown, warning
   }
 
   bands.sort((a, b) => a.from - b.from)
-  reportGaps(template, section, bands, warnings)
+  reportGaps(template, section, bands, scale, warnings)
   return bands
+}
+
+/**
+ * Шкала секции — по её балльным вопросам.
+ *
+ * Нужна, чтобы было с чем сравнивать края диапазонов интерпретации. Во всём разобранном
+ * наборе шкала везде `0…10`, но брать её константой значит поверить в это навсегда.
+ * `null` — считать нечем: в секции нет балльных вопросов, и диапазонам там взяться неоткуда.
+ */
+function sectionScale(questions: readonly ImportedQuestion[]): { min: number, max: number } | null {
+  const scales = questions.map(q => q.scale).filter((s): s is { min: number, max: number } => s !== undefined)
+  if (scales.length === 0) return null
+  return {
+    min: Math.min(...scales.map(s => s.min)),
+    max: Math.max(...scales.map(s => s.max)),
+  }
 }
 
 /**
  * Пожаловаться на дыры в покрытии шкалы.
  *
- * Границы диапазонов в источнике смежные (…6–7.5, 7.5–8…), поэтому дырой считается только
- * настоящий разрыв: следующий диапазон начинается ВЫШЕ конца предыдущего.
+ * Границы диапазонов в источнике смежные (…6–7.5, 7.5–8…), поэтому дырой между диапазонами
+ * считается только настоящий разрыв: следующий начинается ВЫШЕ конца предыдущего.
+ *
+ * ⚠ Края шкалы проверяются отдельно, и это не педантизм. Сначала здесь сравнивались только
+ * соседние пары — и та единственная дыра, ради которой вся проверка писалась, не ловилась:
+ * у анкеты `digital` диапазоны шли с 4 и между собой стыковались вплотную, а непокрытым
+ * оставался отрезок 0–4. Клиент с плохой оценкой не видел никакого текста, а отчёт о переносе
+ * сказал бы «дыр нет». Нашла панель ревью PR #14.
  */
-function reportGaps(template: string, section: string, bands: readonly ImportedBand[], warnings: ImportWarning[]): void {
+function reportGaps(
+  template: string,
+  section: string,
+  bands: readonly ImportedBand[],
+  scale: { min: number, max: number } | null,
+  warnings: ImportWarning[],
+): void {
+  if (bands.length === 0) return
+
+  if (scale !== null && bands[0]!.from > scale.min) {
+    warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${scale.min}–${bands[0]!.from}`))
+  }
+
   for (let i = 1; i < bands.length; i++) {
     const previous = bands[i - 1]!
     const current = bands[i]!
     if (current.from > previous.to) {
       warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${previous.to}–${current.from}`))
     }
+  }
+
+  const last = bands[bands.length - 1]!
+  if (scale !== null && last.to < scale.max) {
+    warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${last.to}–${scale.max}`))
   }
 }
 
@@ -328,6 +408,13 @@ function sectionKey(field: unknown): string {
   return key === '' ? OPEN_SECTION_KEY : key
 }
 
+/**
+ * Тип вопроса источника → наш.
+ *
+ * В источнике типов ровно три: `POINT`, `TEXT`, `DATE`. Умолчание `text` выбрано не по
+ * алфавиту: неизвестный тип, принятый за балльный, попал бы в оценку и молча сдвинул балл
+ * секции, а принятый за текстовый — просто не попадёт никуда.
+ */
 function questionType(type: unknown): ImportedQuestionType {
   if (type === 'POINT') return 'scale'
   if (type === 'DATE') return 'date'

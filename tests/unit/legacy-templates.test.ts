@@ -171,7 +171,7 @@ describe('испорченная конфигурация анкеты', () => {
     const { templates, warnings } = readLegacyTemplates(options)
 
     expect(templates.map(t => t.code)).toEqual(['brand'])
-    expect(warnings.filter(w => w.code === 'field-mismatch')).toHaveLength(1)
+    expect(warnings.filter(w => w.code === 'template-unreadable')).toHaveLength(1)
   })
 })
 
@@ -186,38 +186,142 @@ describe('диапазоны интерпретации', () => {
     ] }]),
   }]
 
+  const gapsOf = (terms: unknown) =>
+    readLegacyTemplates(withTerms(terms)).warnings.filter(w => w.code === 'band-gap').map(w => w.detail)
+
+  /** Диапазоны, покрывающие шкалу 0–10 целиком: фон, на котором видно ровно проверяемую дыру. */
+  const FULL = [{ MIN: 0, MAX: 6, TEXT: 'а' }, { MIN: 6, MAX: 10, TEXT: 'б' }]
+
   it('вычищает HTML до текста и говорит об этом', () => {
-    const terms = [{ MIN: '4', MAX: '6', TEXT: '<p class="g-color-white">Где-то мы <b>свернули</b> не туда</p>' }]
+    const terms = [{ MIN: '0', MAX: '10', TEXT: '<p class="g-color-white">Где-то мы <b>свернули</b> не туда</p>' }]
 
     const { templates, warnings } = readLegacyTemplates(withTerms(terms))
 
-    expect(templates[0]!.sections[0]!.bands[0]).toEqual({ from: 4, to: 6, text: 'Где-то мы свернули не туда' })
+    expect(templates[0]!.sections[0]!.bands[0]).toEqual({ from: 0, to: 10, text: 'Где-то мы свернули не туда' })
     expect(warnings.filter(w => w.code === 'html-stripped')).toHaveLength(1)
   })
 
   it('не считает дырой смежные границы', () => {
-    // В источнике диапазоны стыкуются: 6–7.5, затем 7.5–8. Это не разрыв.
-    const terms = [{ MIN: 6, MAX: 7.5, TEXT: 'а' }, { MIN: 7.5, MAX: 8, TEXT: 'б' }]
-
-    expect(readLegacyTemplates(withTerms(terms)).warnings.filter(w => w.code === 'band-gap')).toEqual([])
+    // В источнике диапазоны стыкуются: 0–7.5, затем 7.5–10. Это не разрыв.
+    expect(gapsOf([{ MIN: 0, MAX: 7.5, TEXT: 'а' }, { MIN: 7.5, MAX: 10, TEXT: 'б' }])).toEqual([])
   })
 
-  it('сообщает о настоящем разрыве шкалы', () => {
-    // Клиент с оценкой в непокрытом отрезке не увидит никакого текста — так было у digital
-    // ниже четвёрки. Чинить чужие данные догадкой нельзя, но молчать о дыре тоже.
-    const terms = [{ MIN: 4, MAX: 6, TEXT: 'а' }, { MIN: 8, MAX: 10, TEXT: 'б' }]
+  it('не находит дыр там, где шкала покрыта целиком', () => {
+    expect(gapsOf(FULL)).toEqual([])
+  })
 
-    const gaps = readLegacyTemplates(withTerms(terms)).warnings.filter(w => w.code === 'band-gap')
+  it('сообщает о разрыве между диапазонами', () => {
+    expect(gapsOf([{ MIN: 0, MAX: 4, TEXT: 'а' }, { MIN: 8, MAX: 10, TEXT: 'б' }])).toEqual([
+      'шкала не покрыта на отрезке 4–8',
+    ])
+  })
 
-    expect(gaps).toHaveLength(1)
-    expect(gaps[0]!.detail).toContain('6–8')
+  it('ловит дыру внизу шкалы — ту самую, ради которой всё писалось', () => {
+    // Гвард от дефекта, найденного панелью ревью PR #14. Сравнивались только соседние пары,
+    // и случай анкеты digital не ловился: диапазоны шли с 4 и стыковались вплотную, а отрезок
+    // 0–4 не покрывал никто. Клиент с плохой оценкой не видел текста, а отчёт о переносе
+    // сказал бы «дыр нет» — молчаливее дефекта не бывает.
+    const digital = [
+      { MIN: 4, MAX: 6, TEXT: 'Где-то мы свернули не туда' },
+      { MIN: 6, MAX: 7.5, TEXT: 'б' },
+      { MIN: 7.5, MAX: 8, TEXT: 'в' },
+      { MIN: 8, MAX: 8.5, TEXT: 'г' },
+      { MIN: 8.5, MAX: 9.4, TEXT: 'д' },
+      { MIN: 9.4, MAX: 10, TEXT: 'Мы на вершине!' },
+    ]
+
+    expect(gapsOf(digital)).toEqual(['шкала не покрыта на отрезке 0–4'])
+  })
+
+  it('ловит дыру вверху шкалы', () => {
+    expect(gapsOf([{ MIN: 0, MAX: 8, TEXT: 'а' }])).toEqual(['шкала не покрыта на отрезке 8–10'])
   })
 
   it('упорядочивает диапазоны по нижней границе, как бы они ни лежали в источнике', () => {
-    const terms = [{ MIN: 8, MAX: 10, TEXT: 'б' }, { MIN: 4, MAX: 8, TEXT: 'а' }]
+    const bands = readLegacyTemplates(withTerms([...FULL].reverse())).templates[0]!.sections[0]!.bands
 
-    const bands = readLegacyTemplates(withTerms(terms)).templates[0]!.sections[0]!.bands
+    expect(bands.map(b => b.from)).toEqual([0, 6])
+  })
 
-    expect(bands.map(b => b.from)).toEqual([4, 8])
+  it('молчит про края, когда шкалу взять неоткуда', () => {
+    // Секция без балльных вопросов: сравнивать не с чем, и выдумывать шкалу мы не станем.
+    const options = [{
+      name: 'questionary_group_digital',
+      value: JSON.stringify([{ NAME: 'Вопросы', FIELD: '', TERMS: [{ MIN: 4, MAX: 6, TEXT: 'а' }], FIELDS: [
+        { CODE: 'UF_HQ_D_9', NAME: '', TYPE: 'TEXT' },
+      ] }]),
+    }]
+
+    expect(readLegacyTemplates(options).warnings.filter(w => w.code === 'band-gap')).toEqual([])
+  })
+})
+
+describe('предупреждения о составе секции', () => {
+  const section = (fields: unknown[], name = 'Продукт', field = 'PROPERTY_PRODUCT') => [{
+    name: 'questionary_group_synthetic',
+    value: JSON.stringify([{ NAME: name, FIELD: field, FIELDS: fields }]),
+  }]
+
+  const point = (code: string, size: number) =>
+    ({ CODE: code, NAME: '', TYPE: 'POINT', SETTING: { MIN: 0, MAX: 10, SIZE: size } })
+
+  it('сообщает, когда сумма весов не 100', () => {
+    // Гвард из мутационного прогона на ревью PR #14: код предупреждения существовал,
+    // но ни один тест не проверял, что он вообще срабатывает.
+    const warnings = readLegacyTemplates(section([point('A', 30), point('B', 30)])).warnings
+
+    expect(warnings.filter(w => w.code === 'weights-not-100').map(w => w.detail)).toEqual(['сумма весов 60, а не 100'])
+  })
+
+  it('сообщает, когда в оценочной секции нечего оценивать', () => {
+    // Все вопросы выключены весом 0: секция объявлена балльной, а балла не даёт.
+    const warnings = readLegacyTemplates(section([point('A', 0)])).warnings
+
+    expect(warnings.filter(w => w.code === 'section-not-scored').map(w => w.at)).toEqual(['product'])
+  })
+
+  it('не проверяет весов у секции открытых вопросов', () => {
+    // Иначе предупреждение навесится на каждую анкету: там текстовые вопросы и весов нет.
+    const warnings = readLegacyTemplates(
+      section([{ CODE: 'A', NAME: '', TYPE: 'TEXT' }], 'Вопросы', ''),
+    ).warnings
+
+    expect(warnings.filter(w => w.code === 'weights-not-100' || w.code === 'section-not-scored')).toEqual([])
+  })
+})
+
+describe('подписи полей', () => {
+  it('находятся независимо от регистра', () => {
+    // Гвард из мутационного прогона на ревью PR #14. Подписи приезжают выгрузкой из MySQL,
+    // где разнобой регистра обычное дело, а промах по индексу ничего не ломает — он тихо
+    // оставляет заголовок пустым, и заметить это можно только на настоящем снимке.
+    const labels = [{ template: 'BRAND', field: 'uf_hq_prod_analyt', title: 'Аналитика продукта' }]
+
+    const { templates } = readLegacyTemplates(
+      realOptions().filter(o => o.name === 'questionary_group_brand'),
+      labels,
+    )
+
+    expect(templates[0]!.sections[0]!.questions[0]!.title).toBe('Аналитика продукта')
+  })
+})
+
+describe('столкновение ключей внутри одной секции', () => {
+  it('разводит одинаковые коды в одной секции, а не выдаёт им общий ключ', () => {
+    // В одиннадцати разобранных анкетах такого нет, но digital мы не видели. Суффикса
+    // по секции здесь мало: оба вхождения получили бы один ключ, и уникальность,
+    // ради которой расщепление и существует, не наступила бы.
+    const options = [{
+      name: 'questionary_group_synthetic',
+      value: JSON.stringify([{ NAME: 'Продукт', FIELD: 'PROPERTY_PRODUCT', FIELDS: [
+        { CODE: 'UF_DUP', NAME: '', TYPE: 'POINT', SETTING: { MIN: 0, MAX: 10, SIZE: 50 } },
+        { CODE: 'UF_DUP', NAME: '', TYPE: 'POINT', SETTING: { MIN: 0, MAX: 10, SIZE: 50 } },
+      ] }]),
+    }]
+
+    const questions = readLegacyTemplates(options).templates[0]!.sections[0]!.questions
+
+    expect(questions.map(q => q.key)).toEqual(['UF_DUP__product', 'UF_DUP__product_2'])
+    expect(new Set(questions.map(q => q.sourceKey))).toEqual(new Set(['UF_DUP']))
   })
 })

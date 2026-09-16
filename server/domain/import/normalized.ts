@@ -27,7 +27,7 @@ export type ImportedQuestionType = 'scale' | 'text' | 'date'
  * | `weights-not-100` | сумма весов в секции не даёт 100 |
  * | `band-gap` | диапазоны интерпретации не покрывают шкалу без дыр |
  * | `section-not-scored` | секция без единого вопроса, идущего в оценку |
- * | `field-mismatch` | вопрос есть в конфигурации, но не в хранилище ответов, или наоборот |
+ * | `template-unreadable` | конфигурация анкеты не разобралась: шаблон пропущен целиком |
  */
 export type ImportWarningCode
   = | 'question-split'
@@ -37,7 +37,7 @@ export type ImportWarningCode
     | 'weights-not-100'
     | 'band-gap'
     | 'section-not-scored'
-    | 'field-mismatch'
+    | 'template-unreadable'
 
 export interface ImportWarning {
   code: ImportWarningCode
