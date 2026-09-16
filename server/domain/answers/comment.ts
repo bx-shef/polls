@@ -1,6 +1,6 @@
 import type { AnswerValue } from '../surveys/answer'
 import type { SurveyTemplate } from '../surveys/model'
-import type { SurveyScore } from '../surveys/scoring'
+import type { SectionScore, SurveyScore } from '../surveys/scoring'
 
 /**
  * Builds the timeline comment a manager reads in the deal.
@@ -61,7 +61,7 @@ export function buildAnswerComment(
 function sectionLines(
   section: SurveyTemplate['sections'][number],
   answers: Record<string, AnswerValue>,
-  score: { score: number | null, answered: number, scored: number, band: { text: string } | null } | undefined,
+  score: SectionScore | undefined,
 ): string[] {
   const lines: string[] = []
 

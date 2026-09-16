@@ -160,34 +160,41 @@ async function claimPending(limit: number): Promise<BufferedAnswer[]> {
  * и его неудача не повод откладывать саму доставку.
  */
 export async function deliverOne(row: BufferedAnswer): Promise<DeliveryOutcome> {
-  const answers = readAnswers(row.payload)
-  if (answers === null) {
-    // Содержимое буфера испорчено. Повторять нечего: следующая попытка разберёт то же самое.
-    return { ok: false, retry: false, reason: 'буфер не разобрался' }
-  }
-
-  const link = await findLinkByTokenHash(row.tokenHash)
-  if (link === null) return { ok: false, retry: false, reason: 'ссылка не найдена' }
-
-  const template = await findTemplate(link.portalId, link.surveyCode, link.surveyVersion)
-  if (template === null) return { ok: false, retry: false, reason: 'схема версии не найдена в кэше' }
-
-  const portal = await findPortalById(row.portalId)
-  if (portal === null || portal.status === 'deleted') {
-    // Портал удалил приложение. Долбиться в него больше нельзя — это инвариант,
-    // и повторять такую задачу бессмысленно.
-    return { ok: false, retry: false, reason: 'портал удалил приложение' }
-  }
-
-  const call = callForPortal(portal)
-  if (call === null) return { ok: false, retry: true, reason: 'у портала нет пригодных токенов' }
-
+  // ⚠ `try` охватывает ВСЁ тело, включая три обращения к базе. Сначала он начинался только
+  // перед записью в портал — и это была единственная асимметрия в файле: обрыв к Postgres
+  // на поиске ссылки улетал из `deliverOne` необработанным, рвал цикл `drainInbox`, и остаток
+  // уже захваченной пачки — до девяти ответов — оставался в `sending` ждать `requeueStuck`,
+  // то есть пятнадцать минут, при живом процессе, тикающем раз в минуту. Нашла панель ревью
+  // PR #22.
   try {
+    const answers = readAnswers(row.payload)
+    if (answers === null) {
+      // Содержимое буфера испорчено. Повторять нечего: следующая попытка разберёт то же самое.
+      return { ok: false, retry: false, reason: 'буфер не разобрался' }
+    }
+
+    const link = await findLinkByTokenHash(row.tokenHash)
+    if (link === null) return { ok: false, retry: false, reason: 'ссылка не найдена' }
+
+    const template = await findTemplate(link.portalId, link.surveyCode, link.surveyVersion)
+    if (template === null) return { ok: false, retry: false, reason: 'схема версии не найдена в кэше' }
+
+    const portal = await findPortalById(row.portalId)
+    if (portal === null || portal.status === 'deleted') {
+      // Портал удалил приложение. Долбиться в него больше нельзя — это инвариант,
+      // и повторять такую задачу бессмысленно.
+      return { ok: false, retry: false, reason: 'портал удалил приложение' }
+    }
+
+    const call = callForPortal(portal)
+    if (call === null) return { ok: false, retry: true, reason: 'у портала нет пригодных токенов' }
+
     return await writeToPortal(call, link.itemId, template, answers)
   }
   catch (error) {
     // ⚠ Наружу уходит НАШ код отказа, а не текст портала. Текст портала цитирует присланное
     // значение — а присланное значение здесь и есть ответ клиента. См. `portal-errors.ts`.
+    // База сюда тоже попадает: её ошибка так же не должна утечь в журнал целиком.
     return { ok: false, retry: true, reason: safeRefusal(error) }
   }
 }
