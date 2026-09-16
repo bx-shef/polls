@@ -58,4 +58,4 @@
   `decideInstall`, а SDK проверять структурно типизированной подделкой, как уже сделано
   для `RestCall`.
 
-_Last reviewed: 2026-09-15_
+_Last reviewed: 2026-09-16_
