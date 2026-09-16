@@ -3,10 +3,10 @@ import { eq, sql } from 'drizzle-orm'
 import { makePortalCall } from '../b24/client'
 import { parseBracketForm } from '../b24/event-body'
 import { refreshTokens } from '../b24/oauth'
-import { isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from '../b24/provision'
+import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from '../b24/provision'
 import { decideInstall } from '../domain/portals/install'
 import { getDb, isDatabaseConfigured, schema } from '../db/client'
-import { b24ClientId, b24ClientSecret } from '../utils/env'
+import { b24ClientId, b24ClientSecret, publicBaseUrl } from '../utils/env'
 import { assertEncryptionKey, encryptSecret } from '../utils/crypto'
 import { logger } from '../utils/logger'
 
@@ -203,8 +203,16 @@ async function provisionPortal(portal: {
       )
     }
 
+    // Вкладка регистрируется ПОСЛЕ смарт-процессов и отдельным вызовом: `placement.bind`
+    // не кладётся в батч, а вкладка без смарт-процессов показала бы менеджеру пустой экран.
+    // Её отказ установку не роняет — без вкладки приложение работает, без токенов нет.
+    const placed = await ensureDealTabPlacement(budgeted, publicBaseUrl())
+    if (!placed) {
+      logger.warn({ domain: portal.domain }, 'вкладка в карточке сделки не зарегистрирована')
+    }
+
     logger.info(
-      { domain: portal.domain, created: [result.createdTemplate, result.createdSurvey], addedFields: result.addedFields },
+      { domain: portal.domain, created: [result.createdTemplate, result.createdSurvey], addedFields: result.addedFields, placed },
       'смарт-процессы обустроены',
     )
     return 'ok'

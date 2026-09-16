@@ -1,4 +1,9 @@
 import {
+  buildBindDealTabCall,
+  DEAL_TAB_PATH,
+  isPlacementAlreadyBound,
+} from '../domain/portals/placements'
+import {
   buildCreateSmartProcessCall,
   findTypeByTitle,
   planMissingFields,
@@ -249,5 +254,33 @@ export async function provisionSmartProcesses(
     adoptedTemplate: template.adopted,
     adoptedSurvey: survey.adopted,
     addedFields: addedTemplate + addedSurvey,
+  }
+}
+
+/**
+ * Зарегистрировать вкладку приложения в карточке сделки.
+ *
+ * ⚠ Отдельным вызовом, не в батче: `placement.bind` в батче отвечает
+ * `ERROR_BATCH_METHOD_NOT_ALLOWED`.
+ *
+ * ⚠ Отказ «уже зарегистрировано» — НЕ ошибка. На переустановке точка с одной регистрацией
+ * отвечает `ERROR_PLACEMENT_MAX_COUNT`, и считать это поломкой значит красить исправную
+ * установку в жёлтое. Из этого же следует, что сменить адрес обработчика повторным `bind`
+ * нельзя — сначала `placement.unbind`.
+ *
+ * Возвращает `false`, когда вкладку зарегистрировать не удалось по настоящей причине. Установку
+ * это не роняет: без вкладки приложение работает, ссылку можно выпустить и роботом, а вот без
+ * токенов не работает ничего.
+ */
+export async function ensureDealTabPlacement(call: RestCall, baseUrl: string): Promise<boolean> {
+  const bind = buildBindDealTabCall(`${baseUrl.replace(/\/+$/, '')}${DEAL_TAB_PATH}`)
+  if (bind === null) return false
+
+  try {
+    await call(bind.method, bind.params)
+    return true
+  }
+  catch (error) {
+    return isPlacementAlreadyBound(error) || isPlacementAlreadyBound((error as Error).message)
   }
 }
