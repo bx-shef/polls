@@ -71,10 +71,20 @@ export function decideRateLimit(
  * ⚠ Адрес в ключ уходит хешем, а не как есть. IP посетителя анкеты — персональные данные
  * постороннего человека, и хранить их у себя, даже на минуту и даже в Redis, мы не обязаны:
  * для счёта достаточно различать адреса, а не знать их.
+ *
+ * ⚠ `scope` разделяет счёт публичной анкеты и портальных экранов. Общий ключ при РАЗНЫХ
+ * пределах (60 и 120) даёт неочевидную беду: сотрудники наработали за минуту 70 обращений
+ * из офиса — портальный предел не тронут, а респондент с того же адреса получает
+ * «слишком много попыток» за чужую активность и не может ответить на анкету вовсе.
+ * Отдельные пространства убирают этот класс целиком.
  */
-export function addressKey(address: string, hash: (value: string) => string): string {
+export function addressKey(
+  address: string,
+  hash: (value: string) => string,
+  scope: 'public' | 'portal' = 'public',
+): string {
   const normalized = address.trim().toLowerCase().replace(/^::ffff:/, '')
-  return `rate:addr:${hash(normalized)}`
+  return `rate:addr:${scope === 'portal' ? 'portal:' : ''}${hash(normalized)}`
 }
 
 /** Ключ счётчика по токену. Токен и здесь не хранится — только его хеш. */

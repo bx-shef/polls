@@ -99,7 +99,9 @@ function countAt(results: [Error | null, unknown][], index: number): number {
 export async function countAndDecidePortal(address: string, memberId: string): Promise<RateDecision> {
   if (!isRedisConfigured()) return failOpen('redis не настроен')
 
-  const byAddress = addressKey(address, sha256)
+  // Пространство `portal`: у публичной анкеты предел вдвое ниже, и общий ключ означал бы,
+  // что офисный трафик сотрудников выедает бюджет респондента с того же адреса.
+  const byAddress = addressKey(address, sha256, 'portal')
   const byPortal = portalKey(memberId, sha256)
 
   try {
