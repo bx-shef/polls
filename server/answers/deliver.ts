@@ -125,7 +125,9 @@ async function claimPending(limit: number): Promise<BufferedAnswer[]> {
 
     return tx
       .update(schema.inbox)
-      .set({ status: 'sending' })
+      // ⚠ `nextAttemptAt` обновляется вместе со статусом, и это не косметика: по нему
+      // `requeueStuck` отличает строку, взятую только что, от брошенной умершим процессом.
+      .set({ status: 'sending', nextAttemptAt: now })
       .where(inArray(schema.inbox.id, ids))
       .returning({
         id: schema.inbox.id,
@@ -281,7 +283,12 @@ export async function requeueStuck(olderThanMinutes = 15): Promise<number> {
   const rows = await getDb()
     .update(schema.inbox)
     .set({ status: 'pending', nextAttemptAt: new Date() })
-    .where(and(eq(schema.inbox.status, 'sending'), lt(schema.inbox.receivedAt, cutoff)))
+    // ⚠ Смотрим на `next_attempt_at`, который ставится в момент ЗАХВАТА, а не на
+    // `received_at`. Сначала здесь стояло второе — и это был дефект с прямой ценой: ответ,
+    // пролежавший в буфере дольше срока (портал был недоступен), возвращался бы в работу
+    // через секунду после того, как его взяли, и уехал бы в портал дважды. То есть чинилка
+    // потери ответа сама создавала бы дубли ровно в том сценарии, ради которого написана.
+    .where(and(eq(schema.inbox.status, 'sending'), lt(schema.inbox.nextAttemptAt, cutoff)))
     .returning({ id: schema.inbox.id })
 
   if (rows.length > 0) logger.warn({ count: rows.length }, 'подвисшие ответы возвращены в буфер')
