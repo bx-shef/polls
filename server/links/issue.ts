@@ -47,6 +47,34 @@ export async function findPortalByMemberId(memberId: string): Promise<IssuingPor
 }
 
 /**
+ * Найти портал по нашему идентификатору.
+ *
+ * Отдельно от поиска по `member_id`: тот обслуживает запрос из фрейма, где `member_id`
+ * единственное, что известно. Воркер доставки приходит от строки буфера, у которой уже
+ * есть внешний ключ, и лишний поиск по чужому ключу тут был бы только способом ошибиться.
+ */
+export async function findPortalById(id: string): Promise<IssuingPortal | null> {
+  const rows = await getDb()
+    .select({
+      id: schema.portals.id,
+      memberId: schema.portals.memberId,
+      domain: schema.portals.domain,
+      publicHost: schema.portals.publicHost,
+      status: schema.portals.status,
+      accessToken: schema.portals.accessToken,
+      refreshToken: schema.portals.refreshToken,
+      applicationToken: schema.portals.applicationToken,
+      tokenExpiresAt: schema.portals.tokenExpiresAt,
+      scopes: schema.portals.scopes,
+    })
+    .from(schema.portals)
+    .where(eq(schema.portals.id, id))
+    .limit(1)
+
+  return rows[0] ?? null
+}
+
+/**
  * Положить схему версии в кэш.
  *
  * ⚠ Вставка ИДЕМПОТЕНТНАЯ. Уникальный индекс стоит по паре «портал + код + версия», и вторая

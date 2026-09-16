@@ -1,13 +1,12 @@
 import type { H3Event } from 'h3'
 import { createError, getRequestHeader, readBody, setResponseHeader, setResponseStatus } from 'h3'
-import { makePortalCall } from '../../b24/client'
+import { callForPortal } from '../../b24/from-record'
 import { verifyFrameToken } from '../../b24/frame-auth'
 import { trustedAddress } from '../../domain/links/rate-limit'
 import { countAndDecidePortal } from '../../links/rate'
 import type { RestCall } from '../../b24/provision'
-import { findPortalByMemberId, saveRefreshedTokens, type IssuingPortal } from '../../links/issue'
+import { findPortalByMemberId, type IssuingPortal } from '../../links/issue'
 import { isDatabaseConfigured } from '../../db/client'
-import { decryptSecret, encryptSecret } from '../../utils/crypto'
 import { logger } from '../../utils/logger'
 
 /**
@@ -91,63 +90,12 @@ export async function openPortalSession(event: H3Event): Promise<PortalSession> 
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
   }
 
-  return { portal, userId: check.userId, authId, call: makeCall(portal) }
-}
-
-/**
- * Собрать вызов портала от сохранённых токенов.
- *
- * Обновлённые токены сохраняются сразу: SDK меняет их молча, и не записать значит отправить
- * следующий запуск со старой парой, которая после обмена мертва.
- *
- * ⚠ Бросает 503, когда сохранённых токенов нет или они не расшифровываются. Функция выглядит
- * чистой сборкой, но это прихожая HTTP-слоя, и отказ здесь — такой же ответ, как 403 выше.
- */
-function makeCall(portal: IssuingPortal): RestCall {
-  const accessToken = decryptOrEmpty(portal.accessToken, 'access')
-  const refreshToken = decryptOrEmpty(portal.refreshToken, 'refresh')
-  if (accessToken === '' || refreshToken === '') {
-    logger.error({ domain: portal.domain }, 'у портала нет пригодных токенов')
+  const call = callForPortal(portal)
+  if (call === null) {
+    // Токенов нет или они не читаются. Наружу — 503: это наша беда, а не вина обратившегося,
+    // и повторить запрос осмысленно, когда её починят.
     throw createError({ statusCode: 503, statusMessage: 'Portal not authorised' })
   }
 
-  const expiresIn = portal.tokenExpiresAt === null
-    ? 0
-    : Math.max(0, Math.floor((portal.tokenExpiresAt.getTime() - Date.now()) / 1000))
-
-  return makePortalCall(
-    {
-      memberId: portal.memberId,
-      domain: portal.domain,
-      accessToken,
-      refreshToken,
-      applicationToken: decryptOrEmpty(portal.applicationToken, 'application'),
-      expiresIn,
-      scope: portal.scopes ?? [],
-    },
-    async next => saveRefreshedTokens(portal.id, {
-      accessToken: encryptSecret(next.accessToken),
-      refreshToken: encryptSecret(next.refreshToken),
-      expiresAt: new Date(Date.now() + next.expiresIn * 1000),
-    }),
-  )
-}
-
-/**
- * Пустая строка вместо исключения: негодный токен обрабатывается выше, одним понятным отказом.
- *
- * ⚠ Неудача расшифровки логируется ОТДЕЛЬНО от «токена не было». Это разные беды: первая
- * означает, что ключ шифрования сменили без `B24_TOKEN_ENC_KEY_OLD`, и тогда «портал
- * не авторизован» приезжает сразу у всех порталов — по общему сообщению это не отличить
- * от единичной поломки. В журнал уходит факт, не содержимое.
- */
-function decryptOrEmpty(blob: string | null, field: string): string {
-  if (blob === null || blob === '') return ''
-  try {
-    return decryptSecret(blob)
-  }
-  catch (error) {
-    logger.error({ field, reason: (error as Error).message }, 'токен портала не расшифровался')
-    return ''
-  }
+  return { portal, userId: check.userId, authId, call }
 }

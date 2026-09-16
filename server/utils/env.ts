@@ -38,3 +38,23 @@ export const b24ClientSecret = (): string => process.env.B24_CLIENT_SECRET ?? ''
  * Сюда смотрим, только когда у портала своего нет.
  */
 export const publicBaseUrl = (): string => process.env.PUBLIC_BASE_URL ?? ''
+
+/**
+ * Выключить разбор буфера ответов в этом процессе.
+ *
+ * Нужно ровно для одного: когда доставку вынесут в отдельный контейнер, веб-часть должна
+ * перестать её делать. Значение по умолчанию — включено, потому что забытая переменная
+ * не должна означать «ответы копятся и никто не везёт».
+ */
+export const deliveryDisabled = (): boolean => (process.env.ANSWER_DELIVERY ?? '').trim().toLowerCase() === 'off'
+
+/**
+ * Как часто заходить в буфер, секунды.
+ *
+ * Страховка, а не основной путь: в норме разбор дёргается сразу после приёма ответа.
+ * Меньше пяти секунд не берём — это не ускорит доставку, зато превратит журнал в шум.
+ */
+export function deliveryIntervalSeconds(): number {
+  const raw = Number(process.env.ANSWER_DELIVERY_INTERVAL ?? '')
+  return Number.isFinite(raw) && raw >= 5 ? Math.floor(raw) : 60
+}

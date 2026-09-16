@@ -17,6 +17,24 @@ jobs:
   check:
     name: pnpm check
     runs-on: ubuntu-latest
+    # Postgres нужен проекту тестов `db`: блокировки строк и сравнение колонок проверяются
+    # только настоящей базой, подделка подтвердила бы что угодно. Без сервиса эти файлы
+    # пропускают себя сами — то есть гвард молча перестал бы быть гвардом.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: survey
+          POSTGRES_PASSWORD: survey
+          POSTGRES_DB: survey
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U survey"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://survey:survey@localhost:5432/survey
     steps:
       # Действия закреплены по SHA, а не по тегу: тег перемещаем не мы, и подменённый
       # тег — это чужой код в нашем CI с доступом к GITHUB_TOKEN. Взято у client-bank-alfa-by.
@@ -30,6 +48,9 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # Схема накатывается до тестов: проект `db` работает с настоящими таблицами.
+      - run: pnpm db:migrate
 
       # Единый гейт: границы слоёв, линт, типы, тесты. Разбивать на отдельные шаги
       # незачем — локально перед пушем запускается ровно эта команда.

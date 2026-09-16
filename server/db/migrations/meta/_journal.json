@@ -22,6 +22,20 @@
       "when": 1789550170408,
       "tag": "0002_wandering_weapon_omega",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789561173399,
+      "tag": "0003_broad_lily_hollister",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789562678132,
+      "tag": "0004_flowery_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }

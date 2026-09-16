@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm'
+import { inboxDepth } from '../answers/deliver'
 import { getDb, isDatabaseConfigured } from '../db/client'
 import { appVersion } from '../utils/env'
 import { logger } from '../utils/logger'
@@ -86,5 +87,21 @@ export default defineEventHandler(async (event) => {
     status: degraded ? 'degraded' : 'ok',
     version: appVersion(),
     checks,
+    // Глубина буфера ответов. Наружу уходят ДВА ЧИСЛА и ничего больше: сколько ждёт
+    // доставки и сколько сдалось. Эндпоинт анонимный, и по числам нельзя ни узнать,
+    // чей это ответ, ни прочитать его, — но растущий `failed` виден сразу, а это то
+    // единственное состояние, в котором ответ клиента залёживается у нас.
+    answers: db.status === 'ok' ? await depthOrNull() : null,
   }
 })
+
+/** Глубина буфера, но не ценой самой пробы: упавший счёт не должен красить здоровье в 503. */
+async function depthOrNull(): Promise<{ pending: number, failed: number } | null> {
+  try {
+    return await inboxDepth()
+  }
+  catch (error) {
+    logger.warn({ probeError: scrub((error as Error).message) }, 'глубина буфера ответов не прочиталась')
+    return null
+  }
+}

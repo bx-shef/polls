@@ -62,30 +62,28 @@ export const inbox = pgTable('inbox', {
   tokenHash: text('token_hash').notNull(),
   payload: jsonb('payload').notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
-  /** pending | delivered | failed. Запись удаляется после подтверждённой записи в портал. */
+  /**
+   * pending | sending | failed. Запись УДАЛЯЕТСЯ после подтверждённой записи в портал,
+   * поэтому состояния «доставлено» тут нет: доставленного ответа у нас не остаётся.
+   *
+   * `sending` — строку взял воркер. Умер между «взял» и «доставил» — её вернёт `requeueStuck`,
+   * иначе один перезапуск в неудачный момент тихо теряет ответ.
+   */
   status: text('status').notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0),
   lastError: text('last_error'),
+  /**
+   * Не раньше этого момента пробовать снова.
+   *
+   * Отдельная колонка, а не вычисление из `attempts` и `received_at`: иначе выборка
+   * «что пора доставить» превращается в арифметику внутри WHERE, которую не накроет индекс,
+   * и на первой же тысяче отложенных строк разбор буфера начнёт читать таблицу целиком.
+   */
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   index('inbox_status_received_idx').on(table.status, table.receivedAt),
-])
-
-/** Исходящие записи в портал: идемпотентны по `dedup_key`. */
-export const outbox = pgTable('outbox', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  portalId: uuid('portal_id').notNull().references(() => portals.id, { onDelete: 'cascade' }),
-  /** Что именно пишем: элемент смарт-процесса, комментарий в таймлайн, поле сущности. */
-  kind: text('kind').notNull(),
-  payload: jsonb('payload').notNull(),
-  dedupKey: text('dedup_key').notNull(),
-  /** pending | done | dead — исчерпал попытки и уехал в отчёт о здоровье, а не потерялся. */
-  status: text('status').notNull().default('pending'),
-  attempts: integer('attempts').notNull().default(0),
-  lastError: text('last_error'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, table => [
-  uniqueIndex('outbox_portal_dedup_key').on(table.portalId, table.dedupKey),
-  index('outbox_status_created_idx').on(table.status, table.createdAt),
+  // Индекс ровно под выборку воркера: «pending, чей срок подошёл, в порядке поступления».
+  index('inbox_due_idx').on(table.status, table.nextAttemptAt),
 ])
 
 /**
