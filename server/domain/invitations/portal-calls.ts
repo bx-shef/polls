@@ -148,8 +148,33 @@ function parseSchema(raw: unknown): SurveyTemplate | null {
   }
 }
 
+/**
+ * Проверить форму схемы, а не только её оболочку.
+ *
+ * ⚠ Сначала здесь проверялись только `code` и то, что `sections` — массив. Запись вида
+ * `{"code":"x","sections":[{}]}` проходила фильтр, уезжала в кэш и доходила до публичной
+ * страницы как «валидная» — где ломался бы рендер. Соседний комментарий при этом обещал,
+ * что фильтр не даст выдать человеку страницу, которая не откроется. Нашла панель ревью PR #18.
+ *
+ * Проверяем структуру, а не содержимое: пустой список секций — законная анкета-заготовка,
+ * а секция без `key` или с `questions` не массивом — уже поломка.
+ */
 function isTemplateShaped(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false
   const candidate = value as { code?: unknown, sections?: unknown }
-  return typeof candidate.code === 'string' && Array.isArray(candidate.sections)
+  if (typeof candidate.code !== 'string' || candidate.code === '') return false
+  if (!Array.isArray(candidate.sections)) return false
+
+  return candidate.sections.every((raw) => {
+    if (raw === null || typeof raw !== 'object') return false
+    const section = raw as { key?: unknown, questions?: unknown }
+    if (typeof section.key !== 'string' || section.key === '') return false
+    if (!Array.isArray(section.questions)) return false
+
+    return section.questions.every((item) => {
+      if (item === null || typeof item !== 'object') return false
+      const question = item as { key?: unknown, type?: unknown }
+      return typeof question.key === 'string' && question.key !== '' && typeof question.type === 'string'
+    })
+  })
 }

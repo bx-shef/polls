@@ -14,12 +14,7 @@ import { hashToken, isTokenShaped } from '../../server/domain/links/token'
 
 const NOW = new Date('2026-09-16T12:00:00Z')
 
-const REQUEST: InvitationRequest = {
-  memberId: 'abc123',
-  target: { entityType: 'deal', entityId: 42 },
-  surveyCode: 'brand',
-  surveyVersion: 1,
-}
+const REQUEST: InvitationRequest = {}
 
 describe('приглашение', () => {
   it('выпускает настоящий токен и его хеш', () => {

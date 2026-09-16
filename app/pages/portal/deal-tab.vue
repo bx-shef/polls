@@ -21,6 +21,18 @@ interface Survey {
   title: string
 }
 
+/**
+ * Отказы выпуска, у каждого свой текст.
+ *
+ * «Попробуйте ещё раз» на отказ в доступе — обман: сколько ни пробуй, чужую сделку не увидишь.
+ * Человек должен понимать, что именно случилось, иначе он будет звонить в поддержку.
+ */
+const REFUSALS: Record<string, string> = {
+  'survey-gone': 'Этот опрос сняли с публикации, пока вкладка была открыта. Обновите страницу.',
+  'deal-denied': 'У вас нет доступа к этой сделке — ссылку по ней выпустить нельзя.',
+  'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
+}
+
 const route = useRoute()
 
 const loading = ref(true)
@@ -32,6 +44,15 @@ const dealId = ref<number | null>(null)
 const issued = ref<{ url: string, expiresAt: string } | null>(null)
 const copied = ref(false)
 
+/**
+ * Связь с порталом. `undefined` ровно до конца `onMounted`.
+ *
+ * Дальше в коде стоит `frame!`, и это не «а вдруг пронесёт»: обе функции, которые его читают,
+ * достижимы только из шаблона, а шаблон до конца `onMounted` показывает скелет — `loading`
+ * снимается в `finally`, то есть после присваивания. Если `initializeB24Frame` упал, кнопок
+ * нет вовсе: на экране карточка отказа. Убрать `finally` или отрисовать кнопки при `loading` —
+ * и это перестанет быть правдой; поэтому здесь и написано, чем именно держится.
+ */
 let frame: B24Frame | undefined
 
 useHead({ title: 'Опросы' })
@@ -87,9 +108,7 @@ async function issue(survey: Survey) {
       issued.value = { url: result.url, expiresAt: result.expiresAt ?? '' }
       return
     }
-    failure.value = result.reason === 'survey-gone'
-      ? 'Этот опрос сняли с публикации, пока вкладка была открыта. Обновите страницу.'
-      : 'Не удалось выпустить ссылку. Попробуйте ещё раз.'
+    failure.value = REFUSALS[result.reason ?? ''] ?? 'Не удалось выпустить ссылку. Попробуйте ещё раз.'
   }
   catch {
     failure.value = 'Не удалось выпустить ссылку. Попробуйте ещё раз.'

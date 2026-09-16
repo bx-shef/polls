@@ -1,6 +1,7 @@
 import {
   buildBindDealTabCall,
-  DEAL_TAB_PATH,
+  buildDealTabHandlerUrl,
+  buildUnbindDealTabCall,
   isPlacementAlreadyBound,
 } from '../domain/portals/placements'
 import {
@@ -263,18 +264,33 @@ export async function provisionSmartProcesses(
  * ⚠ Отдельным вызовом, не в батче: `placement.bind` в батче отвечает
  * `ERROR_BATCH_METHOD_NOT_ALLOWED`.
  *
- * ⚠ Отказ «уже зарегистрировано» — НЕ ошибка. На переустановке точка с одной регистрацией
- * отвечает `ERROR_PLACEMENT_MAX_COUNT`, и считать это поломкой значит красить исправную
- * установку в жёлтое. Из этого же следует, что сменить адрес обработчика повторным `bind`
- * нельзя — сначала `placement.unbind`.
+ * ⚠ Сначала `unbind`, потом `bind`, и это не перестраховка. Точка с одной регистрацией
+ * на повторный `bind` отвечает `ERROR_PLACEMENT_MAX_COUNT`, то есть сменить АДРЕС обработчика
+ * повторной регистрацией нельзя — портал продолжит открывать старый, и снаружи это выглядит
+ * как «вкладка ведёт не туда» на свежем выкате. Снятие делает переустановку настоящим
+ * способом починки: адрес всегда становится текущим. Панель ревью PR #18 указала, что иначе
+ * ошибка в публичном адресе на первой установке неисправима штатными средствами.
+ *
+ * Отказ `unbind` игнорируется: на первой установке снимать нечего, и это норма.
  *
  * Возвращает `false`, когда вкладку зарегистрировать не удалось по настоящей причине. Установку
  * это не роняет: без вкладки приложение работает, ссылку можно выпустить и роботом, а вот без
  * токенов не работает ничего.
  */
 export async function ensureDealTabPlacement(call: RestCall, baseUrl: string): Promise<boolean> {
-  const bind = buildBindDealTabCall(`${baseUrl.replace(/\/+$/, '')}${DEAL_TAB_PATH}`)
+  const handlerUrl = buildDealTabHandlerUrl(baseUrl)
+  if (handlerUrl === null) return false
+
+  const bind = buildBindDealTabCall(handlerUrl)
   if (bind === null) return false
+
+  const unbind = buildUnbindDealTabCall(handlerUrl)
+  try {
+    await call(unbind.method, unbind.params)
+  }
+  catch {
+    // Снимать было нечего — обычное дело на первой установке.
+  }
 
   try {
     await call(bind.method, bind.params)

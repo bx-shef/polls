@@ -1,7 +1,9 @@
 import type { H3Event } from 'h3'
-import { createError, readBody } from 'h3'
+import { createError, getRequestHeader, readBody, setResponseHeader, setResponseStatus } from 'h3'
 import { makePortalCall } from '../../b24/client'
 import { verifyFrameToken } from '../../b24/frame-auth'
+import { trustedAddress } from '../../domain/links/rate-limit'
+import { countAndDecidePortal } from '../../links/rate'
 import type { RestCall } from '../../b24/provision'
 import { findPortalByMemberId, saveRefreshedTokens, type IssuingPortal } from '../../links/issue'
 import { isDatabaseConfigured } from '../../db/client'
@@ -25,9 +27,16 @@ import { logger } from '../../utils/logger'
 
 export interface PortalSession {
   portal: IssuingPortal
-  /** Кто пришёл. Нужен, чтобы в отчёте о ссылках было видно, кто её выпустил. */
+  /** Кто пришёл. Пишется в журнал выпуска — по нему видно, кто выдал ссылку. */
   userId: number
-  isAdmin: boolean
+  /**
+   * Фреймовый токен сотрудника.
+   *
+   * ⚠ Живёт только внутри одного запроса и НЕ сохраняется. Нужен там, где надо спросить
+   * портал от имени человека, а не приложения: у приложения прав больше, и без такого
+   * вопроса оно становится подставным лицом.
+   */
+  authId: string
   /** Вызов портала от имени приложения. */
   call: RestCall
 }
@@ -51,6 +60,21 @@ export async function openPortalSession(event: H3Event): Promise<PortalSession> 
     throw createError({ statusCode: 400, statusMessage: 'Bad request' })
   }
 
+  // ⚠ Считаем ДО обращения в портал. Каждый запрос сюда — это исходящий вызов в Битрикс24
+  // клиента, и без предела похищенный фреймовый токен превращается в усилитель нагрузки
+  // на чужой портал. Нашла панель ревью PR #18.
+  const address = trustedAddress(
+    getRequestHeader(event, 'x-forwarded-for'),
+    event.node.req.socket.remoteAddress ?? '',
+  )
+  const rate = await countAndDecidePortal(address, memberId)
+  if (!rate.allow) {
+    logger.warn({ by: rate.by }, 'портальный экран: превышена частота обращений')
+    setResponseStatus(event, 429)
+    setResponseHeader(event, 'Retry-After', rate.retryAfterSeconds)
+    throw createError({ statusCode: 429, statusMessage: 'Too many requests' })
+  }
+
   const portal = await findPortalByMemberId(memberId)
   if (portal === null || portal.status === 'deleted') {
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
@@ -67,7 +91,7 @@ export async function openPortalSession(event: H3Event): Promise<PortalSession> 
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
   }
 
-  return { portal, userId: check.userId, isAdmin: check.isAdmin, call: makeCall(portal) }
+  return { portal, userId: check.userId, authId, call: makeCall(portal) }
 }
 
 /**
@@ -75,10 +99,13 @@ export async function openPortalSession(event: H3Event): Promise<PortalSession> 
  *
  * Обновлённые токены сохраняются сразу: SDK меняет их молча, и не записать значит отправить
  * следующий запуск со старой парой, которая после обмена мертва.
+ *
+ * ⚠ Бросает 503, когда сохранённых токенов нет или они не расшифровываются. Функция выглядит
+ * чистой сборкой, но это прихожая HTTP-слоя, и отказ здесь — такой же ответ, как 403 выше.
  */
 function makeCall(portal: IssuingPortal): RestCall {
-  const accessToken = decryptOrEmpty(portal.accessToken)
-  const refreshToken = decryptOrEmpty(portal.refreshToken)
+  const accessToken = decryptOrEmpty(portal.accessToken, 'access')
+  const refreshToken = decryptOrEmpty(portal.refreshToken, 'refresh')
   if (accessToken === '' || refreshToken === '') {
     logger.error({ domain: portal.domain }, 'у портала нет пригодных токенов')
     throw createError({ statusCode: 503, statusMessage: 'Portal not authorised' })
@@ -94,7 +121,7 @@ function makeCall(portal: IssuingPortal): RestCall {
       domain: portal.domain,
       accessToken,
       refreshToken,
-      applicationToken: decryptOrEmpty(portal.applicationToken),
+      applicationToken: decryptOrEmpty(portal.applicationToken, 'application'),
       expiresIn,
       scope: portal.scopes ?? [],
     },
@@ -106,13 +133,21 @@ function makeCall(portal: IssuingPortal): RestCall {
   )
 }
 
-/** Пустая строка вместо исключения: негодный токен обрабатывается выше, одним понятным отказом. */
-function decryptOrEmpty(blob: string | null): string {
+/**
+ * Пустая строка вместо исключения: негодный токен обрабатывается выше, одним понятным отказом.
+ *
+ * ⚠ Неудача расшифровки логируется ОТДЕЛЬНО от «токена не было». Это разные беды: первая
+ * означает, что ключ шифрования сменили без `B24_TOKEN_ENC_KEY_OLD`, и тогда «портал
+ * не авторизован» приезжает сразу у всех порталов — по общему сообщению это не отличить
+ * от единичной поломки. В журнал уходит факт, не содержимое.
+ */
+function decryptOrEmpty(blob: string | null, field: string): string {
   if (blob === null || blob === '') return ''
   try {
     return decryptSecret(blob)
   }
-  catch {
+  catch (error) {
+    logger.error({ field, reason: (error as Error).message }, 'токен портала не расшифровался')
     return ''
   }
 }

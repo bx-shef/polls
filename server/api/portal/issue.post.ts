@@ -6,6 +6,7 @@ import {
   readCreatedItemId,
   readPublishedTemplates,
 } from '../../domain/invitations/portal-calls'
+import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import { cacheTemplate, insertLink } from '../../links/issue'
 import { publicBaseUrl } from '../../utils/env'
@@ -39,6 +40,20 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'Bad request' })
   }
 
+  // ⚠ Спрашиваем ТОКЕНОМ СОТРУДНИКА, видит ли он эту сделку, и только потом создаём элемент
+  // СВОИМ. Без этого приложение — подставное лицо: элемент создаётся токеном с правами шире
+  // любого отдельного сотрудника, а номер сделки приходит из параметров фрейма и подменяется
+  // тривиально. Нашла панель ревью PR #18.
+  const access = await verifyDealAccess(session.portal.domain, session.authId, dealId)
+  if (!access.ok) {
+    if (access.reason === 'unreachable') {
+      throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
+    }
+    // Наружу — ровно то, что человек и так знает: этой сделки он не видит. Ни намёка
+    // на то, существует ли она вообще.
+    return { ok: false as const, reason: 'deal-denied' as const }
+  }
+
   const refs = await readStoredRefs(session.call)
   if (refs.template === undefined || refs.survey === undefined) {
     logger.warn({ domain: session.portal.domain }, 'выпуск ссылки: смарт-процессы не найдены на портале')
@@ -54,15 +69,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const baseUrl = session.portal.publicHost ?? publicBaseUrl()
-  const invitation = createInvitation(
-    {
-      memberId: session.portal.memberId,
-      target: { entityType: 'deal', entityId: dealId },
-      surveyCode: chosen.code,
-      surveyVersion: chosen.version,
-    },
-    new Date(),
-  )
+  const invitation = createInvitation({}, new Date())
 
   const url = buildSurveyUrl(baseUrl, invitation.token)
   if (url === null) {
