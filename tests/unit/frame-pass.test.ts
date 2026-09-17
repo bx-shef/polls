@@ -71,6 +71,9 @@ describe('хост портала', () => {
     // а отсутствующий — сломает установку целиком.
     expect(portalHost('https://shef.bitrix24.ru')).toBe('shef.bitrix24.ru')
     expect(portalHost('shef.bitrix24.ru')).toBe('shef.bitrix24.ru')
+    // Регистр приводится в ОБЕИХ ветках. Мутация «убрать toLowerCase у голого хоста»
+    // пережила первую версию теста: заглавных в ней не было. Нашла панель ревью PR #27.
+    expect(portalHost('SHEF.Bitrix24.RU')).toBe('shef.bitrix24.ru')
     expect(portalHost('https://shef.bitrix24.ru/')).toBe('shef.bitrix24.ru')
     expect(portalHost('  https://SHEF.bitrix24.ru  ')).toBe('shef.bitrix24.ru')
   })

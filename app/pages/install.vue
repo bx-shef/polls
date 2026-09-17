@@ -40,9 +40,20 @@ const REFUSALS: Record<number, string> = {
   503: 'Приложение сейчас не может завершить установку. Попробуйте через несколько минут.',
 }
 
+const busy = ref(false)
+/**
+ * Есть ли связь с порталом.
+ *
+ * Отдельный признак, а не `frame !== undefined` в шаблоне: `frame` — обычная переменная,
+ * Vue за ней не следит, и условие в разметке зависело бы от того, что перерисовку вызвало
+ * изменение `stage` раньше. Работало бы, но держалось на порядке присваиваний.
+ */
+const connected = ref(false)
+
 onMounted(async () => {
   try {
     frame = await initializeB24Frame()
+    connected.value = true
   }
   catch {
     stage.value = 'failed'
@@ -101,16 +112,70 @@ async function install() {
     await frame!.installFinish()
   }
   catch {
-    // Портал не принял сигнал. Установка при этом состоялась у нас, поэтому текст
-    // не про ошибку, а про то, что делать.
+    // ⚠ Причин здесь ДВЕ, и вторая к порталу отношения не имеет. Либо портал не принял
+    // сигнал, либо SDK отказал локально: при `!isInstallMode` `installFinish()` бросает
+    // `JSSDK_FRAME_INSTALL_ALREADY_FINISHED` не отправляя ничего — то есть установка уже
+    // завершена, и это не беда, а повтор. В обоих случаях у нас всё сохранено, поэтому
+    // текст не про ошибку, а про то, что делать.
     stage.value = 'failed'
-    failure.value = 'Портал не принял завершение установки. Закройте окно и откройте приложение снова.'
+    failure.value = 'Установка у нас сохранена, но портал не подтвердил её завершение. '
+      + 'Закройте окно и откройте приложение снова — если оно открылось, всё в порядке.'
   }
 }
 
+/**
+ * Повтор — и он НЕ одинаковый в разных состояниях.
+ *
+ * ⚠ Из `partial` повторять установку нельзя: обмен гранта уже прошёл и ВРАЩАЕТ его,
+ * то есть `refresh_token` во фрейме мёртв (SDK держит его в памяти с инициализации
+ * и сам не обновляет). Повторный обмен гарантированно отказывал, и человек видел
+ * «вы не администратор» вместо настоящей причины. Поэтому здесь доустройство
+ * по уже сохранённым токенам, без обмена. Нашла панель ревью PR #27.
+ *
+ * ⚠ Без связи с порталом кнопки повтора нет вовсе: `frame` не получен, и нажатие
+ * молча не делало бы ничего. Кнопка, которая выглядит рабочей и не работает, хуже
+ * её отсутствия.
+ */
 async function retry() {
-  if (frame === undefined) return
-  await install()
+  if (frame === undefined || busy.value) return
+  busy.value = true
+  try {
+    if (stage.value === 'partial') await finishProvisioning()
+    else await install()
+  }
+  finally {
+    busy.value = false
+  }
+}
+
+/** Доустроить портал уже сохранёнными токенами: обмена гранта здесь нет. */
+async function finishProvisioning() {
+  const pass = readFramePass(frame!.auth.getAuthData())
+  if (pass === null) {
+    stage.value = 'failed'
+    failure.value = 'Портал не передал данные авторизации. Переустановите приложение.'
+    return
+  }
+
+  stage.value = 'installing'
+  try {
+    const result = await $fetch<{ ok: boolean, reason?: string }>('/api/portal/provision', {
+      method: 'POST',
+      body: { memberId: pass.memberId, authId: pass.authId },
+    })
+    if (result.ok) {
+      stage.value = 'done'
+      return
+    }
+    stage.value = 'partial'
+    failure.value = result.reason === 'not-admin'
+      ? 'Прав администратора по-прежнему нет.'
+      : 'Портал снова не дал создать смарт-процессы.'
+  }
+  catch {
+    stage.value = 'partial'
+    failure.value = 'Не удалось настроить портал. Попробуйте через несколько минут.'
+  }
 }
 </script>
 
@@ -138,6 +203,8 @@ async function retry() {
         />
         <B24Button
           color="air-secondary-accent"
+          :loading="busy"
+          :disabled="busy"
           @click="retry"
         >
           Попробовать настроить ещё раз
@@ -151,8 +218,12 @@ async function retry() {
           :description="failure"
           class="mb-3"
         />
+        <!-- Без связи с порталом повторять нечем: `frame` не получен. Кнопку не показываем. -->
         <B24Button
+          v-if="connected"
           color="air-primary"
+          :loading="busy"
+          :disabled="busy"
           @click="retry"
         >
           Попробовать ещё раз

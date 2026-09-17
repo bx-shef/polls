@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readPortalGrant } from '../../server/domain/portals/grant'
+import { readFrameGrant, readPortalGrant } from '../../server/domain/portals/grant'
 
 /** Как выглядит настоящее `auth` события установки — по документации ONAPPINSTALL. */
 const REAL = {
@@ -86,5 +86,54 @@ describe('разбор гранта установки', () => {
   it('не падает на мусоре вместо объекта', () => {
     expect(readPortalGrant(null)).toEqual({ ok: false, reason: 'not-an-object' })
     expect(readPortalGrant('строка')).toEqual({ ok: false, reason: 'not-an-object' })
+  })
+})
+
+/**
+ * Грант из мастера установки. Ослаблено ровно одно требование — `application_token`,
+ * которого фрейм не отдаёт вовсе.
+ *
+ * ⚠ Блок появился по следам мутационного прогона панели ревью PR #27: замена
+ * `readPortalGrant(auth, true)` на `(auth, false)` — один булев литерал, отключающий
+ * мастер установки целиком, — пережила все 412 юнит-тестов. Ни typecheck, ни один
+ * тестовый файл её не заметили.
+ */
+describe('грант из мастера установки', () => {
+  const { application_token: _dropped, ...WITHOUT_TOKEN } = REAL
+
+  it('принимает грант без токена приложения', () => {
+    // Фрейм отдаёт `access_token`, `refresh_token`, `member_id` и `domain` — и всё.
+    // Требовать поле, которого источник не присылает, значит сделать мастер неработающим.
+    const parsed = readFrameGrant(WITHOUT_TOKEN)
+
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.grant.applicationToken).toBe('')
+    expect(parsed.grant.memberId).toBe(REAL.member_id)
+    expect(parsed.grant.refreshToken).toBe(REAL.refresh_token)
+  })
+
+  it('на том же гранте путь события по-прежнему отказывает', () => {
+    // Ослабление касается ТОЛЬКО мастера. Если оно протечёт в путь события, обработчик
+    // событий портала останется без единственного способа отличить Битрикс24 от постороннего.
+    expect(readPortalGrant(WITHOUT_TOKEN)).toEqual({ ok: false, reason: 'missing-application-token' })
+  })
+
+  it('остальные поля обязательны так же строго', () => {
+    // Ослабили одно требование — легко ослабить соседнее и не заметить.
+    expect(readFrameGrant({ ...WITHOUT_TOKEN, member_id: '' }).ok).toBe(false)
+    expect(readFrameGrant({ ...WITHOUT_TOKEN, refresh_token: '' }).ok).toBe(false)
+    expect(readFrameGrant({ ...WITHOUT_TOKEN, domain: 'зло.example.com' }).ok).toBe(false)
+    expect(readFrameGrant(null).ok).toBe(false)
+  })
+
+  it('не даёт мастеру задать токен приложения самому', () => {
+    // Контракт «мастер не приносит `application_token`» не должен держаться на том,
+    // что страница не пришлёт лишнего поля: тело запроса пишет клиент.
+    const parsed = readFrameGrant({ ...REAL, application_token: 'подсунутый' })
+
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.grant.applicationToken).toBe('')
   })
 })

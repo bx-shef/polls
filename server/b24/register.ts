@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
 import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
+import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import type { RegisterPortal } from '../domain/portals/install'
 import { publicBaseUrl } from '../utils/env'
@@ -44,7 +45,10 @@ export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'de
       domain: portal.domain,
       accessToken: encryptSecret(portal.accessToken),
       refreshToken: encryptSecret(portal.refreshToken),
-      applicationToken: encryptSecret(portal.applicationToken),
+      // ⚠ NULL, а не шифротекст пустой строки. `encryptSecret('')` даёт непустую строку,
+      // и по ней потом не отличить «токена не приносили» от «приносили пустой» — а именно
+      // на этом отличии держится защита ниже.
+      applicationToken: portal.applicationToken === '' ? null : encryptSecret(portal.applicationToken),
       tokenExpiresAt: new Date(now.getTime() + portal.expiresInSeconds * 1000),
       scopes: portal.scope,
       status: 'active',
@@ -59,14 +63,15 @@ export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'de
         domain: sql`excluded.domain`,
         accessToken: sql`excluded.access_token`,
         refreshToken: sql`excluded.refresh_token`,
-        // Перезаписывается намеренно: при переустановке портал выдаёт новый токен,
+        // Перезаписывается при переустановке СОБЫТИЕМ: портал выдаёт новый токен,
         // и сохранённый старый сделал бы непроверяемым каждое следующее событие.
         //
-        // ⚠ У мастера установки этого токена НЕТ — фрейм его не отдаёт вовсе. Оттуда сюда
-        // приезжает шифротекст пустой строки, и он затирает то, что могло приехать событием
-        // раньше. Сегодня это не стоит ничего: подписок на события в проекте нет ни одной.
-        // Перед первой подпиской вопрос обязан быть закрыт — см. `readFrameGrant`.
-        applicationToken: sql`excluded.application_token`,
+        // ⚠ Но пустым НЕ затирается. У мастера установки этого токена нет вовсе — фрейм его
+        // не отдаёт, — и безусловная перезапись превращала бы уже полученный событием токен
+        // в пустую строку при первой же переустановке через мастер. Молча: ни ошибки,
+        // ни строки в журнале. Защита была чисто процессной («не забыть перед первой
+        // подпиской»); теперь она техническая. Нашла панель ревью PR #27.
+        applicationToken: sql`coalesce(excluded.application_token, ${schema.portals.applicationToken})`,
         tokenExpiresAt: sql`excluded.token_expires_at`,
         scopes: sql`excluded.scopes`,
         status: sql`excluded.status`,
@@ -139,6 +144,23 @@ async function provisionPortal(portal: {
     },
   )
 
+  return provisionWithCall(call, portal.domain)
+}
+
+/**
+ * Обустроить портал уже готовым вызовом.
+ *
+ * Вынесено, когда вызывающих стало двое: установка (и событием, и мастером) и ДОУСТРОЙСТВО
+ * по уже сохранённым токенам (`server/api/portal/provision.post.ts`). Второй нужен потому,
+ * что повторить установку с тем же грантом нельзя — обмен его вращает, — а состояние
+ * «токены сохранены, смарт-процессы нет» обязано иметь выход, не требующий переустановки
+ * приложения целиком. Нашла панель ревью PR #27.
+ *
+ * Идемпотентно: смарт-процессы ищутся по сохранённым идентификаторам и по заголовку,
+ * поля добавляются только недостающие, вкладка перерегистрируется.
+ */
+export async function provisionWithCall(call: RestCall, domain: string): Promise<'ok' | 'not-admin' | 'failed'> {
+  const portal = { domain }
   const budgeted = withDeadline(call, PROVISION_BUDGET_MS)
 
   try {
