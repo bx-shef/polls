@@ -103,8 +103,20 @@ export async function decideInstall(payload: unknown, deps: InstallDeps): Promis
   if (!parsed.ok) {
     return { status: 400, reason: parsed.reason }
   }
-  const grant: PortalGrant = parsed.grant
 
+  return decideGrant(parsed.grant, deps)
+}
+
+/**
+ * Решить, что делать с УЖЕ РАЗОБРАННЫМ грантом.
+ *
+ * Вынесено из `decideInstall`, когда путей установки стало два: событие `ONAPPINSTALL`
+ * и мастер установки во фрейме портала (`app/pages/install.vue`). Разбор у них разный —
+ * бракетная форма тела против данных фрейма, — а подтверждение подлинности обязано быть
+ * одним и тем же. Скопируй его во второй путь, и через полгода одна из копий начнёт
+ * проверять на одну вещь меньше; какая именно, выяснится на чужом портале.
+ */
+export async function decideGrant(grant: PortalGrant, deps: InstallDeps): Promise<InstallDecision> {
   const outcome = await deps.reauthorize(grant.refreshToken)
   if (!outcome.ok) {
     // Отказ гранта и невозможность его проверить лечатся по-разному: первое повторять

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
+import { readFramePass } from '~/utils/frame-auth'
 import { dealIdFrom } from '~/utils/placement'
 
 /**
@@ -71,11 +72,18 @@ onMounted(async () => {
   }
 })
 
-/** Пропуск, который сервер проверит у портала: сами по себе эти два значения ничего не дают. */
+/**
+ * Пропуск, который сервер проверит у портала: сами по себе эти два значения ничего не дают.
+ *
+ * ⚠ Имена полей читает `readFramePass`, а не этот файл. Здесь стояло `auth.memberId` —
+ * а SDK отдаёт `member_id`, и из-за индексной сигнатуры `[key: string]: any` в его типе
+ * это компилировалось молча. На сервер уезжало `memberId: undefined`, то есть вкладка
+ * не работала бы ни разу при полностью зелёном `pnpm check`.
+ */
 function pass() {
-  const auth = frame!.auth.getAuthData()
-  if (auth === false) throw new Error('нет данных авторизации фрейма')
-  return { memberId: auth.memberId, authId: auth.access_token }
+  const parsed = readFramePass(frame!.auth.getAuthData())
+  if (parsed === null) throw new Error('нет данных авторизации фрейма')
+  return { memberId: parsed.memberId, authId: parsed.authId }
 }
 
 async function loadSurveys() {
