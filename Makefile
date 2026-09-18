@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down dev check image \
         prod-pull prod-up prod-down prod-logs prod-migrate prod-ps \
-        doctor host-update compose-found prod-tail
+        doctor host-update compose-found prod-tail prod-portals
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -108,6 +108,13 @@ prod-logs: compose-found ## Смотреть логи приложения вж�
 LINES ?= 2000
 prod-tail: compose-found ## Последние LINES строк журнала и выйти — для grep (LINES=2000)
 	$(PROD) logs --no-color --tail=$(LINES) app
+
+# ⚠ Колонки перечислены поимённо, и `SELECT *` здесь запрещён намеренно: в таблице лежат
+# шифротексты токенов портала, а вывод команды человек копирует в переписку не задумываясь.
+# Про `application_token` спрашиваем ФАКТ, а не значение: он отвечает на вопрос, приходило ли
+# событие установки, — у мастера его неоткуда взять, и колонка остаётся пустой.
+prod-portals: compose-found ## Состояние установленных порталов (без токенов)
+	@$(PROD) exec -T db psql -U survey -d survey -xc "	select domain, status, scopes, license, 	       application_token is not null as event_token_present, 	       installed_at, updated_at 	  from portals order by installed_at"
 
 prod-migrate: compose-found ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate
