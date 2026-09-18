@@ -3,6 +3,7 @@ import { inboxDepth } from '../answers/deliver'
 import { getDb, isDatabaseConfigured } from '../db/client'
 import { appVersion } from '../utils/env'
 import { logger } from '../utils/logger'
+import { missingForInstall } from '../utils/readiness'
 import { getRedis, isRedisConfigured, whenRedisReady } from '../utils/redis'
 
 /**
@@ -83,10 +84,22 @@ export default defineEventHandler(async (event) => {
   const degraded = Object.values(checks).some(check => check.status === 'down')
   if (degraded) setResponseStatus(event, 503)
 
+  // ⚠ Наружу уходят ИМЕНА незаданных переменных, но никогда не значения и не длины:
+  // имена и так лежат в `.env.example` и `deploy/README.md`, а длина ключа сужает перебор.
+  // Знание «установка сейчас не примет портал» ничего не добавляет обращающемуся —
+  // роут установки отвечает ему тем же 503, — зато снимает целый класс расследований:
+  // при первой живой установке пришлось идти в журнал на хосте, чтобы отличить
+  // незаданную пару приложения от негодного ключа шифрования.
+  const missing = missingForInstall()
+
   return {
     status: degraded ? 'degraded' : 'ok',
     version: appVersion(),
     checks,
+    // Отдельно от `checks`: это не проба живости, а состояние конфигурации, и на общий
+    // `status` она не влияет — приложение живо и отдаёт публичные анкеты даже тогда,
+    // когда принять новую установку не может.
+    install: missing.length === 0 ? { status: 'ready' as const } : { status: 'not-configured' as const, missing },
     // Глубина буфера ответов. Наружу уходят ДВА ЧИСЛА и ничего больше: сколько ждёт
     // доставки и сколько сдалось. Эндпоинт анонимный, и по числам нельзя ни узнать,
     // чей это ответ, ни прочитать его, — но растущий `failed` виден сразу, а это то

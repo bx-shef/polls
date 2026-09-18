@@ -3,10 +3,9 @@ import { parseBracketForm } from '../b24/event-body'
 import { refreshTokens } from '../b24/oauth'
 import { registerPortal } from '../b24/register'
 import { decideInstall } from '../domain/portals/install'
-import { isDatabaseConfigured } from '../db/client'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
-import { assertEncryptionKey } from '../utils/crypto'
 import { logger } from '../utils/logger'
+import { missingForInstall } from '../utils/readiness'
 
 /**
  * ONAPPINSTALL handler — a thin adapter over `decideInstall`.
@@ -45,8 +44,11 @@ export default defineEventHandler(async (event) => {
   // отсутствующем ключе уже после обмена значит сжечь единственный токен администратора,
   // а на повтор события рассчитывать нельзя (см. шапку). Установка стала бы
   // невосстановимой.
-  if (clientId === '' || clientSecret === '' || !isDatabaseConfigured() || !assertEncryptionKey()) {
-    logger.error('установка невозможна: нет B24_CLIENT_ID/B24_CLIENT_SECRET, DATABASE_URL или B24_TOKEN_ENC_KEY')
+  const missing = missingForInstall()
+  if (missing.length > 0) {
+    // ⚠ Имя виновника, а не список подозреваемых. Раньше здесь перечислялись все четыре
+    // причины сразу, и по журналу нельзя было понять, какую переменную править.
+    logger.error({ missing }, 'установка невозможна: конфигурация неполна')
     throw createError({ statusCode: 503, statusMessage: 'Not configured' })
   }
 
