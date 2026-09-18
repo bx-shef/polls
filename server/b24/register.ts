@@ -4,7 +4,7 @@ import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readSto
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import type { RegisterPortal } from '../domain/portals/install'
-import { missingScopes } from '../domain/portals/scopes'
+import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
 import { logger } from '../utils/logger'
@@ -120,18 +120,17 @@ async function provisionPortal(portal: {
   expiresInSeconds: number
   scope: string[]
 }): Promise<'ok' | 'not-admin' | 'no-scope' | 'failed'> {
-  // ⚠ Разрешения проверяются ДО первого вызова, и это не перестраховка. Выдать приложению
-  // один `crm` — самая естественная ошибка при регистрации в кабинете, потому что
-  // `userfieldconfig.add` живёт в модуле `crm` и документируется в разделе CRM, а scope
-  // у него свой. Начав вслепую, мы создали бы смарт-процесс (`crm.type.add` прошёл бы)
-  // и упали на первом же поле — оставив на портале пустой смарт-процесс при лимите 150
-  // на весь портал, который не наш. Не начинать дешевле, чем остановиться посередине.
-  const lacking = missingScopes(portal.scope)
-  if (lacking.length > 0) {
-    logger.error({ domain: portal.domain, missingScopes: lacking }, 'приложению не выданы права, обустройство не начато')
-    return 'no-scope'
-  }
-
+  // ⚠ Здесь НЕТ предварительной проверки разрешений по `portal.scope`, и это вывод
+  // из живого портала, а не упущение. PR #30 такую проверку завёл — и она была бы
+  // неверной: на `b24-ypkv9c.bitrix24.by` сохранённый `scopes` равен `{app}`, при том
+  // что установка на нём прошла целиком, то есть `crm.type.add`, `userfieldconfig.add`
+  // и `placement.bind` отработали. Значит `scope` в ответе сервера авторизации при
+  // обмене по `refresh_token` НЕ перечисляет выданные приложению права, и решать
+  // по нему «нам не хватит прав» — значит запрещать установку работающему порталу.
+  // Разбор — в `docs/PROCESS.md`.
+  //
+  // Настоящий источник правды о правах — сам портал: недостающий scope он называет
+  // кодом `insufficient_scope`, и этот случай разобран в `provisionWithCall` ниже.
   const call = makePortalCall(
     {
       memberId: portal.memberId,
@@ -172,7 +171,7 @@ async function provisionPortal(portal: {
  * Идемпотентно: смарт-процессы ищутся по сохранённым идентификаторам и по заголовку,
  * поля добавляются только недостающие, вкладка перерегистрируется.
  */
-export async function provisionWithCall(call: RestCall, domain: string): Promise<'ok' | 'not-admin' | 'failed'> {
+export async function provisionWithCall(call: RestCall, domain: string): Promise<'ok' | 'not-admin' | 'no-scope' | 'failed'> {
   const portal = { domain }
   const budgeted = withDeadline(call, PROVISION_BUDGET_MS)
 
@@ -208,7 +207,17 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     return 'ok'
   }
   catch (error) {
-    logger.error({ domain: portal.domain, reason: (error as Error).message }, 'обустройство портала не удалось')
+    const reason = (error as Error).message
+    // ⚠ Отказ по правам отделяем от прочих: лечится он галочкой в партнёрском кабинете,
+    // а не повтором через минуту, и перепутать эти два совета дорого — администратор
+    // будет жать «попробовать ещё раз» ровно столько раз, сколько у него терпения.
+    // Портал — единственный, кто знает правду о правах: предсказать её по `scope`
+    // из ответа сервера авторизации нельзя, см. комментарий в `provisionPortal`.
+    if (looksLikeScopeRefusal(reason)) {
+      logger.error({ domain: portal.domain, required: [...REQUIRED_SCOPES] }, 'порталу не хватает прав приложения')
+      return 'no-scope'
+    }
+    logger.error({ domain: portal.domain, reason }, 'обустройство портала не удалось')
     return 'failed'
   }
 }
