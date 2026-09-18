@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down dev check image \
         prod-pull prod-up prod-down prod-logs prod-migrate prod-ps \
-        doctor host-update compose-found
+        doctor host-update compose-found prod-tail
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -98,8 +98,16 @@ prod-down: compose-found ## Погасить прод-стек
 prod-ps: compose-found ## Состояние контейнеров стека
 	$(PROD) ps
 
-prod-logs: compose-found ## Смотреть логи приложения
+prod-logs: compose-found ## Смотреть логи приложения вживую (не завершается, Ctrl+C)
 	$(PROD) logs -f app
+
+# ⚠ Отдельная цель, а не флаг к `prod-logs`. Та следует за журналом и НЕ ЗАВЕРШАЕТСЯ —
+# значит `make prod-logs | grep …` не отдаёт ничего и выглядит как зависший терминал.
+# Ровно на это наступили, разбирая первую живую установку: журнал есть, посмотреть нечем.
+# Для разбора нужен конечный вывод, для наблюдения — бесконечный; это две разные команды.
+LINES ?= 2000
+prod-tail: compose-found ## Последние LINES строк журнала и выйти — для grep (LINES=2000)
+	$(PROD) logs --no-color --tail=$(LINES) app
 
 prod-migrate: compose-found ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate
