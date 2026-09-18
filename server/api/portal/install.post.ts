@@ -7,12 +7,11 @@ import { registerPortal } from '../../b24/register'
 import { trustedAddress } from '../../domain/links/rate-limit'
 import { readFrameGrant } from '../../domain/portals/grant'
 import { decideGrant } from '../../domain/portals/install'
-import { isDatabaseConfigured } from '../../db/client'
 import { findPortalByMemberId } from '../../links/issue'
 import { countAndDecidePortal } from '../../links/rate'
 import { b24ClientId, b24ClientSecret } from '../../utils/env'
-import { assertEncryptionKey } from '../../utils/crypto'
 import { logger } from '../../utils/logger'
+import { missingForInstall } from '../../utils/readiness'
 
 /**
  * Installs the app from the setup wizard running inside the portal's iframe.
@@ -57,8 +56,12 @@ export default defineEventHandler(async (event) => {
   // Тот же порядок, что в обработчике события: ключ шифрования проверяется ДО обмена.
   // Упасть на отсутствующем ключе после обмена значит сжечь единственный грант
   // администратора — повторить мастер он сможет, но только переустановив приложение.
-  if (clientId === '' || clientSecret === '' || !isDatabaseConfigured() || !assertEncryptionKey()) {
-    logger.error('мастер установки: нет B24_CLIENT_ID/B24_CLIENT_SECRET, DATABASE_URL или B24_TOKEN_ENC_KEY')
+  const missing = missingForInstall()
+  if (missing.length > 0) {
+    // ⚠ Имя виновника, а не список подозреваемых: этот 503 уже один раз встал поперёк
+    // живой установки, и по журналу было не отличить незаданный `B24_CLIENT_ID`
+    // от ключа шифрования, который задан, но не разворачивается в 32 байта.
+    logger.error({ missing }, 'мастер установки: конфигурация неполна')
     throw createError({ statusCode: 503, statusMessage: 'Not configured' })
   }
 
