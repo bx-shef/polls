@@ -84,9 +84,25 @@ describe('выбор заголовков по адресу', () => {
     expect(csp).toContain(`default-src 'none'`)
   })
 
-  it('всему остальному — портальную', () => {
-    expect(securityHeadersFor('/')['Content-Security-Policy']).toBe(portalCsp)
-    expect(securityHeadersFor('/settings')['Content-Security-Policy']).toBe(portalCsp)
+  it('лендингу — публичную, и он единственный индексируется', () => {
+    // Корень живёт вне портала и в выдаче ему место. Всё остальное — служебные страницы.
+    expect(securityHeadersFor('/')['Content-Security-Policy']).toBe(publicPageCsp)
+    expect(securityHeadersFor('/')['X-Robots-Tag']).toBeUndefined()
+  })
+
+  it('страницам приложения — портальную и noindex', () => {
+    // ⚠ Гвард под ошибку, оплаченную соседним проектом: служебная страница без `noindex`
+    // ушла в индекс С МЕТА-ДАННЫМИ ЛЕНДИНГА, и по запросу про продукт выдача показывала
+    // пустую панель, которая снаружи портала не работает в принципе.
+    for (const path of ['/app', '/install', '/portal/deal-tab']) {
+      expect(securityHeadersFor(path)['Content-Security-Policy']).toBe(portalCsp)
+      expect(securityHeadersFor(path)['X-Robots-Tag']).toBe('noindex, nofollow')
+    }
+  })
+
+  it('не путает лендинг с путём, который с него начинается', () => {
+    // `startsWith('/')` накрыл бы всё приложение: с косой черты начинается любой путь.
+    expect(securityHeadersFor('/app')['Content-Security-Policy']).not.toBe(publicPageCsp)
   })
 
   it('общие заголовки ставит везде', () => {

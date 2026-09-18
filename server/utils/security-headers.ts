@@ -84,11 +84,37 @@ export function securityHeadersFor(path: string): Record<string, string> {
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   }
 
-  if (path.startsWith('/s/')) {
-    return { ...common, 'Content-Security-Policy': publicPageCsp, 'X-Robots-Tag': 'noindex, nofollow' }
-  }
   if (path.startsWith('/api/')) {
     return { ...common, 'Content-Security-Policy': apiCsp }
   }
-  return { ...common, 'Content-Security-Policy': portalCsp }
+  if (path.startsWith('/s/')) {
+    return { ...common, 'Content-Security-Policy': publicPageCsp, 'X-Robots-Tag': 'noindex, nofollow' }
+  }
+
+  // Лендинг — единственная страница, которой в выдаче место. Политика у неё та же, что
+  // у публичной анкеты: она тоже вне портала, и встраивать её в чужие страницы незачем.
+  if (isLanding(path)) {
+    return { ...common, 'Content-Security-Policy': publicPageCsp }
+  }
+
+  // Всё остальное — страницы внутри портала: `/app`, `/install`, `/portal/**`.
+  //
+  // ⚠ `noindex` здесь обязателен, и это не перестраховка. У соседнего проекта служебная
+  // страница без него ушла в индекс С МЕТА-ДАННЫМИ ЛЕНДИНГА — то есть по запросу про продукт
+  // выдача показывала пустую панель, которая снаружи портала не работает в принципе.
+  // Закрываем заголовком, а не `Disallow` в robots.txt: краулер, послушавший `Disallow`,
+  // страницу не скачает, не увидит `noindex` и вполне может показать голый адрес
+  // по внешней ссылке.
+  return { ...common, 'Content-Security-Policy': portalCsp, 'X-Robots-Tag': 'noindex, nofollow' }
+}
+
+/**
+ * Лендинг — это корень и ничего больше.
+ *
+ * Сравнение точное, а не `startsWith`: с префиксом под лендинг попало бы всё приложение,
+ * потому что с `/` начинается любой путь.
+ */
+function isLanding(path: string): boolean {
+  const withoutQuery = path.split('?')[0] ?? ''
+  return withoutQuery === '/' || withoutQuery === ''
 }
