@@ -4,6 +4,7 @@ import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readSto
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import type { RegisterPortal } from '../domain/portals/install'
+import { missingScopes } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
 import { logger } from '../utils/logger'
@@ -118,7 +119,19 @@ async function provisionPortal(portal: {
   applicationToken: string
   expiresInSeconds: number
   scope: string[]
-}): Promise<'ok' | 'not-admin' | 'failed'> {
+}): Promise<'ok' | 'not-admin' | 'no-scope' | 'failed'> {
+  // ⚠ Разрешения проверяются ДО первого вызова, и это не перестраховка. Выдать приложению
+  // один `crm` — самая естественная ошибка при регистрации в кабинете, потому что
+  // `userfieldconfig.add` живёт в модуле `crm` и документируется в разделе CRM, а scope
+  // у него свой. Начав вслепую, мы создали бы смарт-процесс (`crm.type.add` прошёл бы)
+  // и упали на первом же поле — оставив на портале пустой смарт-процесс при лимите 150
+  // на весь портал, который не наш. Не начинать дешевле, чем остановиться посередине.
+  const lacking = missingScopes(portal.scope)
+  if (lacking.length > 0) {
+    logger.error({ domain: portal.domain, missingScopes: lacking }, 'приложению не выданы права, обустройство не начато')
+    return 'no-scope'
+  }
+
   const call = makePortalCall(
     {
       memberId: portal.memberId,
