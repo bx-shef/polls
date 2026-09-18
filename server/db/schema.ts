@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 /**
  * Минимальная своя схема (`docs/PROCESS.md`, раздел 5). Источник истины — портал;
@@ -49,10 +50,33 @@ export const portals = pgTable('portals', {
   license: text('license'),
   /** active | degraded | deleted — портал удалил приложение, долбиться в него больше нельзя. */
   status: text('status').notNull().default('active'),
+  /**
+   * Когда портал ВПЕРВЫЕ отказал по мёртвому гранту. `null` — не отказывал.
+   *
+   * ⚠ Существует потому, что событие удаления приложения до нас не доходит. У тиражного
+   * приложения с пунктом в меню `ONAPPINSTALL` после `installFinish()` не приходит вовсе
+   * (проверено на живом портале), а `application_token` приходит только в событиях — значит
+   * `ONAPPUNINSTALL` проверить нечем даже теоретически: данных авторизации в него не передают.
+   * Без этой колонки токены ушедшего клиента лежали бы у нас вечно.
+   *
+   * ⚠ Отметка ставится ОДИН раз, первым отказом, и снимается первым успехом. Переписывать её
+   * на каждом отказе значит отодвигать срок вечно: уборщик выглядел бы рабочим и не работал.
+   * Приём взят у `client-bank-alfa-by` (`grant_revoked_at`), где оплачен живыми клиентами.
+   */
+  grantRevokedAt: timestamp('grant_revoked_at', { withTimezone: true }),
   installedAt: timestamp('installed_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   uniqueIndex('portals_member_id_key').on(table.memberId),
+  // ⚠ Под уборщик мёртвых грантов: он ходит сюда каждую минуту с
+  // `WHERE grant_revoked_at < граница ORDER BY grant_revoked_at`. Комментарий в плагине
+  // обещал «один индексный запрос», а индекса не было вовсе — то есть последовательный
+  // проход по всей таблице с сортировкой, вечно. Сегодня это ничего не стоит, но обещание
+  // в комментарии было ложным, и первый, кто оценит цену по нему, ошибётся.
+  // Частичный: помеченных порталов всегда единицы, а строк в таблице — все клиенты.
+  index('portals_grant_revoked_idx')
+    .on(table.grantRevokedAt)
+    .where(sql`${table.grantRevokedAt} is not null`),
 ])
 
 /** Буфер входящих ответов: сохраняем до того, как пробуем записать в портал. */

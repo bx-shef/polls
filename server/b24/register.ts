@@ -3,6 +3,7 @@ import { makePortalCall } from './client'
 import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
+import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
@@ -39,13 +40,17 @@ const PROVISION_BUDGET_MS = 45_000
  */
 export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'degraded'> {
   const now = new Date()
-  await getDb()
+  // ⚠ Шифротекст считается ОДИН раз и запоминается: шифрование рандомизировано, и повторный
+  // `encryptSecret` того же токена даёт другую строку. Дальше он нужен как исходное значение
+  // для compare-and-swap при продлении — сравнивать надо ровно с тем, что легло в колонку.
+  const storedRefreshToken = encryptSecret(portal.refreshToken)
+  const rows = await getDb()
     .insert(schema.portals)
     .values({
       memberId: portal.memberId,
       domain: portal.domain,
       accessToken: encryptSecret(portal.accessToken),
-      refreshToken: encryptSecret(portal.refreshToken),
+      refreshToken: storedRefreshToken,
       // ⚠ NULL, а не шифротекст пустой строки. `encryptSecret('')` даёт непустую строку,
       // и по ней потом не отличить «токена не приносили» от «приносили пустой» — а именно
       // на этом отличии держится защита ниже.
@@ -74,12 +79,24 @@ export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'de
         // подпиской»); теперь она техническая. Нашла панель ревью PR #27.
         applicationToken: sql`coalesce(excluded.application_token, ${schema.portals.applicationToken})`,
         tokenExpiresAt: sql`excluded.token_expires_at`,
+        // ⚠ Отметка мёртвого гранта снимается переустановкой, и без этой строки механизм
+        // отмирания портала ломал сам себя. `ON CONFLICT DO UPDATE` не трогает колонки,
+        // которых нет в списке, — то есть портал, помеченный или уже стёртый, возвращался бы
+        // к жизни со свежими токенами И со старой, давно просроченной отметкой. Первый же
+        // тик уборщика (раз в минуту) стирал бы только что выданные токены, и спасти их
+        // не успевало бы ничто: снять отметку может только продление, а оно не раньше чем
+        // через час. Клиент переустанавливает приложение, оно «не запоминается», и понять
+        // это без похода в базу нельзя. Подтверждённая переустановка и есть тот успех,
+        // который обязан снимать отметку. Нашла панель ревью PR #34.
+        grantRevokedAt: sql`null`,
         scopes: sql`excluded.scopes`,
         status: sql`excluded.status`,
         updatedAt: sql`excluded.updated_at`,
       },
     })
+    .returning({ id: schema.portals.id })
 
+  const portalId = rows[0]!.id
   logger.info({ domain: portal.domain }, 'токены портала сохранены')
 
   // Смарт-процессы создаём ПОСЛЕ сохранения токенов и не роняем ими установку.
@@ -91,7 +108,7 @@ export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'de
   // целиком, не про отдельный портал), ни фоновая задача — её нет. Портал, застрявший
   // в этом статусе, чинится только переустановкой руками. Автоматическое долечивание —
   // отдельная задача, см. `docs/BACKLOG.md`.
-  const outcome = await provisionPortal(portal)
+  const outcome = await provisionPortal({ ...portal, id: portalId, storedRefreshToken })
   if (outcome !== 'ok') {
     await getDb()
       .update(schema.portals)
@@ -112,10 +129,13 @@ export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'de
  * сотрудник уже ждёт ссылку, — худший из вариантов.
  */
 async function provisionPortal(portal: {
+  id: string
   memberId: string
   domain: string
   accessToken: string
   refreshToken: string
+  /** Шифротекст, который лёг в колонку: исходное значение для compare-and-swap. */
+  storedRefreshToken: string
   applicationToken: string
   expiresInSeconds: number
   scope: string[]
@@ -141,19 +161,18 @@ async function provisionPortal(portal: {
       expiresIn: portal.expiresInSeconds,
       scope: portal.scope,
     },
-    // SDK обновил токены сам — сохраняем. Только UPDATE: операция идемпотентна
-    // при нескольких репликах и не воскресит удалённый портал.
-    async (next) => {
-      await getDb()
-        .update(schema.portals)
-        .set({
-          accessToken: encryptSecret(next.accessToken),
-          refreshToken: encryptSecret(next.refreshToken),
-          tokenExpiresAt: new Date(Date.now() + next.expiresIn * 1000),
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.portals.memberId, portal.memberId))
-    },
+    // ⚠ Через ОБЩИЙ `saveRefreshedTokens`, а не своим `UPDATE`. Здесь стояла собственная
+    // копия записи — без compare-and-swap по прежней паре и без условия `status <> 'deleted'`,
+    // то есть в обход обеих защит, которые ради этих же гонок и заводились. Комментарий
+    // при этом обещал «не воскресит удалённый портал»: до появления стирания это было верно,
+    // а с ним стало неправдой. Обустройство — это 17–19 вызовов под бюджетом в 45 секунд,
+    // и продление посреди них вполне реально. Нашла панель ревью PR #34.
+    async next => saveRefreshedTokens(portal.id, {
+      accessToken: encryptSecret(next.accessToken),
+      refreshToken: encryptSecret(next.refreshToken),
+      expiresAt: new Date(Date.now() + next.expiresIn * 1000),
+      previousRefreshToken: portal.storedRefreshToken,
+    }),
   )
 
   return provisionWithCall(call, portal.domain)

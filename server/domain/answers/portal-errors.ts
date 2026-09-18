@@ -1,3 +1,5 @@
+import { refusalCode } from '../portals/portal-error'
+
 /**
  * Turns a portal refusal into something safe to write down.
  *
@@ -70,14 +72,32 @@ const TIMEOUT_MARK = 'портал не ответил за'
  * Здесь же результат — всегда одна из констант этого файла.
  */
 export function safeRefusal(error: unknown): string {
+  // ⚠ Сначала СТРУКТУРНЫЙ код, и только он имеет силу. Портал присылает код в поле `error`,
+  // а пояснение — в `error_description`; документация Битрикс24 велит ветвиться по коду.
+  // `server/b24/client.ts` доносит его сюда в `PortalError.code`.
+  const code = refusalCode(error)
+  if (code !== '') return (KNOWN_CODES as readonly string[]).includes(code) ? code : UNKNOWN_REFUSAL
+
   const raw = typeof error === 'string' ? error : String((error as Error | undefined)?.message ?? '')
   if (raw === '') return UNKNOWN_REFUSAL
-
-  const hit = KNOWN_CODES.find(code => raw.includes(code))
-  if (hit !== undefined) return hit
 
   // Таймаут — наша собственная формулировка, и метод в ней назвать полезно.
   if (raw.includes(TIMEOUT_MARK)) return 'портал не ответил вовремя'
 
+  // ⚠ Поиска кодов подстрокой здесь БОЛЬШЕ НЕТ, и это исправление двух дефектов сразу.
+  //
+  // Первый: он не работал. Искать машинный код в `message` бессмысленно — там лежит одно
+  // описание портала («Wrong authorization data», «Доступ запрещен»), кода в нём нет.
+  // То есть почти любой настоящий отказ схлопывался в «код не распознан» с PR #22.
+  //
+  // Второй: он был управляем снаружи. `KNOWN_CODES.find(code => raw.includes(code))`
+  // возвращал первый код ПО ПОРЯДКУ В МАССИВЕ, найденный где угодно в строке, — а Битрикс24
+  // цитирует присланное значение в ошибке валидации, и присланное значение у нас это ответ
+  // клиента. Респондент, набравший в анкете `expired_token`, выбирал бы код за нас: на этом
+  // коде принимаются необратимые решения (`server/domain/portals/lifecycle.ts`).
+  // Обе находки — панель ревью PR #34.
+  //
+  // Осталось без кода — значит перед нами не отказ портала, а что-то наше: сеть, разбор,
+  // исключение из нашего же кода. Называть это чужим кодом нельзя.
   return UNKNOWN_REFUSAL
 }
