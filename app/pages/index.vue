@@ -18,8 +18,17 @@
  */
 
 const TITLE = 'Опросы клиентов'
-const DESCRIPTION = 'Опрос уходит сам по стадии сделки, а ответы возвращаются в карточку клиента '
-  + 'и превращаются в понятные цифры. Приложение для Битрикс24.'
+/**
+ * Обещание продукта — ОДНОЙ строкой и в одном месте.
+ *
+ * ⚠ Сначала лид был набран в шаблоне руками, а `DESCRIPTION` собиралась отдельно: то есть
+ * то же обещание стояло дважды внутри одного файла, в файле, чей собственный комментарий
+ * запрещает разносить его по двум местам. Правка мета-описания молча расходилась бы
+ * с текстом на экране. Нашла панель ревью PR #28.
+ */
+const LEAD = 'Опрос уходит сам по стадии сделки, а ответы возвращаются в карточку клиента '
+  + 'и превращаются в понятные цифры.'
+const DESCRIPTION = `${LEAD} Приложение для Битрикс24.`
 
 useHead({
   title: `${TITLE} — приложение для Битрикс24`,
@@ -30,8 +39,9 @@ useHead({
     { property: 'og:type', content: 'website' },
     { property: 'og:locale', content: 'ru_RU' },
   ],
+  // `lang` здесь не ставим: он общий на приложение, в `nuxt.config.ts`. Страничный атрибут
+  // покрывал только лендинг, а забывала бы его каждая следующая страница.
   link: [{ rel: 'canonical', href: 'https://polls.bx-shef.by/' }],
-  htmlAttrs: { lang: 'ru' },
 })
 
 /** Три шага пути — то же, что на изображении №3 карточки Маркета. */
@@ -79,8 +89,7 @@ const DIFFERENCES = [
       </p>
       <h1>{{ TITLE }}</h1>
       <p class="lead">
-        Опрос уходит сам по стадии сделки, а ответы возвращаются в карточку клиента
-        и превращаются в понятные цифры.
+        {{ LEAD }}
       </p>
     </header>
 
@@ -137,9 +146,15 @@ const DIFFERENCES = [
         Приложение устанавливается из Маркета Битрикс24 администратором портала.
         После установки вкладка «Опросы» появляется в карточке сделки.
       </p>
+      <!--
+        ⚠ Ссылок на юридические документы здесь НЕТ намеренно. Они стояли в первой редакции
+        и вели на `/eula` и `/privacy-policy`, которых в проекте не существует: `docs/PROJECT_MAP.md`
+        честно помечает юридический пакет как не начатый. Это единственная индексируемая
+        страница продукта, и две мёртвые ссылки в её подвале увидел бы и модератор Маркета.
+        Вернуть вместе с пакетом, не раньше. Нашла панель ревью PR #28.
+      -->
       <p class="muted">
-        <a href="/eula">Лицензионное соглашение</a> ·
-        <a href="/privacy-policy">Политика конфиденциальности</a>
+        Вопросы и поддержка — через карточку приложения в Маркете Битрикс24.
       </p>
     </footer>
   </main>
@@ -148,14 +163,21 @@ const DIFFERENCES = [
 <style scoped>
 /*
  * Своя вёрстка без единой зависимости: страница живёт вне портала, `b24ui` сюда
- * не распространяется по правилу проекта. Обе темы обязательны — светлая и тёмная.
+ * не распространяется по правилу проекта.
+ *
+ * ⚠ Цвета берутся ИМЕНАМИ РОЛЕЙ из `app/app.vue`, а не значениями — правило проекта,
+ * и обе темы приезжают вместе с ними. Первая редакция завела здесь собственный набор
+ * из восемнадцати литералов и второй блок `prefers-color-scheme`; они успели разъехаться
+ * с общими ещё до мержа (`#e6e6e6` против `--fg: #eceff3`), то есть правку палитры
+ * пришлось бы делать дважды и один раз забыть. Прецедент рядом: публичная страница
+ * анкеты — такой же мир вне портала — живёт на этих же переменных. Нашла панель ревью PR #28.
  */
 .page {
   max-width: 44rem;
   margin: 0 auto;
   padding: 2.5rem 1rem 4rem;
   font: 1rem/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  color: #1a1a1a;
+  color: var(--fg);
 }
 
 .hero {
@@ -166,10 +188,10 @@ const DIFFERENCES = [
   display: inline-block;
   margin: 0 0 1rem;
   padding: 0.25rem 0.7rem;
-  border: 1px solid #c8d3e0;
+  border: 1px solid var(--line);
   border-radius: 999px;
   font-size: 0.8rem;
-  color: #4a5b70;
+  color: var(--muted);
 }
 
 h1 {
@@ -181,7 +203,7 @@ h1 {
 .lead {
   margin: 0;
   font-size: 1.15rem;
-  color: #3d4b5c;
+  color: var(--muted);
 }
 
 section {
@@ -219,8 +241,8 @@ p {
   width: 1.9rem;
   height: 1.9rem;
   border-radius: 50%;
-  background: #eef2f7;
-  color: #2a3a4d;
+  background: var(--surface);
+  color: var(--fg);
   font-weight: 600;
   text-align: center;
   line-height: 1.9rem;
@@ -233,54 +255,21 @@ p {
 
 .cards article {
   padding: 1rem 1.1rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--line);
   border-radius: 0.6rem;
 }
 
 .foot {
   padding-top: 1.5rem;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--line);
 }
 
 .muted {
-  color: #5c6b7a;
+  color: var(--muted);
   font-size: 0.9rem;
 }
 
 a {
-  color: #1f6feb;
-}
-
-@media (prefers-color-scheme: dark) {
-  .page {
-    color: #e6e6e6;
-  }
-
-  .lead {
-    color: #b6c2cf;
-  }
-
-  .badge {
-    border-color: #3a4756;
-    color: #9fb0c3;
-  }
-
-  .num {
-    background: #263040;
-    color: #cfe0f3;
-  }
-
-  .cards article,
-  .foot {
-    border-color: #2c3543;
-  }
-
-  .muted {
-    color: #9aa7b4;
-  }
-
-  a {
-    color: #6cb0ff;
-  }
+  color: var(--accent);
 }
 </style>

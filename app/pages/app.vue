@@ -25,6 +25,20 @@ interface Survey {
   title: string
 }
 
+/**
+ * The shape `/api/portal/surveys` actually answers with.
+ *
+ * ⚠ Объединение по тегу `ok`, а не плоский объект с необязательными полями. С плоским
+ * типом ветка `if (!result.ok)` не была исчерпывающей: любая НОВАЯ причина отказа на сервере
+ * проваливалась мимо всех проверок, и страница показывала «опубликованных анкет пока нет» —
+ * ложное утверждение о портале клиента, неотличимое от честной пустоты. Нашла панель ревью
+ * PR #28; в проекте это уже случалось с типом `AuthData` из SDK, где `[key: string]: any`
+ * скрыл опечатку в имени поля.
+ */
+type SurveysReply
+  = | { ok: true, surveys: Survey[] }
+    | { ok: false, reason: string }
+
 const route = useRoute()
 const resolved = ref(false)
 const inPortal = ref(false)
@@ -35,12 +49,14 @@ const surveys = ref<Survey[]>([])
 
 let frame: B24Frame | undefined
 
-useHead({
-  title: 'Опросы клиентов',
-  // ⚠ Служебная страница: в выдаче ей делать нечего. Дублируем заголовок `X-Robots-Tag`
-  // мета-тегом — заголовок ставит сервер, и при смене раздачи он теряется молча.
-  meta: [{ name: 'robots', content: 'noindex, nofollow' }],
-})
+// ⚠ Мета-тега `robots` здесь НЕТ, и это не упущение. Страница под `ssr: false`: Nitro отдаёт
+// оболочку SPA, чья `<head>` собрана из `nuxt.config`, а страничный `useHead` отрабатывает
+// только после гидратации. Краулер без выполнения JS мета-тега не увидит вовсе. Первая
+// редакция ставила его «дублем на случай смены раздачи» — то есть обещала защиту, которой
+// нет, и следующий читатель мог бы снять настоящую. Служебные страницы закрывает заголовок
+// `X-Robots-Tag` из `server/plugins/security-headers.ts`, и он же единственная защита.
+// Нашла панель ревью PR #28.
+useHead({ title: 'Опросы клиентов' })
 
 const gate = computed(() => portalGate({
   resolved: resolved.value,
@@ -61,13 +77,13 @@ onMounted(async () => {
     resolved.value = true
   }
 
-  if (!inPortal.value) {
+  if (frame === undefined) {
     loading.value = false
     return
   }
 
   try {
-    await loadSurveys()
+    await loadSurveys(frame)
   }
   catch {
     failure.value = 'Не удалось получить список опросов с портала. Обновите страницу.'
@@ -77,19 +93,23 @@ onMounted(async () => {
   }
 })
 
-async function loadSurveys() {
-  const pass = readFramePass(frame!.auth.getAuthData())
+/** `frame` параметром, а не из замыкания: `!` при рефакторинге ломается молча. */
+async function loadSurveys(connection: B24Frame) {
+  const pass = readFramePass(connection.auth.getAuthData())
   if (pass === null) throw new Error('нет данных авторизации фрейма')
 
-  const result = await $fetch<{ ok: boolean, reason?: string, surveys?: Survey[] }>(
+  const result = await $fetch<SurveysReply>(
     '/api/portal/surveys',
     { method: 'POST', body: { memberId: pass.memberId, authId: pass.authId } },
   )
   if (!result.ok) {
-    notProvisioned.value = result.reason === 'not-provisioned'
+    if (result.reason === 'not-provisioned') notProvisioned.value = true
+    // Незнакомая причина отказа — это отказ, а не пустой список. Молчать здесь значит
+    // соврать клиенту про его собственный портал.
+    else failure.value = 'Портал ответил отказом на запрос списка опросов. Обновите страницу.'
     return
   }
-  surveys.value = result.surveys ?? []
+  surveys.value = result.surveys
 }
 </script>
 

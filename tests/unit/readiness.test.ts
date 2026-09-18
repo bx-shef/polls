@@ -46,7 +46,7 @@ describe('missingSettings', () => {
     expect(missingSettings({ ...READY, databaseConfigured: false })).toEqual(['DATABASE_URL'])
   })
 
-  it('перечисляет всё недостающее разом и в порядке `.env.example`', () => {
+  it('перечисляет всё недостающее разом, сначала правимое руками', () => {
     // Иначе оператор чинит по одной переменной за выкатку, узнавая о следующей из
     // следующего отказа.
     expect(missingSettings({

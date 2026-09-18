@@ -43,12 +43,10 @@ describe('лендинг', () => {
     return mountSuspended(IndexPage).then(p => expect(p.text()).toContain('пяти ответов'))
   })
 
-  it('не строит разметку из внешних источников', () => {
-    // Страница живёт вне портала и ничего не знает о REST — это правило проекта.
-    // Здесь нет ни одного места, куда можно подставить чужой текст.
+  it('не оставляет неподставленных значений', () => {
     return mountSuspended(IndexPage).then((p) => {
-      expect(p.html()).not.toContain('v-html')
       expect(p.text()).not.toContain('undefined')
+      expect(p.text()).not.toContain('[object Object]')
     })
   })
 })
