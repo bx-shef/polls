@@ -1,6 +1,9 @@
 import { makePortalCall } from './client'
 import type { RestCall } from './provision'
 import { saveRefreshedTokens, type IssuingPortal } from '../links/issue'
+import { safeRefusal } from '../domain/answers/portal-errors'
+import { isDeadGrant } from '../domain/portals/lifecycle'
+import { markGrantRevoked } from '../portals/store'
 import { decryptSecret, encryptSecret } from '../utils/crypto'
 import { logger } from '../utils/logger'
 
@@ -30,7 +33,7 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
     ? 0
     : Math.max(0, Math.floor((portal.tokenExpiresAt.getTime() - Date.now()) / 1000))
 
-  return makePortalCall(
+  const call = makePortalCall(
     {
       memberId: portal.memberId,
       domain: portal.domain,
@@ -46,8 +49,51 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
       accessToken: encryptSecret(next.accessToken),
       refreshToken: encryptSecret(next.refreshToken),
       expiresAt: new Date(Date.now() + next.expiresIn * 1000),
+      // Шифротекст из строки, а не расшифрованное значение: сравнение идёт с колонкой,
+      // а шифрование рандомизировано — второй `encryptSecret` того же токена дал бы
+      // другую строку, и условие не совпало бы никогда.
+      previousRefreshToken: portal.refreshToken ?? '',
     }),
   )
+
+  return watchGrant(call, portal.id)
+}
+
+/**
+ * Wraps a call so a dead grant is recorded the first time the portal says so.
+ *
+ * ⚠ ЭТО ЕДИНСТВЕННЫЙ СПОСОБ УЗНАТЬ, что клиент удалил приложение. Событие `ONAPPUNINSTALL`
+ * нам недоступно: `application_token` приходит только в событиях, а `ONAPPINSTALL` у тиражного
+ * приложения с пунктом в меню не приходит вовсе (проверено на живом портале). Проверять
+ * событие удаления нечем даже теоретически — данных авторизации в него не передают.
+ * Поэтому об уходе клиента мы узнаём из собственного исходящего вызова: его не подделать
+ * снаружи, в отличие от события.
+ *
+ * ⚠ Обёртка ставится ЗДЕСЬ, в одном месте, а не у каждого вызывающего. Их сейчас двое —
+ * портальные экраны и воркер доставки, — и третий забудет. Место выбрано по тому же
+ * рассуждению, по которому сюда переехала расшифровка токенов.
+ *
+ * ⚠ Классифицируем по `safeRefusal`, а не по тексту ошибки: в тексте портала едет
+ * процитированный ответ клиента, и респондент, набравший в анкете `expired_token`,
+ * объявлял бы грант своего портала мёртвым. `safeRefusal` выбирает из закрытого списка
+ * наших констант — чужой текст сюда не проходит по построению.
+ *
+ * Отметка не мешает вызову: ошибка пробрасывается дальше как была, а вызывающие решают
+ * сами. Стирание — не здесь: у него отсрочка в две недели и свой уборщик.
+ */
+function watchGrant(call: RestCall, portalId: string): RestCall {
+  return async (method, params) => {
+    try {
+      return await call(method, params)
+    }
+    catch (error) {
+      if (isDeadGrant(safeRefusal(error))) {
+        // Отметка не должна ронять вызов: её неудача — наша беда, а не портала.
+        await markGrantRevoked(portalId, new Date()).catch(() => {})
+      }
+      throw error
+    }
+  }
 }
 
 /**

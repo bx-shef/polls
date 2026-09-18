@@ -49,6 +49,20 @@ export const portals = pgTable('portals', {
   license: text('license'),
   /** active | degraded | deleted — портал удалил приложение, долбиться в него больше нельзя. */
   status: text('status').notNull().default('active'),
+  /**
+   * Когда портал ВПЕРВЫЕ отказал по мёртвому гранту. `null` — не отказывал.
+   *
+   * ⚠ Существует потому, что событие удаления приложения до нас не доходит. У тиражного
+   * приложения с пунктом в меню `ONAPPINSTALL` после `installFinish()` не приходит вовсе
+   * (проверено на живом портале), а `application_token` приходит только в событиях — значит
+   * `ONAPPUNINSTALL` проверить нечем даже теоретически: данных авторизации в него не передают.
+   * Без этой колонки токены ушедшего клиента лежали бы у нас вечно.
+   *
+   * ⚠ Отметка ставится ОДИН раз, первым отказом, и снимается первым успехом. Переписывать её
+   * на каждом отказе значит отодвигать срок вечно: уборщик выглядел бы рабочим и не работал.
+   * Приём взят у `client-bank-alfa-by` (`grant_revoked_at`), где оплачен живыми клиентами.
+   */
+  grantRevokedAt: timestamp('grant_revoked_at', { withTimezone: true }),
   installedAt: timestamp('installed_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [

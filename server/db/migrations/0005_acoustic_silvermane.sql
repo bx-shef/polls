@@ -1,0 +1,1 @@
+ALTER TABLE "portals" ADD COLUMN "grant_revoked_at" timestamp with time zone;
