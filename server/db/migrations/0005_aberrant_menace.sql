@@ -1,0 +1,2 @@
+ALTER TABLE "portals" ADD COLUMN "grant_revoked_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "portals_grant_revoked_idx" ON "portals" USING btree ("grant_revoked_at") WHERE "portals"."grant_revoked_at" is not null;

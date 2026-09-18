@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 /**
  * Минимальная своя схема (`docs/PROCESS.md`, раздел 5). Источник истины — портал;
@@ -67,6 +68,15 @@ export const portals = pgTable('portals', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   uniqueIndex('portals_member_id_key').on(table.memberId),
+  // ⚠ Под уборщик мёртвых грантов: он ходит сюда каждую минуту с
+  // `WHERE grant_revoked_at < граница ORDER BY grant_revoked_at`. Комментарий в плагине
+  // обещал «один индексный запрос», а индекса не было вовсе — то есть последовательный
+  // проход по всей таблице с сортировкой, вечно. Сегодня это ничего не стоит, но обещание
+  // в комментарии было ложным, и первый, кто оценит цену по нему, ошибётся.
+  // Частичный: помеченных порталов всегда единицы, а строк в таблице — все клиенты.
+  index('portals_grant_revoked_idx')
+    .on(table.grantRevokedAt)
+    .where(sql`${table.grantRevokedAt} is not null`),
 ])
 
 /** Буфер входящих ответов: сохраняем до того, как пробуем записать в портал. */

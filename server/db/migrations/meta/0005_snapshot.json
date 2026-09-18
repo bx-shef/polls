@@ -1,5 +1,5 @@
 {
-  "id": "0e99950a-ae8b-48cb-a404-b31d247f0dc0",
+  "id": "3b6064c9-f585-48c9-b2f1-b9d04a3df827",
   "prevId": "d09a6e41-81a2-48d5-ba68-c4bbc34a49ea",
   "version": "7",
   "dialect": "postgresql",
@@ -353,6 +353,22 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "portals_grant_revoked_idx": {
+          "name": "portals_grant_revoked_idx",
+          "columns": [
+            {
+              "expression": "grant_revoked_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"portals\".\"grant_revoked_at\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

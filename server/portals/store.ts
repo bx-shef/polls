@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, ne, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm'
 import { getDb, schema } from '../db/client'
 import { purgeBoundary } from '../domain/portals/lifecycle'
 import { logger } from '../utils/logger'
@@ -89,7 +89,37 @@ export async function purgePortalTokens(portalId: string, reason: 'grant-dead'):
  *
  * Возвращает, сколько стёрли: ноль — обычное состояние, и его в журнал не пишем.
  */
+/**
+ * Флот, ниже которого предохранитель по доле молчит.
+ *
+ * Десять — то число, начиная с которого «треть помеченных» перестаёт быть совпадением.
+ * У нас сегодня один портал: предохранитель не мешает, а `limit` за один заход и так
+ * больше, чем весь флот.
+ */
+const BREAKER_MIN_FLEET = 10
+
 export async function purgeDeadPortals(now: Date, limit = 20): Promise<number> {
+  // ⚠ ПРЕДОХРАНИТЕЛЬ ПО ДОЛЕ ФЛОТА. `limit` ограничивает один заход, но не ущерб: тик идёт
+  // раз в минуту, то есть за сутки потолок — почти полторы тысячи порталов. Это ровно то,
+  // на чём обжёгся сосед (`client-bank-alfa-by`, `fleetBreach`): «потолок за прогон
+  // не ограничивает ущерб, пока частота прогонов задаётся чужой переменной».
+  //
+  // Здоровое состояние — единицы помеченных порталов. Треть флота под отсчётом означает
+  // не исход клиентов, а нашу поломку: разъехался ключ шифрования, сломалась классификация,
+  // упал сервер авторизации. В такой ситуации стирать НЕЛЬЗЯ, и молчать тоже нельзя —
+  // отказ стирания единственный способ узнать, что что-то не так, пока это ещё обратимо.
+  //
+  // ⚠ Но доля осмысленна только на флоте, где она вообще бывает долей. На одном портале
+  // «треть» — это он сам, и предохранитель без нижней границы просто выключил бы стирание
+  // навсегда: механизм выглядел бы рабочим и не работал. Ровно та ловушка, которую проект
+  // уже ловил дважды. Ниже границы защищает `limit`, а он на маленьком флоте и есть
+  // весь флот.
+  const [revoked, total] = await Promise.all([countRevokedPortals(), countLivePortals()])
+  if (total >= BREAKER_MIN_FLEET && revoked * 3 > total) {
+    logger.error({ revoked, total }, 'стирание порталов остановлено: под отсчётом больше трети флота')
+    return 0
+  }
+
   const due = await getDb()
     .select({ id: schema.portals.id })
     .from(schema.portals)
@@ -116,8 +146,17 @@ export async function countRevokedPortals(): Promise<number> {
     .select({ n: sql<number>`count(*)::int` })
     .from(schema.portals)
     .where(and(
-      sql`${schema.portals.grantRevokedAt} is not null`,
+      isNotNull(schema.portals.grantRevokedAt),
       ne(schema.portals.status, 'deleted'),
     ))
+  return rows[0]?.n ?? 0
+}
+
+/** Сколько всего порталов живо. Знаменатель предохранителя по доле флота. */
+async function countLivePortals(): Promise<number> {
+  const rows = await getDb()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.portals)
+    .where(ne(schema.portals.status, 'deleted'))
   return rows[0]?.n ?? 0
 }

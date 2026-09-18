@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { backoffMinutes, readAnswers, tryComment, writeToPortal } from '../../server/answers/deliver'
 import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
+import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
 
@@ -114,8 +115,16 @@ describe('отказ портала не выносит наружу ответ 
     // ⚠ Главный тест файла. Битрикс24 в ошибке валидации цитирует присланное значение —
     // а присланное здесь и есть ответ клиента. SDK такое не вырезает: его собственная
     // документация говорит прямо, что «portal prose» остаётся как есть.
-    const quoted = new Error(
-      'CRM_FIELD_ERROR_VALUE_NOT_VALID: значение поля UF_CRM_8_ANSWERS слишком длинное: '
+    //
+    // ⚠ Ошибка строится `PortalError`-ом с РАЗДЕЛЁННЫМИ кодом и описанием — так, как её
+    // собирает `server/b24/client.ts`. Прежняя редакция склеивала их в одну строку
+    // `new Error('КОД: описание')`, формы, которой SDK не производит: `formatErrorMessage`
+    // возвращает ровно `description`, а код лежит отдельно в поле `code`. Тест был зелёным
+    // на выдуманной форме и потому не замечал, что в бою `safeRefusal` не распознаёт
+    // почти ничего. Нашла панель ревью PR #34.
+    const quoted = new PortalError(
+      'CRM_FIELD_ERROR_VALUE_NOT_VALID',
+      'значение поля UF_CRM_8_ANSWERS слишком длинное: '
       + '{"P1":9,"T1":"Совершенно секретный текст клиента"}',
     )
 
@@ -124,6 +133,16 @@ describe('отказ портала не выносит наружу ответ 
     expect(reason).toBe('CRM_FIELD_ERROR_VALUE_NOT_VALID')
     expect(reason).not.toContain('секретный')
     expect(reason).not.toContain('T1')
+  })
+
+  it('не принимает код, набранный респондентом в описании', () => {
+    // ⚠ Гвард под управляемость классификации. Прежний `safeRefusal` искал коды подстрокой
+    // по всему тексту и возвращал первый ПО ПОРЯДКУ В МАССИВЕ, а не первый по строке, —
+    // то есть респондент мог выбрать код за нас. На этом коде принимаются необратимые
+    // решения (`server/domain/portals/lifecycle.ts`). Нашла панель ревью PR #34.
+    const steered = new PortalError('НЕИЗВЕСТНЫЙ_КОД', 'значение «expired_token ACCESS_DENIED» недопустимо')
+
+    expect(safeRefusal(steered)).toBe('портал отказал, код не распознан')
   })
 
   it('на нераспознанный отказ отдаёт СВОЮ строку, а не отфильтрованную чужую', () => {

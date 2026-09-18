@@ -1,6 +1,7 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
 import type { RestCall } from './provision'
+import { PortalError } from '../domain/portals/portal-error'
 
 /**
  * A portal-bound REST caller backed by the official SDK.
@@ -107,10 +108,20 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
   return async (method, params = {}) => {
     const response = await withTimeout(client.actions.v2.call.make({ method, params }), method)
     if (!response.isSuccess) {
-      // Текст ошибки портала нужен целиком: по нему различаются нет прав, нет метода
-      // и исчерпан лимит смарт-процессов. Токенов в нём не бывает: SDK пропускает текст
-      // через свой `redactSensitiveParams`, а сырую транспортную ошибку не сериализует.
-      throw new Error(response.getErrorMessages().join('; '))
+      // ⚠ Код отказа вытаскивается ОТДЕЛЬНО от текста, и это не украшательство.
+      // `Result.getErrorMessages()` отдаёт только `message`, а `SdkError.formatErrorMessage`
+      // возвращает ровно `description` — человеческую фразу портала. Машинный код лежит
+      // в собственном поле `code` и в текст не попадает никогда (проверено в исходнике SDK
+      // 2.2.0). Пока сюда бросался `new Error(текст)`, код терялся, и всё, что по нему
+      // ветвится, работало вслепую: `safeRefusal` писал «код не распознан» почти на любой
+      // настоящий отказ, а распознавание мёртвого гранта не могло сработать ни разу.
+      // Документация Битрикс24 велит ветвиться по коду, а не по описанию. Нашла панель
+      // ревью PR #34.
+      //
+      // Текст сохраняем целиком: по нему различаются «нет прав», «нет метода» и «исчерпан
+      // лимит смарт-процессов». Токенов в нём не бывает — SDK пропускает его через свой
+      // `redactSensitiveParams`, а сырую транспортную ошибку не сериализует.
+      throw new PortalError(firstCode(response.getErrors()), response.getErrorMessages().join('; '))
     }
     return response.getData()
   }
@@ -130,4 +141,19 @@ async function withTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
   finally {
     if (timer !== undefined) clearTimeout(timer)
   }
+}
+
+/**
+ * Первый непустой машинный код из набора ошибок ответа.
+ *
+ * Пакетный вызов может принести несколько; берём первый названный — им и объясняется отказ
+ * целиком, потому что батч у нас останавливается на первой ошибке. Поле читается защитно:
+ * это чужая структура, и обещания «там всегда строка» у нас нет.
+ */
+function firstCode(errors: Iterable<Error>): string {
+  for (const error of errors) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code !== '') return code
+  }
+  return ''
 }

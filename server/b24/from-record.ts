@@ -1,7 +1,6 @@
 import { makePortalCall } from './client'
 import type { RestCall } from './provision'
 import { saveRefreshedTokens, type IssuingPortal } from '../links/issue'
-import { safeRefusal } from '../domain/answers/portal-errors'
 import { isDeadGrant } from '../domain/portals/lifecycle'
 import { markGrantRevoked } from '../portals/store'
 import { decryptSecret, encryptSecret } from '../utils/crypto'
@@ -73,10 +72,11 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
  * портальные экраны и воркер доставки, — и третий забудет. Место выбрано по тому же
  * рассуждению, по которому сюда переехала расшифровка токенов.
  *
- * ⚠ Классифицируем по `safeRefusal`, а не по тексту ошибки: в тексте портала едет
- * процитированный ответ клиента, и респондент, набравший в анкете `expired_token`,
- * объявлял бы грант своего портала мёртвым. `safeRefusal` выбирает из закрытого списка
- * наших констант — чужой текст сюда не проходит по построению.
+ * ⚠ Решение принимается по СТРУКТУРНОМУ коду отказа (`PortalError.code`), а не по тексту.
+ * Первая редакция смотрела на результат `safeRefusal`, то есть на строку, в выборе которой
+ * участвовал текст портала, — а в тексте портала едет процитированный ответ клиента.
+ * Респондент, набравший в анкете `invalid_grant`, объявлял бы грант своего портала мёртвым
+ * и запускал отсчёт до стирания токенов. Нашла панель ревью PR #34.
  *
  * Отметка не мешает вызову: ошибка пробрасывается дальше как была, а вызывающие решают
  * сами. Стирание — не здесь: у него отсрочка в две недели и свой уборщик.
@@ -87,7 +87,7 @@ function watchGrant(call: RestCall, portalId: string): RestCall {
       return await call(method, params)
     }
     catch (error) {
-      if (isDeadGrant(safeRefusal(error))) {
+      if (isDeadGrant(error)) {
         // Отметка не должна ронять вызов: её неудача — наша беда, а не портала.
         await markGrantRevoked(portalId, new Date()).catch(() => {})
       }
