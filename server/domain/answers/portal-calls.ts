@@ -111,3 +111,25 @@ export function readUpdatedItemId(response: unknown): number | null {
   const id = Number(typeof raw === 'string' ? raw.trim() : raw)
   return Number.isInteger(id) && id > 0 ? id : null
 }
+
+/**
+ * Какие поля связи портал вернул на самом деле.
+ *
+ * ⚠ Диагностика, а не логика: по этим именам ничего не решается. Нужна потому, что
+ * `readParentDealId` возвращает `null` двумя способами — связи действительно нет, и связь
+ * есть, но названа не так, как мы ждём. Различить их по коду нельзя, а цена ошибки разная:
+ * первое штатно, второе означает, что комментарий не придёт НИКОГДА и молча.
+ *
+ * Повод не умозрительный. `normalizeFieldName` в `../portals/smart-processes.ts` существует
+ * ровно потому, что тот же портал отдаёт имена полей не в той форме, в какой принимает,
+ * и на живом портале соседа часть полей из-за этого «не находилась никогда».
+ *
+ * ⚠ Возвращаются ТОЛЬКО имена полей — они описывают схему смарт-процесса, а не клиента
+ * портала, и попасть в журнал им можно. Значения не возвращаются ни в каком виде:
+ * идентификатор сделки указывает на конкретного клиента, и в журнале ему места нет.
+ */
+export function parentFieldNames(response: unknown): string[] {
+  const item = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item
+  if (item === undefined || item === null) return []
+  return Object.keys(item).filter(key => key.toLowerCase().includes('parent')).sort()
+}

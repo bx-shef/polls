@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down dev check image \
         prod-pull prod-up prod-down prod-logs prod-migrate prod-ps \
-        doctor host-update compose-found prod-tail prod-portals
+        doctor host-update compose-found prod-tail prod-portals prod-inbox
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -121,6 +121,19 @@ prod-tail: compose-found ## Последние LINES строк журнала �
 # Срок считается запросом, а не держится в голове: тридцать суток — `PURGE_GRACE_DAYS`.
 prod-portals: compose-found ## Состояние установленных порталов (без токенов)
 	@$(PROD) exec -T db psql -U survey -d survey -xc "select domain, status, scopes, license, application_token is not null as event_token_present, grant_revoked_at, case when grant_revoked_at is null then null else (grant_revoked_at + interval '30 days')::date end as purge_due, installed_at, updated_at from portals order by installed_at"
+
+# ⚠ `payload` не показывается и показан не будет: в нём лежит ответ живого человека,
+# а вывод команды копируют в переписку не задумываясь. Это тот же инвариант, по которому
+# ответ не попадает в журнал, — команда оператора ничем не лучше журнала. `token_hash`
+# опущен по другой причине: он ключ к ссылке, и делу не помогает.
+#
+# ⚠ Цель заведена после первого сквозного прогона на живом портале. Ответ ушёл, комментарий
+# в сделке не появился, и посмотреть, лежит ли ответ ещё в буфере или давно доставлен,
+# было НЕЧЕМ: единственный признак — строка в журнале, которую легко пролистать.
+# Пустая выдача — здоровое состояние: доставленный ответ у нас не хранится.
+prod-inbox: compose-found ## Что лежит в буфере ответов (без текста ответов)
+	@$(PROD) exec -T db psql -U survey -d survey -c "select status, count(*) as n, min(received_at) as oldest from inbox group by status order by status"
+	@$(PROD) exec -T db psql -U survey -d survey -c "select status, attempts, left(coalesce(last_error, '—'), 120) as last_error, received_at, next_attempt_at from inbox order by received_at limit 20"
 
 prod-migrate: compose-found ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate
