@@ -11,7 +11,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down dev check image \
         prod-pull prod-up prod-down prod-logs prod-migrate prod-ps \
-        doctor host-update compose-found prod-tail prod-portals
+        doctor host-update compose-found prod-tail prod-portals prod-inbox
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
