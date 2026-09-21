@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
-import { DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS, type TypeRelations } from '../../server/domain/portals/smart-processes'
+import { buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 
 /**
  * Обустройство портала целиком, поверх подделки вызова. Проверяем то, чья поломка
@@ -43,10 +43,17 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     // подделки, а дословная форма ответа из документации `crm.type.get`, и именно это
     // состояние месяц стояло на живом портале.
     if (method === 'crm.type.get') return { result: { type: { relations: CLIENT_ONLY } } }
-    // Настоящий портал возвращает обновлённый тип целиком — проверено по ответу метода
-    // в документации. Подделка применяет присланное, иначе она подтверждала бы что угодно.
+    // ⚠ Подделка ПРИМЕНЯЕТ присланное и отвечает так же, как живой портал: принимает флаг
+    // как `'true'`/`'false'`, отдаёт как `'Y'`/`'N'`. Эта асимметрия — не придирка: именно
+    // на ней связь со сделкой появилась, а список опросов в карточке остался выключенным.
+    // Подделка, не воспроизводящая её, подтверждала бы что угодно.
     if (method === 'crm.type.update') {
-      return { result: { type: { relations: (params.fields as { relations?: unknown }).relations } } }
+      const sent = (params.fields as { relations?: { parent?: unknown[], child?: unknown[] } }).relations
+      const applied = (list: unknown[] = []) => list.map((r) => {
+        const { entityTypeId, isChildrenListEnabled } = r as Record<string, unknown>
+        return { entityTypeId, isChildrenListEnabled: isChildrenListEnabled === 'true' ? 'Y' : 'N' }
+      })
+      return { result: { type: { relations: { parent: applied(sent?.parent), child: applied(sent?.child) } } } }
     }
     if (method === 'crm.type.add') {
       const title = (params.fields as { title?: string }).title
@@ -183,6 +190,12 @@ describe('повторный запуск', () => {
  * Нашлось первым сквозным прогоном на живом портале: в журнале стояло `parentFields: []`.
  * Ни один тест поймать этого не мог — про связи не спрашивал ни один.
  */
+/** Что реально ушло в портал — в его форме, не в нашей. */
+function sentRelations(p: ReturnType<typeof portal>) {
+  const fields = p.of('crm.type.update')[0]!.params.fields as { relations: { parent: { entityTypeId: number }[] } }
+  return fields.relations
+}
+
 describe('связь «Опроса» со сделкой', () => {
   it('заводится там, где её нет', async () => {
     const p = portal()
@@ -204,8 +217,19 @@ describe('связь «Опроса» со сделкой', () => {
 
     await provisionSmartProcesses(p.call)
 
-    const sent = (p.of('crm.type.update')[0]!.params.fields as { relations: TypeRelations }).relations
+    const sent = sentRelations(p)
     expect(sent.parent.map(r => r.entityTypeId).sort()).toEqual([2, 3, 4])
+  })
+
+  it('шлёт флаг в той форме, которую портал ПРИНИМАЕТ, а не в той, которую отдаёт', () => {
+    // ⚠ Живой портал: отправили `'Y'` — записалось `'N'`. Он отдаёт `'Y'`/`'N'`, а принимает
+    // `'true'`/`'false'`; пример в документации `crm.type.add` шлёт именно `"true"`.
+    // Из-за этой асимметрии связь со сделкой появилась, а список опросов в карточке — нет.
+    const call = buildUpdateRelationsCall(SURVEY, { parent: [{ entityTypeId: 2, childrenList: true }], child: [] })
+    const sent = (call.params.fields as { relations: { parent: Record<string, unknown>[] } }).relations
+
+    expect(sent.parent[0]!.isChildrenListEnabled).toBe('true')
+    expect(sent.parent[0]!.isChildrenListEnabled).not.toBe('Y')
   })
 
   it('заводится только «Опросу», не «Шаблону»', async () => {
@@ -278,7 +302,19 @@ describe('планирование связи, без портала', () => {
     const planned = planDealRelation(readTypeRelations({ result: { type: { relations: CLIENT_ONLY } } }))
     const deal = planned!.parent.find(r => r.entityTypeId === DEAL_ENTITY_TYPE_ID)
 
-    expect(deal!.isChildrenListEnabled).toBe('Y')
+    expect(deal!.childrenList).toBe(true)
+  })
+
+  it('чинит выключенный список, а не считает связь готовой', () => {
+    // ⚠ Гвард под вторую редакцию этого же места. Сверяя только `entityTypeId`, мы объявляли
+    // связь готовой, и неправильно записанный флаг не вылечился бы НИКОГДА. Ровно это
+    // и случилось на живом портале: связь появилась, список в сделке остался выключенным.
+    const broken = { parent: [{ entityTypeId: 2, isChildrenListEnabled: 'N', isPredefined: 'N' }], child: [] }
+    const planned = planDealRelation(readTypeRelations({ result: { type: { relations: broken } } }))
+
+    expect(planned).not.toBeNull()
+    expect(planned!.parent.filter(r => r.entityTypeId === 2)).toHaveLength(1)
+    expect(planned!.parent[0]!.childrenList).toBe(true)
   })
 })
 

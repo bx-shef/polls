@@ -274,12 +274,20 @@ export const DEAL_ENTITY_TYPE_ID = 2
 /**
  * Одна связь смарт-процесса с другим типом CRM.
  *
- * `isPredefined` портал отдаёт, но обратно НЕ принимается и не посылается: это его пометка
- * о том, что связь появилась сама из `isClientEnabled`, а не наша настройка.
+ * ⚠ `childrenList` — БУЛЕВО, и это не вкусовщина. Портал ОТДАЁТ флаг как `'Y'`/`'N'`,
+ * а ПРИНИМАЕТ как `'true'`/`'false'` — формы разные, и на этом уже обожглись: первая
+ * редакция отправляла `'Y'`, портал разбирал его как «не true» и записывал `'N'`.
+ * Проверено на живом портале: отправили `'Y'` → в `crm.type.get` пришло `'N'`; пример
+ * в документации `crm.type.add` шлёт именно `"true"`. Внутри держим булево, а обе чужие
+ * формы живут по краям — в разборе и в сборке вызова, каждая в одном месте.
+ *
+ * `isPredefined` портал отдаёт, но обратно не посылается: это его пометка о том, что связь
+ * появилась сама из `isClientEnabled`, а не наша настройка.
  */
 export interface TypeRelation {
   entityTypeId: number
-  isChildrenListEnabled: 'Y' | 'N'
+  /** Показывать ли в карточке родителя список его детей. */
+  childrenList: boolean
 }
 
 /** Связи смарт-процесса: кто ему родитель и кто ребёнок. */
@@ -299,6 +307,9 @@ export function buildReadTypeCall(ref: SmartProcessRef): PortalCall {
  * `null` — ответ не той формы. Это НЕ то же самое, что «связей нет»: пустые списки
  * означают известное состояние, а `null` — что мы ничего не знаем и трогать настройки
  * клиента вслепую нельзя.
+ *
+ * ⚠ Читать связи можно только этим методом: `crm.type.list` отдаёт `relations: null`
+ * у каждого типа — проверено на живом портале.
  */
 export function readTypeRelations(response: unknown): TypeRelations | null {
   const relations = (response as { result?: { type?: { relations?: unknown } } } | null)
@@ -314,8 +325,7 @@ export function readTypeRelations(response: unknown): TypeRelations | null {
 function toRelation(raw: unknown): TypeRelation | null {
   const entityTypeId = Number((raw as { entityTypeId?: unknown } | null)?.entityTypeId)
   if (!Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
-  const enabled = (raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled
-  return { entityTypeId, isChildrenListEnabled: enabled === 'N' ? 'N' : 'Y' }
+  return { entityTypeId, childrenList: (raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled === 'Y' }
 }
 
 function isRelation(value: TypeRelation | null): value is TypeRelation {
@@ -323,32 +333,143 @@ function isRelation(value: TypeRelation | null): value is TypeRelation {
 }
 
 /**
- * Что отправить, чтобы «Опрос» стал дочерним к сделке. `null` — связь уже есть, писать нечего.
+ * Что отправить, чтобы «Опрос» стал дочерним к сделке. `null` — всё уже так, писать нечего.
  *
  * ⚠ САМОЕ ВАЖНОЕ ЗДЕСЬ — СЛИЯНИЕ, А НЕ ЗАМЕНА. Документация `crm.type.update` про `relations`
  * говорит: «Настройки необходимо передавать целиком, они полностью перезаписываются».
  * Отправив один свой пункт, мы стёрли бы всё остальное — в том числе предустановленные
- * Контакт и Компанию от `isClientEnabled` и любые связи, которые клиент настроил сам.
- * Это как раз тот случай, когда починка одной вещи ломает три чужих.
+ * Контакт и Компанию от `isClientEnabled` (проверено на живом портале: они там с пометкой
+ * `isPredefined: 'Y'`) и любые связи, которые клиент настроил сам. Это как раз тот случай,
+ * когда починка одной вещи ломает три чужих.
  *
  * ⚠ Поэтому же `null` при `current === null`: не прочитав связи, менять их нельзя. Лучше
  * не починить, чем стереть настройки клиента по ответу, формы которого мы не узнали.
  *
- * `isChildrenListEnabled: 'Y'` — чтобы в карточке сделки был список её опросов. Это не
- * украшение: без него менеджер видит результат только комментарием, а перечитать прошлые
- * анкеты по сделке ему негде.
+ * ⚠ Список детей в карточке сделки чиним, даже если связь уже есть. Отличить «клиент выключил
+ * его сам» от «мы записали его неправильно» нечем, и выбран второй вариант осознанно: список
+ * опросов в сделке — это то, ради чего связь и заводится, а не украшение. Первая редакция
+ * оставила его выключенным на живом портале и не могла бы вылечить это никогда, потому что
+ * сверяла только `entityTypeId`.
  */
 export function planDealRelation(current: TypeRelations | null): TypeRelations | null {
   if (current === null) return null
-  if (current.parent.some(relation => relation.entityTypeId === DEAL_ENTITY_TYPE_ID)) return null
 
+  const deal = current.parent.find(relation => relation.entityTypeId === DEAL_ENTITY_TYPE_ID)
+  if (deal !== undefined && deal.childrenList) return null
+
+  const others = current.parent.filter(relation => relation.entityTypeId !== DEAL_ENTITY_TYPE_ID)
   return {
-    parent: [...current.parent, { entityTypeId: DEAL_ENTITY_TYPE_ID, isChildrenListEnabled: 'Y' }],
+    parent: [...others, { entityTypeId: DEAL_ENTITY_TYPE_ID, childrenList: true }],
     child: current.child,
   }
 }
 
-/** Записать связи целиком. Частичной записи у метода нет — см. `planDealRelation`. */
+/**
+ * Записать связи целиком. Частичной записи у метода нет — см. `planDealRelation`.
+ *
+ * ⚠ Здесь и только здесь булево превращается в ту форму, которую портал ПРИНИМАЕТ.
+ * Она не совпадает с той, которую он отдаёт.
+ */
 export function buildUpdateRelationsCall(ref: SmartProcessRef, relations: TypeRelations): PortalCall {
-  return { method: 'crm.type.update', params: { id: ref.id, fields: { relations } } }
+  return {
+    method: 'crm.type.update',
+    params: {
+      id: ref.id,
+      fields: {
+        relations: {
+          parent: relations.parent.map(toRelationParams),
+          child: relations.child.map(toRelationParams),
+        },
+      },
+    },
+  }
+}
+
+function toRelationParams(relation: TypeRelation): Record<string, unknown> {
+  return {
+    entityTypeId: relation.entityTypeId,
+    isChildrenListEnabled: relation.childrenList ? 'true' : 'false',
+  }
+}
+
+/**
+ * Настройка карточки «Опроса»: что видно и в каком порядке.
+ *
+ * ⚠ Существует потому, что умолчание портала прячет главное. На живом портале «Сделка»
+ * и «Клиент» лежали в разделе «Скрытые поля»: карточка показывала код шаблона, состояние
+ * и баллы — и НЕ показывала, по какой сделке опрос и кого спрашивали. Ровно те два ответа,
+ * ради которых менеджер её и открывает.
+ *
+ * ⚠ Имена полей — `upperName` из `crm.item.fields`, а не то, чем адресуются элементы
+ * в `crm.item.*`. Формы разные: карточка ждёт `PARENT_ID_2`, вызовы элементов — `parentId2`.
+ * Все имена ниже сняты с живого портала этим методом, как велит документация
+ * `crm.item.details.configuration.set`.
+ *
+ * ⚠ Клиент раскладывается на `CONTACT_ID` и `COMPANY_ID`: отдельного поля «Клиент»
+ * в `crm.item.fields` нет, хотя интерфейс показывает его одной строкой.
+ */
+export function buildCardSections(spTypeId: number): Record<string, unknown>[] {
+  const own = (postfix: string) => ({ name: buildFieldName(spTypeId, postfix) })
+
+  return [
+    {
+      name: 'survey_about',
+      title: 'Об опросе',
+      type: 'section',
+      elements: [
+        // `optionFlags: 1` — «показывать всегда», в том числе когда значение пустое.
+        // Для связи и клиента это важнее всего: пустое место на виду говорит, что связи нет,
+        // а спрятанное поле не говорит ничего.
+        { name: 'TITLE', optionFlags: 1 },
+        { name: 'PARENT_ID_2', optionFlags: 1 },
+        { name: 'CONTACT_ID', optionFlags: 1 },
+        { name: 'COMPANY_ID', optionFlags: 1 },
+        { name: 'ASSIGNED_BY_ID' },
+      ],
+    },
+    {
+      name: 'survey_form',
+      title: 'Анкета',
+      type: 'section',
+      elements: [own('TEMPLATE_CODE'), own('TEMPLATE_VERSION'), own('STATE'), own('EXPIRES_AT')],
+    },
+    {
+      name: 'survey_result',
+      title: 'Результат',
+      type: 'section',
+      elements: [
+        { ...own('SCORE'), optionFlags: 1 },
+        own('COMPLETED_AT'),
+        own('SCORES'),
+        own('ANSWERS'),
+      ],
+    },
+  ]
+}
+
+/** Прочитать общую настройку карточки. `scope: 'C'` — общая, не личная. */
+export function buildReadCardConfigCall(entityTypeId: number): PortalCall {
+  return { method: 'crm.item.details.configuration.get', params: { entityTypeId, scope: 'C' } }
+}
+
+/**
+ * Есть ли уже общая настройка карточки.
+ *
+ * ⚠ От этого зависит, тронем ли мы её вообще. `crm.item.details.configuration.set`
+ * перезаписывает раскладку ЦЕЛИКОМ и на всех пользователей сразу — как `relations`.
+ * Клиент, разложивший карточку под себя, получил бы нашу при каждой переустановке.
+ * Поэтому ставим только на пустом месте: на живом портале умолчание отдаётся как `null`,
+ * то есть «никто ничего не настраивал» отличимо от «настроено».
+ */
+export function hasCardConfig(response: unknown): boolean {
+  const result = (response as { result?: unknown } | null)?.result
+  return Array.isArray(result) && result.length > 0
+}
+
+/** Записать общую раскладку карточки. */
+export function buildSetCardConfigCall(entityTypeId: number, spTypeId: number): PortalCall {
+  return {
+    method: 'crm.item.details.configuration.set',
+    params: { entityTypeId, scope: 'C', data: buildCardSections(spTypeId) },
+  }
 }

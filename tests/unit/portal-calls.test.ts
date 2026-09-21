@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCreateSurveyItemCall,
   buildListTemplatesCall,
+  buildReadDealClientCall,
   DEAL_ENTITY_TYPE_ID,
   readCreatedItemId,
+  readDealClient,
   readPublishedTemplates,
 } from '../../server/domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
@@ -18,6 +20,13 @@ const TEMPLATE = { entityTypeId: 1044, id: 7 }
 const SURVEY = { entityTypeId: 1046, id: 8 }
 
 const SCHEMA: SurveyTemplate = { code: 'brand', title: 'Бренд-платформа', sections: [] }
+
+const INVITATION = {
+  templateCode: 'brand',
+  templateVersion: 1,
+  expiresAt: new Date('2026-10-16T12:00:00Z'),
+  title: 'Бренд-платформа',
+}
 
 function item(over: Record<string, unknown> = {}) {
   return {
@@ -139,5 +148,54 @@ describe('идентификатор созданного элемента', () 
     // Записать ссылку без настоящего элемента значит потерять связь приглашения
     // с порталом навсегда.
     expect(readCreatedItemId(response)).toBeNull()
+  })
+})
+
+describe('клиент сделки в приглашении', () => {
+  it('переносится снимком на момент выпуска', () => {
+    // ⚠ Снимок, а не вычисление потом: клиента у сделки меняют, и «кого мы спрашивали»
+    // разошлось бы с «кто там сейчас».
+    const fields = buildCreateSurveyItemCall(SURVEY, 42, {
+      ...INVITATION,
+      client: { contactId: 7, companyId: 9 },
+    }).params.fields as Record<string, unknown>
+
+    expect(fields.contactId).toBe(7)
+    expect(fields.companyId).toBe(9)
+  })
+
+  it('нули не отправляются вовсе', () => {
+    // ⚠ Портал понял бы ноль как «очистить», а не как «значения нет». У сделки физлица
+    // компании нет, и отправив `companyId: 0`, мы бы затёрли то, чего не знаем.
+    const fields = buildCreateSurveyItemCall(SURVEY, 42, {
+      ...INVITATION,
+      client: { contactId: 7, companyId: 0 },
+    }).params.fields as Record<string, unknown>
+
+    expect(fields).toHaveProperty('contactId')
+    expect(fields).not.toHaveProperty('companyId')
+  })
+
+  it('без клиента приглашение всё равно создаётся', () => {
+    // Чтение клиента — удобство. Отказать в выпуске из-за него значит поменять местами
+    // главное и второстепенное.
+    const fields = buildCreateSurveyItemCall(SURVEY, 42, INVITATION).params.fields as Record<string, unknown>
+
+    expect(fields).not.toHaveProperty('contactId')
+    expect(fields.parentId2).toBe(42)
+  })
+
+  it('читает клиента, отсеивая нули и мусор', () => {
+    expect(readDealClient({ result: { item: { contactId: 2, companyId: '3' } } })).toEqual({ contactId: 2, companyId: 3 })
+    expect(readDealClient({ result: { item: { contactId: 0, companyId: null } } })).toEqual({ contactId: 0, companyId: 0 })
+    expect(readDealClient(null)).toEqual({ contactId: 0, companyId: 0 })
+  })
+
+  it('спрашивает у портала только то, что переносит', () => {
+    // Имена полей сняты с живого портала через `crm.item.fields`, а не придуманы.
+    const call = buildReadDealClientCall(42)
+
+    expect(call.params.entityTypeId).toBe(DEAL_ENTITY_TYPE_ID)
+    expect(call.params.select).toEqual(['id', 'contactId', 'companyId'])
   })
 })

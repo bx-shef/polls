@@ -2,6 +2,8 @@ import { createError, defineEventHandler, readBody } from 'h3'
 import { buildSurveyUrl, createInvitation } from '../../domain/invitations/invitation'
 import {
   buildCreateSurveyItemCall,
+  buildReadDealClientCall,
+  readDealClient,
   buildListTemplatesCall,
   readCreatedItemId,
   readPublishedTemplates,
@@ -81,11 +83,25 @@ export default defineEventHandler(async (event) => {
 
   await cacheTemplate(session.portal.id, chosen.code, chosen.version, chosen.schema)
 
+  // ⚠ Клиент сделки переносится в приглашение СНИМКОМ. Отдельный вызов, и он оправдан:
+  // без клиента карточка «Опроса» отвечает, по какой сделке опрос, но не отвечает, кого
+  // спрашивали, — а это первое, зачем её открывают. Неудача чтения ссылку НЕ роняет:
+  // ссылка важнее удобства карточки, и поменять их местами было бы ошибкой.
+  let client
+  try {
+    const clientCall = buildReadDealClientCall(dealId)
+    client = readDealClient(await session.call(clientCall.method, clientCall.params))
+  }
+  catch {
+    logger.warn({ domain: session.portal.domain }, 'клиент сделки не прочитан, приглашение уйдёт без него')
+  }
+
   const createCall = buildCreateSurveyItemCall(refs.survey, dealId, {
     templateCode: chosen.code,
     templateVersion: chosen.version,
     expiresAt: invitation.expiresAt,
     title: chosen.title,
+    client,
   })
   const itemId = readCreatedItemId(await session.call(createCall.method, createCall.params))
   if (itemId === null) {
