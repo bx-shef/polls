@@ -106,7 +106,14 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
 export function buildCreateSurveyItemCall(
   survey: SmartProcessRef,
   dealId: number,
-  invitation: { templateCode: string, templateVersion: number, expiresAt: Date, title: string },
+  invitation: {
+    templateCode: string
+    templateVersion: number
+    expiresAt: Date
+    title: string
+    /** Клиент сделки на момент выпуска. Пусто — у сделки его не было или прочитать не вышло. */
+    client?: DealClient
+  },
 ): PortalCall {
   return {
     method: 'crm.item.add',
@@ -116,6 +123,11 @@ export function buildCreateSurveyItemCall(
       fields: {
         title: invitation.title,
         [`parentId${DEAL_ENTITY_TYPE_ID}`]: dealId,
+        // ⚠ Клиент проставляется СНИМКОМ на момент выпуска, а не вычисляется потом. У сделки
+        // его могут поменять, и тогда «кого мы спрашивали» разошлось бы с «кто там сейчас».
+        // Нули не шлём: портал понял бы их как «очистить», а не как «нет значения».
+        ...(invitation.client?.contactId ? { contactId: invitation.client.contactId } : {}),
+        ...(invitation.client?.companyId ? { companyId: invitation.client.companyId } : {}),
         [buildFieldName(survey.id, 'TEMPLATE_CODE')]: invitation.templateCode,
         [buildFieldName(survey.id, 'TEMPLATE_VERSION')]: invitation.templateVersion,
         [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_SENT,
@@ -178,4 +190,44 @@ function isTemplateShaped(value: unknown): boolean {
       return typeof question.key === 'string' && question.key !== '' && typeof question.type === 'string'
     })
   })
+}
+
+/** Клиент сделки: контакт и компания. Ноль — значения нет. */
+export interface DealClient {
+  contactId: number
+  companyId: number
+}
+
+/**
+ * Прочитать клиента сделки, чтобы перенести его в приглашение.
+ *
+ * ⚠ Отдельный вызов, и он того стоит. Без клиента карточка «Опроса» отвечает на вопрос
+ * «по какой сделке», но не отвечает на «кого мы, собственно, спрашивали», — а второе и есть
+ * то, зачем менеджер её открывает.
+ *
+ * Спрашиваем только то, что переносим: имена полей подтверждены `crm.item.fields`
+ * на живом портале (`CONTACT_ID`, `COMPANY_ID`; в `crm.item.*` — `contactId`, `companyId`).
+ */
+export function buildReadDealClientCall(dealId: number): PortalCall {
+  return {
+    method: 'crm.item.get',
+    params: { entityTypeId: DEAL_ENTITY_TYPE_ID, id: dealId, select: ['id', 'contactId', 'companyId'] },
+  }
+}
+
+/**
+ * Достать клиента из ответа.
+ *
+ * ⚠ Неудача — не ошибка выпуска. Ссылка важнее удобства карточки: отказать человеку
+ * в выпуске из-за того, что не прочитался контакт, значит поменять местами главное
+ * и второстепенное.
+ */
+export function readDealClient(response: unknown): DealClient {
+  const item = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item
+  return { contactId: positive(item?.contactId), companyId: positive(item?.companyId) }
+}
+
+function positive(raw: unknown): number {
+  const value = Number(typeof raw === 'string' ? raw.trim() : raw)
+  return Number.isInteger(value) && value > 0 ? value : 0
 }

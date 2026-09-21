@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger'
 import {
   buildBindDealTabCall,
   buildDealTabHandlerUrl,
@@ -6,8 +7,11 @@ import {
 } from '../domain/portals/placements'
 import {
   buildCreateSmartProcessCall,
+  buildReadCardConfigCall,
   buildReadTypeCall,
+  buildSetCardConfigCall,
   buildUpdateRelationsCall,
+  hasCardConfig,
   findTypeByTitle,
   planDealRelation,
   readTypeRelations,
@@ -105,6 +109,8 @@ export interface ProvisionResult extends SmartProcessRefs {
    * залогировать. Ровно этот исход месяц был невидимым.
    */
   dealLinked: boolean
+  /** Разложили ли мы карточку «Опроса». `false` — там уже была своя раскладка либо не вышло. */
+  cardConfigured: boolean
 }
 
 /**
@@ -283,6 +289,26 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 }
 
 /**
+ * Разложить карточку «Опроса» так, чтобы в ней было видно главное.
+ *
+ * ⚠ Только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает раскладку
+ * целиком и сразу для всех пользователей — это настройка клиента, а не наша. Разложивший
+ * карточку под себя получал бы нашу при каждой переустановке; такого мы уже натворили бы
+ * со связями, если бы не сливали их. Поэтому сначала читаем, и ставим, только если пусто.
+ *
+ * Возвращает, стоит ли раскладка нашей. `false` здесь — и «не поставили», и «там уже своя»:
+ * различать их незачем, действие одно и то же — не трогать.
+ */
+async function ensureCardConfig(call: RestCall, ref: SmartProcessRef): Promise<boolean> {
+  const read = buildReadCardConfigCall(ref.entityTypeId)
+  if (hasCardConfig(await call(read.method, read.params))) return false
+
+  const set = buildSetCardConfigCall(ref.entityTypeId, ref.id)
+  await call(set.method, set.params)
+  return true
+}
+
+/**
  * Создать или до-лечить оба смарт-процесса и их поля.
  *
  * Идемпотентно: повторный запуск на готовом портале не делает ни одного изменяющего вызова.
@@ -305,6 +331,17 @@ export async function provisionSmartProcesses(
   // а не про её прохождение.
   const dealLinked = await ensureDealRelation(call, survey.ref)
 
+  // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
+  // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
+  // мы поменяли бы местами главное и второстепенное.
+  let cardConfigured = false
+  try {
+    cardConfigured = await ensureCardConfig(call, survey.ref)
+  }
+  catch (error) {
+    logger.warn({ reason: (error as Error).message }, 'раскладка карточки «Опроса» не настроена')
+  }
+
   return {
     template: template.ref,
     survey: survey.ref,
@@ -314,6 +351,7 @@ export async function provisionSmartProcesses(
     adoptedSurvey: survey.adopted,
     addedFields: addedTemplate + addedSurvey,
     dealLinked,
+    cardConfigured,
   }
 }
 
