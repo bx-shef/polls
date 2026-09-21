@@ -93,7 +93,7 @@ describe.skipIf(!enabled)('жизнь портала после установк
 
   it('отметка мёртвого гранта ставится первым отказом', async () => {
     const id = await seedPortal()
-    await markGrantRevoked(id, NOW)
+    await markGrantRevoked(id, NOW, 'шифротекст-обновления')
 
     expect((await readPortal(id)).grantRevokedAt?.toISOString()).toBe(NOW.toISOString())
   })
@@ -102,10 +102,22 @@ describe.skipIf(!enabled)('жизнь портала после установк
     // ⚠ Главный тест файла. Перепиши отметку — и портал не будет стёрт никогда,
     // потому что отказы идут каждую минуту, а срок отсчитывается от последнего.
     const id = await seedPortal()
-    await markGrantRevoked(id, NOW)
-    await markGrantRevoked(id, new Date(NOW.getTime() + 10 * DAY_MS))
+    await markGrantRevoked(id, NOW, 'шифротекст-обновления')
+    await markGrantRevoked(id, new Date(NOW.getTime() + 10 * DAY_MS), 'шифротекст-обновления')
 
     expect((await readPortal(id)).grantRevokedAt?.toISOString()).toBe(NOW.toISOString())
+  })
+
+  it('НЕ помечает проигравшего гонку продления', async () => {
+    // ⚠ Два обработчика пошли обменивать один токен; победитель провернул грант, и обмен
+    // проигравшего честно отвечает `invalid_grant`. Портал при этом ЖИВ. Без условия по паре
+    // штатная гонка запускала бы отсчёт до стирания токенов работающего клиента.
+    // Нашла повторная панель ревью PR #34.
+    const id = await seedPortal()
+
+    await markGrantRevoked(id, NOW, 'пара-с-которой-шли-но-её-уже-провернули')
+
+    expect((await readPortal(id)).grantRevokedAt).toBeNull()
   })
 
   it('успешное продление снимает отметку', async () => {

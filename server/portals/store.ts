@@ -27,7 +27,7 @@ import { logger } from '../utils/logger'
  * ⚠ `updatedAt` НЕ трогаем. Он означает «когда у нас была свежая пара», и сдвинув его,
  * мы соврали бы о возрасте токенов ровно в тот момент, когда их уже нет.
  */
-export async function markGrantRevoked(portalId: string, at: Date): Promise<void> {
+export async function markGrantRevoked(portalId: string, at: Date, wentWithRefreshToken: string): Promise<void> {
   const rows = await getDb()
     .update(schema.portals)
     .set({ grantRevokedAt: at })
@@ -36,6 +36,13 @@ export async function markGrantRevoked(portalId: string, at: Date): Promise<void
       isNull(schema.portals.grantRevokedAt),
       // У стёртого портала отмечать нечего: он уже без токенов.
       ne(schema.portals.status, 'deleted'),
+      // ⚠ Только если в строке ЕЩЁ ЛЕЖИТ та пара, с которой мы шли. Иначе пометка достаётся
+      // проигравшему гонки продления: два обработчика пошли обменивать один токен, победитель
+      // провернул грант, и обмен проигравшего честно отвечает `invalid_grant` — на живом
+      // портале, у которого всё в порядке. Гонка описана в `saveRefreshedTokens` как штатная,
+      // и её последствие не должно запускать отсчёт до стирания токенов. Нашла повторная
+      // панель ревью PR #34.
+      eq(schema.portals.refreshToken, wentWithRefreshToken),
     ))
     .returning({ domain: schema.portals.domain })
 

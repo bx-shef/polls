@@ -55,7 +55,7 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
     }),
   )
 
-  return watchGrant(call, portal.id)
+  return watchGrant(call, portal.id, portal.refreshToken ?? '')
 }
 
 /**
@@ -79,9 +79,9 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
  * и запускал отсчёт до стирания токенов. Нашла панель ревью PR #34.
  *
  * Отметка не мешает вызову: ошибка пробрасывается дальше как была, а вызывающие решают
- * сами. Стирание — не здесь: у него отсрочка в две недели и свой уборщик.
+ * сами. Стирание — не здесь: у него месячная отсрочка и уборщик на тике доставки.
  */
-function watchGrant(call: RestCall, portalId: string): RestCall {
+function watchGrant(call: RestCall, portalId: string, wentWithRefreshToken: string): RestCall {
   return async (method, params) => {
     try {
       return await call(method, params)
@@ -89,7 +89,7 @@ function watchGrant(call: RestCall, portalId: string): RestCall {
     catch (error) {
       if (isDeadGrant(error)) {
         // Отметка не должна ронять вызов: её неудача — наша беда, а не портала.
-        await markGrantRevoked(portalId, new Date()).catch(() => {})
+        await markGrantRevoked(portalId, new Date(), wentWithRefreshToken).catch(() => {})
       }
       throw error
     }

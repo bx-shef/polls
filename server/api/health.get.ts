@@ -3,7 +3,6 @@ import { inboxDepth } from '../answers/deliver'
 import { getDb, isDatabaseConfigured } from '../db/client'
 import { appVersion } from '../utils/env'
 import { logger } from '../utils/logger'
-import { countRevokedPortals } from '../portals/store'
 import { missingForInstall } from '../utils/readiness'
 import { getRedis, isRedisConfigured, whenRedisReady } from '../utils/redis'
 
@@ -105,12 +104,13 @@ export default defineEventHandler(async (event) => {
     // доставки и сколько сдалось. Эндпоинт анонимный, и по числам нельзя ни узнать,
     // чей это ответ, ни прочитать его, — но растущий `failed` виден сразу, а это то
     // единственное состояние, в котором ответ клиента залёживается у нас.
+    // ⚠ Числа порталов под отсчётом до стирания здесь НЕТ, и это осознанный отказ.
+    // Оно тут было, и на флоте из одного портала переход 0→1 на анонимном эндпоинте
+    // означал бы «у этого единственного клиента грант помечен мёртвым» — в реальном
+    // времени и всем желающим. Это тот же класс, что порог в пять ответов для срезов
+    // отчёта, только применённый к нам самим. Оператору то же самое отдаёт
+    // `make prod-portals`, где есть аутентификация хоста. Нашла повторная панель ревью PR #34.
     answers: db.status === 'ok' ? await depthOrNull() : null,
-    // Сколько порталов сейчас под отсчётом до стирания. ОДНО ЧИСЛО и ничего больше:
-    // эндпоинт анонимный, и по числу нельзя узнать ни чей это портал, ни его домен.
-    // Растущее — единственный снаружи видимый признак, что клиенты уходят или что-то
-    // сломалось у нас; ноль — обычное состояние.
-    revokedPortals: db.status === 'ok' ? await revokedOrNull() : null,
   }
 })
 
@@ -121,17 +121,6 @@ async function depthOrNull(): Promise<{ pending: number, failed: number } | null
   }
   catch (error) {
     logger.warn({ probeError: scrub((error as Error).message) }, 'глубина буфера ответов не прочиталась')
-    return null
-  }
-}
-
-/** Счёт порталов под отсчётом, но не ценой самой пробы: упавший счёт не красит здоровье в 503. */
-async function revokedOrNull(): Promise<number | null> {
-  try {
-    return await countRevokedPortals()
-  }
-  catch (error) {
-    logger.warn({ probeError: scrub((error as Error).message) }, 'счёт мёртвых грантов не прочитался')
     return null
   }
 }
