@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, ne } from 'drizzle-orm'
 import { getDb, schema } from '../db/client'
 import type { SurveyTemplate } from '../domain/surveys/model'
 
@@ -127,10 +127,22 @@ export async function insertLink(link: {
   })
 }
 
-/** Сохранить обновлённые токены портала. Только UPDATE — воскрешать удалённый портал нельзя. */
+/**
+ * Сохранить обновлённые токены портала.
+ *
+ * ⚠ Только UPDATE и только по живому порталу — воскрешать стёртый нельзя. Между чтением
+ * пары и записью новой стоит POST к серверу авторизации Битрикс24, то есть секунды; если
+ * за это время портал стёрли как мёртвый, `INSERT`-ветка вернула бы его к жизни с рабочими
+ * токенами клиента, который ушёл. Условие `status <> 'deleted'` закрывает это без блокировок:
+ * обновлять нечего. Приём у соседа (`updatePortalTokenSecrets`), там он оплачен гонкой.
+ *
+ * ⚠ Отметка мёртвого гранта снимается ЗДЕСЬ ЖЕ, одним запросом, а не соседним. Успешное
+ * продление и снятая отметка обязаны быть одной записью строки: отдельный запрос можно
+ * забыть, а рассинхронизировать — нечем.
+ */
 export async function saveRefreshedTokens(
   portalId: string,
-  tokens: { accessToken: string, refreshToken: string, expiresAt: Date },
+  tokens: { accessToken: string, refreshToken: string, expiresAt: Date, previousRefreshToken: string },
 ): Promise<void> {
   await getDb()
     .update(schema.portals)
@@ -138,7 +150,20 @@ export async function saveRefreshedTokens(
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       tokenExpiresAt: tokens.expiresAt,
+      grantRevokedAt: null,
       updatedAt: new Date(),
     })
-    .where(eq(schema.portals.id, portalId))
+    .where(and(
+      eq(schema.portals.id, portalId),
+      ne(schema.portals.status, 'deleted'),
+      // ⚠ Пишем, только если в строке лежит ТА пара, с которой мы шли на обмен. Это
+      // compare-and-swap, и он закрывает гонку: вкладка в карточке сделки делает два запроса
+      // подряд, сотрудников на портале много, и два обработчика могут пойти обменивать
+      // один и тот же протухший токен одновременно. Обмен ВРАЩАЕТ грант — пара проигравшего
+      // мертва в момент, когда он её записывает. Без условия последний писатель клал
+      // в базу мёртвый токен, и портал отвечал `expired_token` на всё до переустановки
+      // приложения. Проигравший просто не пишет: его вызов доработает на своей паре,
+      // а следующий перечитает строку и возьмёт пару победителя.
+      eq(schema.portals.refreshToken, tokens.previousRefreshToken),
+    ))
 }

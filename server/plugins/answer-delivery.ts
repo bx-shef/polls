@@ -1,5 +1,6 @@
 import { drainInbox, requeueStuck } from '../answers/deliver'
 import { isDatabaseConfigured } from '../db/client'
+import { purgeDeadPortals } from '../portals/store'
 import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
 import { logger } from '../utils/logger'
 
@@ -39,6 +40,26 @@ export default defineNitroPlugin(() => {
       await requeueStuck()
       const result = await drainInbox()
       if (result.delivered > 0 || result.failed > 0) logger.info(result, 'разбор буфера ответов')
+
+      // ⚠ Уборщик мёртвых порталов висит на ЭТОМ тике, а не на своём таймере. Своего
+      // не завели намеренно: второй таймер — это второе место, где цикл может не запуститься,
+      // и второй же набор гвардов на «а он вообще тикает». Работы у уборщика на пустом
+      // множестве ровно один индексный запрос раз в минуту.
+      //
+      // Порог — месяц молчания портала, см. `server/domain/portals/lifecycle.ts`.
+      //
+      // ⚠ Свой `try`: уборщик от разбора буфера не зависит ничем, а в общем блоке упавший
+      // разбор глушил бы его бессрочно — и молча, потому что в журнал уходила бы строка
+      // про буфер ответов. Нашла повторная панель ревью PR #34.
+      try {
+        const purged = await purgeDeadPortals(new Date())
+        if (purged > 0) logger.warn({ purged }, 'стёрты порталы с мёртвым грантом')
+      }
+      catch (error) {
+        // Причину записать МОЖНО: здесь только ошибки Postgres, ответов клиентов на этом
+        // пути нет вовсе — в отличие от разбора буфера ниже.
+        logger.error({ reason: (error as Error).message }, 'уборка мёртвых порталов сорвалась')
+      }
     }
     catch {
       // Упавший тик не должен уносить цикл: следующий разберётся.

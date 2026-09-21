@@ -1,6 +1,7 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
 import type { RestCall } from './provision'
+import { PortalError } from '../domain/portals/portal-error'
 
 /**
  * A portal-bound REST caller backed by the official SDK.
@@ -105,15 +106,66 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
   }
 
   return async (method, params = {}) => {
-    const response = await withTimeout(client.actions.v2.call.make({ method, params }), method)
+    // ⚠ SDK БРОСАЕТ отказ портала, а не возвращает его результатом. Проверено зондом против
+    // настоящего SDK 2.2.0: ответ `400 {"error":"ACCESS_DENIED"}` приезжает исключением
+    // `AjaxError`, и ветка `!response.isSuccess` не достигается вовсе. Первая редакция строила
+    // `PortalError` только в этой ветке — то есть почти никогда, и весь разбор кодов снова
+    // работал вслепую. Нашла повторная панель ревью PR #34; первая нашла предыдущий слой
+    // той же ошибки. Мягким результатом SDK отдаёт лишь десяток «встроенных» кодов,
+    // остальное летит исключением.
+    let response
+    try {
+      response = await withTimeout(client.actions.v2.call.make({ method, params }), method)
+    }
+    catch (error) {
+      throw asPortalError(error)
+    }
     if (!response.isSuccess) {
-      // Текст ошибки портала нужен целиком: по нему различаются нет прав, нет метода
-      // и исчерпан лимит смарт-процессов. Токенов в нём не бывает: SDK пропускает текст
-      // через свой `redactSensitiveParams`, а сырую транспортную ошибку не сериализует.
-      throw new Error(response.getErrorMessages().join('; '))
+      // Мягкий отказ: тот самый десяток кодов, которые SDK не бросает. Форма ответа
+      // другая, код достаётся из набора ошибок результата.
+      throw new PortalError(firstCode(response.getErrors()), response.getErrorMessages().join('; '))
     }
     return response.getData()
   }
+}
+
+/**
+ * Привести брошенное SDK к `PortalError` с машинным кодом.
+ *
+ * ⚠ Порядок предпочтения кодов НЕ произвольный, и обратный порядок я уже написал —
+ * его поймал `tests/unit/portal-call-errors.test.ts` в первом же прогоне. Два случая:
+ *
+ * | Что случилось | `.code` | `.originalError.code` | Что верно |
+ * |---|---|---|---|
+ * | Портал отказал методу | `ACCESS_DENIED` | `ERR_BAD_REQUEST` (axios) | внешний |
+ * | Грант мёртв | `JSSDK_UNKNOWN_ERROR` | `invalid_grant` | внутренний |
+ *
+ * То есть внешний код верен ВСЕГДА, кроме случая, когда SDK подставил свой обобщённый:
+ * отказ сервера авторизации он заворачивает в `JSSDK_UNKNOWN_ERROR`, пряча настоящий код
+ * в `originalError`. Возьмёшь внутренний всегда — получишь код транспорта вместо кода
+ * портала; возьмёшь внешний всегда — потеряешь мёртвый грант, ради которого всё писалось.
+ * Оба факта проверены зондом против настоящего SDK 2.2.0 и закреплены тестом.
+ *
+ * ⚠ Наш собственный таймаут (`withTimeout`) сюда тоже попадает. У него кода нет, и это
+ * правильно: он не отказ портала, а наше решение не ждать дольше.
+ */
+export function asPortalError(error: unknown): Error {
+  if (!(error instanceof Error)) return new PortalError('', String(error))
+
+  const outer = codeOf(error)
+  // `JSSDK_*` — код самого SDK, а не портала: разворачиваем на слой глубже.
+  const code = outer === '' || outer.startsWith('JSSDK_') ? codeOf((error as { originalError?: unknown }).originalError) : outer
+
+  // Код транспорта (`ERR_*`, `ECONNRESET`) — не отказ портала. Наружу его выдавать нельзя:
+  // по нему ни объяснить человеку беду, ни принять решение о стирании токенов.
+  if (code === '' || code.startsWith('JSSDK_') || code.startsWith('ERR_')) return new PortalError('', error.message)
+  return new PortalError(code, error.message)
+}
+
+/** Машинный код объекта ошибки, если он строкой. Чужая структура — читаем защитно. */
+function codeOf(error: unknown): string {
+  const code = (error as { code?: unknown } | null | undefined)?.code
+  return typeof code === 'string' ? code : ''
 }
 
 /** Ограничить ожидание одного вызова. Таймер снимается, чтобы не держать процесс живым. */
@@ -130,4 +182,23 @@ async function withTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
   finally {
     if (timer !== undefined) clearTimeout(timer)
   }
+}
+
+/**
+ * Первый непустой машинный код из набора ошибок ответа.
+ *
+ * ⚠ Набор, а не одна ошибка, — потому что такова форма `Result`, а не потому что мы ждём
+ * нескольких: пакетных вызовов в проекте нет ни одного, и на этом пути их быть не может.
+ * Первая редакция объясняла цикл батчем — это описывало сценарий, которого в кодовой базе
+ * не существует, и отправляло бы читателя искать несуществующий вызов. Нашла повторная
+ * панель ревью PR #34.
+ *
+ * Поле читается защитно: это чужая структура, и обещания «там всегда строка» у нас нет.
+ */
+function firstCode(errors: Iterable<Error>): string {
+  for (const error of errors) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code !== '') return code
+  }
+  return ''
 }
