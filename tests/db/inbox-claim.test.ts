@@ -40,21 +40,41 @@ async function statusOf(id: string): Promise<string> {
   return rows[0]!.status
 }
 
+/**
+ * ⚠ Чистим ТОЛЬКО свой портал, а не таблицу.
+ *
+ * Здесь стояло `truncate table inbox cascade` — в `beforeEach` и в `afterAll`. У того, кто
+ * запустил `pnpm check` с `DATABASE_URL` на живой базе, это стирало ВСЕ недоставленные ответы
+ * всех порталов, то есть ровно то, что инвариант проекта запрещает терять в принципе. Тест,
+ * написанный ради «ответ не теряется никогда», сам его и нарушал.
+ *
+ * Отдельного удаления строк буфера не нужно: `inbox.portal_id` объявлен
+ * `onDelete: 'cascade'`, и удаление портала-пустышки уносит его строки само.
+ *
+ * ⚠ Соседний `portal-lifecycle.test.ts` про этот файл утверждал, что он «уже избегает этого
+ * и чистит по своему домену». Это было неправдой с первого дня — проверено перечитыванием
+ * при ответе на вопрос владельца, что переживает перезапуск сервера. Утверждение исправлено
+ * там же: соседний файл в роли образца опаснее отсутствующего образца.
+ */
+const TEST_DOMAIN = 'db-test.bitrix24.ru'
+
+async function wipe() {
+  await getDb().execute(sql`delete from ${schema.portals} where domain = ${TEST_DOMAIN}`)
+}
+
 describe.skipIf(!enabled)('возврат подвисших строк', () => {
   beforeEach(async () => {
-    await getDb().execute(sql`truncate table ${schema.inbox} cascade`)
-    await getDb().execute(sql`delete from ${schema.portals} where domain = 'db-test.bitrix24.ru'`)
+    await wipe()
     const rows = await getDb()
       .insert(schema.portals)
-      .values({ memberId: randomUUID(), domain: 'db-test.bitrix24.ru' })
+      .values({ memberId: randomUUID(), domain: TEST_DOMAIN })
       .returning({ id: schema.portals.id })
     portalId = rows[0]!.id
   })
 
   afterAll(async () => {
     if (!enabled) return
-    await getDb().execute(sql`truncate table ${schema.inbox} cascade`)
-    await getDb().execute(sql`delete from ${schema.portals} where domain = 'db-test.bitrix24.ru'`)
+    await wipe()
   })
 
   it('НЕ забирает строку, которую взяли только что, даже если лежит она давно', async () => {
