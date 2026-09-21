@@ -143,8 +143,13 @@ export function buildCreateSmartProcessCall(title: string): PortalCall {
         title,
         isStagesEnabled: false,
         isCategoriesEnabled: false,
-        // Клиент нужен обоим: «Опрос» привязывается к сделке и контакту, а «Шаблон»
-        // остаётся без привязки — лишнее встроенное поле дешевле лишнего своего.
+        // ⚠ Даёт Контакт и Компанию, и ТОЛЬКО их. Прежний комментарий здесь обещал, что
+        // этим же включается привязка к сделке, — это была неправда, и она стоила всей
+        // отдачи ответа в карточку: у элемента «Опрос» поля `parentId2` просто не было,
+        // `crm.item.add` молча его игнорировал, а комментарий в таймлайн не приходил никогда.
+        // Документация метода говорит прямо: «При включенной опции у смарт-процесса
+        // появляется предустановленная привязка к Контактам и Компаниям». Сделка заводится
+        // отдельно, через `relations.parent` — см. `planDealRelation`.
         isClientEnabled: true,
         isAutomationEnabled: true,
         isBizProcEnabled: false,
@@ -255,4 +260,95 @@ export function readFieldNames(response: unknown): string[] {
 export function readNextOffset(response: unknown): number | null {
   const next = Number((response as { next?: unknown } | null)?.next)
   return Number.isInteger(next) && next > 0 ? next : null
+}
+
+/**
+ * Идентификатор типа «Сделка». Системный, одинаковый на всех порталах.
+ *
+ * ⚠ Живёт здесь, а не рядом с вызовами приглашений, потому что нужен обеим сторонам:
+ * тому, кто настраивает связь смарт-процесса, и тому, кто по ней ходит. Две копии одной
+ * константы разъехались бы ровно в тот день, когда одну из них поправят.
+ */
+export const DEAL_ENTITY_TYPE_ID = 2
+
+/**
+ * Одна связь смарт-процесса с другим типом CRM.
+ *
+ * `isPredefined` портал отдаёт, но обратно НЕ принимается и не посылается: это его пометка
+ * о том, что связь появилась сама из `isClientEnabled`, а не наша настройка.
+ */
+export interface TypeRelation {
+  entityTypeId: number
+  isChildrenListEnabled: 'Y' | 'N'
+}
+
+/** Связи смарт-процесса: кто ему родитель и кто ребёнок. */
+export interface TypeRelations {
+  parent: TypeRelation[]
+  child: TypeRelation[]
+}
+
+/** Прочитать настройки смарт-процесса. По `id` типа, не по `entityTypeId`. */
+export function buildReadTypeCall(ref: SmartProcessRef): PortalCall {
+  return { method: 'crm.type.get', params: { id: ref.id } }
+}
+
+/**
+ * Достать связи из ответа `crm.type.get`.
+ *
+ * `null` — ответ не той формы. Это НЕ то же самое, что «связей нет»: пустые списки
+ * означают известное состояние, а `null` — что мы ничего не знаем и трогать настройки
+ * клиента вслепую нельзя.
+ */
+export function readTypeRelations(response: unknown): TypeRelations | null {
+  const relations = (response as { result?: { type?: { relations?: unknown } } } | null)
+    ?.result?.type?.relations
+  if (relations === null || typeof relations !== 'object') return null
+
+  const { parent, child } = relations as { parent?: unknown, child?: unknown }
+  if (!Array.isArray(parent) || !Array.isArray(child)) return null
+
+  return { parent: parent.map(toRelation).filter(isRelation), child: child.map(toRelation).filter(isRelation) }
+}
+
+function toRelation(raw: unknown): TypeRelation | null {
+  const entityTypeId = Number((raw as { entityTypeId?: unknown } | null)?.entityTypeId)
+  if (!Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
+  const enabled = (raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled
+  return { entityTypeId, isChildrenListEnabled: enabled === 'N' ? 'N' : 'Y' }
+}
+
+function isRelation(value: TypeRelation | null): value is TypeRelation {
+  return value !== null
+}
+
+/**
+ * Что отправить, чтобы «Опрос» стал дочерним к сделке. `null` — связь уже есть, писать нечего.
+ *
+ * ⚠ САМОЕ ВАЖНОЕ ЗДЕСЬ — СЛИЯНИЕ, А НЕ ЗАМЕНА. Документация `crm.type.update` про `relations`
+ * говорит: «Настройки необходимо передавать целиком, они полностью перезаписываются».
+ * Отправив один свой пункт, мы стёрли бы всё остальное — в том числе предустановленные
+ * Контакт и Компанию от `isClientEnabled` и любые связи, которые клиент настроил сам.
+ * Это как раз тот случай, когда починка одной вещи ломает три чужих.
+ *
+ * ⚠ Поэтому же `null` при `current === null`: не прочитав связи, менять их нельзя. Лучше
+ * не починить, чем стереть настройки клиента по ответу, формы которого мы не узнали.
+ *
+ * `isChildrenListEnabled: 'Y'` — чтобы в карточке сделки был список её опросов. Это не
+ * украшение: без него менеджер видит результат только комментарием, а перечитать прошлые
+ * анкеты по сделке ему негде.
+ */
+export function planDealRelation(current: TypeRelations | null): TypeRelations | null {
+  if (current === null) return null
+  if (current.parent.some(relation => relation.entityTypeId === DEAL_ENTITY_TYPE_ID)) return null
+
+  return {
+    parent: [...current.parent, { entityTypeId: DEAL_ENTITY_TYPE_ID, isChildrenListEnabled: 'Y' }],
+    child: current.child,
+  }
+}
+
+/** Записать связи целиком. Частичной записи у метода нет — см. `planDealRelation`. */
+export function buildUpdateRelationsCall(ref: SmartProcessRef, relations: TypeRelations): PortalCall {
+  return { method: 'crm.type.update', params: { id: ref.id, fields: { relations } } }
 }

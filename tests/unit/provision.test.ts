@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
-import { SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
+import { DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS, type TypeRelations } from '../../server/domain/portals/smart-processes'
 
 /**
  * Обустройство портала целиком, поверх подделки вызова. Проверяем то, чья поломка
@@ -10,6 +10,21 @@ import { SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smar
 
 const TEMPLATE = { entityTypeId: 1044, id: 7 }
 const SURVEY = { entityTypeId: 1046, id: 8 }
+
+/** Что даёт `isClientEnabled` и только он: Контакт (3) и Компания (4). Сделки (2) тут нет. */
+const CLIENT_ONLY = {
+  parent: [
+    { entityTypeId: 3, isChildrenListEnabled: 'Y', isPredefined: 'Y' },
+    { entityTypeId: 4, isChildrenListEnabled: 'Y', isPredefined: 'Y' },
+  ],
+  child: [],
+}
+
+/** То же плюс Сделка — состояние, в котором приложение наконец работает. */
+const WITH_DEAL = {
+  parent: [...CLIENT_ONLY.parent, { entityTypeId: 2, isChildrenListEnabled: 'Y', isPredefined: 'N' }],
+  child: [],
+}
 
 /** Подделка портала: отвечает по методу, считает вызовы. */
 function portal(answers: Record<string, unknown | ((params: Record<string, unknown>) => unknown)> = {}) {
@@ -23,6 +38,16 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     if (method === 'crm.type.list') return { result: { types: [] } }
     if (method === 'userfieldconfig.list') return { result: { fields: [] } }
     if (method === 'userfieldconfig.add') return { result: { field: 1 } }
+    // ⚠ Умолчание — смарт-процесс, СОЗДАННЫЙ С `isClientEnabled`: Контакт и Компания
+    // стоят родителями и помечены `isPredefined`, а Сделки среди них НЕТ. Это не выдумка
+    // подделки, а дословная форма ответа из документации `crm.type.get`, и именно это
+    // состояние месяц стояло на живом портале.
+    if (method === 'crm.type.get') return { result: { type: { relations: CLIENT_ONLY } } }
+    // Настоящий портал возвращает обновлённый тип целиком — проверено по ответу метода
+    // в документации. Подделка применяет присланное, иначе она подтверждала бы что угодно.
+    if (method === 'crm.type.update') {
+      return { result: { type: { relations: (params.fields as { relations?: unknown }).relations } } }
+    }
     if (method === 'crm.type.add') {
       const title = (params.fields as { title?: string }).title
       const ref = title === 'Опрос' ? SURVEY : TEMPLATE
@@ -82,13 +107,18 @@ describe('повторный запуск', () => {
       const spId = entityId === `CRM_${TEMPLATE.id}` ? TEMPLATE.id : SURVEY.id
       return { result: { fields: fields.map(f => ({ fieldName: `UF_CRM_${spId}_${f.postfix}` })) } }
     }
-    const p = portal({ 'userfieldconfig.list': existing })
+    // ⚠ «Готовый» теперь значит и «связь со сделкой стоит». Без этой строки тест был бы
+    // зелёным по неправильной причине: связь не читалась бы вовсе, и «ни одного изменяющего
+    // вызова» означало бы «мы не дошли до того, чтобы что-то менять».
+    const p = portal({ 'userfieldconfig.list': existing, 'crm.type.get': { result: { type: { relations: WITH_DEAL } } } })
 
     const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY })
 
     expect(result.addedFields).toBe(0)
+    expect(result.dealLinked).toBe(true)
     expect(p.of('crm.type.add')).toHaveLength(0)
     expect(p.of('userfieldconfig.add')).toHaveLength(0)
+    expect(p.of('crm.type.update')).toHaveLength(0)
     // Список типов даже не запрашивается: оба идентификатора известны.
     expect(p.of('crm.type.list')).toHaveLength(0)
   })
@@ -138,6 +168,117 @@ describe('повторный запуск', () => {
     const result = await provisionSmartProcesses(p.call)
 
     expect(result.addedFields).toBe(TEMPLATE_FIELDS.length + SURVEY_FIELDS.length - 1)
+  })
+})
+
+/**
+ * Гвард под дефект, из-за которого приложение месяц не делало того, ради чего написано.
+ *
+ * ⚠ У смарт-процесса поля `parentId2` не появляется само. `isClientEnabled` даёт Контакт
+ * и Компанию — и ТОЛЬКО их, это дословно в документации `crm.type.update`. Сделка заводится
+ * отдельно, через `relations.parent`. Пока шага не было, `crm.item.add` молча игнорировал
+ * `parentId2`, элемент «Опрос» оставался без сделки, и итог не возвращался в карточку
+ * НИКОГДА — притом что ответ доезжал, элемент обновлялся и всё выглядело работающим.
+ *
+ * Нашлось первым сквозным прогоном на живом портале: в журнале стояло `parentFields: []`.
+ * Ни один тест поймать этого не мог — про связи не спрашивал ни один.
+ */
+describe('связь «Опроса» со сделкой', () => {
+  it('заводится там, где её нет', async () => {
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.dealLinked).toBe(true)
+    const update = p.of('crm.type.update')
+    expect(update).toHaveLength(1)
+    expect(update[0]!.params.id).toBe(SURVEY.id)
+  })
+
+  it('ДОПИСЫВАЕТСЯ к чужим связям, а не заменяет их', async () => {
+    // ⚠ Главный тест файла. Документация `crm.type.update` про `relations`: «Настройки
+    // необходимо передавать целиком, они полностью перезаписываются». Отправив один свой
+    // пункт, мы стёрли бы Контакт и Компанию и любые связи, настроенные клиентом руками,
+    // — то есть починка одной вещи сломала бы три чужих, причём тихо.
+    const p = portal()
+
+    await provisionSmartProcesses(p.call)
+
+    const sent = (p.of('crm.type.update')[0]!.params.fields as { relations: TypeRelations }).relations
+    expect(sent.parent.map(r => r.entityTypeId).sort()).toEqual([2, 3, 4])
+  })
+
+  it('заводится только «Опросу», не «Шаблону»', async () => {
+    // Шаблон анкеты ни к какой сделке не относится: он про анкету, а не про прохождение.
+    const p = portal()
+
+    await provisionSmartProcesses(p.call)
+
+    const touched = p.of('crm.type.update').map(c => c.params.id)
+    expect(touched).toEqual([SURVEY.id])
+  })
+
+  it('не трогает настройки, когда связи не прочитались', async () => {
+    // ⚠ Не узнав формы ответа, писать нельзя: `relations` перезаписываются целиком,
+    // и «починка» вслепую стёрла бы клиенту всё. Лучше не починить, чем стереть.
+    const p = portal({ 'crm.type.get': { result: true } })
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.dealLinked).toBe(false)
+    expect(p.of('crm.type.update')).toHaveLength(0)
+  })
+
+  it('не считает успехом двухсотый ответ без связи', async () => {
+    // ⚠ Портал принял запрос и ничего не сделал — и мы отчитались бы об успехе ровно там,
+    // где до этого молчали. Проверяем ОТВЕТ, а не отсутствие исключения.
+    const p = portal({ 'crm.type.update': { result: { type: { relations: CLIENT_ONLY } } } })
+
+    expect(await ensureDealRelation(p.call, SURVEY)).toBe(false)
+  })
+
+  it('отказ портала не роняет установку молча', async () => {
+    // Тариф клиента может запрещать правку смарт-процессов (`UPDATE_DYNAMIC_TYPE_RESTRICTED`).
+    // Приложение при этом остаётся рабочим в остальном, но исход обязан быть видимым —
+    // за это отвечает `dealLinked`, а `register.ts` пишет по нему `logger.error`.
+    const p = portal({
+      'crm.type.update': () => {
+        throw new Error('UPDATE_DYNAMIC_TYPE_RESTRICTED')
+      },
+    })
+
+    await expect(provisionSmartProcesses(p.call)).rejects.toThrow()
+  })
+})
+
+describe('планирование связи, без портала', () => {
+  it('не планирует ничего, когда сделка уже в родителях', () => {
+    // Идемпотентность: повторная установка не должна писать настройки заново.
+    expect(planDealRelation(readTypeRelations({ result: { type: { relations: WITH_DEAL } } }))).toBeNull()
+  })
+
+  it('не планирует ничего, когда читать было нечего', () => {
+    expect(planDealRelation(null)).toBeNull()
+    expect(readTypeRelations({ result: { type: {} } })).toBeNull()
+    expect(readTypeRelations(null)).toBeNull()
+  })
+
+  it('роняет `isPredefined` и не шлёт его обратно', () => {
+    // Это пометка портала о том, что связь появилась из `isClientEnabled`, а не наша
+    // настройка. Отправлять обратно чужую пометку как свою — способ получить то, чего
+    // не просили.
+    const planned = planDealRelation(readTypeRelations({ result: { type: { relations: CLIENT_ONLY } } }))
+
+    expect(JSON.stringify(planned)).not.toContain('isPredefined')
+  })
+
+  it('включает список детей в карточке сделки', () => {
+    // Без него менеджер видит результат только комментарием, а перечитать прошлые анкеты
+    // по сделке ему негде.
+    const planned = planDealRelation(readTypeRelations({ result: { type: { relations: CLIENT_ONLY } } }))
+    const deal = planned!.parent.find(r => r.entityTypeId === DEAL_ENTITY_TYPE_ID)
+
+    expect(deal!.isChildrenListEnabled).toBe('Y')
   })
 })
 

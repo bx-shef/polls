@@ -219,8 +219,24 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       logger.warn({ domain: portal.domain }, 'вкладка в карточке сделки не зарегистрирована')
     }
 
+    if (!result.dealLinked) {
+      // ⚠ Приложение установилось, но главного не делает: элемент «Опрос» не привяжется
+      // к сделке, и итог не вернётся в карточку. Чаще всего это тариф, запрещающий правку
+      // смарт-процессов. Громко — потому что месяц этот исход был вообще невидимым.
+      logger.error(
+        { domain: portal.domain },
+        'связь «Опроса» со сделкой не настроена: итог опроса НЕ попадёт в карточку сделки',
+      )
+    }
+
     logger.info(
-      { domain: portal.domain, created: [result.createdTemplate, result.createdSurvey], addedFields: result.addedFields, placed },
+      {
+        domain: portal.domain,
+        created: [result.createdTemplate, result.createdSurvey],
+        addedFields: result.addedFields,
+        placed,
+        dealLinked: result.dealLinked,
+      },
       'смарт-процессы обустроены',
     )
     return 'ok'

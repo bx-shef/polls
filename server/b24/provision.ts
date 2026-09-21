@@ -6,7 +6,11 @@ import {
 } from '../domain/portals/placements'
 import {
   buildCreateSmartProcessCall,
+  buildReadTypeCall,
+  buildUpdateRelationsCall,
   findTypeByTitle,
+  planDealRelation,
+  readTypeRelations,
   planMissingFields,
   readCreatedRef,
   readFieldNames,
@@ -92,6 +96,15 @@ export interface ProvisionResult extends SmartProcessRefs {
   adoptedSurvey: boolean
   /** Сколько полей создано этим запуском. Ноль — всё уже было на месте. */
   addedFields: number
+  /**
+   * Стоит ли у «Опроса» связь со сделкой.
+   *
+   * ⚠ `false` означает, что приложение установлено, но главного не делает: элемент «Опрос»
+   * не привяжется к сделке, и итог не вернётся в карточку. Установку это не роняет —
+   * тариф клиента может запрещать правку смарт-процессов, — но вызывающий обязан это
+   * залогировать. Ровно этот исход месяц был невидимым.
+   */
+  dealLinked: boolean
 }
 
 /**
@@ -229,6 +242,47 @@ async function ensureFields(
 }
 
 /**
+ * Сделать «Опрос» дочерним к сделке.
+ *
+ * ⚠ БЕЗ ЭТОГО ШАГА НЕ РАБОТАЕТ ВСЁ, РАДИ ЧЕГО ПРИЛОЖЕНИЕ СУЩЕСТВУЕТ. У смарт-процесса
+ * поля `parentId2` не появляется само: `isClientEnabled` даёт Контакт и Компанию, а Сделку
+ * надо завести отдельно, `relations.parent`. Пока шага не было, `crm.item.add` молча
+ * игнорировал `parentId2`, элемент «Опрос» оставался без сделки, и комментарий с итогом
+ * не приходил в карточку НИКОГДА. Нашлось первым сквозным прогоном на живом портале:
+ * ответ доезжал, а в журнале потом стояло `parentFields: []` — портал не вернул ни одного
+ * поля связи, потому что их и не было.
+ *
+ * Идемпотентно: сначала читаем, и пишем только если сделки среди родителей нет. На здоровом
+ * портале это один читающий вызов и ноль изменяющих — то, что обещает `provisionSmartProcesses`.
+ *
+ * ⚠ Одного пути хватает на оба случая, и второго заводить не надо. Соблазн передать
+ * `relations` прямо в `crm.type.add` велик — это сэкономило бы вызов на свежей установке,
+ * — но тогда настройка живёт в двух местах и расходится ровно тогда, когда правят одно.
+ * Существующие порталы всё равно чинятся только этим шагом.
+ *
+ * Возвращает, стоит ли связь. `false` установку НЕ роняет: без связи приложение остаётся
+ * рабочим в остальном, а тариф клиента может просто запрещать правку смарт-процессов
+ * (`UPDATE_DYNAMIC_TYPE_RESTRICTED`). Но исход обязан быть виден — молчащий отказ здесь
+ * и есть та беда, которую мы только что чинили.
+ */
+export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): Promise<boolean> {
+  const read = buildReadTypeCall(ref)
+  const current = readTypeRelations(await call(read.method, read.params))
+  if (current === null) return false
+
+  const planned = planDealRelation(current)
+  if (planned === null) return true
+
+  const update = buildUpdateRelationsCall(ref, planned)
+  const relations = readTypeRelations(await call(update.method, update.params))
+
+  // ⚠ Проверяем ОТВЕТ, а не факт отсутствия исключения. Двухсотый ответ без связи в списке
+  // означал бы, что портал принял запрос и ничего не сделал, — и мы отчитались бы об успехе
+  // ровно там, где до этого месяц молчали.
+  return relations !== null && planDealRelation(relations) === null
+}
+
+/**
  * Создать или до-лечить оба смарт-процесса и их поля.
  *
  * Идемпотентно: повторный запуск на готовом портале не делает ни одного изменяющего вызова.
@@ -247,6 +301,10 @@ export async function provisionSmartProcesses(
   const addedTemplate = await ensureFields(call, template.ref, TEMPLATE_FIELDS)
   const addedSurvey = await ensureFields(call, survey.ref, SURVEY_FIELDS)
 
+  // ⚠ Только «Опросу»: «Шаблон опроса» ни к какой сделке не относится — он про анкету,
+  // а не про её прохождение.
+  const dealLinked = await ensureDealRelation(call, survey.ref)
+
   return {
     template: template.ref,
     survey: survey.ref,
@@ -255,6 +313,7 @@ export async function provisionSmartProcesses(
     adoptedTemplate: template.adopted,
     adoptedSurvey: survey.adopted,
     addedFields: addedTemplate + addedSurvey,
+    dealLinked,
   }
 }
 

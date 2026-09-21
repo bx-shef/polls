@@ -1,4 +1,4 @@
-import { buildFieldName } from '../portals/smart-processes'
+import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../portals/smart-processes'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -15,8 +15,9 @@ import type { SurveyTemplate } from '../surveys/model'
  * и это единственная форма, в которой мы уверены.
  */
 
-/** Идентификатор типа «Сделка». Системный, одинаковый на всех порталах. */
-export const DEAL_ENTITY_TYPE_ID = 2
+// Константа живёт в `../portals/smart-processes.ts` — там же, где настраивается сама связь
+// со сделкой. Здесь только повторный вывоз, чтобы у вызывающих не менялись импорты.
+export { DEAL_ENTITY_TYPE_ID } from '../portals/smart-processes'
 
 /** Состояние только что выпущенного приглашения. */
 export const SURVEY_STATE_SENT = 'sent'
