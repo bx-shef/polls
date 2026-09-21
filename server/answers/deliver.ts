@@ -9,6 +9,7 @@ import {
   buildCompleteSurveyCall,
   buildReadSurveyItemCall,
   buildTimelineCommentCall,
+  parentFieldNames,
   readParentDealId,
   readUpdatedItemId,
 } from '../domain/answers/portal-calls'
@@ -230,6 +231,14 @@ export async function writeToPortal(
  * не идемпотентен: второй вызов добавит второй комментарий. Повторяя всю задачу ради
  * комментария, мы получили бы в сделке столько копий, сколько было попыток, — а ответ
  * к тому моменту уже записан и никуда не денется.
+ *
+ * ⚠ КАЖДЫЙ выход отсюда пишет строку в журнал, и это не многословие. Первая редакция
+ * логировала только исключение, а два других выхода — «нет связи со сделкой» и «собирать
+ * нечего» — возвращали `false` молча. При первом же сквозном прогоне на живом портале
+ * комментарий не появился, и различить эти случаи оказалось НЕЧЕМ: ответ в портале лежит,
+ * доставка считается успешной, в журнале пусто. Тихий отказ в необязательном шаге стоит
+ * дороже самого шага — необязательное молчит ровно до того дня, когда оно и есть то,
+ * ради чего всё затевалось.
  */
 export async function tryComment(
   call: RestCall,
@@ -241,15 +250,26 @@ export async function tryComment(
 ): Promise<boolean> {
   try {
     const read = buildReadSurveyItemCall(survey, itemId)
-    const dealId = readParentDealId(await call(read.method, read.params), DEAL_ENTITY_TYPE_ID)
-    if (dealId === null) return false
+    const item = await call(read.method, read.params)
+    const dealId = readParentDealId(item, DEAL_ENTITY_TYPE_ID)
+    if (dealId === null) {
+      // ⚠ В журнал уходят ИМЕНА полей связи, а не значения: имя описывает схему
+      // смарт-процесса, значение указывает на клиента портала. Имена нужны потому, что
+      // «связи нет» и «связь названа иначе, чем мы ждём» — разные беды с одинаковым `null`.
+      logger.warn({ parentFields: parentFieldNames(item) }, 'комментарий не записан: у элемента нет связи со сделкой')
+      return false
+    }
 
     const comment = buildAnswerComment(template, answers, score)
     // Пустой комментарий портал отвергает; проверяем сами, а не ловим его отказ.
-    if (comment === '') return false
+    if (comment === '') {
+      logger.warn({}, 'комментарий не записан: из ответов нечего собрать')
+      return false
+    }
 
     const post = buildTimelineCommentCall(dealId, comment)
     await call(post.method, post.params)
+    logger.info({}, 'итог опроса записан в таймлайн сделки')
     return true
   }
   catch (error) {

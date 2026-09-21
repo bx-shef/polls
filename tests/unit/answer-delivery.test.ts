@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { backoffMinutes, readAnswers, tryComment, writeToPortal } from '../../server/answers/deliver'
 import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
+import { logger } from '../../server/utils/logger'
 
 /**
  * Доставка ответа в портал — единственный канал, которым ответ клиента попадает в CRM,
@@ -107,6 +108,57 @@ describe('запись ответа в портал', () => {
     await tryComment(p.call, SURVEY, 777, empty, {}, scoreSurvey(empty, {}))
 
     expect(p.methods()).not.toContain('crm.timeline.comment.add')
+  })
+})
+
+/**
+ * Гвард под дефект «комментарий не появился, и узнать почему нечем».
+ *
+ * ⚠ Нашёлся первым сквозным прогоном на живом портале, а не тестом, и это показательно:
+ * все тесты выше проверяют, что `tryComment` ВЕРНЁТ `false` в нужных случаях, — и ни один
+ * не спрашивал, скажет ли он об этом. Доставка при этом считается успешной, строка буфера
+ * удаляется, в журнале — тишина. Осталось «комментария нет, причин ноль».
+ *
+ * Поэтому здесь проверяется ровно выход в журнал, и отдельно — что в него НЕ попало.
+ */
+describe('комментарий не записался — это должно быть видно', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('отвязанный элемент: в журнал уходят имена полей связи', async () => {
+    // Имена нужны, чтобы отличить «связи правда нет» от «связь названа иначе, чем мы ждём».
+    // Второе значит, что комментарий не придёт никогда, и по `null` эти случаи неразличимы.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({ 'crm.item.get': { result: { item: { id: 777, PARENT_ID_2: 351 } } } })
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    const said = warn.mock.calls.find(([, message]) => String(message).includes('нет связи со сделкой'))
+    expect(said).toBeDefined()
+    expect((said![0] as { parentFields: string[] }).parentFields).toEqual(['PARENT_ID_2'])
+  })
+
+  it('идентификатор сделки в журнал не уходит', async () => {
+    // ⚠ Инвариант проекта: в логи не попадают идентификаторы клиентов портала. Сделка —
+    // это конкретный клиент, и в журнале ей места нет ни при отказе, ни при удаче.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    const p = portal()
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    const everything = JSON.stringify([...warn.mock.calls, ...info.mock.calls])
+    expect(everything).not.toContain('351')
+    expect(everything).not.toContain('Совершенно секретный текст клиента')
+  })
+
+  it('удавшийся комментарий тоже оставляет след', async () => {
+    // Без него «комментарий записан» и «до комментария не дошло» выглядят одинаково.
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    const p = portal()
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    expect(info.mock.calls.some(([, message]) => String(message).includes('таймлайн'))).toBe(true)
   })
 })
 

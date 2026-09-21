@@ -3,6 +3,7 @@ import {
   buildCompleteSurveyCall,
   buildReadSurveyItemCall,
   buildTimelineCommentCall,
+  parentFieldNames,
   readParentDealId,
   readUpdatedItemId,
 } from '../../server/domain/answers/portal-calls'
@@ -86,6 +87,32 @@ describe('связь со сделкой', () => {
     // и молча не написать комментарий.
     expect(readParentDealId({ result: { item: { id: 777, parentId2: 351 } } }, 2)).toBe(351)
     expect(readParentDealId({ result: { item: { id: 777, parentId2: '351' } } }, 2)).toBe(351)
+  })
+
+  it('говорит, какие поля связи портал прислал на самом деле', () => {
+    // ⚠ Диагностика под конкретную беду: `readParentDealId` отдаёт `null` и когда связи
+    // нет, и когда она названа иначе, чем мы ждём. Второе означает, что комментарий
+    // не придёт НИКОГДА, причём молча. Повод не умозрительный — `normalizeFieldName`
+    // в `smart-processes.ts` существует ровно потому, что тот же портал отдаёт имена полей
+    // не в той форме, в какой принимает.
+    const original = { result: { item: { id: 777, PARENT_ID_2: 351, title: 'Опрос' } } }
+
+    expect(readParentDealId(original, 2)).toBeNull()
+    expect(parentFieldNames(original)).toEqual(['PARENT_ID_2'])
+  })
+
+  it('имена полей отдаются без значений', () => {
+    // ⚠ Эти имена уезжают в журнал. Имя описывает схему смарт-процесса, значение указывает
+    // на клиента портала — и уехать туда не должно ни при каких обстоятельствах.
+    const item = { result: { item: { id: 777, parentId2: 351, parentId1046: 12 } } }
+
+    expect(parentFieldNames(item)).toEqual(['parentId1046', 'parentId2'])
+    expect(JSON.stringify(parentFieldNames(item))).not.toContain('351')
+  })
+
+  it('на пустом ответе имён не выдумывает', () => {
+    expect(parentFieldNames(null)).toEqual([])
+    expect(parentFieldNames({ result: {} })).toEqual([])
   })
 
   it('отсутствие связи — не ошибка, а «комментировать нечего»', () => {
