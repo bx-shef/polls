@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCompleteSurveyCall,
   buildReadSurveyItemCall,
-  buildTimelineCommentCall,
   parentFieldNames,
   readParentDealId,
   readUpdatedItemId,
@@ -127,16 +126,6 @@ describe('связь со сделкой', () => {
 
     expect(call.method).toBe('crm.item.get')
     expect(call.params).toEqual({ entityTypeId: 1048, id: ITEM, useOriginalUfNames: 'Y' })
-  })
-})
-
-describe('комментарий в таймлайн', () => {
-  it('адресуется сделке строковым типом, а не числом', () => {
-    // У `crm.timeline.*` своя номенклатура типов: `deal`, а не `entityTypeId: 2`.
-    const call = buildTimelineCommentCall(351, 'Опрос пройден')
-
-    expect(call.method).toBe('crm.timeline.comment.add')
-    expect(call.params.fields).toEqual({ ENTITY_ID: 351, ENTITY_TYPE: 'deal', COMMENT: 'Опрос пройден' })
   })
 })
 

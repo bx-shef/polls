@@ -30,7 +30,7 @@
  *
  * | Разрешение | Что им вызываем |
  * |---|---|
- * | `crm` | `crm.type.add`, `crm.type.list`, `crm.item.*`, `crm.deal.get`, `crm.timeline.comment.add` |
+ * | `crm` | `crm.type.add`, `crm.type.list`, `crm.item.*`, `crm.deal.get`, `crm.activity.*` |
  * | `userfieldconfig` | `userfieldconfig.add`, `userfieldconfig.list` — поля смарт-процессов |
  * | `placement` | `placement.bind`, `placement.unbind` — вкладка в карточке сделки |
  *

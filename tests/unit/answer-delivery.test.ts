@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { backoffMinutes, readAnswers, tryComment, writeToPortal } from '../../server/answers/deliver'
+import { backoffMinutes, readAnswers, tryTimelineActivity, writeToPortal } from '../../server/answers/deliver'
 import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
+import { ACTIVITY_ORIGINATOR_ID, activityOriginId } from '../../server/domain/answers/timeline-activity'
 import { logger } from '../../server/utils/logger'
 
 /**
@@ -46,10 +47,13 @@ function portal(answers: Record<string, unknown | ((p: Record<string, unknown>) 
       return { result: JSON.stringify({ template: { entityTypeId: 1044, id: 7 }, survey: SURVEY }) }
     }
     if (method === 'crm.item.update') return { result: { item: { id: 777 } } }
-    if (method === 'crm.item.get') return { result: { item: { id: 777, parentId2: 351 } } }
+    if (method === 'crm.item.get') return { result: { item: { id: 777, parentId2: 351, assignedById: 5 } } }
+    // Пусто — дела с нашей меткой ещё нет. Так отвечает портал на первую доставку.
+    if (method === 'crm.activity.list') return { result: [] }
+    if (method === 'crm.activity.todo.add') return { result: { id: 9001 } }
     return { result: true }
   })
-  return { call, calls, methods: () => calls.map(c => c.method) }
+  return { call, calls, methods: () => calls.map(c => c.method), of: (m: string) => calls.filter(c => c.method === m) }
 }
 
 describe('запись ответа в портал', () => {
@@ -61,20 +65,20 @@ describe('запись ответа в портал', () => {
     await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
 
     const methods = p.methods()
-    expect(methods.indexOf('crm.item.update')).toBeLessThan(methods.indexOf('crm.timeline.comment.add'))
+    expect(methods.indexOf('crm.item.update')).toBeLessThan(methods.indexOf('crm.activity.todo.add'))
   })
 
   it('считает доставку удавшейся, даже если комментарий не записался', async () => {
     // Комментарий — удобство. Проваливать из-за него доставку значит повторять всю задачу,
     // и тогда в сделке окажется столько копий комментария, сколько было попыток.
     const p = portal({
-      'crm.timeline.comment.add': () => {
+      'crm.activity.todo.add': () => {
         throw new Error('ACCESS_DENIED')
       },
     })
     const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
 
-    expect(outcome).toEqual({ ok: true, itemId: 777, commented: false })
+    expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
   })
 
   it('просит повторить, когда смарт-процесс на портале не найден', async () => {
@@ -98,16 +102,16 @@ describe('запись ответа в портал', () => {
     const p = portal({ 'crm.item.get': { result: { item: { id: 777 } } } })
     const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
 
-    expect(outcome).toEqual({ ok: true, itemId: 777, commented: false })
-    expect(p.methods()).not.toContain('crm.timeline.comment.add')
+    expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
   })
 
   it('не отправляет пустой комментарий: портал его отвергает', async () => {
     const empty: SurveyTemplate = { ...TEMPLATE, sections: [{ ...TEMPLATE.sections[0]!, scored: false, questions: [] }] }
     const p = portal()
-    await tryComment(p.call, SURVEY, 777, empty, {}, scoreSurvey(empty, {}))
+    await tryTimelineActivity(p.call, SURVEY, 777, empty, {}, scoreSurvey(empty, {}))
 
-    expect(p.methods()).not.toContain('crm.timeline.comment.add')
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
   })
 })
 
@@ -159,6 +163,99 @@ describe('комментарий не записался — это должно
     await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
 
     expect(info.mock.calls.some(([, message]) => String(message).includes('таймлайн'))).toBe(true)
+  })
+})
+
+/**
+ * Гварды под то, ради чего комментарий заменён делом.
+ *
+ * ⚠ `crm.timeline.comment.add` не идемпотентен: второй вызов добавлял второй комментарий.
+ * Это стояло в коде как принятый риск и прямо противоречило инварианту проекта «перед
+ * созданием — поиск существующего». У дела есть метка внешнего источника, и здесь
+ * проверяется, что мы ею действительно пользуемся, а не просто наносим.
+ */
+describe('дело пишется один раз', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('найдено по метке — второго не создаём', async () => {
+    // ⚠ Главный тест файла. Портал, а не наша таблица, — источник правды о том, писали мы уже.
+    const p = portal({ 'crm.activity.list': { result: [{ ID: 4242 }] } })
+
+    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    expect(outcome).toEqual({ ok: true, itemId: 777, reported: true })
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
+  })
+
+  it('ищет ПАРОЙ, а не одним идентификатором', async () => {
+    // Один `ORIGIN_ID` мог бы совпасть с делом, которое клиент завёл сам или принёс другой
+    // поставщик, — и мы молча решили бы, что уже писали.
+    const p = portal()
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
+    expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
+    expect(filter.ORIGIN_ID).toBe(activityOriginId(777))
+  })
+
+  it('метка наносится вторым вызовом — иначе дело не найдётся никогда', async () => {
+    // `todo.add` метку не принимает. Не нанеся её, мы получили бы дело, невидимое поиску,
+    // и следующая запись создала бы второе.
+    const p = portal()
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    const fields = p.of('crm.activity.update')[0]!.params.fields as Record<string, unknown>
+    expect(fields.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(fields.DESCRIPTION_TYPE).toBe(1)
+  })
+
+  it('непомеченное дело СНИМАЕТСЯ, а не остаётся висеть', async () => {
+    // ⚠ Непомеченное дело хуже, чем никакого: поиск его не найдёт, а следующая доставка
+    // напишет второе. Компенсация закрывает всё, кроме смерти процесса между двумя вызовами.
+    const p = portal({
+      'crm.activity.update': () => {
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
+    expect(p.of('crm.activity.delete')[0]!.params.id).toBe(9001)
+  })
+
+  it('не считает записью ответ без идентификатора', async () => {
+    // `null` читался бы как «ничего не записано», метка не наносится, и следующая доставка
+    // пишет заново. Приняв мусор за идентификатор, мы нанесли бы метку в пустоту.
+    const p = portal({ 'crm.activity.todo.add': { result: { id: 'не число' } } })
+
+    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
+    expect(p.methods()).not.toContain('crm.activity.update')
+  })
+
+  it('ответственный — тот, кто выпускал ссылку', async () => {
+    const p = portal()
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    expect(p.of('crm.activity.todo.add')[0]!.params.responsibleId).toBe(5)
+  })
+
+  it('текст ответа клиента наружу в журнал не уходит', async () => {
+    // Тот же инвариант, что и раньше: ответ едет в портал, но не в наш журнал.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    const p = portal()
+
+    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+
+    const said = JSON.stringify([...warn.mock.calls, ...info.mock.calls])
+    expect(said).not.toContain('Совершенно секретный текст клиента')
+    expect(said).not.toContain('351')
   })
 })
 

@@ -8,11 +8,24 @@ import { safeRefusal } from '../domain/answers/portal-errors'
 import {
   buildCompleteSurveyCall,
   buildReadSurveyItemCall,
-  buildTimelineCommentCall,
   parentFieldNames,
+  readAssignedById,
   readParentDealId,
   readUpdatedItemId,
 } from '../domain/answers/portal-calls'
+import {
+  ACTIVITY_COLOR_BAD,
+  ACTIVITY_COLOR_GOOD,
+  activityOriginId,
+  buildActivityMarkerCall,
+  buildActivityTitle,
+  buildDeleteActivityCall,
+  buildFindActivityCall,
+  buildTodoActivityCall,
+  hasBadSection,
+  readCreatedActivityId,
+  readFoundActivityId,
+} from '../domain/answers/timeline-activity'
 import { DEAL_ENTITY_TYPE_ID } from '../domain/invitations/portal-calls'
 import type { AnswerValue } from '../domain/surveys/answer'
 import type { SurveyTemplate } from '../domain/surveys/model'
@@ -75,7 +88,7 @@ interface BufferedAnswer {
 }
 
 export type DeliveryOutcome
-  = | { ok: true, itemId: number, commented: boolean }
+  = | { ok: true, itemId: number, reported: boolean }
     | { ok: false, retry: boolean, reason: string }
 
 /**
@@ -220,27 +233,25 @@ export async function writeToPortal(
   if (updated === null) return { ok: false, retry: true, reason: 'портал не подтвердил обновление элемента' }
 
   // Дальше — только удобство. Всё, что было обязательным, уже в портале.
-  const commented = await tryComment(call, refs.survey, itemId, template, answers, score)
-  return { ok: true, itemId: updated, commented }
+  const reported = await tryTimelineActivity(call, refs.survey, itemId, template, answers, score)
+  return { ok: true, itemId: updated, reported }
 }
 
 /**
- * Положить итог в историю сделки.
+ * Положить итог в историю сделки — ДЕЛОМ, а не комментарием.
  *
- * ⚠ Неудача здесь НЕ проваливает доставку, и это выбор. `crm.timeline.comment.add`
- * не идемпотентен: второй вызов добавит второй комментарий. Повторяя всю задачу ради
- * комментария, мы получили бы в сделке столько копий, сколько было попыток, — а ответ
- * к тому моменту уже записан и никуда не денется.
+ * ⚠ Неудача здесь НЕ проваливает доставку: ответ уже в портале, в элементе смарт-процесса.
+ * Но, в отличие от прежнего комментария, повторить это МОЖНО без последствий — у дела есть
+ * метка внешнего источника, и перед созданием мы ищем уже записанное. `crm.timeline.comment.add`
+ * такого не умел вовсе: второй вызов добавлял второй комментарий, и это стояло в коде
+ * как принятый риск, прямо противоречащий инварианту «перед созданием — поиск существующего».
  *
- * ⚠ КАЖДЫЙ выход отсюда пишет строку в журнал, и это не многословие. Первая редакция
- * логировала только исключение, а два других выхода — «нет связи со сделкой» и «собирать
- * нечего» — возвращали `false` молча. При первом же сквозном прогоне на живом портале
- * комментарий не появился, и различить эти случаи оказалось НЕЧЕМ: ответ в портале лежит,
- * доставка считается успешной, в журнале пусто. Тихий отказ в необязательном шаге стоит
- * дороже самого шага — необязательное молчит ровно до того дня, когда оно и есть то,
- * ради чего всё затевалось.
+ * ⚠ КАЖДЫЙ выход отсюда пишет строку в журнал. Первая редакция логировала только исключение,
+ * два других выхода возвращали `false` молча, и состояние «ответ в портале, записи в сделке
+ * нет» было ненаблюдаемым по построению. Необязательный шаг молчит ровно до того дня, когда
+ * он и есть то, ради чего всё затевалось.
  */
-export async function tryComment(
+export async function tryTimelineActivity(
   call: RestCall,
   survey: { entityTypeId: number, id: number },
   itemId: number,
@@ -256,25 +267,101 @@ export async function tryComment(
       // ⚠ В журнал уходят ИМЕНА полей связи, а не значения: имя описывает схему
       // смарт-процесса, значение указывает на клиента портала. Имена нужны потому, что
       // «связи нет» и «связь названа иначе, чем мы ждём» — разные беды с одинаковым `null`.
-      logger.warn({ parentFields: parentFieldNames(item) }, 'комментарий не записан: у элемента нет связи со сделкой')
+      logger.warn({ parentFields: parentFieldNames(item) }, 'итог не записан: у элемента нет связи со сделкой')
       return false
     }
 
-    const comment = buildAnswerComment(template, answers, score)
-    // Пустой комментарий портал отвергает; проверяем сами, а не ловим его отказ.
-    if (comment === '') {
-      logger.warn({}, 'комментарий не записан: из ответов нечего собрать')
+    const description = buildAnswerComment(template, answers, score)
+    if (description === '') {
+      logger.warn({}, 'итог не записан: из ответов нечего собрать')
       return false
     }
 
-    const post = buildTimelineCommentCall(dealId, comment)
-    await call(post.method, post.params)
-    logger.info({}, 'итог опроса записан в таймлайн сделки')
-    return true
+    // ⚠ Инвариант проекта: перед созданием — поиск существующего. Источник правды о том,
+    // писали мы уже или нет, — сам портал, а не таблица у нас.
+    const find = buildFindActivityCall(activityOriginId(itemId))
+    if (readFoundActivityId(await call(find.method, find.params)) !== null) {
+      logger.info({}, 'итог уже записан делом, второго не создаём')
+      return true
+    }
+
+    return await createMarkedActivity(call, {
+      dealId,
+      itemId,
+      description,
+      title: buildActivityTitle(template, score),
+      color: hasBadSection(template, score) ? ACTIVITY_COLOR_BAD : ACTIVITY_COLOR_GOOD,
+      responsibleId: readAssignedById(item),
+    })
   }
   catch (error) {
-    logger.warn({ reason: safeRefusal(error) }, 'комментарий в таймлайн не записан; ответ в портале')
+    logger.warn({ reason: safeRefusal(error) }, 'дело с итогом не записано; ответ в портале')
     return false
+  }
+}
+
+/**
+ * Создать дело и сделать его находимым.
+ *
+ * ⚠ Два вызова, и это навязано, а не выбрано: `crm.activity.todo.add` метку не принимает,
+ * `DESCRIPTION_TYPE` — тоже. Между ними есть окно, в котором дело существует БЕЗ метки:
+ * остановись мы там, поиск его больше никогда не нашёл бы, а следующая запись создала бы
+ * второе. Поэтому неудачная пометка КОМПЕНСИРУЕТСЯ — дело снимается.
+ *
+ * ⚠ Чего это окно не закрывает: жёсткая смерть процесса между созданием и удалением.
+ * Останется одно ненаходимое дело. Закрыть это с нашей стороны нечем — нужен был бы
+ * атомарный «создать с меткой», которого у этого типа дел нет. Цена ограничена одним делом
+ * на падение, а не на ответ.
+ */
+async function createMarkedActivity(
+  call: RestCall,
+  plan: { dealId: number, itemId: number, title: string, description: string, color: string, responsibleId: number },
+): Promise<boolean> {
+  const add = buildTodoActivityCall({
+    dealEntityTypeId: DEAL_ENTITY_TYPE_ID,
+    dealId: plan.dealId,
+    title: plan.title,
+    description: plan.description,
+    // Срок — сейчас: дело открытое и должно попасть в текущие, а не ждать завтрашнего дня.
+    deadline: new Date(),
+    color: plan.color,
+    ...(plan.responsibleId ? { responsibleId: plan.responsibleId } : {}),
+  })
+  const activityId = readCreatedActivityId(await call(add.method, add.params))
+  if (activityId === null) {
+    logger.warn({}, 'итог не записан: портал не вернул идентификатор дела')
+    return false
+  }
+
+  const mark = buildActivityMarkerCall(activityId, activityOriginId(plan.itemId))
+  try {
+    await call(mark.method, mark.params)
+  }
+  catch (error) {
+    await deleteOrphanActivity(call, activityId)
+    throw error
+  }
+
+  logger.info({}, 'итог опроса записан делом в таймлайн сделки')
+  return true
+}
+
+/**
+ * Снять дело, которое не удалось пометить.
+ *
+ * ⚠ По возможности: если не удалось и удаление, наверх уходит ИСХОДНАЯ ошибка — она
+ * объясняет, что случилось, — а про оставшееся дело предупреждает эта строка.
+ */
+async function deleteOrphanActivity(call: RestCall, activityId: string): Promise<void> {
+  try {
+    const remove = buildDeleteActivityCall(activityId)
+    await call(remove.method, remove.params)
+  }
+  catch (error) {
+    logger.error(
+      { reason: safeRefusal(error) },
+      'непомеченное дело не удалось снять: в сделке останется запись, которую поиск не найдёт',
+    )
   }
 }
 
