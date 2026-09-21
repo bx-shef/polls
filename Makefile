@@ -113,8 +113,14 @@ prod-tail: compose-found ## Последние LINES строк журнала �
 # шифротексты токенов портала, а вывод команды человек копирует в переписку не задумываясь.
 # Про `application_token` спрашиваем ФАКТ, а не значение: он отвечает на вопрос, приходило ли
 # событие установки, — у мастера его неоткуда взять, и колонка остаётся пустой.
+#
+# ⚠ `grant_revoked_at` и расчётный срок стирания добавлены после того, как цель показала
+# живой портал БЕЗ них: она написана раньше, чем появилась колонка, и не показывала ровно
+# то состояние, ради которого механизм отмирания портала и заводился. Инструмент, который
+# не показывает главного, хуже отсутствующего — на него полагаются.
+# Срок считается запросом, а не держится в голове: тридцать суток — `PURGE_GRACE_DAYS`.
 prod-portals: compose-found ## Состояние установленных порталов (без токенов)
-	@$(PROD) exec -T db psql -U survey -d survey -xc "	select domain, status, scopes, license, 	       application_token is not null as event_token_present, 	       installed_at, updated_at 	  from portals order by installed_at"
+	@$(PROD) exec -T db psql -U survey -d survey -xc "select domain, status, scopes, license, application_token is not null as event_token_present, grant_revoked_at, case when grant_revoked_at is null then null else (grant_revoked_at + interval '30 days')::date end as purge_due, installed_at, updated_at from portals order by installed_at"
 
 prod-migrate: compose-found ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate
