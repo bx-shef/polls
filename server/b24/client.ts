@@ -132,7 +132,7 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
 /**
  * Привести брошенное SDK к `PortalError` с машинным кодом.
  *
- * ⚠ Порядок предпочтения кодов НЕ произвольный, и обратный порядок я уже написала —
+ * ⚠ Порядок предпочтения кодов НЕ произвольный, и обратный порядок я уже написал —
  * его поймал `tests/unit/portal-call-errors.test.ts` в первом же прогоне. Два случая:
  *
  * | Что случилось | `.code` | `.originalError.code` | Что верно |
