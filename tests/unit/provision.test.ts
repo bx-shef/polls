@@ -383,6 +383,73 @@ describe('планирование связи, без портала', () => {
     expect(deal!.childrenList).toBe(true)
   })
 
+  it('НЕ пишет ничего, если хоть одна связь не разобралась', () => {
+    // ⚠ ГВАРД ПОД ДЕФЕКТ, КОТОРЫЙ УЖЕ БЫЛ В ПРОДЕ. `crm.type.update` перезаписывает
+    // `relations` целиком, а прежняя редакция роняла непонятную запись через `filter` —
+    // то есть связь, настроенную клиентом руками и нами не узнанную, стирал ровно тот вызов,
+    // чей смысл «ничего не потерять». Правило модуля для нечитаемого ОТВЕТА было верным
+    // с самого начала; теперь так же ведёт себя и нечитаемая ЗАПИСЬ.
+    const withJunk = {
+      parent: [{ entityTypeId: 'не число', isChildrenListEnabled: 'Y' }, { entityTypeId: 177, isChildrenListEnabled: 'Y' }],
+      child: [],
+    }
+
+    expect(readTypeRelations({ result: { type: { relations: withJunk } } })).toBeNull()
+    expect(planDealRelation(readTypeRelations({ result: { type: { relations: withJunk } } }))).toBeNull()
+  })
+
+  it('непонятная запись среди ДЕТЕЙ тоже отменяет запись', () => {
+    // Отправляются оба списка целиком, значит и потерять можно из обоих.
+    const withJunk = { parent: [{ entityTypeId: 2, isChildrenListEnabled: 'Y' }], child: [{ entityTypeId: 0 }] }
+
+    expect(readTypeRelations({ result: { type: { relations: withJunk } } })).toBeNull()
+  })
+
+  it('чужая связь доезжает до записи целой', () => {
+    // Смысл всей осторожности: связь, которую завёл клиент, должна пережить наше обустройство.
+    const mine = { parent: [{ entityTypeId: 177, isChildrenListEnabled: 'Y' }], child: [] }
+    const planned = planDealRelation(readTypeRelations({ result: { type: { relations: mine } } }))
+    const params = buildUpdateRelationsCall(SURVEY, planned!).params.fields as { relations: { parent: Record<string, unknown>[] } }
+
+    const theirs = params.relations.parent.find(r => r.entityTypeId === 177)
+    expect(theirs).toBeDefined()
+    expect(theirs!.isChildrenListEnabled).toBe('true')
+  })
+
+  it('читает наблюдавшиеся формы флага, и только их', () => {
+    // Живой портал отдаёт строку `'Y'` или `'N'` — проверено `crm.type.get` 22.09.
+    const read = (raw: unknown) => readTypeRelations({
+      result: { type: { relations: { parent: [{ entityTypeId: 177, isChildrenListEnabled: raw }], child: [] } } },
+    })
+
+    expect(read('Y')!.parent[0]!.childrenList).toBe(true)
+    expect(read('N')!.parent[0]!.childrenList).toBe(false)
+  })
+
+  it.each([['1'], ['y'], ['true'], [true], [undefined], ['может быть']])(
+    'НЕ пишет ничего, когда флаг пришёл в форме %p', (raw) => {
+      // ⚠ ГВАРД ПОД ВТОРУЮ РЕДАКЦИЮ ЭТОЙ ЖЕ ПРАВКИ. Первая останавливалась на непонятном
+      // `entityTypeId`, а непонятный ФЛАГ молча превращала в «выключено» — и записывала его
+      // обратно в портал как `'false'`. То есть ровно то стирание чужой настройки, против
+      // которого вся правка и затевалась, просто на одно поле правее.
+      const relations = { parent: [{ entityTypeId: 177, isChildrenListEnabled: raw }], child: [] }
+
+      expect(readTypeRelations({ result: { type: { relations } } })).toBeNull()
+    },
+  )
+
+  it.each([[true], [['2']], ['2'], [2.5], [null]])(
+    'НЕ пишет ничего, когда `entityTypeId` пришёл как %p', (raw) => {
+      // ⚠ Проверяем `typeof`, а не `Number()`. Приведение пропускало мусор сквозь гвард
+      // и превращало его в ДРУГУЮ настоящую связь: `Number(true) === 1` — это Лид, `['2']` —
+      // Сделка. Клиент получил бы связь, которой никогда не настраивал: это уже не потеря,
+      // а порча. Живой портал отдаёт число.
+      const relations = { parent: [{ entityTypeId: raw, isChildrenListEnabled: 'Y' }], child: [] }
+
+      expect(readTypeRelations({ result: { type: { relations } } })).toBeNull()
+    },
+  )
+
   it('чинит выключенный список, а не считает связь готовой', () => {
     // ⚠ Гвард под вторую редакцию этого же места. Сверяя только `entityTypeId`, мы объявляли
     // связь готовой, и неправильно записанный флаг не вылечился бы НИКОГДА. Ровно это

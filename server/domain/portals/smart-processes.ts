@@ -308,6 +308,18 @@ export function buildReadTypeCall(ref: SmartProcessRef): PortalCall {
  * означают известное состояние, а `null` — что мы ничего не знаем и трогать настройки
  * клиента вслепую нельзя.
  *
+ * ⚠ ОДНА НЕРАЗОБРАННАЯ ЗАПИСЬ ОТМЕНЯЕТ ВЕСЬ РАЗБОР, и это исправление настоящего дефекта,
+ * который уже был в проде. Прежняя редакция роняла непонятную запись через `filter`, а
+ * `crm.type.update` перезаписывает `relations` ЦЕЛИКОМ — то есть связь, настроенную клиентом
+ * руками и нами не узнанную, стирал ровно тот вызов, чей смысл «ничего не потерять».
+ *
+ * Правило модуля для нечитаемого ОТВЕТА уже было верным — «лучше не починить, чем стереть».
+ * Теперь так же ведёт себя и нечитаемая ЗАПИСЬ. Цена отказа честная: на таком портале список
+ * опросов в карточке сделки не включится, пока запись не станет понятной, — но чужие настройки
+ * останутся целы. Вернуть непонятную запись порталу как есть тоже нельзя: он ОТДАЁТ флаг
+ * как `'Y'`/`'N'`, а ПРИНИМАЕТ как `'true'`/`'false'`, и эхо погасило бы список детей
+ * в чужой связи (проверено на живом портале в PR #38).
+ *
  * ⚠ Читать связи можно только этим методом: `crm.type.list` отдаёт `relations: null`
  * у каждого типа — проверено на живом портале.
  */
@@ -319,13 +331,56 @@ export function readTypeRelations(response: unknown): TypeRelations | null {
   const { parent, child } = relations as { parent?: unknown, child?: unknown }
   if (!Array.isArray(parent) || !Array.isArray(child)) return null
 
-  return { parent: parent.map(toRelation).filter(isRelation), child: child.map(toRelation).filter(isRelation) }
+  const read = { parent: parent.map(toRelation), child: child.map(toRelation) }
+  if (!read.parent.every(isRelation) || !read.child.every(isRelation)) return null
+
+  return { parent: read.parent, child: read.child }
 }
 
+/**
+ * Разобрать одну запись связи. `null` — форму не узнали, и тогда не трогаем ничего.
+ *
+ * ⚠ ОБА ПОЛЯ СТРОГО, И ВТОРОЕ — ТОЖЕ. Первая редакция этой правки останавливалась на непонятном
+ * `entityTypeId`, а непонятный ФЛАГ молча превращала в «выключено» — и записывала его обратно
+ * в портал как `'false'`. То есть ровно то стирание чужой настройки, против которого вся правка
+ * и затевалась, просто на одно поле правее. Нашёл `/code-review` в PR #51.
+ *
+ * ⚠ `entityTypeId` проверяется `typeof`, а не `Number()`. Приведение пропускало мусор сквозь
+ * гвард и превращало его в ДРУГУЮ настоящую связь: `Number(true) === 1` — это Лид, `['2']` —
+ * Сделка. Клиент получил бы родительскую связь, которой никогда не настраивал, а это уже
+ * не потеря, а порча. Живой портал отдаёт число (проверено `crm.type.get` 22.09).
+ */
 function toRelation(raw: unknown): TypeRelation | null {
-  const entityTypeId = Number((raw as { entityTypeId?: unknown } | null)?.entityTypeId)
-  if (!Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
-  return { entityTypeId, childrenList: (raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled === 'Y' }
+  const record = raw as { entityTypeId?: unknown, isChildrenListEnabled?: unknown } | null
+  if (record === null || typeof record !== 'object') return null
+
+  const entityTypeId = record.entityTypeId
+  if (typeof entityTypeId !== 'number' || !Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
+
+  const childrenList = readChildrenList(record.isChildrenListEnabled)
+  if (childrenList === null) return null
+
+  return { entityTypeId, childrenList }
+}
+
+/**
+ * Прочитать флаг списка детей. `null` — форму не узнали.
+ *
+ * ⚠ ТОЛЬКО НАБЛЮДАВШИЕСЯ ФОРМЫ. Живой портал отдаёт строку `'Y'` или `'N'` — проверено
+ * `crm.type.get` 22.09, и то же говорит документация. Промежуточная редакция принимала ещё
+ * `true` и `1`, взятые по памяти, а не из наблюдения: список выглядел исчерпывающим, и именно
+ * поэтому дыра рядом с ним (`'1'`, `'y'`, отсутствующий флаг) не бросалась в глаза.
+ * `CLAUDE.md` про это говорит дважды — «не писать код на будущее» и «состав параметров берётся
+ * из документации, а не из памяти».
+ *
+ * ⚠ Асимметрия портала остаётся в силе и здесь ни при чём: ПРИНИМАЕТ он `'true'`/`'false'`
+ * (см. `toRelationParams`), а ОТДАЁТ `'Y'`/`'N'`. Принимать на чтении то, что он никогда
+ * не присылал, значит угадывать.
+ */
+function readChildrenList(raw: unknown): boolean | null {
+  if (raw === 'Y') return true
+  if (raw === 'N') return false
+  return null
 }
 
 function isRelation(value: TypeRelation | null): value is TypeRelation {
