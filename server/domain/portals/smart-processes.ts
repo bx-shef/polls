@@ -308,6 +308,18 @@ export function buildReadTypeCall(ref: SmartProcessRef): PortalCall {
  * означают известное состояние, а `null` — что мы ничего не знаем и трогать настройки
  * клиента вслепую нельзя.
  *
+ * ⚠ ОДНА НЕРАЗОБРАННАЯ ЗАПИСЬ ОТМЕНЯЕТ ВЕСЬ РАЗБОР, и это исправление настоящего дефекта,
+ * который уже был в проде. Прежняя редакция роняла непонятную запись через `filter`, а
+ * `crm.type.update` перезаписывает `relations` ЦЕЛИКОМ — то есть связь, настроенную клиентом
+ * руками и нами не узнанную, стирал ровно тот вызов, чей смысл «ничего не потерять».
+ *
+ * Правило модуля для нечитаемого ОТВЕТА уже было верным — «лучше не починить, чем стереть».
+ * Теперь так же ведёт себя и нечитаемая ЗАПИСЬ. Цена отказа честная: на таком портале список
+ * опросов в карточке сделки не включится, пока запись не станет понятной, — но чужие настройки
+ * останутся целы. Вернуть непонятную запись порталу как есть тоже нельзя: он ОТДАЁТ флаг
+ * как `'Y'`/`'N'`, а ПРИНИМАЕТ как `'true'`/`'false'`, и эхо погасило бы список детей
+ * в чужой связи (проверено на живом портале в PR #38).
+ *
  * ⚠ Читать связи можно только этим методом: `crm.type.list` отдаёт `relations: null`
  * у каждого типа — проверено на живом портале.
  */
@@ -319,17 +331,30 @@ export function readTypeRelations(response: unknown): TypeRelations | null {
   const { parent, child } = relations as { parent?: unknown, child?: unknown }
   if (!Array.isArray(parent) || !Array.isArray(child)) return null
 
-  return { parent: parent.map(toRelation).filter(isRelation), child: child.map(toRelation).filter(isRelation) }
+  const read = { parent: parent.map(toRelation), child: child.map(toRelation) }
+  if ([...read.parent, ...read.child].some(relation => relation === null)) return null
+
+  return { parent: read.parent as TypeRelation[], child: read.child as TypeRelation[] }
 }
 
 function toRelation(raw: unknown): TypeRelation | null {
   const entityTypeId = Number((raw as { entityTypeId?: unknown } | null)?.entityTypeId)
   if (!Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
-  return { entityTypeId, childrenList: (raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled === 'Y' }
+  return { entityTypeId, childrenList: readChildrenList((raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled) }
 }
 
-function isRelation(value: TypeRelation | null): value is TypeRelation {
-  return value !== null
+/**
+ * Прочитать флаг списка детей во всех формах, какие может принести портал.
+ *
+ * ⚠ Сверка ровно с `'Y'` была молчаливым понижением. Портал ОТДАЁТ `'Y'`/`'N'`, но ПРИНИМАЕТ
+ * `'true'`/`'false'` — асимметрия проверена живьём в PR #38, и раз он говорит на двух языках
+ * на входе, полагаться на один на выходе значит однажды прочитать включённый список как
+ * выключенный. А дальше мы бы записали его обратно `'false'` и своими руками погасили список
+ * детей в связи, которую клиент включил сам. Нераспознанное значение не считаем включением:
+ * выключенный список — это неудобство, а стёртая настройка клиента — потеря.
+ */
+function readChildrenList(raw: unknown): boolean {
+  return raw === 'Y' || raw === 'true' || raw === true || raw === 1
 }
 
 /**

@@ -275,7 +275,15 @@ async function ensureFields(
 export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): Promise<boolean> {
   const read = buildReadTypeCall(ref)
   const current = readTypeRelations(await call(read.method, read.params))
-  if (current === null) return false
+  if (current === null) {
+    // ⚠ Молчать здесь нельзя, и это не формальность. Отказ читается как `dealLinked: false`,
+    // неотличимо от «тариф не позволил» и от «портал не ответил», — а причина у него своя
+    // и чинится по-другому: среди связей клиента есть запись, формы которой мы не узнали,
+    // и мы намеренно не трогаем настройки, чтобы её не стереть (`readTypeRelations`).
+    // Без этой строки владелец видел бы «связь не настроена» и не знал бы, что делать.
+    logger.warn({}, 'связь со сделкой не тронута: настройки связей на портале не разобраны целиком')
+    return false
+  }
 
   const planned = planDealRelation(current)
   if (planned === null) return true
