@@ -11,7 +11,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down dev check image \
         prod-pull prod-up prod-down prod-logs prod-migrate prod-ps \
-        doctor host-update compose-found prod-tail prod-portals prod-inbox
+        doctor host-update compose-found prod-tail prod-portals prod-inbox \
+        prod-stuck prod-retry
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -134,6 +135,37 @@ prod-portals: compose-found ## Состояние установленных п�
 prod-inbox: compose-found ## Что лежит в буфере ответов (без текста ответов)
 	@$(PROD) exec -T db psql -U survey -d survey -c "select status, count(*) as n, min(received_at) as oldest from inbox group by status order by status"
 	@$(PROD) exec -T db psql -U survey -d survey -c "select status, attempts, left(coalesce(last_error, '—'), 120) as last_error, received_at, next_attempt_at from inbox order by received_at limit 20"
+
+# ⚠ ОТДЕЛЬНАЯ ЦЕЛЬ, А НЕ РАСШИРЕНИЕ `prod-inbox`, и причина в том, что `prod-inbox`
+# показывает ПЕРВЫЕ ДВАДЦАТЬ строк по времени получения. Застрявшие — самые старые лишь
+# до первого всплеска: двадцать свежих `pending` прячут `failed` за край выдачи ровно тогда,
+# когда буфер и так не в порядке. Инструмент, теряющий главное под нагрузкой, хуже
+# отсутствующего — на него полагаются (issue #24).
+#
+# ⚠ Домен портала джойнится сюда намеренно: без него строка отвечает «что-то не доставилось»
+# и не отвечает «кому». Почти все причины отказа чинятся на стороне КОНКРЕТНОГО портала —
+# права, переустановка, тариф, — и без домена оператору некуда идти.
+#
+# ⚠ `payload` не показывается и показан не будет: в нём ответ живого человека. `token_hash`
+# — префиксом: сопоставить строку с приглашением он позволяет, ключом к ссылке не служит.
+prod-stuck: compose-found ## Ответы, застрявшие в failed: чей портал, сколько попыток, код отказа
+	@$(PROD) exec -T db psql -U survey -d survey -c "select i.id, p.domain, i.attempts, coalesce(i.last_error, '—') as last_error, left(i.token_hash, 8) as token, i.received_at from inbox i join portals p on p.id = i.portal_id where i.status = 'failed' order by i.received_at"
+
+# ⚠ ПО УМОЛЧАНИЮ — СУХОЙ ПРОГОН, запись только по `APPLY=1`. Тот же порядок, что
+# у операторских команд переноса, и по той же причине: «посмотреть» и «сделать» обязаны
+# быть разными нажатиями, когда действие трогает чужие данные.
+#
+# ⚠ `attempts` СБРАСЫВАЕТСЯ В НОЛЬ, и без этого цель была бы пустышкой: строка попала
+# в `failed`, исчерпав предел попыток, и вернувшись в `pending` с прежним счётчиком
+# упёрлась бы в тот же предел на первой же попытке. Внешне — «повторил, не помогло».
+#
+# ⚠ `next_attempt_at` ставится в `now()`: без него строка ждала бы прежней отложенной
+# даты, то есть до часа тишины после команды, которую оператор выполнил только что.
+#
+# Отбор: `DOMAIN=портал.bitrix24.ru` — все застрявшие одного портала (основной случай,
+# причина обычно общая), `ID=<uuid>` — ровно одна строка. Без обоих — все сразу.
+prod-retry: compose-found ## Вернуть failed в pending (сухой прогон; APPLY=1 — записать)
+	@dom='$(DOMAIN)'; row='$(ID)'; 	where="i.status = 'failed'"; 	if [ -n "$$dom" ]; then where="$$where and p.domain = '$$dom'"; fi; 	if [ -n "$$row" ]; then where="$$where and i.id = '$$row'"; fi; 	if [ -z "$(APPLY)" ]; then 		echo 'СУХОЙ ПРОГОН — ничего не изменено. Записать: та же команда с APPLY=1'; 		$(PROD) exec -T db psql -U survey -d survey -c "select i.id, p.domain, i.attempts, coalesce(i.last_error, '—') as last_error from inbox i join portals p on p.id = i.portal_id where $$where order by i.received_at"; 	else 		$(PROD) exec -T db psql -U survey -d survey -c "update inbox set status = 'pending', attempts = 0, next_attempt_at = now() where id in (select i.id from inbox i join portals p on p.id = i.portal_id where $$where)"; 	fi
 
 prod-migrate: compose-found ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate

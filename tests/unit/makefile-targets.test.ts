@@ -35,14 +35,35 @@ function layout(files: string[]): string {
   return dir
 }
 
-function make(dir: string, args: string[]): { out: string, code: number } {
+function make(dir: string, args: string[], env: Record<string, string> = {}): { out: string, code: number } {
   try {
-    return { out: execFileSync('make', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe' }), code: 0 }
+    return {
+      out: execFileSync('make', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, ...env } }),
+      code: 0,
+    }
   }
   catch (e) {
     const err = e as { status?: number, stdout?: string, stderr?: string }
     return { out: `${err.stdout ?? ''}${err.stderr ?? ''}`, code: err.status ?? -1 }
   }
+}
+
+/**
+ * Каталог с `Makefile` и ПОДСТАВНЫМ `docker` в `PATH`.
+ *
+ * ⚠ Нужен там, где `make -n` бессилен. Цель с ветвлением внутри рецепта печатается
+ * при `-n` целиком, вместе с обеими ветками, — то есть по её выводу НЕЛЬЗЯ сказать,
+ * какая из них сработала бы. А именно это здесь и надо проверить: без `APPLY` цель
+ * обязана только смотреть. Поэтому цель выполняется по-настоящему, а наружу вместо
+ * `docker` встаёт `echo`.
+ */
+function withFakeDocker(files: string[]): { dir: string, env: Record<string, string> } {
+  const dir = layout(files)
+  const bin = join(dir, 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "docker $@"\n')
+  execFileSync('chmod', ['+x', join(bin, 'docker')])
+  return { dir, env: { PATH: `${bin}:${process.env.PATH ?? ''}` } }
 }
 
 afterAll(() => {
@@ -175,5 +196,91 @@ describe('поиск прокси и acme среди контейнеров хо
 
     expect(pick('proxy', old)).toBe('')
     expect(pick('acme', old)).toBe('le')
+  })
+})
+
+/**
+ * Гварды под issue #24: разбор застрявших ответов.
+ *
+ * Цена ошибки несимметрична. Не показали застрявшую строку — ответ живого человека лежит
+ * в Postgres неопределённо долго, а единственный сигнал о нём это растущее число
+ * в счётчике здоровья. Записали, когда просили посмотреть, — тронули чужие данные без
+ * ведома оператора.
+ */
+describe('разбор застрявших ответов', () => {
+  it('повтор БЕЗ APPLY ничего не меняет, а только показывает', () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД. `make -n` здесь не годится: он печатает обе ветки рецепта,
+    // и по его выводу нельзя сказать, какая сработала бы. Поэтому цель выполняется
+    // по-настоящему, с подставным `docker`.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    const { out, code } = make(dir, ['prod-retry'], env)
+
+    expect(code).toBe(0)
+    expect(out).toContain('СУХОЙ ПРОГОН')
+    expect(out).toContain('select')
+    expect(out).not.toContain('update inbox')
+  })
+
+  it('повтор с APPLY=1 действительно возвращает строки в pending', () => {
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    const { out } = make(dir, ['prod-retry', 'APPLY=1'], env)
+
+    expect(out).toContain('update inbox')
+    expect(out).toContain(`status = 'pending'`)
+  })
+
+  it('повтор СБРАСЫВАЕТ счётчик попыток и срок', () => {
+    // ⚠ Без сброса цель была бы пустышкой: строка попала в `failed`, исчерпав предел
+    // попыток, и вернувшись в `pending` с прежним счётчиком упёрлась бы в тот же предел
+    // на первой же попытке. Внешне — «повторил, не помогло».
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    const { out } = make(dir, ['prod-retry', 'APPLY=1'], env)
+
+    expect(out).toContain('attempts = 0')
+    expect(out).toContain('next_attempt_at = now()')
+  })
+
+  it('повтор сужается по домену портала и по строке', () => {
+    // Почти все причины чинятся на стороне КОНКРЕТНОГО портала, поэтому пачка по домену —
+    // основной случай; отдельная строка нужна, когда чинили точечно.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    expect(make(dir, ['prod-retry', 'DOMAIN=x.bitrix24.ru'], env).out).toContain(`p.domain = 'x.bitrix24.ru'`)
+    expect(make(dir, ['prod-retry', 'ID=00000000-0000-0000-0000-000000000001'], env).out)
+      .toContain(`i.id = '00000000-0000-0000-0000-000000000001'`)
+  })
+
+  it('повтор трогает ТОЛЬКО failed, даже когда отбора нет', () => {
+    // ⚠ Без этого условия цель, запущенная без DOMAIN и ID, вернула бы в очередь и то,
+    // что воркер держит прямо сейчас (`sending`), — то есть доставила бы ответ дважды.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    expect(make(dir, ['prod-retry', 'APPLY=1'], env).out).toContain(`i.status = 'failed'`)
+  })
+
+  it('показ застрявших называет портал и не показывает ответ', () => {
+    // ⚠ Без домена строка отвечает «что-то не доставилось» и не отвечает «кому», а чинится
+    // это почти всегда на стороне конкретного портала. `payload` при этом не показывается
+    // и показан не будет: в нём ответ живого человека.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    const { out, code } = make(dir, ['prod-stuck'], env)
+
+    expect(code).toBe(0)
+    expect(out).toContain('p.domain')
+    expect(out).toContain(`i.status = 'failed'`)
+    expect(out).not.toContain('payload')
+  })
+
+  it('показ застрявших не режется по числу строк', () => {
+    // ⚠ Гвард под причину, по которой цель заведена отдельно от `prod-inbox`: тот показывает
+    // первые двадцать по времени, и всплеск свежих `pending` прячет `failed` за край выдачи
+    // ровно тогда, когда буфер и так не в порядке.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    expect(make(dir, ['prod-stuck'], env).out).not.toContain('limit')
   })
 })
