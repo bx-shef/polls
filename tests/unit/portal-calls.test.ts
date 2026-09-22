@@ -107,14 +107,21 @@ describe('разбор списка шаблонов', () => {
     expect(named[0]!.title).toBe('Оценка работы по проекту')
   })
 
-  it('без названия в схеме берёт имя элемента, а без него — код', () => {
+  it('без названия в схеме берёт КОД, а имя элемента не берёт никогда', () => {
+    // ⚠ ГВАРД ПОД РЕШЕНИЕ, а не под поведение. Имя элемента запасным вариантом стояло
+    // с первого дня и не срабатывало ни разу: `title` в ответе не приходил вовсе из-за
+    // `select` (см. `buildListTemplatesCall`). Починив `select` в PR #50, мы эту ветку
+    // оживили бы — и вот тогда она стала бы вредной: имя элемента правится на портале кем
+    // угодно, а опубликованная версия обязана быть неизменяемой, иначе сотрудник задним
+    // числом переименует версию, по которой уже собрана статистика. Назвать анкету можно,
+    // но до публикации и через схему — `pnpm publish:templates`.
     const noSchemaTitle = JSON.stringify({ ...SCHEMA, title: '' })
 
-    const byItem = readPublishedTemplates({ result: { items: [item({ title: 'Вручную', UF_CRM_7_SCHEMA: noSchemaTitle })] } }, TEMPLATE)
-    expect(byItem[0]!.title).toBe('Вручную')
+    const withItemName = readPublishedTemplates({ result: { items: [item({ title: 'Вручную', UF_CRM_7_SCHEMA: noSchemaTitle })] } }, TEMPLATE)
+    expect(withItemName[0]!.title).toBe('brand')
 
-    const byCode = readPublishedTemplates({ result: { items: [item({ title: '', UF_CRM_7_SCHEMA: noSchemaTitle })] } }, TEMPLATE)
-    expect(byCode[0]!.title).toBe('brand')
+    const withoutItemName = readPublishedTemplates({ result: { items: [item({ title: '', UF_CRM_7_SCHEMA: noSchemaTitle })] } }, TEMPLATE)
+    expect(withoutItemName[0]!.title).toBe('brand')
   })
 
   it.each<[unknown, string]>([

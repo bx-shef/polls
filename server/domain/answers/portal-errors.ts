@@ -57,6 +57,25 @@ const KNOWN_CODES = [
   'PORTAL_DELETED',
 ] as const
 
+/**
+ * Наши собственные коды — не портала.
+ *
+ * ⚠ Заведены отдельным списком, потому что `KNOWN_CODES` собран из разделов «Errors»
+ * документации Битрикс24, и подмешивать туда своё значило бы врать о происхождении.
+ * Но проходить через `safeRefusal` они обязаны: без этого специально написанный диагноз
+ * схлопывался в «код не распознан» и доезжал до оператора неотличимым от сетевой беды —
+ * ровно то, ради чего его и заводили. Дефект прожил от PR #47 до находки code-review
+ * в PR #50: `SHEF_CREATED_NOTHING` бросался с кодом и ни разу не был назван.
+ */
+const OWN_CODES = [
+  /** Портал принял `crm.item.add` и ничего не создал. */
+  'SHEF_CREATED_NOTHING',
+  /** Портал принял `crm.item.update` и ничего не изменил. */
+  'SHEF_UPDATED_NOTHING',
+  /** Списочный метод не дочитан до конца: продолжать на неполных данных нельзя. */
+  'SHEF_LIST_TRUNCATED',
+] as const
+
 /** Что пишем, когда код не распознан. Фиксированная строка — в ней нет ничего чужого. */
 export const UNKNOWN_REFUSAL = 'портал отказал, код не распознан'
 
@@ -71,12 +90,16 @@ const TIMEOUT_MARK = 'портал не ответил за'
  * через подчёркивания, и «вырезание всего, кроме кодов» вынесло бы его текст наружу.
  * Здесь же результат — всегда одна из констант этого файла.
  */
+function isNamedCode(code: string): boolean {
+  return (KNOWN_CODES as readonly string[]).includes(code) || (OWN_CODES as readonly string[]).includes(code)
+}
+
 export function safeRefusal(error: unknown): string {
   // ⚠ Сначала СТРУКТУРНЫЙ код, и только он имеет силу. Портал присылает код в поле `error`,
   // а пояснение — в `error_description`; документация Битрикс24 велит ветвиться по коду.
   // `server/b24/client.ts` доносит его сюда в `PortalError.code`.
   const code = refusalCode(error)
-  if (code !== '') return (KNOWN_CODES as readonly string[]).includes(code) ? code : UNKNOWN_REFUSAL
+  if (code !== '') return isNamedCode(code) ? code : UNKNOWN_REFUSAL
 
   const raw = typeof error === 'string' ? error : String((error as Error | undefined)?.message ?? '')
   if (raw === '') return UNKNOWN_REFUSAL

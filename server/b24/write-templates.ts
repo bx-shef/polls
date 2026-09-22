@@ -12,7 +12,7 @@ import { findTypeByTitle, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE, readNextOffset, ty
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
-import { listAllTypes, readStoredRefs, type RestCall } from './provision'
+import { listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
 import { logger } from '../utils/logger'
 
 /**
@@ -140,27 +140,29 @@ async function listExistingVersions(call: RestCall, template: SmartProcessRef): 
  * помечается «усыновлением» и уходит в журнал предупреждением.
  */
 export async function findTemplateProcess(call: RestCall): Promise<SmartProcessRef | null> {
-  return findProcess(call, 'template', TEMPLATE_SP_TITLE)
+  return (await findProcesses(call)).template ?? null
 }
 
-/** То же для «Опроса». Нужен там, где считают выпущенные приглашения. */
-export async function findSurveyProcess(call: RestCall): Promise<SmartProcessRef | null> {
-  return findProcess(call, 'survey', SURVEY_SP_TITLE)
-}
-
-async function findProcess(
-  call: RestCall,
-  key: 'template' | 'survey',
-  title: string,
-): Promise<SmartProcessRef | null> {
+/**
+ * Найти ОБА смарт-процесса за один обход.
+ *
+ * ⚠ Одно перечисление типов, а не два. Раздельный поиск делал в вебхучном режиме — то есть
+ * в единственном задокументированном — два отказавших `app.option.get` и два полных
+ * перелистывания `crm.type.list` подряд, до первой полезной работы и под троттлингом портала
+ * клиента. Нашёл `/code-review` в PR #50.
+ */
+export async function findProcesses(call: RestCall): Promise<Partial<SmartProcessRefs>> {
   try {
     const stored = await readStoredRefs(call)
-    const ref = stored[key]
-    if (ref !== undefined) return ref
+    if (stored.template !== undefined && stored.survey !== undefined) return stored
   }
   catch {
     // Вебхук: контекста приложения нет. Это не беда, а другой способ доступа.
   }
 
-  return findTypeByTitle(await listAllTypes(call), title)
+  const types = await listAllTypes(call)
+  return {
+    template: findTypeByTitle(types, TEMPLATE_SP_TITLE) ?? undefined,
+    survey: findTypeByTitle(types, SURVEY_SP_TITLE) ?? undefined,
+  }
 }

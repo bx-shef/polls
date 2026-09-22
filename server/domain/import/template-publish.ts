@@ -1,4 +1,7 @@
+import { SURVEY_STATE_COMPLETED } from '../answers/portal-calls'
+import { parseTemplateSchema } from '../invitations/portal-calls'
 import { buildFieldName } from '../portals/smart-processes'
+import { versionKey } from './template-write'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -31,6 +34,8 @@ export interface PortalTemplateItem {
   code: string
   version: number
   state: string
+  /** Дата публикации, как её отдал портал. Пусто — не заполнена. */
+  publishedAt: string
   /** Разобранная схема или `null`, если JSON не читается. */
   schema: SurveyTemplate | null
 }
@@ -55,12 +60,26 @@ export interface PlannedPublish {
   action: PublishAction
   /** Сколько приглашений уже выпущено по этой версии. Ноль — переименование никого не застанет. */
   issued: number
+  /** Надо ли проставить дату публикации. */
+  setPublishedAt: boolean
 }
+
+/**
+ * Почему версия не публикуется — МАШИННЫМ признаком, а не прозой.
+ *
+ * ⚠ Отчёт скрипта выносит неназванные отдельным блоком в конец: это единственное, что требует
+ * действия человека. Первая редакция отбирала их по началу русской строки `'НЕ НАЗВАНА'`, —
+ * то есть переформулировав причину, мы бы молча погасили весь блок, и оператор закрыл бы
+ * терминал в уверенности, что делать нечего. Ни один тест этого не держал.
+ * Нашёл `/code-review` в PR #50.
+ */
+export type SkipKind = 'unnamed' | 'already-named' | 'has-answers' | 'duplicate' | 'broken'
 
 /** Версия, которую не публикуем, и почему — человеку, а не в журнал. */
 export interface SkippedPublish {
   code: string
   version: number
+  kind: SkipKind
   reason: string
 }
 
@@ -110,7 +129,8 @@ export function readTemplateItems(response: unknown, template: SmartProcessRef):
       code: text(item[field('CODE')]),
       version: Number(item[field('VERSION')]),
       state: text(item[field('STATE')]),
-      schema: parseSchema(item[field('SCHEMA')]),
+      publishedAt: text(item[field('PUBLISHED_AT')]),
+      schema: parseTemplateSchema(item[field('SCHEMA')]),
     })
   }
 
@@ -122,28 +142,22 @@ function text(raw: unknown): string {
   return typeof raw === 'string' ? raw : ''
 }
 
-function parseSchema(raw: unknown): SurveyTemplate | null {
-  if (typeof raw !== 'string' || raw === '') return null
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as SurveyTemplate).sections)) return null
-    return parsed as SurveyTemplate
-  }
-  catch {
-    return null
-  }
-}
-
 /** Сколько приглашений выпущено по версии и сколько из них пройдено. */
 export interface VersionUsage {
   issued: number
   completed: number
 }
 
-/** Ключ версии в сводке использования. */
-export function usageKey(code: string, version: number): string {
-  return `${code}@${version}`
-}
+/**
+ * Ключ версии в сводке использования.
+ *
+ * ⚠ Переиспользует `versionKey` переноса, а не повторяет его формат. Две копии одного
+ * проволочного формата в одной фиче расходятся молча: поменяв разделитель в одном месте,
+ * мы получили бы сводку, которая не находит НИ ОДНОЙ версии, — то есть «никто не проходил»
+ * про всё сразу и разрешённое переименование там, где его быть не должно.
+ * Нашёл `/code-review` в PR #50.
+ */
+export const usageKey = versionKey
 
 /**
  * Что можно опубликовать, а что нет.
@@ -175,37 +189,50 @@ export function planTemplatePublish(
   usage: ReadonlyMap<string, VersionUsage> = new Map(),
 ): TemplatePublishPlan {
   const plan: TemplatePublishPlan = { publish: [], skip: [] }
+  const twins = countByVersion(items)
 
   for (const item of items) {
     const at = { code: item.code === '' ? `элемент ${item.id}` : item.code, version: item.version }
     const published = item.state === 'published'
 
     if (item.code === '' || !Number.isInteger(item.version) || item.version <= 0) {
-      plan.skip.push({ ...at, reason: 'нет кода или номера версии' })
+      plan.skip.push({ ...at, kind: 'broken', reason: 'нет кода или номера версии' })
       continue
     }
     if (item.schema === null) {
-      plan.skip.push({ ...at, reason: 'схема не разобралась как JSON' })
+      plan.skip.push({ ...at, kind: 'broken', reason: 'схема не разобралась или не похожа на анкету' })
       continue
     }
     if (item.name === '') {
-      plan.skip.push({ ...at, reason: 'НЕ НАЗВАНА: имя элемента пустое' })
+      plan.skip.push({ ...at, kind: 'unnamed', reason: 'имя элемента пустое' })
       continue
     }
     if (item.name === item.code) {
-      plan.skip.push({ ...at, reason: `НЕ НАЗВАНА: элемент всё ещё называется кодом «${item.code}»` })
+      plan.skip.push({ ...at, kind: 'unnamed', reason: `элемент всё ещё называется кодом «${item.code}»` })
+      continue
+    }
+
+    // ⚠ Две карточки с одной парой «код + версия» — это не наш случай, а следствие кнопки
+    // «Копировать» на портале. Опубликовав обе, мы сделали бы выпуск ссылки неоднозначным:
+    // `readPublishedTemplates` вернёт два шаблона, и какой из них достанется респонденту,
+    // решит порядок портала. Перенос эту ловушку уже ловит (`planTemplateWrites`), но там
+    // она чинится следующим прогоном, а здесь публикация необратима.
+    // Нашёл `/code-review` в PR #50.
+    if ((twins.get(usageKey(item.code, item.version)) ?? 0) > 1) {
+      plan.skip.push({ ...at, kind: 'duplicate', reason: 'на портале две карточки с этой парой «код + версия»' })
       continue
     }
 
     const seen = usage.get(usageKey(item.code, item.version)) ?? { issued: 0, completed: 0 }
 
     if (published && item.schema.title === item.name) {
-      plan.skip.push({ ...at, reason: 'уже опубликована, название на месте' })
+      plan.skip.push({ ...at, kind: 'already-named', reason: 'уже опубликована, название на месте' })
       continue
     }
     if (published && seen.completed > 0) {
       plan.skip.push({
         ...at,
+        kind: 'has-answers',
         reason: `опубликована и уже пройдена (${seen.completed}) — переименование порвало бы статистику, нужна новая версия`,
       })
       continue
@@ -219,10 +246,26 @@ export function planTemplatePublish(
       schema: item.schema,
       action: published ? 'rename' : 'publish',
       issued: seen.issued,
+      // ⚠ У опубликованной руками версии дата публикации пуста, и заполнить её больше
+      // НЕКОГДА: следующий прогон такую уже пропустит («название на месте»), а версия
+      // неизменяема. Поэтому ставим её здесь — но только если она и правда пуста, чтобы
+      // не переписать настоящую дату сегодняшней. Нашёл `/code-review` в PR #50.
+      setPublishedAt: !published || item.publishedAt === '',
     })
   }
 
   return plan
+}
+
+/** Сколько карточек приходится на каждую пару «код + версия». */
+function countByVersion(items: readonly PortalTemplateItem[]): Map<string, number> {
+  const seen = new Map<string, number>()
+  for (const item of items) {
+    if (item.code === '' || !Number.isInteger(item.version)) continue
+    const key = usageKey(item.code, item.version)
+    seen.set(key, (seen.get(key) ?? 0) + 1)
+  }
+  return seen
 }
 
 /**
@@ -233,9 +276,10 @@ export function planTemplatePublish(
  * их заведомо одинаковыми в момент публикации. Разъехавшись, они дали бы карточку, которая
  * называется одним, а респонденту показывает другое, и понять это со стороны портала нельзя.
  *
- * ⚠ Дату публикации ставим ТОЛЬКО при публикации, не при переименовании. Опубликованная
- * версия публиковалась не сегодня, и переписать дату значило бы соврать в единственном поле,
- * по которому потом восстанавливают, когда анкета вышла.
+ * ⚠ Дату публикации НЕ переписываем, если она уже стоит: опубликованная версия публиковалась
+ * не сегодня, и сегодняшняя дата соврала бы в единственном поле, по которому потом
+ * восстанавливают, когда анкета вышла. Но если поле пусто — заполняем, даже при
+ * переименовании: у версии, которую опубликовали руками, другого случая не будет.
  */
 export function buildPublishCall(
   template: SmartProcessRef,
@@ -252,7 +296,7 @@ export function buildPublishCall(
         title: planned.name,
         [buildFieldName(template.id, 'STATE')]: 'published',
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify({ ...planned.schema, title: planned.name }),
-        ...(planned.action === 'publish'
+        ...(planned.setPublishedAt
           ? { [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10) }
           : {}),
       },
@@ -283,9 +327,6 @@ export function buildListSurveysCall(survey: SmartProcessRef, start = 0): Portal
     },
   }
 }
-
-/** Состояние пройденного опроса. То же слово, что пишет доставка ответа. */
-const SURVEY_STATE_COMPLETED = 'completed'
 
 /** Досчитать сводку использования по странице «Опросов». Копится по страницам. */
 export function tallySurveyUsage(

@@ -24,8 +24,8 @@
  */
 import process from 'node:process'
 
-import type { RestCall } from '../server/b24/provision'
-import { findSurveyProcess, findTemplateProcess } from '../server/b24/write-templates'
+import { die, hookCall, Stop } from './-hook'
+import { findProcesses } from '../server/b24/write-templates'
 import { publishTemplates } from '../server/b24/publish-templates'
 
 interface Args {
@@ -38,42 +38,6 @@ function readArgs(argv: readonly string[]): Args {
   return {
     hook: at === -1 ? '' : (argv[at + 1] ?? ''),
     apply: argv.includes('--apply'),
-  }
-}
-
-/**
- * Остановка с понятным сообщением.
- *
- * ⚠ `exitCode` вместо `process.exit()`: тот не дожидается слива stdout, и отчёт, уходящий
- * в `| tee`, теряет хвост — а хвост это как раз список неназванных. Тот же разбор, что
- * в `migrate-templates.ts`.
- */
-class Stop extends Error {
-  readonly code: number
-  constructor(message: string, code: number) {
-    super(message)
-    this.code = code
-  }
-}
-
-function die(message: string, code = 2): never {
-  throw new Stop(message, code)
-}
-
-/** Вызов портала входящим вебхуком — как при переносе, и по той же причине. */
-function hookCall(base: string): RestCall {
-  const root = base.endsWith('/') ? base : `${base}/`
-  return async (method, params = {}) => {
-    const response = await fetch(`${root}${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(params),
-    })
-    const body = await response.json() as { error?: string, error_description?: string }
-    if (typeof body.error === 'string' && body.error !== '') {
-      throw new Error(`${body.error}: ${body.error_description ?? ''}`)
-    }
-    return body
   }
 }
 
@@ -90,17 +54,22 @@ async function main(): Promise<number> {
   }
 
   const call = hookCall(args.hook)
-  const template = await findTemplateProcess(call)
-  if (template === null) {
+  const { template, survey } = await findProcesses(call)
+  if (template === undefined) {
     die('Смарт-процесс «Шаблон опроса» на портале не найден. Сначала переустановка или «доустроить».', 1)
   }
-  const survey = await findSurveyProcess(call)
-  if (survey === null) {
+  if (survey === undefined) {
     // ⚠ Без «Опроса» не сосчитать, кто уже прошёл анкету, — а значит не отличить версию,
     // которую можно переименовать, от той, по которой собрана статистика. Продолжать вслепую
     // хуже, чем остановиться: мы бы разрешили ровно то, что запрещает инвариант.
     die('Смарт-процесс «Опрос» на портале не найден — не сосчитать выпущенные приглашения.', 1)
   }
+
+  // ⚠ Называем, ЧТО именно посчитали. В вебхучном режиме смарт-процессы находятся по заголовку,
+  // а заголовок не признак владения: совпасть может процесс, заведённый клиентом руками. Тогда
+  // сводка по пройденным опросам окажется пустой, и переименование откроется там, где не должно.
+  // Оператор обязан иметь возможность сверить числа глазами. Нашёл `/code-review` в PR #50.
+  console.info(`Смарт-процессы: «Шаблон опроса» entityTypeId ${template.entityTypeId}, «Опрос» ${survey.entityTypeId}.`)
 
   const result = await publishTemplates(call, template, survey, { apply: args.apply })
 
@@ -123,8 +92,11 @@ async function main(): Promise<number> {
     }
   }
 
-  const unnamed = result.skip.filter(s => s.reason.startsWith('НЕ НАЗВАНА'))
-  const other = result.skip.filter(s => !s.reason.startsWith('НЕ НАЗВАНА'))
+  // ⚠ Отбираем по машинному признаку `kind`, а не по началу русской фразы: переформулировав
+  // причину, мы бы молча погасили весь блок «НЕ НАЗВАНЫ», и оператор закрыл бы терминал
+  // в уверенности, что делать нечего. Нашёл `/code-review` в PR #50.
+  const unnamed = result.skip.filter(s => s.kind === 'unnamed')
+  const other = result.skip.filter(s => s.kind !== 'unnamed')
 
   if (other.length > 0) {
     console.info(`  пропущено    : ${other.length}`)

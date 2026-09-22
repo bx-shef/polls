@@ -79,17 +79,21 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
 
     const code = typeof item[codeField] === 'string' ? item[codeField] : ''
     const version = Number(item[versionField])
-    const schema = parseSchema(item[schemaField])
+    const schema = parseTemplateSchema(item[schemaField])
     if (code === '' || !Number.isInteger(version) || version <= 0 || schema === null) continue
 
     published.push({
       code,
       version,
-      // ⚠ Заголовок берётся из СХЕМЫ, а не из имени элемента. Имя элемента пишет сотрудник
-      // для себя, и на живом портале это оказался служебный код `demo` — он же уезжал
-      // в название приглашения и в заголовок дела. Название анкеты живёт в схеме: его
-      // видит респондент, оно и осмысленно. Имя элемента — запасной вариант.
-      title: firstFilled(schema.title, item.title, code),
+      // ⚠ Заголовок берётся ТОЛЬКО из схемы, и имя элемента запасным вариантом больше НЕ идёт.
+      // Раньше шло — и не срабатывало ни разу, потому что `title` в ответе не приходил вовсе
+      // (см. комментарий к `buildListTemplatesCall`). Починив `select`, мы бы эту ветку оживили,
+      // и вот тогда она стала бы вредной: имя элемента правится на портале кем угодно и когда
+      // угодно, а опубликованная версия обязана быть неизменяемой — сотрудник, переименовавший
+      // карточку, задним числом поменял бы название версии, по которой уже собрана статистика.
+      // Назвать анкету можно, но до публикации и через схему: `pnpm publish:templates`.
+      // Нашёл `/code-review` в PR #50: мёртвую ветку нельзя оживлять, не решив, нужна ли она.
+      title: firstFilled(schema.title, code),
       schema,
     })
   }
@@ -155,7 +159,16 @@ export function readCreatedItemId(response: unknown): number | null {
   return Number.isInteger(id) && id > 0 ? id : null
 }
 
-function parseSchema(raw: unknown): SurveyTemplate | null {
+/**
+ * Разобрать схему анкеты из поля портала.
+ *
+ * ⚠ ЭКСПОРТИРУЕТСЯ, и это не про удобство. Публикация (`template-publish.ts`) решает по этой
+ * же функции, можно ли выпускать версию. Своя, более слабая копия там уже была, и расхождение
+ * стоило бы дорого в обе стороны: опубликованная схема, которую приложение потом отказывается
+ * показывать, чинится только новой версией — а обратно, отказ публиковать схему, которую
+ * приложение показывает прекрасно, выглядит как поломка переноса. Нашёл `/code-review` в PR #50.
+ */
+export function parseTemplateSchema(raw: unknown): SurveyTemplate | null {
   if (raw === null || typeof raw === 'object') {
     // Портал отдаёт текстовое поле строкой, но объект может прийти, если поле однажды
     // заведут структурным. Проверяем форму, а не тип поля.

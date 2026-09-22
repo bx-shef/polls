@@ -28,6 +28,9 @@ import { logger } from '../utils/logger'
 /** Предел перелистывания. Страховка от кривого `next`, а не ожидаемый размер. */
 const MAX_PAGES = 50
 
+/** Наш код отказа: список не дочитан до конца. */
+export const PORTAL_LIST_TRUNCATED = 'SHEF_LIST_TRUNCATED'
+
 /** Наш код отказа: портал ответил успехом, но элемент не вернул. */
 export const PORTAL_UPDATED_NOTHING = 'SHEF_UPDATED_NOTHING'
 
@@ -107,6 +110,18 @@ async function tallyUsage(call: RestCall, survey: SmartProcessRef): Promise<Map<
     start = readNextOffset(response)
   }
 
+  // ⚠ ДОЧИТАЛИ ИЛИ НЕ ЗАПУСКАЕМСЯ. Упёршись в предел, мы получили бы сводку без последних
+  // страниц — а неполная сводка тут не «менее точная», она ОПАСНАЯ: версия, чьи пройденные
+  // опросы лежат на непрочитанной странице, выглядит как «никто не проходил» и открывает
+  // переименование, которое инвариант запрещает. Молчать об этом нельзя.
+  // Нашёл `/code-review` в PR #50.
+  if (start !== null) {
+    throw new PortalError(
+      PORTAL_LIST_TRUNCATED,
+      `список «Опросов» не дочитан за ${MAX_PAGES} страниц — сводка по пройденным была бы неполной`,
+    )
+  }
+
   return usage
 }
 
@@ -122,6 +137,16 @@ async function listAllItems(call: RestCall, template: SmartProcessRef): Promise<
     const response = await call(list.method, list.params)
     items.push(...readTemplateItems(response, template))
     start = readNextOffset(response)
+  }
+
+  // Та же причина, что и у сводки: недочитанный список молча теряет шаблоны, а отчёт
+  // при этом выглядит полным. К тому же проверка дубликатов пары «код + версия» на неполном
+  // списке просто не сработает — вторая карточка окажется на непрочитанной странице.
+  if (start !== null) {
+    throw new PortalError(
+      PORTAL_LIST_TRUNCATED,
+      `список шаблонов не дочитан за ${MAX_PAGES} страниц`,
+    )
   }
 
   return items

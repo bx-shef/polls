@@ -31,7 +31,7 @@ const SCHEMA: SurveyTemplate = {
 }
 
 function item(over: Partial<PortalTemplateItem> = {}): PortalTemplateItem {
-  return { id: 4, name: 'Оценка бренд-платформы', code: 'brand', version: 1, state: 'draft', schema: SCHEMA, ...over }
+  return { id: 4, name: 'Оценка бренд-платформы', code: 'brand', version: 1, state: 'draft', publishedAt: '', schema: SCHEMA, ...over }
 }
 
 describe('что публикуем', () => {
@@ -50,8 +50,18 @@ describe('что публикуем', () => {
     const plan = planTemplatePublish([item({ name: 'brand' })])
 
     expect(plan.publish).toEqual([])
-    expect(plan.skip[0]!.reason).toContain('НЕ НАЗВАНА')
+    expect(plan.skip[0]!.kind).toBe('unnamed')
     expect(plan.skip[0]!.reason).toContain('brand')
+  })
+
+  it('причина отбора — машинный признак, а не русская фраза', () => {
+    // ⚠ Отчёт выносит неназванные отдельным блоком в конец: это единственное, что требует
+    // действия человека. Отбирался блок по началу строки `'НЕ НАЗВАНА'`, — то есть
+    // переформулировав причину, мы бы молча его погасили, и оператор закрыл бы терминал
+    // в уверенности, что делать нечего.
+    const plan = planTemplatePublish([item({ name: '' }), item({ id: 6, code: 'concept', name: 'concept' })])
+
+    expect(plan.skip.map(s => s.kind)).toEqual(['unnamed', 'unnamed'])
   })
 
   it('НЕ публикует анкету с пустым именем', () => {
@@ -136,7 +146,7 @@ describe('вызов публикации', () => {
     // Записав только состояние, мы опубликовали бы анкету, которая на портале называется
     // по-человечески, а человеку показывается кодом.
     const call = buildPublishCall(TEMPLATE, {
-      id: 4, code: 'brand', version: 1, name: 'Оценка бренд-платформы', schema: SCHEMA, action: 'publish', issued: 0,
+      id: 4, code: 'brand', version: 1, name: 'Оценка бренд-платформы', schema: SCHEMA, action: 'publish', issued: 0, setPublishedAt: true,
     }, new Date('2026-09-22T10:00:00Z'))
 
     const fields = (call.params as { fields: Record<string, unknown> }).fields
@@ -149,7 +159,7 @@ describe('вызов публикации', () => {
 
   it('остальная схема не теряется при подмене названия', () => {
     const call = buildPublishCall(TEMPLATE, {
-      id: 4, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'publish', issued: 0,
+      id: 4, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'publish', issued: 0, setPublishedAt: true,
     }, new Date('2026-09-22T10:00:00Z'))
 
     const written = JSON.parse((call.params as { fields: Record<string, string> }).fields.UF_CRM_8_SCHEMA!)
@@ -159,7 +169,7 @@ describe('вызов публикации', () => {
 
   it('адресуется идентификатором элемента', () => {
     const call = buildPublishCall(TEMPLATE, {
-      id: 42, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'publish', issued: 0,
+      id: 42, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'publish', issued: 0, setPublishedAt: true,
     }, new Date())
 
     expect((call.params as { id: number }).id).toBe(42)
@@ -249,7 +259,7 @@ describe('ответ портала на правку', () => {
 describe('дата публикации', () => {
   it('ставится при публикации черновика', () => {
     const call = buildPublishCall(TEMPLATE, {
-      id: 4, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'publish', issued: 0,
+      id: 4, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'publish', issued: 0, setPublishedAt: true,
     }, new Date('2026-09-22T10:00:00Z'))
 
     expect((call.params as { fields: Record<string, unknown> }).fields.UF_CRM_8_PUBLISHED_AT).toBe('2026-09-22')
@@ -259,7 +269,7 @@ describe('дата публикации', () => {
     // ⚠ Опубликованная версия публиковалась не сегодня. Переписав дату, мы соврали бы
     // в единственном поле, по которому потом восстанавливают, когда анкета вышла.
     const call = buildPublishCall(TEMPLATE, {
-      id: 4, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'rename', issued: 0,
+      id: 4, code: 'brand', version: 1, name: 'Новое', schema: SCHEMA, action: 'rename', issued: 0, setPublishedAt: false,
     }, new Date('2026-09-22T10:00:00Z'))
 
     expect((call.params as { fields: Record<string, unknown> }).fields).not.toHaveProperty('UF_CRM_8_PUBLISHED_AT')
