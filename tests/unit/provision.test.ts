@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
-import { buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 
 /**
  * Обустройство портала целиком, поверх подделки вызова. Проверяем то, чья поломка
@@ -261,17 +261,87 @@ describe('связь «Опроса» со сделкой', () => {
     expect(await ensureDealRelation(p.call, SURVEY)).toBe(false)
   })
 
-  it('отказ портала не роняет установку молча', async () => {
-    // Тариф клиента может запрещать правку смарт-процессов (`UPDATE_DYNAMIC_TYPE_RESTRICTED`).
-    // Приложение при этом остаётся рабочим в остальном, но исход обязан быть видимым —
-    // за это отвечает `dealLinked`, а `register.ts` пишет по нему `logger.error`.
+  it('тарифный отказ НЕ роняет установку', async () => {
+    // ⚠ Гвард под находку панели: трое проверяющих независимо заметили, что вызов шёл без
+    // `try/catch`, и `UPDATE_DYNAMIC_TYPE_RESTRICTED` (задокументированный код `crm.type.update`)
+    // ронял ВСЮ установку. Идентификаторы не сохранялись, вкладка не регистрировалась,
+    // а строка `logger.error` про ненастроенную связь не выполнялась никогда — при том что
+    // собственный JSDoc обещал ровно обратное. Прежний тест назывался правильно и закреплял
+    // противоположное поведение.
     const p = portal({
       'crm.type.update': () => {
         throw new Error('UPDATE_DYNAMIC_TYPE_RESTRICTED')
       },
     })
 
-    await expect(provisionSmartProcesses(p.call)).rejects.toThrow()
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.dealLinked).toBe(false)
+    // Остальное обустройство при этом доведено до конца.
+    expect(result.addedFields).toBe(TEMPLATE_FIELDS.length + SURVEY_FIELDS.length)
+  })
+})
+
+/**
+ * Гвард под пробел, найденный панелью: раскладка карточки не была покрыта НИ ОДНИМ тестом.
+ *
+ * ⚠ Проверяющий сломал `hasCardConfig` (всегда «настройки нет») — и все 549 тестов остались
+ * зелёными. То есть код, который на каждой переустановке переписывал бы клиенту раскладку
+ * карточки для ВСЕХ пользователей, прошёл бы гейт незамеченным. Ровно тот класс отказа,
+ * про который в проекте написано «все тесты зелёные при живой регрессии».
+ */
+describe('раскладка карточки «Опроса»', () => {
+  it('ставится там, где своей нет', async () => {
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.cardConfigured).toBe(true)
+    const set = p.of('crm.item.details.configuration.set')
+    expect(set).toHaveLength(1)
+    expect(set[0]!.params.entityTypeId).toBe(SURVEY.entityTypeId)
+    expect(set[0]!.params.scope).toBe('C')
+  })
+
+  it('НЕ трогает раскладку, которую настроил клиент', async () => {
+    // ⚠ Метод перезаписывает раскладку целиком и сразу для всех пользователей. Клиент,
+    // разложивший карточку под себя, получал бы нашу при каждой переустановке.
+    const p = portal({
+      'crm.item.details.configuration.get': { result: [{ name: 'своё', title: 'Своё', elements: [] }] },
+    })
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.cardConfigured).toBe(false)
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+  })
+
+  it('показывает сделку и клиента, а не прячет их', async () => {
+    // Ради этого раскладка и ставится: умолчание портала клало «Сделку» и «Клиента»
+    // в «Скрытые поля», и карточка не отвечала ни «по какой сделке», ни «кого спрашивали».
+    const sections = buildCardSections(SURVEY.id)
+    const shown = sections.flatMap(s => (s.elements as { name: string, optionFlags?: number }[]))
+
+    for (const name of ['PARENT_ID_2', 'CONTACT_ID', 'COMPANY_ID']) {
+      const field = shown.find(e => e.name === name)
+      expect(field, name).toBeDefined()
+      // `optionFlags: 1` — «показывать всегда»: пустое место на виду говорит, что связи нет,
+      // а спрятанное поле не говорит ничего.
+      expect(field!.optionFlags, name).toBe(1)
+    }
+  })
+
+  it('отказ раскладки не роняет установку', async () => {
+    const p = portal({
+      'crm.item.details.configuration.set': () => {
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.cardConfigured).toBe(false)
+    expect(result.dealLinked).toBe(true)
   })
 })
 
@@ -279,6 +349,14 @@ describe('планирование связи, без портала', () => {
   it('не планирует ничего, когда сделка уже в родителях', () => {
     // Идемпотентность: повторная установка не должна писать настройки заново.
     expect(planDealRelation(readTypeRelations({ result: { type: { relations: WITH_DEAL } } }))).toBeNull()
+  })
+
+  it('читает тип по `id`, а не по `entityTypeId`', () => {
+    // ⚠ Проект уже обжигался на этой паре: `entityTypeId` адресует элементы, `id` — настройки.
+    // Подделка портала отвечает по имени метода и на параметры не смотрит, поэтому подмена
+    // здесь не поймалась бы ничем. Нашла панель ревью.
+    expect(buildReadTypeCall(SURVEY).params.id).toBe(SURVEY.id)
+    expect(buildReadTypeCall(SURVEY).params.id).not.toBe(SURVEY.entityTypeId)
   })
 
   it('не планирует ничего, когда читать было нечего', () => {

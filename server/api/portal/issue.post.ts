@@ -2,8 +2,9 @@ import { createError, defineEventHandler, readBody } from 'h3'
 import { buildSurveyUrl, createInvitation } from '../../domain/invitations/invitation'
 import {
   buildCreateSurveyItemCall,
-  buildReadDealClientCall,
-  readDealClient,
+  buildInvitationTitle,
+  buildReadDealCall,
+  readDealFacts,
   buildListTemplatesCall,
   readCreatedItemId,
   readPublishedTemplates,
@@ -87,21 +88,23 @@ export default defineEventHandler(async (event) => {
   // без клиента карточка «Опроса» отвечает, по какой сделке опрос, но не отвечает, кого
   // спрашивали, — а это первое, зачем её открывают. Неудача чтения ссылку НЕ роняет:
   // ссылка важнее удобства карточки, и поменять их местами было бы ошибкой.
-  let client
+  let deal
   try {
-    const clientCall = buildReadDealClientCall(dealId)
-    client = readDealClient(await session.call(clientCall.method, clientCall.params))
+    const dealCall = buildReadDealCall(dealId)
+    deal = readDealFacts(await session.call(dealCall.method, dealCall.params))
   }
   catch {
-    logger.warn({ domain: session.portal.domain }, 'клиент сделки не прочитан, приглашение уйдёт без него')
+    logger.warn({ domain: session.portal.domain }, 'сделка не прочитана, приглашение уйдёт без клиента и без её названия')
   }
 
   const createCall = buildCreateSurveyItemCall(refs.survey, dealId, {
     templateCode: chosen.code,
     templateVersion: chosen.version,
     expiresAt: invitation.expiresAt,
-    title: chosen.title,
-    client,
+    title: buildInvitationTitle(chosen.title, deal?.title ?? ''),
+    client: deal,
+    // Кто нажал «выпустить» — на него и повесится дело по итогу.
+    assignedById: session.userId,
   })
   const itemId = readCreatedItemId(await session.call(createCall.method, createCall.params))
   if (itemId === null) {
