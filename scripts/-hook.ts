@@ -8,6 +8,8 @@
  *
  * Имя с дефисом впереди — соглашение проекта: файл рядом с обработчиками, но сам не команда.
  */
+import { PortalError } from '../server/domain/portals/portal-error'
+import { safeRefusal } from '../server/domain/answers/portal-errors'
 import type { RestCall } from '../server/b24/provision'
 
 /**
@@ -40,8 +42,14 @@ export function die(message: string, code = 2): never {
  * роняла разбор голым `SyntaxError: Unexpected token '<'` — сообщением, по которому оператор
  * ничего не поймёт, при том что все остальные исходы оформлены человеческими фразами.
  *
- * ⚠ Ошибка портала поднимается исключением с КОДОМ в тексте: наверху её пропустит через
- * `safeRefusal`, который знает закрытый список кодов и наружу лишнего не выпустит.
+ * ⚠ Ошибка портала поднимается `PortalError` С КОДОМ ОТДЕЛЬНЫМ ПОЛЕМ, а не прозой в тексте.
+ * Первая редакция бросала голый `Error` с текстом портала, а комментарий рядом обещал, что
+ * «наверху её пропустит через `safeRefusal`». Обещание было неправдой: `refusalCode` читает
+ * только `PortalError.code`, так что у голой ошибки кода нет, а списочные вызовы вообще
+ * не обёрнуты в перехват — их текст уезжал в stderr как есть. Битрикс24 цитирует присланное
+ * значение в ошибке валидации, и хотя у списочных вызовов присылать нечего, держать здесь
+ * обещание, которое код не выполняет, — способ однажды обнаружить это на настоящих данных.
+ * Нашла проверка безопасности в PR #50.
  */
 export function hookCall(base: string): RestCall {
   const root = base.endsWith('/') ? base : `${base}/`
@@ -57,13 +65,36 @@ export function hookCall(base: string): RestCall {
     // беду ДО портала: прокси, опечатку в адресе, погашенный вебхук. Тела у неё может не быть
     // вовсе, а может быть страница — разбирать её как JSON бессмысленно.
     if (!response.ok) {
-      throw new Error(`портал ответил ${response.status} на ${method}`)
+      // ⚠ `Stop`, а не голый `Error`: текст здесь НАШ, и `report` печатает его как есть.
+      // Пройдя через `safeRefusal`, понятное «портал ответил 502» схлопнулось бы
+      // в «код не распознан» — то есть фильтр, заведённый против чужой прозы, съел бы
+      // единственную полезную подсказку.
+      throw new Stop(`\nПортал ответил ${response.status} на ${method}. Проверьте адрес вебхука и то, что он ещё жив.`, 1)
     }
 
     const body = await response.json() as { error?: string, error_description?: string }
     if (typeof body.error === 'string' && body.error !== '') {
-      throw new Error(`${body.error}: ${body.error_description ?? ''}`)
+      throw new PortalError(body.error, body.error_description ?? '')
     }
     return body
   }
+}
+
+/**
+ * Напечатать беду и вернуть код выхода. Единственная точка, где что-то уходит наружу при отказе.
+ *
+ * ⚠ Отказ портала проходит через `safeRefusal` — здесь это уже не украшение, а то самое
+ * обещание из комментария к `hookCall`. Без него проза портала (а он цитирует присланное
+ * значение) печаталась бы в терминал и уезжала в `| tee`.
+ *
+ * ⚠ `Stop` печатается как есть: это НАШ текст, написанный для оператора, и пропускать его
+ * через фильтр кодов значило бы схлопнуть подробную инструкцию в «код не распознан».
+ */
+export function report(error: unknown): number {
+  if (error instanceof Stop) {
+    console.error(error.message)
+    return error.code
+  }
+  console.error(`\nНе получилось: ${safeRefusal(error)}`)
+  return 1
 }

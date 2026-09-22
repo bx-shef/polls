@@ -24,7 +24,7 @@
  */
 import process from 'node:process'
 
-import { die, hookCall, Stop } from './-hook'
+import { die, hookCall, report } from './-hook'
 import { findProcesses } from '../server/b24/write-templates'
 import { publishTemplates } from '../server/b24/publish-templates'
 
@@ -130,6 +130,5 @@ try {
   process.exitCode = await main()
 }
 catch (error) {
-  console.error(error instanceof Stop ? error.message : `\nНе получилось: ${(error as Error)?.message ?? error}`)
-  process.exitCode = error instanceof Stop ? error.code : 1
+  process.exitCode = report(error)
 }

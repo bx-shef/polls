@@ -236,3 +236,50 @@ describe('публикация против портала', () => {
     info.mockRestore()
   })
 })
+
+describe('транспорт операторских скриптов', () => {
+  it('отказ портала превращается в PortalError с кодом, а не в прозу', async () => {
+    // ⚠ ГВАРД ПОД НЕТОЧНЫЙ КОММЕНТАРИЙ, который нашла проверка безопасности в PR #50.
+    // Комментарий обещал, что ошибка пройдёт через `safeRefusal`, а бросался голый `Error`:
+    // `refusalCode` читает только `PortalError.code`, значит обещание не выполнялось.
+    // Битрикс24 цитирует присланное значение в ошибке валидации, поэтому обещание
+    // из комментария должно быть правдой, а не намерением.
+    const { hookCall, report } = await import('../../scripts/-hook')
+    const { safeRefusal } = await import('../../server/domain/answers/portal-errors')
+
+    vi.stubGlobal('fetch', async () => new Response(
+      JSON.stringify({ error: 'ACCESS_DENIED', error_description: 'значение «текст ответа» недопустимо' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    const call = hookCall('https://портал/rest/1/ключ/')
+    await expect(call('crm.item.list', {})).rejects.toSatisfy(e => safeRefusal(e) === 'ACCESS_DENIED')
+
+    const printed: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation(m => void printed.push(String(m)))
+    report(await call('crm.item.list', {}).catch(e => e))
+    spy.mockRestore()
+    vi.unstubAllGlobals()
+
+    // Проза портала — а вместе с ней процитированное присланное значение — наружу не ушла.
+    expect(printed.join('')).not.toContain('текст ответа')
+    expect(printed.join('')).toContain('ACCESS_DENIED')
+  })
+
+  it('не-2xx печатается НАШИМ текстом, а не схлопывается в «код не распознан»', async () => {
+    // Фильтр против чужой прозы не должен съедать единственную полезную подсказку.
+    const { hookCall, report } = await import('../../scripts/-hook')
+
+    vi.stubGlobal('fetch', async () => new Response('<html>502</html>', { status: 502 }))
+
+    const printed: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation(m => void printed.push(String(m)))
+    const code = report(await hookCall('https://портал/rest/1/ключ/')('crm.item.list', {}).catch(e => e))
+    spy.mockRestore()
+    vi.unstubAllGlobals()
+
+    expect(code).toBe(1)
+    expect(printed.join('')).toContain('502')
+    expect(printed.join('')).not.toContain('не распознан')
+  })
+})

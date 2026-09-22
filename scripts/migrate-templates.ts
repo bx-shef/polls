@@ -31,7 +31,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import process from 'node:process'
 
-import { die, hookCall, Stop } from './-hook'
+import { die, hookCall, report } from './-hook'
 import { readLegacyTemplates } from '../server/domain/import/legacy-templates'
 import { readSnapshot } from '../server/domain/import/snapshot'
 import { DEFAULT_IMPORT_STATE, type TemplateState } from '../server/domain/import/template-write'
@@ -188,6 +188,5 @@ try {
   process.exitCode = await main()
 }
 catch (error) {
-  console.error(error instanceof Stop ? error.message : `\nНе получилось: ${(error as Error)?.message ?? error}`)
-  process.exitCode = error instanceof Stop ? error.code : 1
+  process.exitCode = report(error)
 }
