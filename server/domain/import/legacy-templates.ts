@@ -340,13 +340,18 @@ function readBands(
 ): SurveyBand[] {
   if (!Array.isArray(rawTerms)) return []
   const bands: SurveyBand[] = []
+  // ⚠ Про HTML говорим ОДИН раз на раздел, а не на каждый диапазон. Вёрстка в источнике
+  // лежит во всех шести диапазонах сразу, и шесть одинаковых строк подряд — это шум
+  // в отчёте, который читает клиент: настоящие находки в нём тонут.
+  let saidAboutHtml = false
 
   for (const rawTerm of rawTerms) {
     const term = rawTerm as { MIN?: unknown, MAX?: unknown, VALUE?: unknown, TEXT?: unknown, NAME?: unknown }
     const source = firstString(term?.VALUE, term?.TEXT, term?.NAME)
 
-    if (looksLikeHtml(source)) {
-      warnings.push(warn('html-stripped', template, section, 'текст интерпретации хранился готовым HTML — вычищен до текста'))
+    if (looksLikeHtml(source) && !saidAboutHtml) {
+      saidAboutHtml = true
+      warnings.push(warn('html-stripped', template, section, 'тексты интерпретации хранились готовым HTML — вычищены до текста'))
     }
 
     const from = toNumber(term?.MIN, 0)
