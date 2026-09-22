@@ -256,6 +256,59 @@ describe('диапазоны интерпретации', () => {
   })
 })
 
+/**
+ * Гварды под то, что подтвердил НАСТОЯЩИЙ снимок заказчика.
+ *
+ * ⚠ Эти три вещи разбор угадывал, и в коде рядом честно стояло «имя ключа НЕ подтверждено».
+ * Снимок пришёл — и все три догадки оказались неверными. Формы ниже взяты из него дословно.
+ */
+describe('формы, подтверждённые настоящим снимком', () => {
+  const digitalTerms = (terms: unknown[]) => [{
+    name: 'questionary_group_digital',
+    value: JSON.stringify([{
+      NAME: 'Процессы',
+      FIELD: 'PROPERTY_PROCESS',
+      TERMS: terms,
+      FIELDS: [{ CODE: 'UF_A', NAME: '', TYPE: 'POINT', SETTING: { MIN: '0', MAX: '10', SIZE: '100' } }],
+    }]),
+  }]
+
+  it('текст диапазона лежит под ключом `VALUE`, а не `TEXT`', () => {
+    // ⚠ Главный гвард файла. Разбор брал `TEXT`/`NAME` — у всех шести диапазонов `digital`
+    // текст выходил ПУСТОЙ строкой, и предупреждение `html-stripped` не срабатывало, потому
+    // что `looksLikeHtml('')` — ложь. То есть «клиент с плохой оценкой не увидит ничего» —
+    // инвариант, ради которого диапазоны и переносятся, — нарушался бы молча.
+    const { templates } = readLegacyTemplates(digitalTerms([
+      { MIN: '4', MAX: '6', VALUE: '<div class="g-color-white text-center">Где-то мы свернули не туда</div>' },
+    ]))
+
+    expect(templates[0]!.sections[0]!.bands[0]!.text).toBe('Где-то мы свернули не туда')
+  })
+
+  it('`MAX: "0"` в последнем диапазоне читается как «до верха шкалы» — и это в отчёте', () => {
+    // ⚠ Так в источнике БУКВАЛЬНО: `{"MIN":"9.4","MAX":"0"}`. Диапазон «от 9,4 до 0»
+    // не совпадёт ни с чем, то есть верхняя оценка осталась бы без текста. Догадка о чужих
+    // данных не проходит молча, даже верная.
+    const { templates, warnings } = readLegacyTemplates(digitalTerms([
+      { MIN: '9.4', MAX: '0', VALUE: 'Мы на вершине!' },
+    ]))
+
+    expect(templates[0]!.sections[0]!.bands[0]).toMatchObject({ from: 9.4, to: 10 })
+    expect(warnings.some(w => w.code === 'band-open-end')).toBe(true)
+  })
+
+  it('хвостовой `\\r` из формулировки обрезается', () => {
+    // В снимке подписи приезжают как «качество аналитики\r» — источник в MySQL с виндовыми
+    // переводами строк. Невидимый символ уехал бы в анкету, которую читает посторонний.
+    const { templates } = readLegacyTemplates(
+      digitalTerms([]),
+      [{ template: 'digital', field: 'UF_A', title: 'качество аналитики\r' }],
+    )
+
+    expect(templates[0]!.sections[0]!.questions[0]!.title).toBe('качество аналитики')
+  })
+})
+
 describe('предупреждения о составе секции', () => {
   const section = (fields: unknown[], name = 'Продукт', field = 'PROPERTY_PRODUCT') => [{
     name: 'questionary_group_synthetic',
