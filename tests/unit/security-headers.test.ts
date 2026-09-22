@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { portalCsp, publicPageCsp, securityHeadersFor } from '../../server/utils/security-headers'
+import { buildPublicPageCsp, needsNonce, portalCsp, securityHeadersFor } from '../../server/utils/security-headers'
 
 /**
  * Гвард под переезд заголовков из nginx в приложение.
@@ -18,6 +18,9 @@ const EXPECTED_ZONES = [
   'ru', 'by', 'kz', 'ua', 'com', 'eu', 'de', 'fr', 'it', 'es',
   'pl', 'in', 'jp', 'vn', 'mx', 'id', 'com.br', 'com.tr',
 ]
+
+/** Политика публичной страницы без nonce — её форма проверяется прежними тестами. */
+const publicPageCsp = buildPublicPageCsp()
 
 /** Вырезает одну директиву целиком — иначе проверка на зону проходит на `connect-src`. */
 function directive(csp: string, name: string): string {
@@ -113,5 +116,48 @@ describe('выбор заголовков по адресу', () => {
       expect(headers['Referrer-Policy'], path).toBe('no-referrer')
       expect(headers['Strict-Transport-Security'], path).toContain('includeSubDomains')
     }
+  })
+})
+
+describe('nonce вместо unsafe-inline на публичной странице', () => {
+  it('в `script-src` публичной страницы НЕТ `unsafe-inline`', () => {
+    // ⚠ ГВАРД ИЗ issue #2, и он же главный здесь. Это единственная страница, где текст,
+    // введённый сотрудником портала, читает посторонний человек. Первый рубеж — отсутствие
+    // разметки вовсе; CSP страхует его, и с `unsafe-inline` этой страховки просто нет.
+    expect(directive(buildPublicPageCsp('abc'), 'script-src')).not.toContain('unsafe-inline')
+    expect(directive(buildPublicPageCsp(), 'script-src')).not.toContain('unsafe-inline')
+  })
+
+  it('nonce попадает в `script-src`, когда он есть', () => {
+    expect(directive(buildPublicPageCsp('abc123'), 'script-src')).toBe(`script-src 'self' 'nonce-abc123'`)
+  })
+
+  it('БЕЗ nonce политика строже, а не слабее', () => {
+    // ⚠ Обратный порядок («нет nonce — вернём `unsafe-inline`») означал бы, что любая ошибка
+    // в протягивании nonce тихо возвращает дыру, ради закрытия которой всё и делалось.
+    expect(directive(buildPublicPageCsp(), 'script-src')).toBe(`script-src 'self'`)
+  })
+
+  it('в портальную политику nonce НЕ попадает ни при каких условиях', () => {
+    // ⚠ В CSP nonce и `unsafe-inline` взаимоисключающие: браузер игнорирует `unsafe-inline`,
+    // как только в политике появился хоть один nonce. Добавив nonce «заодно и туда»,
+    // мы бы молча погасили скрипты самого Битрикс24.
+    expect(securityHeadersFor('/app', 'abc')['Content-Security-Policy']).toBe(portalCsp)
+    expect(securityHeadersFor('/app', 'abc')['Content-Security-Policy']).not.toContain('nonce-')
+    expect(needsNonce('/app')).toBe(false)
+    expect(needsNonce('/api/s/x')).toBe(false)
+  })
+
+  it('nonce просят ровно те пути, что получают публичную политику', () => {
+    // Иначе заголовок и разметка разъедутся: где-то nonce в политике без nonce в скриптах
+    // (страница не оживёт), где-то наоборот (дыра осталась).
+    for (const path of ['/s/abc', '/', '']) {
+      expect(needsNonce(path), path).toBe(true)
+      expect(securityHeadersFor(path, 'n')['Content-Security-Policy'], path).toContain(`'nonce-n'`)
+    }
+  })
+
+  it('заголовок публичной страницы несёт именно тот nonce, что дали', () => {
+    expect(securityHeadersFor('/s/abc', 'РОВНО-ЭТОТ')['Content-Security-Policy']).toContain(`'nonce-РОВНО-ЭТОТ'`)
   })
 })

@@ -39,22 +39,38 @@ export const portalCsp = [
  * Policy for the public survey page.
  *
  * Её открывает посторонний респондент, встраивать её в чужие страницы незачем —
- * отсюда `frame-ancestors 'none'`. `unsafe-inline` в `script-src` остаётся временно:
- * Nuxt встраивает полезную нагрузку инлайновым скриптом, и замена на nonce — отдельная
- * работа вместе с самой страницей (issue #2).
+ * отсюда `frame-ancestors 'none'`.
+ *
+ * ⚠ В `script-src` БОЛЬШЕ НЕТ `unsafe-inline`, и это главное здесь (issue #2). Это
+ * единственная страница, где текст, введённый сотрудником портала, читает посторонний
+ * человек. Первый рубеж — то, что разметки там не бывает вовсе: всё через `{{ }}`,
+ * без `v-html`. CSP — второй, страхующий первый; с `unsafe-inline` его просто не было.
+ *
+ * ⚠ БЕЗ NONCE ПОЛИТИКА СТРОЖЕ, А НЕ СЛАБЕЕ. Не отрендерив разметку, мы не знаем, какие
+ * инлайновые скрипты в ней окажутся, — и тогда не разрешаем ни одного. Обратный порядок
+ * («нет nonce — вернём `unsafe-inline`») означал бы, что любая ошибка в протягивании nonce
+ * тихо возвращает дыру, ради закрытия которой всё и делалось.
+ *
+ * ⚠ `style-src 'unsafe-inline'` ОСТАЁТСЯ, и это осознанно, а не забыто. Vue проставляет
+ * стили атрибутом `style` при обычном рендере, и без этого разрешения страница поедет
+ * вёрсткой. Вектор здесь несопоставим: через CSS вытаскивают данные по одному селектору
+ * за загрузку, через `<script>` выполняют что угодно сразу. Сузить его — отдельная работа
+ * со своей проверкой, а не заодно.
  */
-export const publicPageCsp = [
-  `default-src 'self'`,
-  `script-src 'self' 'unsafe-inline'`,
-  `style-src 'self' 'unsafe-inline'`,
-  `img-src 'self' data:`,
-  `connect-src 'self'`,
-  `object-src 'none'`,
-  `frame-src 'none'`,
-  `frame-ancestors 'none'`,
-  `base-uri 'none'`,
-  `form-action 'self'`,
-].join('; ')
+export function buildPublicPageCsp(nonce?: string): string {
+  return [
+    `default-src 'self'`,
+    `script-src 'self'${nonce === undefined ? '' : ` 'nonce-${nonce}'`}`,
+    `style-src 'self' 'unsafe-inline'`,
+    `img-src 'self' data:`,
+    `connect-src 'self'`,
+    `object-src 'none'`,
+    `frame-src 'none'`,
+    `frame-ancestors 'none'`,
+    `base-uri 'none'`,
+    `form-action 'self'`,
+  ].join('; ')
+}
 
 /**
  * Policy for JSON endpoints.
@@ -75,7 +91,7 @@ export const apiCsp = [
  * Чистая функция, чтобы выбор политики можно было проверить тестом, не поднимая сервер.
  * Проставляет их `server/plugins/security-headers.ts`.
  */
-export function securityHeadersFor(path: string): Record<string, string> {
+export function securityHeadersFor(path: string, nonce?: string): Record<string, string> {
   const common = {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -88,13 +104,13 @@ export function securityHeadersFor(path: string): Record<string, string> {
     return { ...common, 'Content-Security-Policy': apiCsp }
   }
   if (path.startsWith('/s/')) {
-    return { ...common, 'Content-Security-Policy': publicPageCsp, 'X-Robots-Tag': 'noindex, nofollow' }
+    return { ...common, 'Content-Security-Policy': buildPublicPageCsp(nonce), 'X-Robots-Tag': 'noindex, nofollow' }
   }
 
   // Лендинг — единственная страница, которой в выдаче место. Политика у неё та же, что
   // у публичной анкеты: она тоже вне портала, и встраивать её в чужие страницы незачем.
   if (isLanding(path)) {
-    return { ...common, 'Content-Security-Policy': publicPageCsp }
+    return { ...common, 'Content-Security-Policy': buildPublicPageCsp(nonce) }
   }
 
   // Всё остальное — страницы внутри портала: `/app`, `/install`, `/portal/**`.
@@ -106,6 +122,21 @@ export function securityHeadersFor(path: string): Record<string, string> {
   // страницу не скачает, не увидит `noindex` и вполне может показать голый адрес
   // по внешней ссылке.
   return { ...common, 'Content-Security-Policy': portalCsp, 'X-Robots-Tag': 'noindex, nofollow' }
+}
+
+/**
+ * Нужен ли этой странице nonce.
+ *
+ * ⚠ Ровно те же пути, что получают публичную политику, и ни одним больше. Портальные
+ * страницы остаются на `unsafe-inline`, потому что он нужен самому Битрикс24, — а в CSP
+ * эти две вещи ВЗАИМОИСКЛЮЧАЮЩИЕ: браузер игнорирует `unsafe-inline`, как только в политике
+ * появился хоть один nonce. Добавив nonce «заодно и туда», мы бы молча погасили портальные
+ * скрипты. Сужать портальную политику надо своей проверкой в живом портале (issue #2
+ * говорит это прямым текстом).
+ */
+export function needsNonce(path: string): boolean {
+  if (path.startsWith('/api/')) return false
+  return path.startsWith('/s/') || isLanding(path)
 }
 
 /**
