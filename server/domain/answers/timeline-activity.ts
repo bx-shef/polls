@@ -82,6 +82,21 @@ export const DESCRIPTION_TYPE_PLAIN = 1
 export const ACTIVITY_COLOR_GOOD = '4'
 export const ACTIVITY_COLOR_BAD = '7'
 
+/**
+ * Через сколько истекает срок дела.
+ *
+ * ⚠ Не «сейчас», и это решение, а не округление. Дело со сроком в текущую секунду становится
+ * просроченным через секунду после появления — то есть выглядит поломкой ровно там, где мы
+ * только что её и чинили. Сутки — то окно, в котором ответ клиента ещё свежий и разговор
+ * с ним имеет смысл; просрочка после них — честный сигнал, что до человека не дошли руки.
+ */
+export const ACTIVITY_DUE_HOURS = 24
+
+/** Срок для дела по завершённому опросу. */
+export function activityDeadline(now: Date): Date {
+  return new Date(now.getTime() + ACTIVITY_DUE_HOURS * 60 * 60 * 1000)
+}
+
 /** Предел заголовка дела. Портал считает символы, мы дополнительно смотрим на байты. */
 export const MAX_TITLE_CHARS = 255
 export const MAX_TITLE_BYTES = 255
@@ -192,9 +207,15 @@ export function buildTodoActivityCall(params: {
   const fields: TodoActivityParams = {
     ownerTypeId: params.dealEntityTypeId,
     ownerId: params.dealId,
-    // ⚠ Без зоны и без миллисекунд: документация показывает `2025-02-03T15:00:00`,
-    // а `WRONG_DATETIME_FORMAT` — один из заявленных отказов метода.
-    deadline: params.deadline.toISOString().slice(0, 19),
+    // ⚠ С ЧАСОВЫМ ПОЯСОМ. Первая редакция обрезала его (`slice(0, 19)`), потому что пример
+    // в документации показан без зоны — и это стоило ровно того, чем пахло: `toISOString()`
+    // даёт UTC, портал прочитал `04:22` как СВОЁ местное, и дело родилось просроченным
+    // на три часа. Видно на живом портале: `CREATED 07:22:23+03:00`, `DEADLINE 04:22:23+03:00`.
+    //
+    // Пример на JS в той же документации передаёт `new Date().toISOString()` целиком —
+    // то есть зона методом принимается. Момент времени должен быть однозначным: мы не знаем
+    // часового пояса чужого портала и знать его не обязаны.
+    deadline: params.deadline.toISOString(),
     title: params.title,
     description: params.description,
     colorId: params.color,

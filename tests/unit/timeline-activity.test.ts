@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ACTIVITY_COLOR_BAD,
   ACTIVITY_COLOR_GOOD,
+  activityDeadline,
   buildActivityTitle,
   buildTodoActivityCall,
   capTitle,
@@ -95,19 +96,32 @@ describe('цвет дела', () => {
     expect(ACTIVITY_COLOR_BAD).not.toBe(ACTIVITY_COLOR_GOOD)
   })
 
-  it('срок уходит без зоны и без миллисекунд', () => {
-    // `WRONG_DATETIME_FORMAT` — один из заявленных отказов метода; документация показывает
-    // `2025-02-03T15:00:00`.
+  it('срок уходит С ЧАСОВЫМ ПОЯСОМ', () => {
+    // ⚠ Гвард под живой дефект. Первая редакция обрезала зону, потому что пример
+    // в документации показан без неё. `toISOString()` даёт UTC, портал прочитал время
+    // как СВОЁ местное, и дело родилось просроченным на три часа: на портале стояло
+    // `CREATED 07:22:23+03:00` при `DEADLINE 04:22:23+03:00`. Момент времени обязан быть
+    // однозначным — часового пояса чужого портала мы не знаем и знать не обязаны.
     const call = buildTodoActivityCall({
       dealEntityTypeId: 2,
       dealId: 1,
       title: 'т',
       description: 'о',
-      deadline: new Date('2026-09-21T12:00:00.123Z'),
+      deadline: new Date('2026-09-21T12:00:00.000Z'),
       color: ACTIVITY_COLOR_GOOD,
     })
 
-    expect(call.params.deadline).toBe('2026-09-21T12:00:00')
+    expect(call.params.deadline).toBe('2026-09-21T12:00:00.000Z')
+    expect(String(call.params.deadline)).toMatch(/Z$/)
+  })
+
+  it('срок не наступает в момент создания', () => {
+    // Дело со сроком «сейчас» просрочено через секунду после появления — то есть выглядит
+    // поломкой ровно там, где мы её только что чинили.
+    const now = new Date('2026-09-21T12:00:00.000Z')
+
+    expect(activityDeadline(now).getTime()).toBeGreaterThan(now.getTime())
+    expect(activityDeadline(now).toISOString()).toBe('2026-09-22T12:00:00.000Z')
   })
 })
 

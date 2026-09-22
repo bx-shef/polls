@@ -16,6 +16,7 @@ import {
 import {
   ACTIVITY_COLOR_BAD,
   ACTIVITY_COLOR_GOOD,
+  activityDeadline,
   activityOriginId,
   buildActivityMarkerCall,
   buildActivityTitle,
@@ -322,8 +323,7 @@ async function createMarkedActivity(
     dealId: plan.dealId,
     title: plan.title,
     description: plan.description,
-    // Срок — сейчас: дело открытое и должно попасть в текущие, а не ждать завтрашнего дня.
-    deadline: new Date(),
+    deadline: activityDeadline(new Date()),
     color: plan.color,
     ...(plan.responsibleId ? { responsibleId: plan.responsibleId } : {}),
   })
