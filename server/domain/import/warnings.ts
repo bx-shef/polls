@@ -20,6 +20,7 @@ import type { SurveyTemplate } from '../surveys/model'
  * | `date-as-text` | тип `DATE` перенесён текстом в ISO: типа даты в новой модели нет |
  * | `html-stripped` | текст интерпретации хранился готовым HTML — вычищен до текста |
  * | `weights-not-100` | сумма весов в секции не даёт 100 |
+ * | `band-open-end` | верхняя граница диапазона в источнике была нулём: прочитана как «до верха шкалы» |
  * | `band-gap` | диапазоны интерпретации не покрывают шкалу без дыр |
  * | `section-not-scored` | секция без единого вопроса, идущего в оценку |
  * | `template-unreadable` | конфигурация анкеты не разобралась: шаблон пропущен целиком |
@@ -31,6 +32,7 @@ export type ImportWarningCode
     | 'html-stripped'
     | 'weights-not-100'
     | 'band-gap'
+    | 'band-open-end'
     | 'section-not-scored'
     | 'template-unreadable'
 

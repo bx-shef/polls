@@ -136,7 +136,11 @@ function readRegistry(options: readonly LegacyOption[]): Record<string, string> 
 function indexLabels(labels: readonly LegacyFieldLabel[]): (template: string, field: string) => string {
   const index = new Map<string, string>()
   for (const label of labels) {
-    index.set(labelKey(label.template, label.field), label.title)
+    // ⚠ Хвостовые пробелы и `\r` обрезаются. В настоящем снимке формулировки приезжают
+    // как «качество аналитики\r» — источник лежит в MySQL с виндовыми переводами строк.
+    // Невидимый символ уехал бы в анкету, которую читает посторонний человек, и всплыл бы
+    // лишним переносом ровно там, где его никто не ждёт.
+    index.set(labelKey(label.template, label.field), label.title.trim())
   }
   return (template, field) => index.get(labelKey(template, field)) ?? ''
 }
@@ -309,13 +313,23 @@ function readQuestions(
 /**
  * Диапазоны интерпретации секции.
  *
- * ⚠ Имя ключа с текстом НЕ подтверждено: `TERMS` заполнены только у анкеты `digital`, а её
- * конфигурация в реконструкцию `legacy/questionary-structure.txt` не попала. Поэтому текст
- * берётся из `TEXT` или `NAME` — что окажется строкой. Подтвердит настоящий снимок; если ключ
- * окажется третьим, разойдётся только этот разбор, а не весь импорт.
+ * ⚠ КЛЮЧ ТЕКСТА — `VALUE`, и это теперь ПОДТВЕРЖДЕНО настоящим снимком. Прежняя редакция
+ * брала `TEXT` или `NAME` и честно писала рядом, что имя ключа не подтверждено, — оно
+ * оказалось третьим. Цена догадки была полной и невидимой: у всех шести диапазонов `digital`
+ * текст выходил ПУСТОЙ строкой, а предупреждение `html-stripped` не срабатывало, потому что
+ * `looksLikeHtml('')` — ложь. То есть «клиент с плохой оценкой не увидит ничего» —
+ * инвариант, ради которого диапазоны и переносятся, — нарушался бы молча.
  *
- * Дыры в покрытии не заделываются: у `digital` нижняя граница начиналась с 4, и клиент
- * с плохой оценкой не видел ничего. Чинить чужие данные догадкой нельзя — это в отчёт.
+ * Прежние имена оставлены запасными: они ничего не стоят, а снимок у нас пока один.
+ *
+ * ⚠ `MAX: "0"` в последнем диапазоне — так в источнике БУКВАЛЬНО, у `digital` это
+ * `{"MIN":"9.4","MAX":"0"}`. Диапазон «от 9,4 до 0» не совпадёт ни с чем, то есть верхняя
+ * оценка осталась бы без текста. Читаем это как «до верха шкалы» — другого осмысленного
+ * чтения нет, — но ОБЯЗАТЕЛЬНО говорим об этом в отчёте: догадка о чужих данных не должна
+ * проходить молча, даже верная.
+ *
+ * Дыры в покрытии не заделываются: у `digital` нижняя граница начинается с 4, и клиент
+ * с плохой оценкой не видел ничего. Это в отчёт, а не в тихую правку.
  */
 function readBands(
   template: string,
@@ -328,15 +342,28 @@ function readBands(
   const bands: SurveyBand[] = []
 
   for (const rawTerm of rawTerms) {
-    const term = rawTerm as { MIN?: unknown, MAX?: unknown, TEXT?: unknown, NAME?: unknown }
-    const source = typeof term?.TEXT === 'string'
-      ? term.TEXT
-      : typeof term?.NAME === 'string' ? term.NAME : ''
+    const term = rawTerm as { MIN?: unknown, MAX?: unknown, VALUE?: unknown, TEXT?: unknown, NAME?: unknown }
+    const source = firstString(term?.VALUE, term?.TEXT, term?.NAME)
 
     if (looksLikeHtml(source)) {
       warnings.push(warn('html-stripped', template, section, 'текст интерпретации хранился готовым HTML — вычищен до текста'))
     }
-    bands.push({ from: toNumber(term?.MIN, 0), to: toNumber(term?.MAX, 0), text: htmlToText(source) })
+
+    const from = toNumber(term?.MIN, 0)
+    let to = toNumber(term?.MAX, 0)
+    if (to <= from) {
+      // ⚠ Верхняя граница не задана или задана нулём. Оставив как есть, мы получили бы
+      // диапазон, который не совпадёт ни с одной оценкой, — и верхняя оценка осталась бы
+      // без текста. Тянем до верха шкалы и сообщаем.
+      to = scale?.max ?? from
+      warnings.push(warn(
+        'band-open-end',
+        template,
+        section,
+        `верхняя граница диапазона от ${from} в источнике была ${toNumber(term?.MAX, 0)} — прочитана как «до верха шкалы» (${to})`,
+      ))
+    }
+    bands.push({ from, to, text: htmlToText(source) })
   }
 
   bands.sort((a, b) => a.from - b.from)
@@ -440,4 +467,12 @@ function parseJson(value: string): unknown {
 
 function warn(code: ImportWarningCode, template: string, at: string, detail: string): ImportWarning {
   return { code, template, at, detail }
+}
+
+/** Первая строка из перечисленного. Источник хранит одно и то же под разными именами. */
+function firstString(...candidates: unknown[]): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate !== '') return candidate
+  }
+  return ''
 }
