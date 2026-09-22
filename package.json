@@ -18,7 +18,8 @@
     "check:layers": "node scripts/check-layer-boundaries.mjs",
     "check": "pnpm check:layers && pnpm lint && pnpm typecheck && pnpm test",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node scripts/migrate.mjs"
+    "db:migrate": "node scripts/migrate.mjs",
+    "migrate:templates": "tsx scripts/migrate-templates.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -45,6 +46,7 @@
     "eslint": "^10.9.1",
     "h3": "^1.15.11",
     "happy-dom": "^20.12.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "vue-tsc": "^3.3.11"
