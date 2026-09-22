@@ -416,24 +416,39 @@ describe('планирование связи, без портала', () => {
     expect(theirs!.isChildrenListEnabled).toBe('true')
   })
 
-  it.each([['Y'], ['true'], [true], [1]])('читает включённый список детей в форме %p', (raw) => {
-    // ⚠ Сверка ровно с `'Y'` была молчаливым понижением: портал ОТДАЁТ `'Y'`, но ПРИНИМАЕТ
-    // `'true'`, и раз он говорит на двух языках на входе, полагаться на один на выходе значит
-    // однажды прочитать включённый список как выключенный — а потом записать его обратно
-    // выключенным, погасив настройку клиента.
-    const relations = { parent: [{ entityTypeId: 177, isChildrenListEnabled: raw }], child: [] }
-    const read = readTypeRelations({ result: { type: { relations } } })
+  it('читает наблюдавшиеся формы флага, и только их', () => {
+    // Живой портал отдаёт строку `'Y'` или `'N'` — проверено `crm.type.get` 22.09.
+    const read = (raw: unknown) => readTypeRelations({
+      result: { type: { relations: { parent: [{ entityTypeId: 177, isChildrenListEnabled: raw }], child: [] } } },
+    })
 
-    expect(read!.parent[0]!.childrenList).toBe(true)
+    expect(read('Y')!.parent[0]!.childrenList).toBe(true)
+    expect(read('N')!.parent[0]!.childrenList).toBe(false)
   })
 
-  it('нераспознанное значение флага НЕ считается включением', () => {
-    // Выключенный список — неудобство; включённый там, где клиент его выключил, — сюрприз
-    // в чужой карточке.
-    const relations = { parent: [{ entityTypeId: 177, isChildrenListEnabled: 'может быть' }], child: [] }
+  it.each([['1'], ['y'], ['true'], [true], [undefined], ['может быть']])(
+    'НЕ пишет ничего, когда флаг пришёл в форме %p', (raw) => {
+      // ⚠ ГВАРД ПОД ВТОРУЮ РЕДАКЦИЮ ЭТОЙ ЖЕ ПРАВКИ. Первая останавливалась на непонятном
+      // `entityTypeId`, а непонятный ФЛАГ молча превращала в «выключено» — и записывала его
+      // обратно в портал как `'false'`. То есть ровно то стирание чужой настройки, против
+      // которого вся правка и затевалась, просто на одно поле правее.
+      const relations = { parent: [{ entityTypeId: 177, isChildrenListEnabled: raw }], child: [] }
 
-    expect(readTypeRelations({ result: { type: { relations } } })!.parent[0]!.childrenList).toBe(false)
-  })
+      expect(readTypeRelations({ result: { type: { relations } } })).toBeNull()
+    },
+  )
+
+  it.each([[true], [['2']], ['2'], [2.5], [null]])(
+    'НЕ пишет ничего, когда `entityTypeId` пришёл как %p', (raw) => {
+      // ⚠ Проверяем `typeof`, а не `Number()`. Приведение пропускало мусор сквозь гвард
+      // и превращало его в ДРУГУЮ настоящую связь: `Number(true) === 1` — это Лид, `['2']` —
+      // Сделка. Клиент получил бы связь, которой никогда не настраивал: это уже не потеря,
+      // а порча. Живой портал отдаёт число.
+      const relations = { parent: [{ entityTypeId: raw, isChildrenListEnabled: 'Y' }], child: [] }
+
+      expect(readTypeRelations({ result: { type: { relations } } })).toBeNull()
+    },
+  )
 
   it('чинит выключенный список, а не считает связь готовой', () => {
     // ⚠ Гвард под вторую редакцию этого же места. Сверяя только `entityTypeId`, мы объявляли

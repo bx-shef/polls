@@ -332,29 +332,59 @@ export function readTypeRelations(response: unknown): TypeRelations | null {
   if (!Array.isArray(parent) || !Array.isArray(child)) return null
 
   const read = { parent: parent.map(toRelation), child: child.map(toRelation) }
-  if ([...read.parent, ...read.child].some(relation => relation === null)) return null
+  if (!read.parent.every(isRelation) || !read.child.every(isRelation)) return null
 
-  return { parent: read.parent as TypeRelation[], child: read.child as TypeRelation[] }
-}
-
-function toRelation(raw: unknown): TypeRelation | null {
-  const entityTypeId = Number((raw as { entityTypeId?: unknown } | null)?.entityTypeId)
-  if (!Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
-  return { entityTypeId, childrenList: readChildrenList((raw as { isChildrenListEnabled?: unknown }).isChildrenListEnabled) }
+  return { parent: read.parent, child: read.child }
 }
 
 /**
- * Прочитать флаг списка детей во всех формах, какие может принести портал.
+ * Разобрать одну запись связи. `null` — форму не узнали, и тогда не трогаем ничего.
  *
- * ⚠ Сверка ровно с `'Y'` была молчаливым понижением. Портал ОТДАЁТ `'Y'`/`'N'`, но ПРИНИМАЕТ
- * `'true'`/`'false'` — асимметрия проверена живьём в PR #38, и раз он говорит на двух языках
- * на входе, полагаться на один на выходе значит однажды прочитать включённый список как
- * выключенный. А дальше мы бы записали его обратно `'false'` и своими руками погасили список
- * детей в связи, которую клиент включил сам. Нераспознанное значение не считаем включением:
- * выключенный список — это неудобство, а стёртая настройка клиента — потеря.
+ * ⚠ ОБА ПОЛЯ СТРОГО, И ВТОРОЕ — ТОЖЕ. Первая редакция этой правки останавливалась на непонятном
+ * `entityTypeId`, а непонятный ФЛАГ молча превращала в «выключено» — и записывала его обратно
+ * в портал как `'false'`. То есть ровно то стирание чужой настройки, против которого вся правка
+ * и затевалась, просто на одно поле правее. Нашёл `/code-review` в PR #51.
+ *
+ * ⚠ `entityTypeId` проверяется `typeof`, а не `Number()`. Приведение пропускало мусор сквозь
+ * гвард и превращало его в ДРУГУЮ настоящую связь: `Number(true) === 1` — это Лид, `['2']` —
+ * Сделка. Клиент получил бы родительскую связь, которой никогда не настраивал, а это уже
+ * не потеря, а порча. Живой портал отдаёт число (проверено `crm.type.get` 22.09).
  */
-function readChildrenList(raw: unknown): boolean {
-  return raw === 'Y' || raw === 'true' || raw === true || raw === 1
+function toRelation(raw: unknown): TypeRelation | null {
+  const record = raw as { entityTypeId?: unknown, isChildrenListEnabled?: unknown } | null
+  if (record === null || typeof record !== 'object') return null
+
+  const entityTypeId = record.entityTypeId
+  if (typeof entityTypeId !== 'number' || !Number.isInteger(entityTypeId) || entityTypeId <= 0) return null
+
+  const childrenList = readChildrenList(record.isChildrenListEnabled)
+  if (childrenList === null) return null
+
+  return { entityTypeId, childrenList }
+}
+
+/**
+ * Прочитать флаг списка детей. `null` — форму не узнали.
+ *
+ * ⚠ ТОЛЬКО НАБЛЮДАВШИЕСЯ ФОРМЫ. Живой портал отдаёт строку `'Y'` или `'N'` — проверено
+ * `crm.type.get` 22.09, и то же говорит документация. Промежуточная редакция принимала ещё
+ * `true` и `1`, взятые по памяти, а не из наблюдения: список выглядел исчерпывающим, и именно
+ * поэтому дыра рядом с ним (`'1'`, `'y'`, отсутствующий флаг) не бросалась в глаза.
+ * `CLAUDE.md` про это говорит дважды — «не писать код на будущее» и «состав параметров берётся
+ * из документации, а не из памяти».
+ *
+ * ⚠ Асимметрия портала остаётся в силе и здесь ни при чём: ПРИНИМАЕТ он `'true'`/`'false'`
+ * (см. `toRelationParams`), а ОТДАЁТ `'Y'`/`'N'`. Принимать на чтении то, что он никогда
+ * не присылал, значит угадывать.
+ */
+function readChildrenList(raw: unknown): boolean | null {
+  if (raw === 'Y') return true
+  if (raw === 'N') return false
+  return null
+}
+
+function isRelation(value: TypeRelation | null): value is TypeRelation {
+  return value !== null
 }
 
 /**
