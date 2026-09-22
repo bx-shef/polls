@@ -5,12 +5,11 @@ import {
   buildInvitationTitle,
   buildReadDealCall,
   readDealFacts,
-  buildListTemplatesCall,
   readCreatedItemId,
-  readPublishedTemplates,
 } from '../../domain/invitations/portal-calls'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
+import { readAllPublishedTemplates } from '../../b24/read-templates'
 import { cacheTemplate, insertLink } from '../../links/issue'
 import { publicBaseUrl } from '../../utils/env'
 import { logger } from '../../utils/logger'
@@ -63,8 +62,7 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-provisioned' as const }
   }
 
-  const listCall = buildListTemplatesCall(refs.template)
-  const published = readPublishedTemplates(await session.call(listCall.method, listCall.params), refs.template)
+  const published = await readAllPublishedTemplates(session.call, refs.template)
   const chosen = published.find(t => t.code === surveyCode && t.version === surveyVersion)
   if (chosen === undefined) {
     // Шаблон мог быть снят с публикации между открытием вкладки и нажатием кнопки.

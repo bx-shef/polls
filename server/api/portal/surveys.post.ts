@@ -1,6 +1,6 @@
 import { defineEventHandler } from 'h3'
-import { buildListTemplatesCall, readPublishedTemplates } from '../../domain/invitations/portal-calls'
 import { readStoredRefs } from '../../b24/provision'
+import { readAllPublishedTemplates } from '../../b24/read-templates'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -25,8 +25,7 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-provisioned' as const }
   }
 
-  const call = buildListTemplatesCall(refs.template)
-  const surveys = readPublishedTemplates(await session.call(call.method, call.params), refs.template)
+  const surveys = await readAllPublishedTemplates(session.call, refs.template)
 
   return {
     ok: true as const,

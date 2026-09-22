@@ -43,6 +43,12 @@ export function versionKey(code: string, version: number): string {
  *
  * Схему НЕ запрашиваем: она здесь не нужна, а весит больше всего остального вместе взятого —
  * двенадцать схем это десятки килобайт в ответе, который читается ради двух полей.
+ *
+ * ⚠ И `id` не запрашиваем — не потому что не нужен, а потому что с `useOriginalUfNames: 'Y'`
+ * портал его в `select` всё равно не honours: системные поля в этом режиме молча
+ * выбрасываются, и просить их значит делать вид, что они придут. Здесь `id` и правда не нужен
+ * (сверяются пары «код + версия»), поэтому остаётся узкий перечень. Там, где он нужен, —
+ * `select: ['*']`, см. `template-publish.ts`.
  */
 export function buildListVersionsCall(template: SmartProcessRef, start = 0): PortalCall {
   return {
@@ -50,7 +56,7 @@ export function buildListVersionsCall(template: SmartProcessRef, start = 0): Por
     params: {
       entityTypeId: template.entityTypeId,
       useOriginalUfNames: 'Y',
-      select: ['id', buildFieldName(template.id, 'CODE'), buildFieldName(template.id, 'VERSION')],
+      select: [buildFieldName(template.id, 'CODE'), buildFieldName(template.id, 'VERSION')],
       ...(start === 0 ? {} : { start }),
     },
   }

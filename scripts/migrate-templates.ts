@@ -31,10 +31,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import process from 'node:process'
 
+import { die, hookCall, report } from './-hook'
 import { readLegacyTemplates } from '../server/domain/import/legacy-templates'
 import { readSnapshot } from '../server/domain/import/snapshot'
 import { DEFAULT_IMPORT_STATE, type TemplateState } from '../server/domain/import/template-write'
-import type { RestCall } from '../server/b24/provision'
 import { findTemplateProcess, writeTemplates } from '../server/b24/write-templates'
 
 interface Args {
@@ -56,50 +56,6 @@ function readArgs(argv: readonly string[]): Args {
     apply: argv.includes('--apply'),
     state: value('state') === 'published' ? 'published' : DEFAULT_IMPORT_STATE,
     confirmed: argv.includes('--i-know'),
-  }
-}
-
-/**
- * Остановка с понятным сообщением.
- *
- * ⚠ `exitCode` вместо `process.exit()`: тот не дожидается слива stdout, и отчёт, уходящий
- * в `| tee migration.log`, теряет хвост — а хвост это как раз «НЕ ЗАПИСАНО» и предупреждение
- * про названия. Нашла панель ревью.
- *
- * ⚠ Бросаем помеченную ошибку, а не голую: `main` ловит её молча, без стека. Стек здесь —
- * шум ровно в тот момент, когда оператору нужен диагноз, а не разработчику место в коде.
- */
-class Stop extends Error {
-  readonly code: number
-  constructor(message: string, code: number) {
-    super(message)
-    this.code = code
-  }
-}
-
-function die(message: string, code = 2): never {
-  throw new Stop(message, code)
-}
-
-/**
- * Вызов портала входящим вебхуком.
- *
- * ⚠ Ошибка портала поднимается исключением с КОДОМ в тексте: наверху её пропустит через
- * `safeRefusal`, который знает закрытый список кодов и наружу лишнего не выпустит.
- */
-function hookCall(base: string): RestCall {
-  const root = base.endsWith('/') ? base : `${base}/`
-  return async (method, params = {}) => {
-    const response = await fetch(`${root}${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(params),
-    })
-    const body = await response.json() as { error?: string, error_description?: string }
-    if (typeof body.error === 'string' && body.error !== '') {
-      throw new Error(`${body.error}: ${body.error_description ?? ''}`)
-    }
-    return body
   }
 }
 
@@ -232,6 +188,5 @@ try {
   process.exitCode = await main()
 }
 catch (error) {
-  console.error(error instanceof Stop ? error.message : `\nНе получилось: ${(error as Error)?.message ?? error}`)
-  process.exitCode = error instanceof Stop ? error.code : 1
+  process.exitCode = report(error)
 }
