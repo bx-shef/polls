@@ -16,9 +16,6 @@ import type { SurveyScore } from '../surveys/scoring'
 /** Состояние пройденного опроса. Те же слова, что в нашем кэш-индексе ссылок. */
 export const SURVEY_STATE_COMPLETED = 'completed'
 
-/** Тип сущности для таймлайна сделки. Строка, а не число: у `crm.timeline.*` своя номенклатура. */
-export const TIMELINE_DEAL_TYPE = 'deal'
-
 /**
  * Записать ответ в элемент смарт-процесса «Опрос».
  *
@@ -89,22 +86,6 @@ export function readParentDealId(response: unknown, dealEntityTypeId: number): n
   return Number.isInteger(id) && id > 0 ? id : null
 }
 
-/**
- * Положить итог опроса в историю сделки.
- *
- * ⚠ Метод НЕЛЬЗЯ класть в батч (`ERROR_BATCH_METHOD_NOT_ALLOWED`) — подтверждено документацией
- * метода. И он НЕ идемпотентен: второй вызов добавит второй комментарий, а не обновит первый.
- *
- * Пустой текст портал отвергает (`INVALID_ARG_VALUE`), поэтому вызывающий обязан убедиться,
- * что строить есть из чего.
- */
-export function buildTimelineCommentCall(dealId: number, comment: string): PortalCall {
-  return {
-    method: 'crm.timeline.comment.add',
-    params: { fields: { ENTITY_ID: dealId, ENTITY_TYPE: TIMELINE_DEAL_TYPE, COMMENT: comment } },
-  }
-}
-
 /** Подтвердить, что портал действительно обновил элемент. */
 export function readUpdatedItemId(response: unknown): number | null {
   const raw = (response as { result?: { item?: { id?: unknown } } } | null)?.result?.item?.id
@@ -132,4 +113,20 @@ export function parentFieldNames(response: unknown): string[] {
   const item = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item
   if (item === undefined || item === null) return []
   return Object.keys(item).filter(key => key.toLowerCase().includes('parent')).sort()
+}
+
+/**
+ * Ответственный за элемент «Опрос» — он же тот, кто выпускал ссылку.
+ *
+ * ⚠ Берём с ЭЛЕМЕНТА, а не со сделки, и не лишним вызовом: элемент мы читаем всё равно,
+ * ради связи со сделкой. Ответственный у элемента — это сотрудник, нажавший «выпустить»,
+ * то есть ровно тот, кто ждёт ответа. У сделки он может быть другим, и тогда дело
+ * досталось бы не тому.
+ *
+ * Ноль — не прочитали; вызывающий просто не отправит поле.
+ */
+export function readAssignedById(response: unknown): number {
+  const raw = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item?.assignedById
+  const id = Number(typeof raw === 'string' ? raw.trim() : raw)
+  return Number.isInteger(id) && id > 0 ? id : 0
 }
