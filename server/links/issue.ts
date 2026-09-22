@@ -47,35 +47,6 @@ export async function findPortalByMemberId(memberId: string): Promise<IssuingPor
 }
 
 /**
- * Найти портал по домену.
- *
- * ⚠ Только для оператора: перенос шаблонов (`pnpm migrate:templates`) запускает человек,
- * и единственное, чем он называет портал, — адрес, который видит в браузере клиента.
- * Ни один запрос из фрейма этим поиском не пользуется и пользоваться не должен: домен
- * приходит параметром и подделывается, а `member_id` — нет (см. `frame-auth.ts`).
- */
-export async function findPortalByDomain(domain: string): Promise<IssuingPortal | null> {
-  const rows = await getDb()
-    .select({
-      id: schema.portals.id,
-      memberId: schema.portals.memberId,
-      domain: schema.portals.domain,
-      publicHost: schema.portals.publicHost,
-      status: schema.portals.status,
-      accessToken: schema.portals.accessToken,
-      refreshToken: schema.portals.refreshToken,
-      applicationToken: schema.portals.applicationToken,
-      tokenExpiresAt: schema.portals.tokenExpiresAt,
-      scopes: schema.portals.scopes,
-    })
-    .from(schema.portals)
-    .where(eq(schema.portals.domain, domain.trim().toLowerCase()))
-    .limit(1)
-
-  return rows[0] ?? null
-}
-
-/**
  * Найти портал по нашему идентификатору.
  *
  * Отдельно от поиска по `member_id`: тот обслуживает запрос из фрейма, где `member_id`

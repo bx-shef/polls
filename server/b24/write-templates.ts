@@ -2,17 +2,17 @@ import {
   buildCreateTemplateCall,
   buildListVersionsCall,
   DEFAULT_IMPORT_STATE,
-  FIRST_IMPORT_VERSION,
   planTemplateWrites,
   readExistingVersions,
   type TemplateState,
   type TemplateWritePlan,
 } from '../domain/import/template-write'
 import { readCreatedItemId } from '../domain/invitations/portal-calls'
-import type { SmartProcessRef } from '../domain/portals/smart-processes'
+import { findTypeByTitle, TEMPLATE_SP_TITLE, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
-import type { RestCall } from './provision'
+import { PortalError } from '../domain/portals/portal-error'
+import { listAllTypes, readStoredRefs, type RestCall } from './provision'
 import { logger } from '../utils/logger'
 
 /**
@@ -35,6 +35,9 @@ import { logger } from '../utils/logger'
  * шаблонов — это одна страница; сотня версий за годы правок — две.
  */
 const MAX_PAGES = 50
+
+/** Наш код отказа: портал ответил успехом, но элемента не создал. */
+export const PORTAL_CREATED_NOTHING = 'SHEF_CREATED_NOTHING'
 
 /** Чем кончился перенос. Обе половины идут в отчёт клиенту, а не только успех. */
 export interface TemplateWriteResult extends TemplateWritePlan {
@@ -60,14 +63,13 @@ export async function writeTemplates(
   call: RestCall,
   template: SmartProcessRef,
   templates: readonly SurveyTemplate[],
-  options: { apply?: boolean, state?: TemplateState, version?: number, now?: Date } = {},
+  options: { apply?: boolean, state?: TemplateState, now?: Date } = {},
 ): Promise<TemplateWriteResult> {
   const state = options.state ?? DEFAULT_IMPORT_STATE
-  const version = options.version ?? FIRST_IMPORT_VERSION
   const dryRun = options.apply !== true
 
   const existing = await listExistingVersions(call, template)
-  const plan = planTemplateWrites(templates, existing, version)
+  const plan = planTemplateWrites(templates, existing)
   const result: TemplateWriteResult = { ...plan, written: 0, failed: [], dryRun }
 
   if (dryRun) return result
@@ -76,9 +78,14 @@ export async function writeTemplates(
     const create = buildCreateTemplateCall(template, planned, state, options.now ?? new Date())
     try {
       if (readCreatedItemId(await call(create.method, create.params)) === null) {
-        // Двухсотый ответ без идентификатора означает, что портал принял запрос и ничего
+        // ⚠ Двухсотый ответ без идентификатора означает, что портал принял запрос и ничего
         // не создал. Посчитав это успехом, мы отчитались бы о переносе, которого не было.
-        throw new Error('портал не вернул идентификатор элемента')
+        //
+        // ⚠ Бросаем `PortalError` С КОДОМ, а не голый `Error`: `safeRefusal` знает закрытый
+        // список кодов и любую незнакомую строку схлопывает в «код не распознан». То есть
+        // специально написанный диагноз доезжал до оператора неотличимым от сетевой беды.
+        // Нашла панель ревью.
+        throw new PortalError(PORTAL_CREATED_NOTHING, 'портал принял запрос и ничего не создал')
       }
       result.written += 1
     }
@@ -101,22 +108,45 @@ async function listExistingVersions(call: RestCall, template: SmartProcessRef): 
   const keys = new Set<string>()
   let start: number | null = 0
 
+  // ⚠ Отказ на любой странице роняет весь перенос, и это осознанно: с неполным списком
+  // существующих версий продолжать нельзя — мы создали бы дубликат той, что лежит
+  // на непрочитанной странице.
   for (let page = 0; page < MAX_PAGES && start !== null; page++) {
-    const response = await call(...asArgs(buildListVersionsCall(template, start)))
+    const list = buildListVersionsCall(template, start)
+    const response = await call(list.method, list.params)
     for (const key of readExistingVersions(response, template)) keys.add(key)
-    start = readNext(response)
+    start = readNextOffset(response)
   }
 
   return keys
 }
 
-function asArgs(planned: { method: string, params: Record<string, unknown> }): [string, Record<string, unknown>] {
-  return [planned.method, planned.params]
-}
+/**
+ * Найти смарт-процесс «Шаблон опроса» так, как это может входящий вебхук.
+ *
+ * ⚠ ВЕБХУК НЕ ВИДИТ `app.option`. Проверено на живом портале: `app.option.get` отвечает
+ * `ACCESS_DENIED: Access denied! Application context required` — это хранилище приложения,
+ * а у входящего вебхука контекста приложения нет по определению. Наши идентификаторы
+ * смарт-процессов лежат именно там, то есть обычный путь чтения ссылок вебхуку закрыт.
+ *
+ * Поэтому: сначала пробуем прочитать сохранённое (сработает, когда вызов идёт токенами
+ * приложения), при отказе — ищем по заголовку. Поиск по заголовку в проекте уже есть
+ * и написан ровно для этого случая («идентификатор потерян, смарт-процесс на портале
+ * остался»); здесь он переиспользуется, а не пишется заново.
+ *
+ * ⚠ Заголовок — не признак владения: совпасть может смарт-процесс, который клиент завёл
+ * руками. Для переноса это приемлемо, потому что оператор видит отчёт до записи и сухой
+ * прогон покажет, во что собирается писать. Для приложения — нет, и там этот путь
+ * помечается «усыновлением» и уходит в журнал предупреждением.
+ */
+export async function findTemplateProcess(call: RestCall): Promise<SmartProcessRef | null> {
+  try {
+    const stored = await readStoredRefs(call)
+    if (stored.template !== undefined) return stored.template
+  }
+  catch {
+    // Вебхук: контекста приложения нет. Это не беда, а другой способ доступа.
+  }
 
-/** Смещение следующей страницы; `null` — страниц больше нет. */
-function readNext(response: unknown): number | null {
-  const next = (response as { next?: unknown } | null)?.next
-  const offset = Number(next)
-  return Number.isInteger(offset) && offset > 0 ? offset : null
+  return findTypeByTitle(await listAllTypes(call), TEMPLATE_SP_TITLE)
 }

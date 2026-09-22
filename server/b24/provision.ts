@@ -156,7 +156,7 @@ function validRef(ref: SmartProcessRef | undefined): SmartProcessRef | undefined
 }
 
 /** Все смарт-процессы портала, со всех страниц. */
-async function listAllTypes(call: RestCall): Promise<Record<string, unknown>[]> {
+export async function listAllTypes(call: RestCall): Promise<Record<string, unknown>[]> {
   const all: Record<string, unknown>[] = []
   let start: number | null = 0
   for (let page = 0; page < MAX_PAGES && start !== null; page++) {
