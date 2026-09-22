@@ -86,7 +86,11 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
     published.push({
       code,
       version,
-      title: typeof item.title === 'string' && item.title !== '' ? item.title : code,
+      // ⚠ Заголовок берётся из СХЕМЫ, а не из имени элемента. Имя элемента пишет сотрудник
+      // для себя, и на живом портале это оказался служебный код `demo` — он же уезжал
+      // в название приглашения и в заголовок дела. Название анкеты живёт в схеме: его
+      // видит респондент, оно и осмысленно. Имя элемента — запасной вариант.
+      title: firstFilled(schema.title, item.title, code),
       schema,
     })
   }
@@ -112,7 +116,9 @@ export function buildCreateSurveyItemCall(
     expiresAt: Date
     title: string
     /** Клиент сделки на момент выпуска. Пусто — у сделки его не было или прочитать не вышло. */
-    client?: DealClient
+    client?: Pick<DealFacts, 'contactId' | 'companyId'>
+    /** Кто выпустил ссылку. Ноль — не знаем, портал поставит владельца токена. */
+    assignedById?: number
   },
 ): PortalCall {
   return {
@@ -128,6 +134,11 @@ export function buildCreateSurveyItemCall(
         // Нули не шлём: портал понял бы их как «очистить», а не как «нет значения».
         ...(invitation.client?.contactId ? { contactId: invitation.client.contactId } : {}),
         ...(invitation.client?.companyId ? { companyId: invitation.client.companyId } : {}),
+        // ⚠ Ответственный ставится ЯВНО. Элемент создаётся токеном ПРИЛОЖЕНИЯ, поэтому портал
+        // проставил бы владельца токена — администратора, ставившего приложение, — а не того
+        // сотрудника, который нажал «выпустить» и ждёт ответа. Дело по итогу опроса вешается
+        // на ответственного элемента, то есть досталось бы не тому. Нашла панель ревью.
+        ...(invitation.assignedById ? { assignedById: invitation.assignedById } : {}),
         [buildFieldName(survey.id, 'TEMPLATE_CODE')]: invitation.templateCode,
         [buildFieldName(survey.id, 'TEMPLATE_VERSION')]: invitation.templateVersion,
         [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_SENT,
@@ -192,10 +203,11 @@ function isTemplateShaped(value: unknown): boolean {
   })
 }
 
-/** Клиент сделки: контакт и компания. Ноль — значения нет. */
-export interface DealClient {
+/** Что мы берём у сделки для приглашения. Ноль и пустая строка — значения нет. */
+export interface DealFacts {
   contactId: number
   companyId: number
+  title: string
 }
 
 /**
@@ -208,11 +220,13 @@ export interface DealClient {
  * Спрашиваем только то, что переносим: имена полей подтверждены `crm.item.fields`
  * на живом портале (`CONTACT_ID`, `COMPANY_ID`; в `crm.item.*` — `contactId`, `companyId`).
  */
-export function buildReadDealClientCall(dealId: number): PortalCall {
-  return {
-    method: 'crm.item.get',
-    params: { entityTypeId: DEAL_ENTITY_TYPE_ID, id: dealId, select: ['id', 'contactId', 'companyId'] },
-  }
+export function buildReadDealCall(dealId: number): PortalCall {
+  // ⚠ Без `select`: у `crm.item.get` такого параметра НЕТ — документированы только
+  // `entityTypeId`, `id` и `useOriginalUfNames`. Первая редакция его передавала, портал молча
+  // игнорировал, а комментарий и тест рядом обещали «спрашиваем только то, что переносим» —
+  // то есть гарантию, которой не существует. Нашла панель ревью. Нужна экономия — это
+  // `crm.item.list`, у которого `select` есть.
+  return { method: 'crm.item.get', params: { entityTypeId: DEAL_ENTITY_TYPE_ID, id: dealId } }
 }
 
 /**
@@ -222,9 +236,33 @@ export function buildReadDealClientCall(dealId: number): PortalCall {
  * в выпуске из-за того, что не прочитался контакт, значит поменять местами главное
  * и второстепенное.
  */
-export function readDealClient(response: unknown): DealClient {
+export function readDealFacts(response: unknown): DealFacts {
   const item = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item
-  return { contactId: positive(item?.contactId), companyId: positive(item?.companyId) }
+  return {
+    contactId: positive(item?.contactId),
+    companyId: positive(item?.companyId),
+    title: typeof item?.title === 'string' ? item.title.trim() : '',
+  }
+}
+
+/** Первое непустое из перечисленного. */
+function firstFilled(...candidates: unknown[]): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+  }
+  return ''
+}
+
+/**
+ * Название приглашения: анкета и сделка, по которой её выпустили.
+ *
+ * ⚠ Без сделки в названии карточка «Опроса» в списке смарт-процесса неразличима: двадцать
+ * строк «Оценка работы по проекту» подряд не отвечают ни на один вопрос. Название сделки
+ * написал сотрудник портала — доверие к нему то же, что к самой CRM.
+ */
+export function buildInvitationTitle(surveyTitle: string, dealTitle: string): string {
+  const name = firstFilled(surveyTitle, 'Опрос')
+  return dealTitle === '' ? name : `${name} — ${dealTitle}`
 }
 
 function positive(raw: unknown): number {

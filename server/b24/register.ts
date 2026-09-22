@@ -236,6 +236,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         addedFields: result.addedFields,
         placed,
         dealLinked: result.dealLinked,
+        cardConfigured: result.cardConfigured,
       },
       'смарт-процессы обустроены',
     )

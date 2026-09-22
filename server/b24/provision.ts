@@ -1,3 +1,4 @@
+import { safeRefusal } from '../domain/answers/portal-errors'
 import { logger } from '../utils/logger'
 import {
   buildBindDealTabCall,
@@ -329,7 +330,18 @@ export async function provisionSmartProcesses(
 
   // ⚠ Только «Опросу»: «Шаблон опроса» ни к какой сделке не относится — он про анкету,
   // а не про её прохождение.
-  const dealLinked = await ensureDealRelation(call, survey.ref)
+  // ⚠ В try/catch, как и раскладка ниже. Первая редакция звала без обёртки, и тарифный отказ
+  // (`UPDATE_DYNAMIC_TYPE_RESTRICTED` — задокументированный код `crm.type.update`) ронял ВСЮ
+  // установку: идентификаторы не сохранялись, вкладка в карточке не регистрировалась, а строка
+  // `logger.error` про ненастроенную связь, заведённая ровно под этот случай, не выполнялась
+  // никогда. Собственный JSDoc обещал обратное. Нашли трое проверяющих независимо.
+  let dealLinked = false
+  try {
+    dealLinked = await ensureDealRelation(call, survey.ref)
+  }
+  catch (error) {
+    logger.warn({ reason: safeRefusal(error) }, 'связь «Опроса» со сделкой не настроена')
+  }
 
   // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
   // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
@@ -339,7 +351,7 @@ export async function provisionSmartProcesses(
     cardConfigured = await ensureCardConfig(call, survey.ref)
   }
   catch (error) {
-    logger.warn({ reason: (error as Error).message }, 'раскладка карточки «Опроса» не настроена')
+    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Опроса» не настроена')
   }
 
   return {

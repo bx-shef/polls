@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCreateSurveyItemCall,
   buildListTemplatesCall,
-  buildReadDealClientCall,
+  buildInvitationTitle,
+  buildReadDealCall,
   DEAL_ENTITY_TYPE_ID,
   readCreatedItemId,
-  readDealClient,
+  readDealFacts,
   readPublishedTemplates,
 } from '../../server/domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
@@ -88,10 +89,27 @@ describe('разбор списка шаблонов', () => {
     expect(readPublishedTemplates({ result: { items: [item(broken)] } }, TEMPLATE)).toEqual([])
   })
 
-  it('подставляет код, когда у шаблона нет названия', () => {
-    const published = readPublishedTemplates({ result: { items: [item({ title: '' })] } }, TEMPLATE)
+  it('берёт название из СХЕМЫ, а не из имени элемента', () => {
+    // ⚠ Гвард под замечание владельца: заголовок был неинформативным. Имя элемента пишет
+    // сотрудник для себя, и на живом портале это оказался служебный код `demo` — он уезжал
+    // и в название приглашения, и в заголовок дела. Название анкеты живёт в схеме: его видит
+    // респондент, оно и осмысленно.
+    const named = readPublishedTemplates(
+      { result: { items: [item({ title: 'demo', UF_CRM_7_SCHEMA: JSON.stringify({ ...SCHEMA, title: 'Оценка работы по проекту' }) })] } },
+      TEMPLATE,
+    )
 
-    expect(published[0]!.title).toBe('brand')
+    expect(named[0]!.title).toBe('Оценка работы по проекту')
+  })
+
+  it('без названия в схеме берёт имя элемента, а без него — код', () => {
+    const noSchemaTitle = JSON.stringify({ ...SCHEMA, title: '' })
+
+    const byItem = readPublishedTemplates({ result: { items: [item({ title: 'Вручную', UF_CRM_7_SCHEMA: noSchemaTitle })] } }, TEMPLATE)
+    expect(byItem[0]!.title).toBe('Вручную')
+
+    const byCode = readPublishedTemplates({ result: { items: [item({ title: '', UF_CRM_7_SCHEMA: noSchemaTitle })] } }, TEMPLATE)
+    expect(byCode[0]!.title).toBe('brand')
   })
 
   it.each<[unknown, string]>([
@@ -185,17 +203,41 @@ describe('клиент сделки в приглашении', () => {
     expect(fields.parentId2).toBe(42)
   })
 
-  it('читает клиента, отсеивая нули и мусор', () => {
-    expect(readDealClient({ result: { item: { contactId: 2, companyId: '3' } } })).toEqual({ contactId: 2, companyId: 3 })
-    expect(readDealClient({ result: { item: { contactId: 0, companyId: null } } })).toEqual({ contactId: 0, companyId: 0 })
-    expect(readDealClient(null)).toEqual({ contactId: 0, companyId: 0 })
+  it('читает клиента и название, отсеивая нули и мусор', () => {
+    expect(readDealFacts({ result: { item: { contactId: 2, companyId: '3', title: ' Test ' } } }))
+      .toEqual({ contactId: 2, companyId: 3, title: 'Test' })
+    expect(readDealFacts({ result: { item: { contactId: 0, companyId: null } } }))
+      .toEqual({ contactId: 0, companyId: 0, title: '' })
+    expect(readDealFacts(null)).toEqual({ contactId: 0, companyId: 0, title: '' })
   })
 
-  it('спрашивает у портала только то, что переносит', () => {
-    // Имена полей сняты с живого портала через `crm.item.fields`, а не придуманы.
-    const call = buildReadDealClientCall(42)
+  it('НЕ передаёт `select` — у метода такого параметра нет', () => {
+    // ⚠ Гвард под находку панели. Документированы только `entityTypeId`, `id`
+    // и `useOriginalUfNames`; портал молча игнорировал `select`, а комментарий и прежний
+    // тест обещали экономию, которой не существует. Обещать несуществующую гарантию хуже,
+    // чем не обещать ничего: следующий читатель на неё положится.
+    const call = buildReadDealCall(42)
 
     expect(call.params.entityTypeId).toBe(DEAL_ENTITY_TYPE_ID)
-    expect(call.params.select).toEqual(['id', 'contactId', 'companyId'])
+    expect(call.params).not.toHaveProperty('select')
+  })
+
+  it('ответственный ставится явно — иначе портал повесит дело на владельца токена', () => {
+    // Элемент создаётся токеном приложения, то есть по умолчанию ответственным станет
+    // администратор, ставивший приложение, а не сотрудник, нажавший «выпустить».
+    const fields = buildCreateSurveyItemCall(SURVEY, 42, { ...INVITATION, assignedById: 12 })
+      .params.fields as Record<string, unknown>
+
+    expect(fields.assignedById).toBe(12)
+    expect(buildCreateSurveyItemCall(SURVEY, 42, INVITATION).params.fields)
+      .not.toHaveProperty('assignedById')
+  })
+
+  it('название приглашения несёт и анкету, и сделку', () => {
+    // Двадцать строк «Оценка работы по проекту» подряд в списке смарт-процесса
+    // не отвечают ни на один вопрос.
+    expect(buildInvitationTitle('Оценка работы', 'Ремонт кровли')).toBe('Оценка работы — Ремонт кровли')
+    expect(buildInvitationTitle('Оценка работы', '')).toBe('Оценка работы')
+    expect(buildInvitationTitle('', '')).toBe('Опрос')
   })
 })

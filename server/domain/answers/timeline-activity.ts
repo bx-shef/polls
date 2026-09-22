@@ -1,4 +1,5 @@
 import type { SurveyTemplate } from '../surveys/model'
+import { Buffer } from 'node:buffer'
 import type { SurveyScore } from '../surveys/scoring'
 import type { PortalCall } from '../portals/smart-processes'
 
@@ -50,24 +51,24 @@ export function activityOriginId(itemId: number): string {
 }
 
 /**
- * `DESCRIPTION_TYPE = 1` — простой текст.
+ * `DESCRIPTION_TYPE = 2` — BB-код.
  *
- * ⚠ ЗНАЧЕНИЕ СНЯТО С ЖИВОГО ПОРТАЛА методом `crm.enum.contenttype`, который документация
+ * ⚠ ЗНАЧЕНИЯ СНЯТЫ С ЖИВОГО ПОРТАЛА методом `crm.enum.contenttype`, который документация
  * прямо называет источником значений этого поля. Он отвечает: `1` — Plain text, `2` — bbCode,
  * `3` — HTML. Это НЕ совпадает с тем, что записано у соседа (`DESCRIPTION_TYPE_BB = 3`),
- * и расхождение важно: умолчание у дела — не простой текст, и не проставив тип, мы отдали бы
- * ответ постороннего человека на разбор как разметку.
+ * и расхождение стоит проверить и там: под тройкой на этом портале лежит HTML.
  *
- * Простой текст выбран сознательно, а не за неимением лучшего. Комментарий к сделке уже
- * собирается плоским текстом (см. `comment.ts`) именно потому, что в него попадает то, что
- * набрал респондент, и строить из этого разметку значит отдать ему управление вёрсткой
- * записи в чужой CRM. С `DESCRIPTION_TYPE = 1` ни BB, ни HTML не разбираются вовсе —
- * обезвреживание скобок в `neutralizeMarkup` остаётся второй линией, а не единственной.
+ * ⚠ Первая редакция ставила `1` (простой текст) — безопасно, но нечитаемо: запись выходила
+ * сплошной простынёй без выделений. Владелец попросил блоки, как у соседа. BB безопасен
+ * ровно постольку, поскольку разметку строим МЫ, а текст респондента проходит через
+ * `neutralizeMarkup` — и тот обезвреживает теперь и квадратные скобки, и угловые, то есть
+ * ни BB, ни HTML из ответа постороннего человека собраться не может. Порядок важен: сначала
+ * расширили обезвреживание, потом включили разметку.
  *
  * ⚠ Тип нельзя задать при создании: у `crm.activity.todo.add` такого параметра нет.
  * Он едет тем же `crm.activity.update`, что и метка, — одним вызовом, а не двумя.
  */
-export const DESCRIPTION_TYPE_PLAIN = 1
+export const DESCRIPTION_TYPE_BB = 2
 
 /**
  * Цвета дела (`colorId` — СТРОКИ, не числа).
@@ -97,8 +98,7 @@ export function activityDeadline(now: Date): Date {
   return new Date(now.getTime() + ACTIVITY_DUE_HOURS * 60 * 60 * 1000)
 }
 
-/** Предел заголовка дела. Портал считает символы, мы дополнительно смотрим на байты. */
-export const MAX_TITLE_CHARS = 255
+/** Предел заголовка дела на портале. Меряем в байтах: кириллица весит вдвое. */
 export const MAX_TITLE_BYTES = 255
 
 /**
@@ -132,21 +132,49 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
  * в нём не осталось бы. Поэтому режется именно название, а итог приписывается после.
  */
 export function buildActivityTitle(template: SurveyTemplate, score: SurveyScore): string {
-  const tail = score.overall === null ? '' : ` — ${String(score.overall).replace('.', ',')}`
-  return capTitle(`Опрос пройден: ${template.title}${tail}`)
+  const prefix = 'Опрос пройден: '
+  const tail = score.overall === null ? '' : ` — ${format(score.overall)}`
+
+  // ⚠ Режем НАЗВАНИЕ, а не готовую строку. Первая редакция склеивала всё и обрезала конец —
+  // то есть при длинном названии молча отрезала ровно балл, ради которого заголовок и нужен.
+  // Порог наступал уже примерно на ста двадцати кириллических символах названия: лимит
+  // байтовый, а кириллица весит вдвое. Нашла панель ревью, воспроизведением.
+  const budget = MAX_TITLE_BYTES - byteLength(prefix) - byteLength(tail)
+  return `${prefix}${capTo(template.title, budget)}${tail}`
+}
+
+/** Балл в русской записи: запятая, а не точка. Та же форма, что в тексте записи. */
+function format(score: number): string {
+  return String(score).replace('.', ',')
+}
+
+/** Длина в байтах: границы размеров в этом проекте меряются в байтах, а не в символах. */
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8')
 }
 
 /**
- * Обрезать заголовок и по символам, и по байтам.
+ * Обрезать текст до бюджета в байтах.
  *
- * ⚠ Два предела, а не один: портал считает символы, а правило проекта требует мерить байты,
- * потому что кириллица весит вдвое. Обрезав только по символам, мы отдали бы в поле на 255
- * строку в 500 байт.
+ * ⚠ Режем по КОДОВЫМ ТОЧКАМ, а не по единицам UTF-16. `slice` разрубает суррогатную пару
+ * пополам, и наружу уходит одинокий суррогат — портал сохранит замену или SDK откажется
+ * кодировать строку. Эмодзи в названии анкеты — не экзотика. Нашла панель ревью.
  */
+export function capTo(text: string, maxBytes: number): string {
+  if (byteLength(text) <= maxBytes) return text
+
+  const points = [...text]
+  let out = ''
+  for (const point of points) {
+    if (byteLength(out + point) > maxBytes) break
+    out += point
+  }
+  return out
+}
+
+/** Обрезать заголовок целиком под предел портала. */
 export function capTitle(title: string): string {
-  let capped = title.slice(0, MAX_TITLE_CHARS)
-  while (Buffer.byteLength(capped, 'utf8') > MAX_TITLE_BYTES) capped = capped.slice(0, -1)
-  return capped
+  return capTo(title, MAX_TITLE_BYTES)
 }
 
 /** Найти уже записанное дело по нашей метке. */
@@ -262,7 +290,7 @@ export function buildActivityMarkerCall(activityId: string, originId: string): P
     params: {
       id: Number(activityId),
       fields: {
-        DESCRIPTION_TYPE: DESCRIPTION_TYPE_PLAIN,
+        DESCRIPTION_TYPE: DESCRIPTION_TYPE_BB,
         ORIGINATOR_ID: ACTIVITY_ORIGINATOR_ID,
         ORIGIN_ID: originId,
       },
@@ -273,4 +301,18 @@ export function buildActivityMarkerCall(activityId: string, originId: string): P
 /** Снять дело, которое не удалось сделать находимым. */
 export function buildDeleteActivityCall(activityId: string): PortalCall {
   return { method: ACTIVITY_DELETE_METHOD, params: { id: Number(activityId) } }
+}
+
+/**
+ * Приняла ли пометка.
+ *
+ * ⚠ Проверяем ОТВЕТ, а не факт отсутствия исключения. `crm.activity.update` документирован
+ * как возвращающий булево: «Возвращает true если дело успешно изменено, иначе — false».
+ * То есть двухсотый ответ с `false` — задокументированный путь отказа, и приняв его
+ * за успех, мы оставили бы дело без метки: поиск его не найдёт никогда, а следующая
+ * доставка создаст второе. Ровно эту проверку соседний `ensureDealRelation` уже делает
+ * для `crm.type.update`; сюда тот же урок не донесли. Нашла панель ревью.
+ */
+export function readMarkApplied(response: unknown): boolean {
+  return (response as { result?: unknown } | null)?.result === true
 }

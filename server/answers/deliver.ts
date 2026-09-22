@@ -25,6 +25,7 @@ import {
   buildTodoActivityCall,
   hasBadSection,
   readCreatedActivityId,
+  readMarkApplied,
   readFoundActivityId,
 } from '../domain/answers/timeline-activity'
 import { DEAL_ENTITY_TYPE_ID } from '../domain/invitations/portal-calls'
@@ -333,12 +334,18 @@ async function createMarkedActivity(
     return false
   }
 
-  const mark = buildActivityMarkerCall(activityId, activityOriginId(plan.itemId))
+  const originId = activityOriginId(plan.itemId)
+  const mark = buildActivityMarkerCall(activityId, originId)
   try {
-    await call(mark.method, mark.params)
+    if (!readMarkApplied(await call(mark.method, mark.params))) {
+      // ⚠ Двухсотый ответ с `false` — задокументированный путь отказа этого метода.
+      // Приняв его за успех, мы оставили бы дело без метки: поиск не найдёт его никогда,
+      // а следующая доставка создаст второе. Нашла панель ревью.
+      throw new Error('портал не подтвердил пометку дела')
+    }
   }
   catch (error) {
-    await deleteOrphanActivity(call, activityId)
+    await deleteOrphanActivity(call, activityId, originId)
     throw error
   }
 
@@ -349,11 +356,25 @@ async function createMarkedActivity(
 /**
  * Снять дело, которое не удалось пометить.
  *
- * ⚠ По возможности: если не удалось и удаление, наверх уходит ИСХОДНАЯ ошибка — она
- * объясняет, что случилось, — а про оставшееся дело предупреждает эта строка.
+ * ⚠ СНАЧАЛА ПЕРЕСПРАШИВАЕМ ПОРТАЛ. Исключение из пометки означает «мы не дождались ответа»,
+ * а не «портал ничего не сделал»: наш собственный таймаут и обрыв сети выглядят точно так же,
+ * при том что запрос мог дойти и примениться. Удалив вслепую, мы снесли бы правильно
+ * помеченное дело — то единственное уведомление, ради которого всё и затевалось, — молча
+ * и без второй попытки: строка буфера к этому моменту уже удалена. Нашла панель ревью.
+ *
+ * Цена — один читающий вызов, и только на пути отказа.
+ *
+ * ⚠ Само удаление — по возможности: если не удалось и оно, наверх уходит ИСХОДНАЯ ошибка,
+ * она объясняет, что случилось, — а про оставшееся дело предупреждает эта строка.
  */
-async function deleteOrphanActivity(call: RestCall, activityId: string): Promise<void> {
+async function deleteOrphanActivity(call: RestCall, activityId: string, originId: string): Promise<void> {
   try {
+    const find = buildFindActivityCall(originId)
+    if (readFoundActivityId(await call(find.method, find.params)) !== null) {
+      logger.warn({}, 'пометка дела не подтвердилась, но дело нашлось по метке — оставляем как есть')
+      return
+    }
+
     const remove = buildDeleteActivityCall(activityId)
     await call(remove.method, remove.params)
   }
