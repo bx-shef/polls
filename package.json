@@ -20,7 +20,8 @@
     "check": "pnpm check:layers && pnpm lint && pnpm typecheck && pnpm test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/migrate.mjs",
-    "migrate:templates": "tsx scripts/migrate-templates.ts"
+    "migrate:templates": "tsx scripts/migrate-templates.ts",
+    "publish:templates": "tsx scripts/publish-templates.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

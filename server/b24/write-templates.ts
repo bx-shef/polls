@@ -8,7 +8,7 @@ import {
   type TemplateWritePlan,
 } from '../domain/import/template-write'
 import { readCreatedItemId } from '../domain/invitations/portal-calls'
-import { findTypeByTitle, TEMPLATE_SP_TITLE, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
+import { findTypeByTitle, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
@@ -140,13 +140,27 @@ async function listExistingVersions(call: RestCall, template: SmartProcessRef): 
  * помечается «усыновлением» и уходит в журнал предупреждением.
  */
 export async function findTemplateProcess(call: RestCall): Promise<SmartProcessRef | null> {
+  return findProcess(call, 'template', TEMPLATE_SP_TITLE)
+}
+
+/** То же для «Опроса». Нужен там, где считают выпущенные приглашения. */
+export async function findSurveyProcess(call: RestCall): Promise<SmartProcessRef | null> {
+  return findProcess(call, 'survey', SURVEY_SP_TITLE)
+}
+
+async function findProcess(
+  call: RestCall,
+  key: 'template' | 'survey',
+  title: string,
+): Promise<SmartProcessRef | null> {
   try {
     const stored = await readStoredRefs(call)
-    if (stored.template !== undefined) return stored.template
+    const ref = stored[key]
+    if (ref !== undefined) return ref
   }
   catch {
     // Вебхук: контекста приложения нет. Это не беда, а другой способ доступа.
   }
 
-  return findTypeByTitle(await listAllTypes(call), TEMPLATE_SP_TITLE)
+  return findTypeByTitle(await listAllTypes(call), title)
 }

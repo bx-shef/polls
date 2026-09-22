@@ -46,11 +46,16 @@ describe('запрос списка шаблонов', () => {
     // По умолчанию `crm.item.*` работает именами вида `ufCrm44_...`. Мы создавали поля
     // как `UF_CRM_<id>_CODE`, и угадывать преобразование уже обжигались на
     // `userfieldconfig.list` — там часть полей не находилась НИКОГДА.
-    const call = buildListTemplatesCall(TEMPLATE)
+    expect(buildListTemplatesCall(TEMPLATE).params.useOriginalUfNames).toBe('Y')
+  })
 
-    expect(call.params.useOriginalUfNames).toBe('Y')
-    expect(call.params.select).toContain('UF_CRM_7_CODE')
-    expect(call.params.select).toContain('UF_CRM_7_SCHEMA')
+  it('просит `*`, а не перечень полей: иначе системные не придут', () => {
+    // ⚠ ГВАРД ПОД НАЙДЕННЫЙ ЖИВЬЁМ ДЕФЕКТ. Прежняя редакция перечисляла `id`, `title`
+    // и четыре наших поля — и не получала `id` с `title` НИКОГДА: с `useOriginalUfNames: 'Y'`
+    // портал honours в `select` только оригинальные имена пользовательских полей, а системные
+    // молча выбрасывает, в любом написании. Из-за этого запасное название шаблона по имени
+    // элемента не срабатывало ни разу.
+    expect(buildListTemplatesCall(TEMPLATE).params.select).toEqual(['*'])
   })
 
   it('адресует элементы по entityTypeId, а не по id типа', () => {

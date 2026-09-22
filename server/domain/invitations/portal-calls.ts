@@ -25,9 +25,15 @@ export const SURVEY_STATE_SENT = 'sent'
 /**
  * Прочитать список опубликованных шаблонов.
  *
- * Берём только то, без чего нельзя показать выбор и выпустить ссылку: код, версию, состояние
- * и схему. Схема нужна потому же, почему нужна и дальше, — её кладут в кэш при выпуске,
- * и второй раз за ней в портал никто не пойдёт.
+ * ⚠ `select: ['*']`, а не перечень полей, и это ИСПРАВЛЕНИЕ, а не упрощение. Прежняя редакция
+ * перечисляла `id`, `title` и четыре наших поля — и не получала `id` с `title` НИКОГДА:
+ * с `useOriginalUfNames: 'Y'` портал honours в `select` только оригинальные имена
+ * пользовательских полей, а системные молча выбрасывает, в любом написании. Проверено
+ * на живом портале, разбор в `docs/PROCESS.md`. Отсюда же мёртвая ветка в `firstFilled`
+ * ниже: имя элемента как запасное название не срабатывало ни разу.
+ *
+ * Тяжелее ответ от этого не стал: схема и так была в перечне, а весит она больше всего
+ * остального вместе взятого.
  */
 export function buildListTemplatesCall(template: SmartProcessRef, start = 0): PortalCall {
   return {
@@ -35,14 +41,7 @@ export function buildListTemplatesCall(template: SmartProcessRef, start = 0): Po
     params: {
       entityTypeId: template.entityTypeId,
       useOriginalUfNames: 'Y',
-      select: [
-        'id',
-        'title',
-        buildFieldName(template.id, 'CODE'),
-        buildFieldName(template.id, 'VERSION'),
-        buildFieldName(template.id, 'STATE'),
-        buildFieldName(template.id, 'SCHEMA'),
-      ],
+      select: ['*'],
       ...(start === 0 ? {} : { start }),
     },
   }
