@@ -1,4 +1,4 @@
-import { drainInbox, requeueStuck } from '../answers/deliver'
+import { drainInbox, purgeExpiredAnswers, requeueStuck } from '../answers/deliver'
 import { isDatabaseConfigured } from '../db/client'
 import { purgeDeadPortals } from '../portals/store'
 import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
@@ -59,6 +59,21 @@ export default defineNitroPlugin(() => {
         // Причину записать МОЖНО: здесь только ошибки Postgres, ответов клиентов на этом
         // пути нет вовсе — в отличие от разбора буфера ниже.
         logger.error({ reason: (error as Error).message }, 'уборка мёртвых порталов сорвалась')
+      }
+
+      // ⚠ Второй уборщик — истёкших ответов, и он ОТДЕЛЬНЫМ `try` по той же причине, что
+      // первый: упавшая уборка порталов не должна глушить уборку ответов, иначе
+      // единственный предельный срок хранения персональных данных отключился бы молча
+      // из-за беды в соседнем механизме. Срок и разбор — `purgeExpiredAnswers`.
+      try {
+        const forgotten = await purgeExpiredAnswers(new Date())
+        if (forgotten > 0) logger.warn({ forgotten }, 'истёкшие ответы стёрты из буфера')
+      }
+      catch (error) {
+        // ⚠ Причину записать можно и здесь: `purgeExpiredAnswers` ходит только в Postgres
+        // и в портал не заглядывает, то есть процитированного ответа клиента в её ошибке
+        // взяться неоткуда. Это ровно та развилка, из-за которой ниже причина НЕ пишется.
+        logger.error({ reason: (error as Error).message }, 'уборка истёкших ответов сорвалась')
       }
     }
     catch {
