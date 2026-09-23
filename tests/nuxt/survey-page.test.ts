@@ -58,34 +58,42 @@ async function openPage(token: string) {
 }
 
 describe('анкета', () => {
-  it('показывает вопросы и деления шкалы', async () => {
+  it('показывает вопросы и ползунок со шкалой вопроса', async () => {
     const page = await openPage(TOKENS.survey)
 
     expect(page.text()).toContain('Как вам работалось')
     expect(page.text()).toContain('Что понравилось')
-    // Шкала 0–3 — четыре кнопки-деления, а не ползунок.
-    expect(page.findAll('button.step')).toHaveLength(4)
+
+    // Границы берутся из самого вопроса (0–3), а не из умолчания набора (0–100):
+    // иначе респондент тянул бы ручку по шкале, которой у вопроса нет.
+    const knob = page.find('[role="slider"]')
+    expect(knob.exists()).toBe(true)
+    expect(knob.attributes('aria-valuemin')).toBe('0')
+    expect(knob.attributes('aria-valuemax')).toBe('3')
   })
 
-  it('не выбирает деление за респондента', async () => {
-    // Инвариант проекта: балльный вопрос не имеет предустановленного значения. У нативного
-    // `<input type="range">` оно есть всегда — поэтому здесь кнопки, и ни одна не нажата.
+  it('НЕ выставляет балл за респондента, хотя ручка ползунка где-то стоит', async () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД ЭТОГО ВИДЖЕТА, и он же причина, по которой ползунок вообще можно было
+    // взять. Инвариант проекта: балльный вопрос не имеет предустановленного значения.
+    // У ползунка значение есть ВСЕГДА — и старое решение заказчика на этом погорело:
+    // нетронутый стоял на нуле и уезжал на сервер честным нулём (README присланного архива
+    // называет это первым же наблюдением по дизайну). Здесь положение ручки и ответ —
+    // разные вещи: подпись говорит «—», а не число, и разметка помечена как нетронутая.
     const page = await openPage(TOKENS.survey)
 
-    expect(page.findAll('button.step.picked')).toHaveLength(0)
+    expect(page.find('.scale').classes()).toContain('untouched')
+    expect(page.find('output.value').text()).toBe('—')
   })
 
-  it('повторный клик по выбранному делению снимает ответ', async () => {
-    // Единственный способ вернуться в «не ответил» после случайного нажатия. Без него
-    // промах пальцем навсегда превращается в оценку, которой человек не ставил.
+  it('первое касание записывает настоящее число — в том числе ноль', async () => {
+    // Ноль — законная оценка, и отличать её от «не отвечал» обязана не догадка, а состояние.
     const page = await openPage(TOKENS.survey)
-    const steps = page.findAll('button.step')
 
-    await steps[2]!.trigger('click')
-    expect(page.findAll('button.step.picked')).toHaveLength(1)
+    await page.findComponent({ name: 'B24Range' }).vm.$emit('update:modelValue', 0)
+    await page.vm.$nextTick()
 
-    await steps[2]!.trigger('click')
-    expect(page.findAll('button.step.picked')).toHaveLength(0)
+    expect(page.find('output.value').text()).toBe('0')
+    expect(page.find('.scale').classes()).not.toContain('untouched')
   })
 
   it('рендерит текст с портала текстом, а не разметкой', async () => {
