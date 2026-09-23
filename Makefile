@@ -11,7 +11,11 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down dev check image \
         prod-pull prod-up prod-down prod-logs prod-migrate prod-ps \
-        doctor host-update compose-found prod-tail prod-portals prod-inbox
+        doctor host-update compose-found prod-tail prod-portals prod-inbox \
+        prod-stuck prod-retry
+
+# ⚠ Пусто, если `APPLY` пришёл не из командной строки. См. разбор у `prod-retry`.
+APPLY_FROM_CLI := $(if $(filter command line,$(origin APPLY)),$(APPLY),)
 
 IMAGE ?= ghcr.io/bx-shef/polls
 TAG   ?= latest
@@ -134,6 +138,85 @@ prod-portals: compose-found ## Состояние установленных п�
 prod-inbox: compose-found ## Что лежит в буфере ответов (без текста ответов)
 	@$(PROD) exec -T db psql -U survey -d survey -c "select status, count(*) as n, min(received_at) as oldest from inbox group by status order by status"
 	@$(PROD) exec -T db psql -U survey -d survey -c "select status, attempts, left(coalesce(last_error, '—'), 120) as last_error, received_at, next_attempt_at from inbox order by received_at limit 20"
+
+# ⚠ ОТДЕЛЬНАЯ ЦЕЛЬ, А НЕ РАСШИРЕНИЕ `prod-inbox`, и причина в том, что `prod-inbox`
+# показывает ПЕРВЫЕ ДВАДЦАТЬ строк по времени получения. Застрявшие — самые старые лишь
+# до первого всплеска: двадцать свежих `pending` прячут `failed` за край выдачи ровно тогда,
+# когда буфер и так не в порядке. Инструмент, теряющий главное под нагрузкой, хуже
+# отсутствующего — на него полагаются (issue #24).
+#
+# ⚠ Домен портала джойнится сюда намеренно: без него строка отвечает «что-то не доставилось»
+# и не отвечает «кому». Почти все причины отказа чинятся на стороне КОНКРЕТНОГО портала —
+# права, переустановка, тариф, — и без домена оператору некуда идти.
+#
+# ⚠ `payload` не показывается и показан не будет: в нём ответ живого человека. `token_hash`
+# — префиксом: сопоставить строку с приглашением он позволяет, ключом к ссылке не служит.
+# ⚠ Сначала СЧЁТЧИК, потом строки. Цель зовут во время аварии, и в аварии застрявших может
+# оказаться не двадцать, а тысячи: без счётчика оператор получил бы безразмерный дамп в терминал
+# и не узнал бы даже масштаба. Потолок в двести строк меняется `LINES=` — но счётчик над ним
+# всегда говорит правду о целом. Нашёл `/code-review` в PR #53.
+prod-stuck: compose-found ## Ответы, застрявшие в failed: чей портал, сколько попыток, код отказа
+	@$(PROD) exec -T db psql -U survey -d survey -c "select count(*) as всего_застряло from inbox where status = 'failed'"
+	@$(PROD) exec -T db psql -U survey -d survey -c "select i.id, p.domain, i.attempts, coalesce(i.last_error, '—') as last_error, left(i.token_hash, 8) as token, i.received_at from inbox i join portals p on p.id = i.portal_id where i.status = 'failed' order by i.received_at limit $(or $(LINES),200)"
+
+# ⚠ ПО УМОЛЧАНИЮ — СУХОЙ ПРОГОН, запись РОВНО по `APPLY=1`. Тот же порядок, что
+# у операторских команд переноса, и по той же причине: «посмотреть» и «сделать» обязаны
+# быть разными нажатиями, когда действие трогает чужие данные.
+#
+# ⚠ Сверка со ЗНАЧЕНИЕМ, а не с непустотой. Первая редакция проверяла `[ -z "$(APPLY)" ]`,
+# то есть писала при ЛЮБОМ непустом значении: `APPLY=0` и `APPLY=нет` записывали.
+# Воспроизведено `/code-review` в PR #53.
+#
+# ⚠ И берётся флаг ТОЛЬКО ИЗ КОМАНДНОЙ СТРОКИ (`origin` = `command line`). `make` втягивает
+# переменные окружения в свою таблицу, поэтому однажды экспортированный `APPLY=1` превращал
+# бы каждый последующий «посмотреть» в «сделать» — до конца сессии и молча. Запись должна
+# быть отдельным осознанным нажатием, а не свойством окружения, о котором забыли.
+#
+# ⚠ `attempts` СБРАСЫВАЕТСЯ В НОЛЬ, и без этого цель была бы пустышкой: строка попала
+# в `failed`, исчерпав предел попыток, и вернувшись в `pending` с прежним счётчиком
+# упёрлась бы в тот же предел на первой же попытке. Внешне — «повторил, не помогло».
+#
+# ⚠ `next_attempt_at` ставится в `now()`: без него строка ждала бы прежней отложенной
+# даты, то есть до часа тишины после команды, которую оператор выполнил только что.
+#
+# Отбор: `DOMAIN=портал.bitrix24.ru` — все застрявшие одного портала (основной случай,
+# причина обычно общая), `ID=<uuid>` — ровно одна строка.
+#
+# ⚠ ЗАПИСЬ БЕЗ ОТБОРА ТРЕБУЕТ `ALL=1`. Пустой отбор означает «весь флот», а пустым он
+# становится не только намеренно: `DOMAIN=$$UNSET` в шелле или `DOMAIN=$$(…)` в аргументе
+# make схлопываются в пустую строку молча — и «повторить один портал» превращается
+# в «повторить все». Сухой прогон без отбора при этом разрешён: смотреть на всё полезно.
+# ⚠ ЗНАЧЕНИЯ УХОДЯТ ПЕРЕМЕННЫМИ psql (`-v` и `:'имя'`), А НЕ СКЛЕЙКОЙ В СТРОКУ. Первая
+# редакция подставляла `DOMAIN` и `ID` прямо в SQL, и `DOMAIN=x' or '1'='1` не «ломал запрос»,
+# а МОЛЧА РОНЯЛ СУЖЕНИЕ: `dom='x'` разбиралось шеллом как присваивание перед командой `or`,
+# переменная оставалась пустой, условие по домену не дописывалось — и `APPLY=1` обновлял весь
+# флот вместо одного портала. Единственным следом было `sh: or: not found` в stderr.
+# Воспроизведено `/code-review` в PR #53.
+#
+# Пустая переменная означает «без сужения», и проверяется это ЯВНО в SQL (`:'dom' = ''`),
+# а не отсутствием куска строки: так условие нельзя потерять по дороге.
+#
+# ⚠ И форма значений проверяется ДО запроса. Одних переменных psql мало: кавычка внутри
+# `DOMAIN` всё равно рвёт кавычки шелла, и в psql уезжают лишние аргументы. Домен и UUID
+# имеют строгий вид, всё остальное — ошибка оператора, и правильный ответ на неё отказ,
+# а не попытка угадать, что он имел в виду.
+prod-retry: compose-found ## Вернуть failed в pending (сухой прогон; APPLY=1 — записать)
+	@set -eu; \
+	dom='$(DOMAIN)'; row='$(ID)'; \
+	printf '%s\n' "$$dom" | grep -qE '^[a-zA-Z0-9.-]*$$' || { echo 'DOMAIN: допустимы только буквы, цифры, точка и дефис.' >&2; exit 2; }; \
+	printf '%s\n' "$$row" | grep -qE '^[0-9a-fA-F-]*$$' || { echo 'ID: допустим только UUID.' >&2; exit 2; }; \
+	if [ "$(APPLY_FROM_CLI)" = 1 ] && [ -z "$$dom$$row" ] && [ "$(ALL)" != 1 ]; then \
+		echo 'Без DOMAIN и ID это ВЕСЬ ФЛОТ. Если правда нужно — добавьте ALL=1.' >&2; exit 2; \
+	fi; \
+	where="i.status = 'failed' and (:'dom' = '' or p.domain = :'dom') and (:'row' = '' or i.id::text = :'row')"; \
+	if [ "$(APPLY_FROM_CLI)" = 1 ]; then \
+		$(PROD) exec -T db psql -U survey -d survey -v dom="$$dom" -v row="$$row" \
+			-c "update inbox set status = 'pending', attempts = 0, next_attempt_at = now() where status = 'failed' and id in (select i.id from inbox i join portals p on p.id = i.portal_id where $$where)"; \
+	else \
+		echo 'СУХОЙ ПРОГОН — ничего не изменено. Записать: та же команда с APPLY=1'; \
+		$(PROD) exec -T db psql -U survey -d survey -v dom="$$dom" -v row="$$row" \
+			-c "select i.id, p.domain, i.attempts, coalesce(i.last_error, '—') as last_error from inbox i join portals p on p.id = i.portal_id where $$where order by i.received_at"; \
+	fi
 
 prod-migrate: compose-found ## Накатить миграции одноразовым запуском образа
 	$(PROD) run --rm migrate
