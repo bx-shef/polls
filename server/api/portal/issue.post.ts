@@ -1,36 +1,23 @@
 import { createError, defineEventHandler, readBody } from 'h3'
-import { buildSurveyUrl, createInvitation } from '../../domain/invitations/invitation'
-import {
-  buildCreateSurveyItemCall,
-  buildDealFactsBatch,
-  buildInvitationTitle,
-  readCreatedItemId,
-  readDealFacts,
-  readSurveyHeader,
-  type SurveyHeader,
-} from '../../domain/invitations/portal-calls'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import { readAllPublishedTemplates } from '../../b24/read-templates'
-import { cacheTemplate, insertLink } from '../../links/issue'
+import { issueLink } from '../../links/issue-flow'
 import { publicBaseUrl } from '../../utils/env'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
 /**
- * Issues one survey link for a deal.
+ * Issues one survey link for a deal — the request side of it.
  *
- * Порядок шагов здесь и есть смысл файла, и он не переставляется:
+ * Здесь остались ровно три вопроса, и все они про ЭТОТ запрос: кто пришёл, видит ли он
+ * эту сделку и ту ли анкету просит. Сам выпуск — общий путь, он живёт
+ * в `server/links/issue-flow.ts` и оттуда же вызывается живой проверкой `pnpm verify:link`.
  *
- * 1. Схема кладётся в кэш ДО того, как ссылка попадёт человеку. Публичная страница в портал
- *    не ходит по инварианту, и промах кэша — это пожизненный 503 по выданной ссылке.
- * 2. Элемент смарт-процесса создаётся ВТОРЫМ: приглашение и есть этот элемент, источник
- *    истины — портал.
- * 3. Хеш токена пишется в наш кэш-индекс ПОСЛЕДНИМ, когда известен идентификатор элемента.
- *
- * Если что-то падает на третьем шаге, на портале остаётся элемент без ссылки — это видно
- * и чинится перевыпуском. Обратный порядок оставил бы ссылку, ведущую в никуда, а её уже
- * нельзя отозвать: она у человека в письме.
+ * ⚠ Разделено именно по этой границе, а не «чтобы файл был короче». Права проверяются
+ * ФРЕЙМОВЫМ токеном сотрудника и только здесь: проверка приходит с вебхуком оператора,
+ * у которого прав и так больше, и смешать эти два случая в одной функции значило бы однажды
+ * получить выпуск без проверки доступа.
  */
 export default defineEventHandler(async (event) => {
   const session = await openPortalSession(event)
@@ -71,73 +58,37 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'survey-gone' as const }
   }
 
-  const baseUrl = session.portal.publicHost ?? publicBaseUrl()
-  const invitation = createInvitation({}, new Date())
-
-  const url = buildSurveyUrl(baseUrl, invitation.token)
-  if (url === null) {
-    // Без `https`-хоста ссылка означала бы токен доступа к чужой анкете, летящий открытым
-    // текстом. Лучше не выпустить, чем выпустить такую.
-    logger.error({ domain: session.portal.domain }, 'выпуск ссылки: публичный адрес не настроен или не https')
-    throw createError({ statusCode: 503, statusMessage: 'Public host is not configured' })
-  }
-
-  await cacheTemplate(session.portal.id, chosen.code, chosen.version, chosen.schema)
-
-  // ⚠ Сделка, её компания и её контакт читаются ОДНИМ пакетом. Три отдельных вызова здесь
-  // означали бы три обращения к порталу клиента на каждое нажатие кнопки, причём второе
-  // и третье нельзя собрать, не дождавшись первого. Связанные команды пакета решают это
-  // штатно — компания и контакт адресуются через результат первой.
-  //
-  // ⚠ Неудача чтения ссылку НЕ роняет: ссылка важнее и шапки, и удобства карточки.
-  // Поменять их местами было бы ошибкой — человек остался бы без ссылки из-за того,
-  // что у сделки не заполнен контакт.
-  let deal
-  let header: SurveyHeader | undefined
-  try {
-    const facts = await session.batch(buildDealFactsBatch(dealId))
-    deal = readDealFacts(facts)
-    header = readSurveyHeader(facts, session.userName)
-  }
-  catch {
-    logger.warn({ domain: session.portal.domain }, 'сделка не прочитана, приглашение уйдёт без клиента и без её названия')
-  }
-
-  const createCall = buildCreateSurveyItemCall(refs.survey, dealId, {
-    templateCode: chosen.code,
-    templateVersion: chosen.version,
-    expiresAt: invitation.expiresAt,
-    title: buildInvitationTitle(chosen.title, deal?.title ?? ''),
-    client: deal,
+  // ⚠ Дальше — общий путь выпуска, тот же самый, что проходит `pnpm verify:link`. Вынесен
+  // в `server/links/issue-flow.ts` ровно затем, чтобы живая проверка не проверяла свою копию:
+  // копии расходятся тогда, когда правят одну из них, и замечают это на клиенте.
+  const issued = await issueLink({
+    call: session.call,
+    batch: session.batch,
+    portalId: session.portal.id,
+    domain: session.portal.domain,
+    baseUrl: session.portal.publicHost ?? publicBaseUrl(),
+    survey: refs.survey,
+    dealId,
+    template: chosen,
     // Кто нажал «выпустить» — на него и повесится дело по итогу.
     assignedById: session.userId,
+    managerName: session.userName,
   })
-  const itemId = readCreatedItemId(await session.call(createCall.method, createCall.params))
-  if (itemId === null) {
-    logger.error({ domain: session.portal.domain }, 'выпуск ссылки: портал не вернул идентификатор элемента')
-    throw createError({ statusCode: 502, statusMessage: 'Portal did not create the item' })
+
+  if (!issued.ok) {
+    // Два исхода, и наружу они уходят разными кодами: нет публичного адреса — наша беда
+    // настройки (503), портал не подтвердил создание — беда портала (502).
+    throw issued.reason === 'no-public-host'
+      ? createError({ statusCode: 503, statusMessage: 'Public host is not configured' })
+      : createError({ statusCode: 502, statusMessage: 'Portal did not create the item' })
   }
-
-  await insertLink({
-    portalId: session.portal.id,
-    tokenHash: invitation.tokenHash,
-    itemId,
-    surveyCode: chosen.code,
-    surveyVersion: chosen.version,
-    expiresAt: invitation.expiresAt,
-    // ⚠ Шапка кладётся СНИМКОМ и только здесь. Публичная страница в портал не ходит,
-    // значит другого способа показать респонденту компанию и проект у неё нет.
-    header,
-  })
-
-  // ⚠ В журнал уходит что угодно, кроме токена и его хеша. Ссылка живёт тридцать дней,
-  // а журналы переживают инцидент и утекают вместе с ним.
-  logger.info(
-    { domain: session.portal.domain, code: chosen.code, version: chosen.version, itemId, userId: session.userId },
-    'ссылка выпущена',
-  )
 
   // Токен отдаётся ЕДИНСТВЕННЫЙ раз, здесь. Второй раз узнать его нельзя ни нам, ни клиенту:
   // у нас лежит только хеш.
-  return { ok: true as const, url, expiresAt: invitation.expiresAt.toISOString(), itemId }
+  return {
+    ok: true as const,
+    url: issued.url,
+    expiresAt: issued.expiresAt.toISOString(),
+    itemId: issued.itemId,
+  }
 })

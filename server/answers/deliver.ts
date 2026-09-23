@@ -2,6 +2,7 @@ import { and, eq, inArray, lt, sql } from 'drizzle-orm'
 import { callForPortal } from '../b24/from-record'
 import { readStoredRefs } from '../b24/provision'
 import type { RestCall } from '../b24/provision'
+import type { SmartProcessRef } from '../domain/portals/smart-processes'
 import { getDb, schema } from '../db/client'
 import { buildAnswerComment } from '../domain/answers/comment'
 import { safeRefusal } from '../domain/answers/portal-errors'
@@ -206,7 +207,10 @@ export async function deliverOne(row: BufferedAnswer): Promise<DeliveryOutcome> 
     const call = callForPortal(portal)?.call ?? null
     if (call === null) return { ok: false, retry: true, reason: 'у портала нет пригодных токенов' }
 
-    return await writeToPortal(call, link.itemId, template, answers)
+    const survey = await resolveSurveyProcess(call)
+    if (!('entityTypeId' in survey)) return survey
+
+    return await writeToPortal(call, survey, link.itemId, template, answers)
   }
   catch (error) {
     // ⚠ Наружу уходит НАШ код отказа, а не текст портала. Текст портала цитирует присланное
@@ -216,27 +220,52 @@ export async function deliverOne(row: BufferedAnswer): Promise<DeliveryOutcome> 
   }
 }
 
+/**
+ * Найти смарт-процесс «Опрос» — или сказать, почему записывать пока нечем.
+ *
+ * ⚠ Отдельной функцией, и это не дробление ради дробления. Раньше поиск стоял внутри
+ * `writeToPortal`, и там его держал названный гвард: «просит повторить, когда смарт-процесс
+ * на портале не найден». Смарт-процессы создаются при установке, их отсутствие лечится
+ * переустановкой — но повторить стоит, потому что установка могла идти прямо сейчас.
+ * Разделив запись и поиск (см. шапку `writeToPortal`), легко было бы уронить гвард молча:
+ * он проверял ветку, которой в новой `writeToPortal` нет. Здесь ему есть за что держаться.
+ *
+ * Возвращает либо сам смарт-процесс, либо готовый исход доставки — вызывающему остаётся
+ * отличить одно от другого и пробросить второе наверх.
+ */
+export async function resolveSurveyProcess(call: RestCall): Promise<SmartProcessRef | DeliveryOutcome> {
+  const refs = await readStoredRefs(call)
+  if (refs.survey === undefined) {
+    return { ok: false, retry: true, reason: 'смарт-процесс «Опрос» не найден на портале' }
+  }
+  return refs.survey
+}
+
+/**
+ * Записать ответ в портал: элемент смарт-процесса, потом дело в истории сделки.
+ *
+ * ⚠ Смарт-процесс приходит ПАРАМЕТРОМ, а не читается здесь. Сначала читался — и это делало
+ * функцию непригодной для живой проверки `pnpm verify:link`: `readStoredRefs` ходит
+ * в `app.option.get`, а тот под входящим вебхуком отвечает `ACCESS_DENIED: Application
+ * context required` (проверено на живом портале). Проверка нашла бы смарт-процессы иначе —
+ * по заголовку, как операторские команды, — но позвать эту функцию всё равно не смогла бы
+ * и была бы вынуждена повторить запись своей копией. Копии расходятся.
+ */
 export async function writeToPortal(
   call: RestCall,
+  survey: SmartProcessRef,
   itemId: number,
   template: SurveyTemplate,
   answers: Record<string, AnswerValue>,
 ): Promise<DeliveryOutcome> {
-  const refs = await readStoredRefs(call)
-  if (refs.survey === undefined) {
-    // Смарт-процессы создаются при установке; их отсутствие лечится переустановкой,
-    // а не повтором. Но повторить стоит: установка могла идти прямо сейчас.
-    return { ok: false, retry: true, reason: 'смарт-процесс «Опрос» не найден на портале' }
-  }
-
   const score = scoreSurvey(template, answers)
 
-  const update = buildCompleteSurveyCall(refs.survey, itemId, { answers, score, completedAt: new Date() })
+  const update = buildCompleteSurveyCall(survey, itemId, { answers, score, completedAt: new Date() })
   const updated = readUpdatedItemId(await call(update.method, update.params))
   if (updated === null) return { ok: false, retry: true, reason: 'портал не подтвердил обновление элемента' }
 
   // Дальше — только удобство. Всё, что было обязательным, уже в портале.
-  const reported = await tryTimelineActivity(call, refs.survey, itemId, template, answers, score)
+  const reported = await tryTimelineActivity(call, survey, itemId, template, answers, score)
   return { ok: true, itemId: updated, reported }
 }
 
@@ -256,7 +285,7 @@ export async function writeToPortal(
  */
 export async function tryTimelineActivity(
   call: RestCall,
-  survey: { entityTypeId: number, id: number },
+  survey: SmartProcessRef,
   itemId: number,
   template: SurveyTemplate,
   answers: Record<string, AnswerValue>,

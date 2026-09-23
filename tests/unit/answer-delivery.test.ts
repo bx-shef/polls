@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { backoffMinutes, readAnswers, tryTimelineActivity, writeToPortal } from '../../server/answers/deliver'
+import { backoffMinutes, readAnswers, resolveSurveyProcess, tryTimelineActivity, writeToPortal } from '../../server/answers/deliver'
 import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
@@ -62,7 +62,7 @@ describe('запись ответа в портал', () => {
     // и наш буфер перестаёт быть единственным местом, где он есть. Обратный порядок
     // сделал бы неудачу комментария причиной откладывать саму доставку.
     const p = portal()
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const methods = p.methods()
     expect(methods.indexOf('crm.item.update')).toBeLessThan(methods.indexOf('crm.activity.todo.add'))
@@ -77,31 +77,42 @@ describe('запись ответа в портал', () => {
         throw new Error('ACCESS_DENIED')
       },
     })
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
   })
 
   it('просит повторить, когда смарт-процесс на портале не найден', async () => {
     // Установка могла идти прямо сейчас. Сдаваться с первой попытки здесь рано.
+    //
+    // ⚠ Проверяется на `resolveSurveyProcess`, а не на `writeToPortal`: поиск смарт-процесса
+    // выделен из записи, потому что живая проверка `verify:link` ходит вебхуком, а под ним
+    // `app.option.get` отвечает `Application context required`. Прежнее второе утверждение
+    // («в портал не пошли писать») отсюда ушло вместе с веткой — теперь это не поведение,
+    // а устройство: `deliverOne` возвращает этот исход раньше, чем доходит до записи.
     const p = portal({ 'app.option.get': { result: '' } })
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
 
-    expect(outcome).toEqual({ ok: false, retry: true, reason: 'смарт-процесс «Опрос» не найден на портале' })
-    expect(p.methods()).not.toContain('crm.item.update')
+    expect(await resolveSurveyProcess(p.call))
+      .toEqual({ ok: false, retry: true, reason: 'смарт-процесс «Опрос» не найден на портале' })
+  })
+
+  it('находит смарт-процесс, когда он на портале есть', async () => {
+    // Обратная сторона: гвард выше не должен быть зелёным просто потому, что функция
+    // всегда возвращает отказ.
+    expect(await resolveSurveyProcess(portal().call)).toEqual(SURVEY)
   })
 
   it('не считает доставкой двухсотый ответ без элемента', async () => {
     // Иначе строка буфера удаляется, а в портал не записано ничего.
     const p = portal({ 'crm.item.update': { error: 'ACCESS_DENIED' } })
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(outcome.ok).toBe(false)
   })
 
   it('не комментирует, когда элемент отвязан от сделки', async () => {
     const p = portal({ 'crm.item.get': { result: { item: { id: 777 } } } })
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
     expect(p.methods()).not.toContain('crm.activity.todo.add')
@@ -135,7 +146,7 @@ describe('запись в таймлайн не удалась — это дол
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const p = portal({ 'crm.item.get': { result: { item: { id: 777, PARENT_ID_2: 351 } } } })
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const said = warn.mock.calls.find(([, message]) => String(message).includes('нет связи со сделкой'))
     expect(said).toBeDefined()
@@ -149,7 +160,7 @@ describe('запись в таймлайн не удалась — это дол
     const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
     const p = portal()
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const everything = JSON.stringify([...warn.mock.calls, ...info.mock.calls])
     expect(everything).not.toContain('351')
@@ -161,7 +172,7 @@ describe('запись в таймлайн не удалась — это дол
     const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
     const p = portal()
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(info.mock.calls.some(([, message]) => String(message).includes('таймлайн'))).toBe(true)
   })
@@ -182,7 +193,7 @@ describe('дело пишется один раз', () => {
     // ⚠ Главный тест файла. Портал, а не наша таблица, — источник правды о том, писали мы уже.
     const p = portal({ 'crm.activity.list': { result: [{ ID: 4242 }] } })
 
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(outcome).toEqual({ ok: true, itemId: 777, reported: true })
     expect(p.methods()).not.toContain('crm.activity.todo.add')
@@ -193,7 +204,7 @@ describe('дело пишется один раз', () => {
     // поставщик, — и мы молча решили бы, что уже писали.
     const p = portal()
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
     expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
@@ -205,7 +216,7 @@ describe('дело пишется один раз', () => {
     // и следующая запись создала бы второе.
     const p = portal()
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const fields = p.of('crm.activity.update')[0]!.params.fields as Record<string, unknown>
     expect(fields.ORIGIN_ID).toBe(activityOriginId(777))
@@ -222,7 +233,7 @@ describe('дело пишется один раз', () => {
       },
     })
 
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
     expect(p.of('crm.activity.delete')[0]!.params.id).toBe(9001)
@@ -233,7 +244,7 @@ describe('дело пишется один раз', () => {
     // пишет заново. Приняв мусор за идентификатор, мы нанесли бы метку в пустоту.
     const p = portal({ 'crm.activity.todo.add': { result: { id: 'не число' } } })
 
-    const outcome = await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
     expect(p.methods()).not.toContain('crm.activity.update')
@@ -242,7 +253,7 @@ describe('дело пишется один раз', () => {
   it('ответственный — тот, кто выпускал ссылку', async () => {
     const p = portal()
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     expect(p.of('crm.activity.todo.add')[0]!.params.responsibleId).toBe(5)
   })
@@ -253,7 +264,7 @@ describe('дело пишется один раз', () => {
     const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
     const p = portal()
 
-    await writeToPortal(p.call, 777, TEMPLATE, ANSWERS)
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const said = JSON.stringify([...warn.mock.calls, ...info.mock.calls])
     expect(said).not.toContain('Совершенно секретный текст клиента')

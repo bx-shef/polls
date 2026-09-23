@@ -10,7 +10,8 @@
  */
 import { PortalError } from '../server/domain/portals/portal-error'
 import { safeRefusal } from '../server/domain/answers/portal-errors'
-import type { RestCall } from '../server/b24/provision'
+import type { RestBatch, RestCall } from '../server/b24/provision'
+import type { PortalCall } from '../server/domain/portals/smart-processes'
 
 /**
  * Остановка с понятным сообщением.
@@ -77,6 +78,42 @@ export function hookCall(base: string): RestCall {
       throw new PortalError(body.error, body.error_description ?? '')
     }
     return body
+  }
+}
+
+/**
+ * Пакетный вызов тем же вебхуком.
+ *
+ * ⚠ Собирается ВРУЧНУЮ, а не через `b24.actions.v2.batch`: SDK строится вокруг OAuth-клиента
+ * приложения, а у вебхука ни `clientId`, ни `memberId` — поднимать его ради одного пакета
+ * значит подсовывать ему выдуманный грант. Форма конверта при этом взята не из головы:
+ * `cmd` — карта «имя команды → `метод?параметры`», `halt: 0`, ответ раскладывается на
+ * `result.result` и `result.result_error`. Проверено на живом портале 23.09, включая
+ * подстановку `$result[…]` и percent-encoding параметров.
+ *
+ * ⚠ Наружу отдаём ТОЛЬКО успешные команды — ровно как рабочий `batch` в `server/b24/client.ts`.
+ * Отсутствие ключа и есть признак отказа; расходиться этим двум реализациям нельзя, иначе
+ * проверка будет доказывать не то поведение, которое у приложения в бою.
+ */
+export function hookBatch(base: string): RestBatch {
+  const call = hookCall(base)
+
+  return async (calls: Record<string, PortalCall>) => {
+    const cmd: Record<string, string> = {}
+    for (const [name, command] of Object.entries(calls)) {
+      const query = new URLSearchParams()
+      for (const [key, value] of Object.entries(command.params)) query.set(key, String(value))
+      cmd[name] = `${command.method}?${query.toString()}`
+    }
+
+    const answer = await call('batch', { halt: 0, cmd }) as {
+      result?: { result?: Record<string, unknown>, result_error?: Record<string, unknown> }
+    }
+
+    const failed = Object.keys(answer.result?.result_error ?? {})
+    if (failed.length > 0) console.warn(`  · команды пакета не отработали: ${failed.join(', ')}`)
+
+    return answer.result?.result ?? {}
   }
 }
 
