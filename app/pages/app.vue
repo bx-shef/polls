@@ -17,7 +17,7 @@ import { isPreview, portalGate } from '~/utils/in-portal'
  * сотрудник эту работу делает.
  */
 
-definePageMeta({ layout: false })
+definePageMeta({ layout: 'portal' })
 
 interface Survey {
   code: string
@@ -114,8 +114,15 @@ async function loadSurveys(connection: B24Frame) {
 </script>
 
 <template>
-  <B24App>
-    <div class="p-4">
+  <B24DashboardPanel id="home">
+    <template #header>
+      <B24DashboardNavbar
+        :toggle="false"
+        title="Опросы клиентов"
+      />
+    </template>
+
+    <template #body>
       <B24Skeleton
         v-if="gate === 'checking' || loading"
         class="h-32 w-full"
@@ -143,9 +150,8 @@ async function loadSurveys(connection: B24Frame) {
       />
 
       <template v-else>
-        <h1 class="mb-2 text-xl font-semibold">
-          Опросы клиентов
-        </h1>
+        <!-- Заголовка здесь НЕТ: его несёт шапка панели. Две одинаковые строки подряд
+             читаются как поломка вёрстки, а не как акцент. -->
         <p class="mb-4">
           Опрос уходит клиенту ссылкой, он проходит его с телефона за пару минут без
           регистрации, а ответ возвращается в карточку сделки: балл, текст целиком
@@ -179,6 +185,6 @@ async function loadSurveys(connection: B24Frame) {
           description="Откройте любую сделку и перейдите на вкладку «Опросы» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё."
         />
       </template>
-    </div>
-  </B24App>
+    </template>
+  </B24DashboardPanel>
 </template>

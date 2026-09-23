@@ -23,6 +23,8 @@ import { readFramePass } from '~/utils/frame-auth'
  *    придётся переустановкой.
  */
 
+definePageMeta({ layout: 'portal' })
+
 type Stage = 'starting' | 'installing' | 'done' | 'partial' | 'failed'
 
 /**
@@ -194,8 +196,15 @@ async function finishProvisioning() {
 </script>
 
 <template>
-  <B24App>
-    <div class="p-4">
+  <B24DashboardPanel id="install">
+    <template #header>
+      <B24DashboardNavbar
+        :toggle="false"
+        title="Установка приложения"
+      />
+    </template>
+
+    <template #body>
       <B24Skeleton
         v-if="stage === 'starting' || stage === 'installing'"
         class="h-24 w-full"
@@ -243,6 +252,6 @@ async function finishProvisioning() {
           Попробовать ещё раз
         </B24Button>
       </template>
-    </div>
-  </B24App>
+    </template>
+  </B24DashboardPanel>
 </template>

@@ -1,5 +1,18 @@
+<script setup lang="ts">
+/**
+ * The application root. Nothing but the layout switch and the global palette.
+ *
+ * ⚠ SEO-меты здесь нет и быть не должно. Корень применяется ко ВСЕМ страницам, включая
+ * служебные и публичную анкету; мета, поставленная отсюда, уносила бы в выдачу заголовок
+ * и описание лендинга с каждой из них. У соседа это подтвердилось на живом проде. Мета живёт
+ * на самих страницах, служебные закрыты заголовком `X-Robots-Tag`.
+ */
+</script>
+
 <template>
-  <NuxtPage />
+  <NuxtLayout>
+    <NuxtPage />
+  </NuxtLayout>
 </template>
 
 <style>
