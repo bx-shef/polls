@@ -151,7 +151,7 @@ async function provisionPortal(portal: {
   //
   // Настоящий источник правды о правах — сам портал: недостающий scope он называет
   // кодом `insufficient_scope`, и этот случай разобран в `provisionWithCall` ниже.
-  const call = makePortalCall(
+  const caller = makePortalCall(
     {
       memberId: portal.memberId,
       domain: portal.domain,
@@ -175,7 +175,7 @@ async function provisionPortal(portal: {
     }),
   )
 
-  return provisionWithCall(call, portal.domain)
+  return provisionWithCall(caller.call, portal.domain)
 }
 
 /**

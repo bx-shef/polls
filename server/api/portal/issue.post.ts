@@ -2,10 +2,12 @@ import { createError, defineEventHandler, readBody } from 'h3'
 import { buildSurveyUrl, createInvitation } from '../../domain/invitations/invitation'
 import {
   buildCreateSurveyItemCall,
+  buildDealFactsBatch,
   buildInvitationTitle,
-  buildReadDealCall,
-  readDealFacts,
   readCreatedItemId,
+  readDealFacts,
+  readSurveyHeader,
+  type SurveyHeader,
 } from '../../domain/invitations/portal-calls'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
@@ -82,14 +84,20 @@ export default defineEventHandler(async (event) => {
 
   await cacheTemplate(session.portal.id, chosen.code, chosen.version, chosen.schema)
 
-  // ⚠ Клиент сделки переносится в приглашение СНИМКОМ. Отдельный вызов, и он оправдан:
-  // без клиента карточка «Опроса» отвечает, по какой сделке опрос, но не отвечает, кого
-  // спрашивали, — а это первое, зачем её открывают. Неудача чтения ссылку НЕ роняет:
-  // ссылка важнее удобства карточки, и поменять их местами было бы ошибкой.
+  // ⚠ Сделка, её компания и её контакт читаются ОДНИМ пакетом. Три отдельных вызова здесь
+  // означали бы три обращения к порталу клиента на каждое нажатие кнопки, причём второе
+  // и третье нельзя собрать, не дождавшись первого. Связанные команды пакета решают это
+  // штатно — компания и контакт адресуются через результат первой.
+  //
+  // ⚠ Неудача чтения ссылку НЕ роняет: ссылка важнее и шапки, и удобства карточки.
+  // Поменять их местами было бы ошибкой — человек остался бы без ссылки из-за того,
+  // что у сделки не заполнен контакт.
   let deal
+  let header: SurveyHeader | undefined
   try {
-    const dealCall = buildReadDealCall(dealId)
-    deal = readDealFacts(await session.call(dealCall.method, dealCall.params))
+    const facts = await session.batch(buildDealFactsBatch(dealId))
+    deal = readDealFacts(facts)
+    header = readSurveyHeader(facts, session.userName)
   }
   catch {
     logger.warn({ domain: session.portal.domain }, 'сделка не прочитана, приглашение уйдёт без клиента и без её названия')
@@ -117,6 +125,9 @@ export default defineEventHandler(async (event) => {
     surveyCode: chosen.code,
     surveyVersion: chosen.version,
     expiresAt: invitation.expiresAt,
+    // ⚠ Шапка кладётся СНИМКОМ и только здесь. Публичная страница в портал не ходит,
+    // значит другого способа показать респонденту компанию и проект у неё нет.
+    header,
   })
 
   // ⚠ В журнал уходит что угодно, кроме токена и его хеша. Ссылка живёт тридцать дней,

@@ -165,7 +165,7 @@ async function mayReplace(portal: { memberId: string, domain: string, accessToke
 
   try {
     // Спрашиваем НОВЫМ грантом: вопрос ровно в том, административен ли он.
-    const call = makePortalCall({
+    const caller = makePortalCall({
       memberId: portal.memberId,
       domain: portal.domain,
       accessToken: portal.accessToken,
@@ -178,7 +178,7 @@ async function mayReplace(portal: { memberId: string, domain: string, accessToke
       // трогать запись портала. Сохранить их здесь значило бы сделать ровно то,
       // что функция и должна предотвратить.
     })
-    return await isPortalAdmin(call)
+    return await isPortalAdmin(caller.call)
   }
   catch (error) {
     // Портал не ответил. Отказываем: пустить непроверенного поверх рабочего портала хуже,

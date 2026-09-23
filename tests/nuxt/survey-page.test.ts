@@ -22,6 +22,8 @@ const TOKENS = {
   expired: 'b'.repeat(43),
   limited: 'c'.repeat(43),
   broken: 'd'.repeat(43),
+  headed: 'e'.repeat(43),
+  partial: 'f'.repeat(43),
 }
 
 /** Анкета с одним балльным и одним текстовым вопросом; заголовок — с попыткой инъекции. */
@@ -48,7 +50,18 @@ function serve(token: string, body: unknown, status = 200) {
   }))
 }
 
+/** Та же анкета, но с шапкой: компания, проект, дата, кто спрашивает и кого. */
+const HEADER = {
+  company: 'Ромашка Дистрибуция',
+  project: 'Рекламная кампания, осень',
+  respondent: 'Игорь Петров',
+  manager: 'Мария Ковалёва',
+  issuedAt: '2026-09-12T14:20:00.000Z',
+}
+
 serve(TOKENS.survey, SURVEY)
+serve(TOKENS.headed, { ...SURVEY, header: HEADER })
+serve(TOKENS.partial, { ...SURVEY, header: { ...HEADER, company: '', respondent: '', manager: '' } })
 serve(TOKENS.expired, { ok: false, reason: 'expired', title: 'Срок ссылки истёк', detail: 'Попросите новую.' })
 serve(TOKENS.limited, { ok: false, reason: 'rate-limited', title: 'Слишком много попыток', detail: 'Подождите минуту.' }, 429)
 serve(TOKENS.broken, { statusCode: 503, statusMessage: 'Not configured' }, 503)
@@ -103,6 +116,50 @@ describe('анкета', () => {
 
     expect(page.html()).not.toContain('<script>alert(1)</script>')
     expect(page.text()).toContain('<script>alert(1)</script>')
+  })
+})
+
+describe('шапка анкеты', () => {
+  it('показывает компанию, тип опроса, проект, дату, менеджера и респондента', async () => {
+    const page = await openPage(TOKENS.headed)
+    const text = page.text()
+
+    expect(text).toContain('Ромашка Дистрибуция')
+    // Название анкеты в шапке — это «тип опроса» из макета, верхней строкой первого блока.
+    expect(text).toContain('Как вам работалось')
+    expect(text).toContain('Рекламная кампания, осень')
+    expect(text).toContain('12.09.2026 14:20')
+    expect(text).toContain('Мария Ковалёва')
+    expect(text).toContain('Игорь Петров')
+  })
+
+  it('дату собирает сама, а не локалью окружения', async () => {
+    // ⚠ ГВАРД ПОД ГИДРАТАЦИЮ. `toLocaleString` на сервере и в браузере респондента дал бы
+    // разные строки — разные пояса, разные локали, — и Vue ругался бы расхождением разметки,
+    // а человек видел бы, как дата прыгает после загрузки. Формат фиксированный и UTC.
+    const page = await openPage(TOKENS.headed)
+
+    expect(page.text()).not.toContain('2026-09-12T14:20')
+    expect(page.find('.masthead').text()).toContain('12.09.2026 14:20')
+  })
+
+  it('незаполненные строки шапки просто не рисует', async () => {
+    // ⚠ У сделки может не быть ни компании, ни контакта — команда пакета приезжает
+    // `NOT_FOUND`, и в снимке остаётся пустая строка. Рисовать пустой заголовок в 60 px
+    // значит показать человеку дыру во весь экран.
+    const page = await openPage(TOKENS.partial)
+
+    expect(page.find('.company').exists()).toBe(false)
+    // Проект на месте — значит шапка не схлопнулась целиком.
+    expect(page.text()).toContain('Рекламная кампания, осень')
+  })
+
+  it('без шапки показывает название анкеты заголовком, как раньше', async () => {
+    // Ссылки, выпущенные до появления снимка, обязаны открываться. Их в базе уже есть.
+    const page = await openPage(TOKENS.survey)
+
+    expect(page.find('.masthead').exists()).toBe(false)
+    expect(page.find('h1').text()).toBe('Как вам работалось')
   })
 })
 

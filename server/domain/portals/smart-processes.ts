@@ -272,6 +272,15 @@ export function readNextOffset(response: unknown): number | null {
 export const DEAL_ENTITY_TYPE_ID = 2
 
 /**
+ * Контакт и компания — тоже системные типы CRM с постоянными номерами.
+ *
+ * Лежат рядом со сделкой по той же причине: номер типа не должен встречаться в коде
+ * литералом. Читает их шапка анкеты — компания и контакт сделки, снятые при выпуске.
+ */
+export const CONTACT_ENTITY_TYPE_ID = 3
+export const COMPANY_ENTITY_TYPE_ID = 4
+
+/**
  * Одна связь смарт-процесса с другим типом CRM.
  *
  * ⚠ `childrenList` — БУЛЕВО, и это не вкусовщина. Портал ОТДАЁТ флаг как `'Y'`/`'N'`,

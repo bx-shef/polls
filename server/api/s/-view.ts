@@ -1,3 +1,4 @@
+import type { SurveyHeader } from '../../domain/invitations/portal-calls'
 import type { SurveyQuestionType, SurveyTemplate } from '../../domain/surveys/model'
 
 /**
@@ -33,6 +34,43 @@ export interface PublicSection {
 export interface PublicSurvey {
   title: string
   sections: PublicSection[]
+}
+
+/**
+ * Шапка страницы: кто спрашивает, кого и по какому проекту.
+ *
+ * ⚠ Всё это СНИМОК, сделанный при выпуске ссылки, а не текущее состояние портала. Публичная
+ * страница в портал не ходит по инварианту, и это не ограничение, с которым мирятся, а то,
+ * что делает шапку честной: через месяц сделку переименуют, а человек отвечал вот на это.
+ *
+ * ⚠ Пустые строки НЕ выбрасываются здесь: решение «не рисовать строку» принимает страница,
+ * и держать это знание в двух местах незачем.
+ */
+export interface PublicHeader {
+  company: string
+  project: string
+  respondent: string
+  manager: string
+  /** Момент выпуска, ISO. Формат для человека выбирает страница, а не сервер. */
+  issuedAt: string
+}
+
+/**
+ * Отдать шапку наружу.
+ *
+ * ⚠ Ссылка без шапки — законный случай, а не поломка: её выпустили до появления снимка,
+ * либо портал не отдал ни одной из трёх сущностей, либо ссылку уже закрыли и шапку стёрли.
+ * Во всех трёх страница просто показывает название анкеты и вопросы.
+ */
+export function toPublicHeader(header: SurveyHeader | null, issuedAt: Date): PublicHeader | null {
+  if (header === null) return null
+  return {
+    company: header.company,
+    project: header.project,
+    respondent: header.respondent,
+    manager: header.manager,
+    issuedAt: issuedAt.toISOString(),
+  }
 }
 
 /** Отдать анкету наружу, оставив внутреннее внутри. */

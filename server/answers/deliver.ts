@@ -203,7 +203,7 @@ export async function deliverOne(row: BufferedAnswer): Promise<DeliveryOutcome> 
       return { ok: false, retry: false, reason: 'портал удалил приложение' }
     }
 
-    const call = callForPortal(portal)
+    const call = callForPortal(portal)?.call ?? null
     if (call === null) return { ok: false, retry: true, reason: 'у портала нет пригодных токенов' }
 
     return await writeToPortal(call, link.itemId, template, answers)

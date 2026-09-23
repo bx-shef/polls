@@ -1,7 +1,7 @@
 import { defineEventHandler, getRouterParam } from 'h3'
 import { markOpened } from '../../links/store'
 import { resolveSurveyAccess } from './-access'
-import { toPublicSurvey } from './-view'
+import { toPublicHeader, toPublicSurvey } from './-view'
 
 /**
  * Serves the public survey page with what it needs to render.
@@ -19,5 +19,9 @@ export default defineEventHandler(async (event) => {
   // считалась бы открытой в случае, когда человек увидел ошибку.
   await markOpened(access.link.id)
 
-  return { ok: true as const, survey: toPublicSurvey(access.template) }
+  return {
+    ok: true as const,
+    survey: toPublicSurvey(access.template),
+    header: toPublicHeader(access.link.header, access.link.createdAt),
+  }
 })

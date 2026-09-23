@@ -1,5 +1,5 @@
 import { makePortalCall } from './client'
-import type { RestCall } from './provision'
+import type { PortalCaller, RestCall } from './provision'
 import { saveRefreshedTokens, type IssuingPortal } from '../links/issue'
 import { isDeadGrant } from '../domain/portals/lifecycle'
 import { markGrantRevoked } from '../portals/store'
@@ -20,7 +20,7 @@ import { logger } from '../utils/logger'
  * Возвращает `null`, когда токенов нет или они не читаются. Не бросает: у вызывающих разные
  * способы сказать об этом наружу — экран отвечает 503, воркер откладывает задачу.
  */
-export function callForPortal(portal: IssuingPortal): RestCall | null {
+export function callForPortal(portal: IssuingPortal): PortalCaller | null {
   const accessToken = decryptOrEmpty(portal.accessToken, 'access')
   const refreshToken = decryptOrEmpty(portal.refreshToken, 'refresh')
   if (accessToken === '' || refreshToken === '') {
@@ -32,7 +32,7 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
     ? 0
     : Math.max(0, Math.floor((portal.tokenExpiresAt.getTime() - Date.now()) / 1000))
 
-  const call = makePortalCall(
+  const caller = makePortalCall(
     {
       memberId: portal.memberId,
       domain: portal.domain,
@@ -55,7 +55,13 @@ export function callForPortal(portal: IssuingPortal): RestCall | null {
     }),
   )
 
-  return watchGrant(call, portal.id, portal.refreshToken ?? '')
+  // ⚠ Обёртка ставится на ОБА вызова. Мёртвый грант одинаково приезжает и на одиночном
+  // методе, и на пакете, а отметка ставится первым отказом — накрыв только один путь,
+  // мы бы получили портал, который «не отказывал», пока клиент ходит другой дверью.
+  return {
+    call: watchGrant(caller.call, portal.id, portal.refreshToken ?? ''),
+    batch: watchGrantBatch(caller.batch, portal.id, portal.refreshToken ?? ''),
+  }
 }
 
 /**
@@ -89,6 +95,21 @@ function watchGrant(call: RestCall, portalId: string, wentWithRefreshToken: stri
     catch (error) {
       if (isDeadGrant(error)) {
         // Отметка не должна ронять вызов: её неудача — наша беда, а не портала.
+        await markGrantRevoked(portalId, new Date(), wentWithRefreshToken).catch(() => {})
+      }
+      throw error
+    }
+  }
+}
+
+/** То же для пакета: отдельной функцией, потому что у пакета другая форма входа. */
+function watchGrantBatch(batch: PortalCaller['batch'], portalId: string, wentWithRefreshToken: string): PortalCaller['batch'] {
+  return async (calls) => {
+    try {
+      return await batch(calls)
+    }
+    catch (error) {
+      if (isDeadGrant(error)) {
         await markGrantRevoked(portalId, new Date(), wentWithRefreshToken).catch(() => {})
       }
       throw error

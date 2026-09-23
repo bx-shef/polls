@@ -28,7 +28,7 @@ const VERIFY_TIMEOUT_MS = 10_000
 const VERIFY_METHOD = 'profile'
 
 export type FrameCheck
-  = | { ok: true, userId: number }
+  = | { ok: true, userId: number, userName: string }
     | { ok: false, reason: 'rejected' | 'unreachable' }
 
 /** Виден ли сотруднику элемент CRM — спрошено ЕГО токеном, а не нашим. */
@@ -51,9 +51,23 @@ export async function verifyFrameToken(
   const response = await callAsUser(domain, authId, VERIFY_METHOD, {}, fetchFn)
   if (!response.ok) return { ok: false, reason: response.reason }
 
-  const userId = Number((response.body as { result?: { ID?: unknown } } | null)?.result?.ID)
+  const profile = (response.body as { result?: Record<string, unknown> } | null)?.result
+  const userId = Number(profile?.ID)
   if (!Number.isInteger(userId) || userId <= 0) return { ok: false, reason: 'rejected' }
-  return { ok: true, userId }
+  // ⚠ Имя берётся ЗДЕСЬ и даром. Респондент должен видеть, кто его спрашивает, а узнать
+  // имя сотрудника иначе нечем: скоупа `user`/`user_brief` приложение не запрашивает
+  // (`crm, im, imbot, pull, bizproc, placement`), то есть `user.get` ему недоступен.
+  // `profile` базовый, и `NAME`/`LAST_NAME` он отдаёт вместе с `ID` — одним вызовом,
+  // который мы и так делаем на каждый запрос из фрейма.
+  return { ok: true, userId, userName: fullName(profile?.NAME, profile?.LAST_NAME) }
+}
+
+/** «Имя Фамилия» из того, что прислал портал. Пусто — у сотрудника не заполнено. */
+function fullName(name: unknown, lastName: unknown): string {
+  return [name, lastName]
+    .map(part => (typeof part === 'string' ? part.trim() : ''))
+    .filter(part => part !== '')
+    .join(' ')
 }
 
 /**

@@ -1,4 +1,9 @@
-import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../portals/smart-processes'
+import {
+  buildFieldName,
+  COMPANY_ENTITY_TYPE_ID,
+  CONTACT_ENTITY_TYPE_ID,
+  DEAL_ENTITY_TYPE_ID,
+} from '../portals/smart-processes'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -223,38 +228,116 @@ export interface DealFacts {
 }
 
 /**
- * Прочитать клиента сделки, чтобы перенести его в приглашение.
+ * Шапка анкеты: то, что респондент видит над вопросами. Пустая строка — данных нет,
+ * и страница просто не рисует эту строку.
  *
- * ⚠ Отдельный вызов, и он того стоит. Без клиента карточка «Опроса» отвечает на вопрос
- * «по какой сделке», но не отвечает на «кого мы, собственно, спрашивали», — а второе и есть
- * то, зачем менеджер её открывает.
- *
- * Спрашиваем только то, что переносим: имена полей подтверждены `crm.item.fields`
- * на живом портале (`CONTACT_ID`, `COMPANY_ID`; в `crm.item.*` — `contactId`, `companyId`).
+ * Даты здесь НЕТ намеренно: момент выпуска — это `link_index.created_at`, и хранить его
+ * второй раз значило бы завести два ответа на один вопрос. Названия анкеты тоже нет:
+ * оно в схеме версии, то есть в кэше рядом.
  */
-export function buildReadDealCall(dealId: number): PortalCall {
-  // ⚠ Без `select`: у `crm.item.get` такого параметра НЕТ — документированы только
-  // `entityTypeId`, `id` и `useOriginalUfNames`. Первая редакция его передавала, портал молча
-  // игнорировал, а комментарий и тест рядом обещали «спрашиваем только то, что переносим» —
-  // то есть гарантию, которой не существует. Нашла панель ревью. Нужна экономия — это
-  // `crm.item.list`, у которого `select` есть.
-  return { method: 'crm.item.get', params: { entityTypeId: DEAL_ENTITY_TYPE_ID, id: dealId } }
+export interface SurveyHeader {
+  /** Компания сделки — крупной строкой. */
+  company: string
+  /** Название сделки: проект, по которому спрашиваем. */
+  project: string
+  /** Контакт сделки: кого спрашиваем. */
+  respondent: string
+  /** Кто спрашивает: сотрудник, нажавший «выпустить». */
+  manager: string
 }
 
 /**
- * Достать клиента из ответа.
+ * Прочитать сделку, её компанию и её контакт — ОДНИМ обращением к порталу.
+ *
+ * ⚠ Пакет, а не три вызова, и это не про скорость, а про цену. Ссылку выпускают из карточки
+ * сделки, то есть по нажатию кнопки: каждый лишний вызов — это и лимит портала клиента,
+ * и секунда ожидания у сотрудника. Отдельными вызовами их было бы три, причём второй
+ * и третий нельзя собрать, не дождавшись первого.
+ *
+ * ⚠ Компания и контакт адресуются ЧЕРЕЗ РЕЗУЛЬТАТ первой команды (`$result[deal][item][…]`) —
+ * это штатная возможность `batch`, а не трюк. Она и позволяет уложиться в одно обращение:
+ * иначе пришлось бы сходить за сделкой, узнать идентификаторы и сходить ещё раз.
+ *
+ * ⚠ Проверено на живом портале 23.09, потому что тут легко ошибиться на форме:
+ * подстановка работает и в сыром виде, и percent-encoded (SDK кодирует её через `qs`);
+ * при `halt: 0` упавшая команда уезжает в `result_error`, не мешая остальным; сделка
+ * без компании даёт по этой команде `NOT_FOUND`, и это нормальный, ожидаемый исход.
+ *
+ * ⚠ Ключи команд — часть контракта с `readDealHeader` ниже. Менять их порознь нельзя.
+ */
+export function buildDealFactsBatch(dealId: number): Record<string, PortalCall> {
+  return {
+    // ⚠ Без `select`: у `crm.item.get` такого параметра НЕТ — документированы только
+    // `entityTypeId`, `id` и `useOriginalUfNames`. Первая редакция его передавала, портал молча
+    // игнорировал, а комментарий и тест рядом обещали «спрашиваем только то, что переносим» —
+    // то есть гарантию, которой не существует. Нашла панель ревью. Нужна экономия — это
+    // `crm.item.list`, у которого `select` есть.
+    deal: { method: 'crm.item.get', params: { entityTypeId: DEAL_ENTITY_TYPE_ID, id: dealId } },
+    company: {
+      method: 'crm.item.get',
+      params: { entityTypeId: COMPANY_ENTITY_TYPE_ID, id: '$result[deal][item][companyId]' },
+    },
+    contact: {
+      method: 'crm.item.get',
+      params: { entityTypeId: CONTACT_ENTITY_TYPE_ID, id: '$result[deal][item][contactId]' },
+    },
+  }
+}
+
+/**
+ * Достать клиента из ответа пакета.
  *
  * ⚠ Неудача — не ошибка выпуска. Ссылка важнее удобства карточки: отказать человеку
  * в выпуске из-за того, что не прочитался контакт, значит поменять местами главное
  * и второстепенное.
+ *
+ * ⚠ Форма входа — карта УСПЕШНЫХ команд, где значение уже развёрнуто до `result` команды,
+ * то есть `{ item: … }`. Это не то же самое, что ответ одиночного вызова (`{ result: { item } }`),
+ * и перепутать их легко: разбор молча вернул бы пустоту.
  */
-export function readDealFacts(response: unknown): DealFacts {
-  const item = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item
+export function readDealFacts(batch: Record<string, unknown>): DealFacts {
+  const item = itemOf(batch.deal)
   return {
     contactId: positive(item?.contactId),
     companyId: positive(item?.companyId),
     title: typeof item?.title === 'string' ? item.title.trim() : '',
   }
+}
+
+/**
+ * Собрать шапку анкеты из ответа того же пакета.
+ *
+ * ⚠ Снимок на момент выпуска, а не ссылка на портал. Публичная страница о REST не знает
+ * по инварианту, значит показать ей имя компании можно только тем, что мы сохранили сами.
+ * Это же делает шапку честной задним числом: сделку переименуют, контакт заменят —
+ * а человек отвечал на анкету, у которой в шапке стояло вот это.
+ */
+export function readSurveyHeader(batch: Record<string, unknown>, manager: string): SurveyHeader {
+  const deal = itemOf(batch.deal)
+  const company = itemOf(batch.company)
+  const contact = itemOf(batch.contact)
+
+  return {
+    company: text(company?.title),
+    project: text(deal?.title),
+    // Порядок «имя, фамилия» — как у `profile` и как в карточке контакта. Отчество
+    // намеренно мимо: шапка, а не паспорт.
+    respondent: [text(contact?.name), text(contact?.lastName)].filter(part => part !== '').join(' '),
+    // Не из портала: имя приходит из проверки фреймового токена (`profile`), которую
+    // мы и так делаем на каждый запрос из карточки. Скоупа под `user.get` у приложения нет.
+    manager: text(manager),
+  }
+}
+
+/** Содержимое команды `crm.item.get` из пакета. Чужая структура — читаем защитно. */
+function itemOf(raw: unknown): Record<string, unknown> | undefined {
+  const item = (raw as { item?: unknown } | null | undefined)?.item
+  return item !== null && typeof item === 'object' ? item as Record<string, unknown> : undefined
+}
+
+/** Строкой и без краевых пробелов; всё остальное — пусто. */
+function text(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim() : ''
 }
 
 /** Первое непустое из перечисленного. */

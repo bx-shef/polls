@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toPublicSurvey } from '../../server/api/s/-view'
+import { toPublicHeader, toPublicSurvey } from '../../server/api/s/-view'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
 /**
@@ -68,5 +68,34 @@ describe('что уходит на публичную страницу', () => {
     const question = toPublicSurvey(TEMPLATE).sections[0]!.questions[1]!
 
     expect(question).not.toHaveProperty('scale')
+  })
+})
+
+describe('шапка анкеты наружу', () => {
+  const HEADER = {
+    company: 'Ромашка Дистрибуция',
+    project: 'Рекламная кампания, осень',
+    respondent: 'Игорь Петров',
+    manager: 'Мария Ковалёва',
+  }
+
+  it('отдаёт снимок вместе с датой выпуска', () => {
+    // Дата берётся у самой ссылки (`created_at`), а не хранится в снимке вторым ответом
+    // на тот же вопрос.
+    expect(toPublicHeader(HEADER, new Date('2026-09-12T14:20:00Z')))
+      .toEqual({ ...HEADER, issuedAt: '2026-09-12T14:20:00.000Z' })
+  })
+
+  it('ссылка без шапки — это `null`, а не пустой объект', () => {
+    // ⚠ Такие ссылки уже есть в базе: их выпустили до появления снимка. Пустой объект
+    // страница отрисовала бы шапкой из пустых строк — дырой во весь экран вместо анкеты.
+    expect(toPublicHeader(null, new Date())).toBeNull()
+  })
+
+  it('отдаёт ровно пять полей и ни одного лишнего', () => {
+    // ⚠ Шапка — единственное место, где наружу уезжают имена людей. Поле, добавленное
+    // в снимок «для отчёта», уехало бы вместе с ними постороннему респонденту.
+    expect(Object.keys(toPublicHeader(HEADER, new Date())!).sort())
+      .toEqual(['company', 'issuedAt', 'manager', 'project', 'respondent'])
   })
 })

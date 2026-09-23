@@ -76,7 +76,7 @@ afterAll(() => {
 })
 
 /** Клиент, смотрящий на наш сервер. `expiresIn` отрицательный — SDK пойдёт продлевать. */
-function callTo(expiresIn = 3600) {
+function portalTo(expiresIn = 3600) {
   return makePortalCall({
     memberId: 'm1',
     domain: `127.0.0.1:${port}`,
@@ -86,6 +86,11 @@ function callTo(expiresIn = 3600) {
     expiresIn,
     scope: ['crm'],
   })
+}
+
+/** Одиночный вызов того же клиента — им пользуется большинство проверок ниже. */
+function callTo(expiresIn = 3600) {
+  return portalTo(expiresIn).call
 }
 
 async function refusalOf(call: ReturnType<typeof callTo>): Promise<unknown> {
@@ -174,5 +179,81 @@ describe('отказ портала доезжает до нас с машинн
     authReply = { status: 200, body: { result: true } }
 
     await expect(callTo()('crm.item.get', {})).resolves.toMatchObject({ result: { item: { id: 7 } } })
+  })
+})
+
+/**
+ * Пакет — против настоящего SDK и настоящего конверта портала.
+ *
+ * ⚠ Тем же приёмом и по той же причине, что весь файл: форма ответа `batch` у Битрикс24
+ * своя (`result.result` рядом с `result.result_error`), и подделка проверяла бы наше
+ * представление о ней, а не её саму. Тела ответов ниже — дословные по форме с живого
+ * портала (проверено 23.09 вебхуком на `crm.item.get`).
+ */
+describe('пакетный вызов', () => {
+  /** Конверт v2 в том виде, в каком его отдаёт портал. */
+  function envelope(result: Record<string, unknown>, resultError: Record<string, unknown> = {}) {
+    const time = { start: 1, finish: 2, duration: 1, processing: 1, date_start: 'x', date_finish: 'y' }
+    return {
+      status: 200,
+      body: {
+        result: {
+          result,
+          result_error: resultError,
+          result_total: {},
+          result_next: {},
+          result_time: Object.fromEntries(Object.keys(result).map(key => [key, time])),
+        },
+        time,
+      },
+    }
+  }
+
+  it('отдаёт результаты команд по их именам', async () => {
+    reply = envelope({
+      deal: { item: { id: 2, title: 'Test' } },
+      company: { item: { id: 2, title: 'Рога и копыта' } },
+    })
+    authReply = { status: 200, body: { result: true } }
+
+    const data = await portalTo().batch({
+      deal: { method: 'crm.item.get', params: { entityTypeId: 2, id: 2 } },
+      company: { method: 'crm.item.get', params: { entityTypeId: 4, id: '$result[deal][item][companyId]' } },
+    })
+
+    expect(data).toMatchObject({ company: { item: { title: 'Рога и копыта' } } })
+  })
+
+  it('упавшая команда не уносит остальные и НЕ бросает', async () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД. На этом держится вся шапка анкеты: у сделки может не быть компании,
+    // и тогда её команда приезжает `NOT_FOUND`. Если бы отказ одной команды рушил пакет,
+    // выпуск ссылки падал бы на каждой сделке без компании — то есть на половине.
+    reply = envelope(
+      { deal: { item: { id: 2, title: 'Test' } } },
+      { company: { error: 'NOT_FOUND', error_description: 'Элемент не найден' } },
+    )
+    authReply = { status: 200, body: { result: true } }
+
+    const data = await portalTo().batch({
+      deal: { method: 'crm.item.get', params: { entityTypeId: 2, id: 2 } },
+      company: { method: 'crm.item.get', params: { entityTypeId: 4, id: 0 } },
+    })
+
+    // Успешная — на месте; упавшей просто нет, и это единственный признак отказа,
+    // на который вызывающий может опереться.
+    expect(data.deal).toMatchObject({ item: { title: 'Test' } })
+    expect(data).not.toHaveProperty('company')
+  })
+
+  it('отказ всего пакета бросается кодом портала, как и одиночный вызов', async () => {
+    // Мёртвый грант, отобранные права, недоступный портал — это не «команда не отработала»,
+    // а «разговора не было». Молча вернуть пустую карту здесь значило бы выдать отказ
+    // портала за «у сделки ничего не заполнено».
+    reply = { status: 400, body: { error: 'ACCESS_DENIED', error_description: 'Доступ запрещен' } }
+    authReply = { status: 200, body: { result: true } }
+
+    const failed = portalTo().batch({ deal: { method: 'crm.item.get', params: { id: 1 } } })
+
+    await expect(failed).rejects.toSatisfy(error => refusalCode(error) === 'ACCESS_DENIED')
   })
 })

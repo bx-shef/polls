@@ -19,11 +19,20 @@ interface PublicQuestion {
   scale?: { min: number, max: number }
 }
 
+interface PublicHeader {
+  company: string
+  project: string
+  respondent: string
+  manager: string
+  issuedAt: string
+}
+
 interface SurveyResponse {
   ok?: boolean
   reason?: string
   title?: string
   detail?: string
+  header?: PublicHeader | null
   survey?: {
     title: string
     sections: { key: string, title: string, questions: PublicQuestion[] }[]
@@ -77,6 +86,30 @@ const problems = ref<{ key: string, detail: string }[]>([])
 const failure = ref('')
 
 const survey = computed(() => data.value?.survey)
+
+/**
+ * Шапка: компания, проект, дата, кто спрашивает и кого.
+ *
+ * ⚠ Снимок с момента выпуска ссылки, а не состояние портала: страница о REST не знает.
+ * Может отсутствовать целиком — ссылку выпустили до появления снимка либо портал ничего
+ * не отдал, — и тогда страница начинается с названия анкеты. Это законный исход.
+ */
+const header = computed(() => data.value?.header ?? null)
+
+/**
+ * Дата опроса — как в макете: `ДД.ММ.ГГГГ ЧЧ:ММ`.
+ *
+ * ⚠ Считаем сами, а не через `toLocaleString`: на сервере и в браузере респондента разные
+ * часовые пояса и разные локали, и SSR отдал бы одну строку, а гидратация подставила другую.
+ * Формат ISO приходит с сервера, разбираем его как есть — по UTC, одинаково с обеих сторон.
+ */
+function issuedAtLabel(iso: string): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return ''
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(at.getUTCDate())}.${pad(at.getUTCMonth() + 1)}.${at.getUTCFullYear()}`
+    + ` ${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}`
+}
 
 /** Отказ, который мы умеем объяснить. Тело без `title` — это чужая ошибка, а не наш отказ. */
 const denial = computed(() => {
@@ -169,6 +202,87 @@ async function submit() {
 
 <template>
   <main class="page">
+    <!--
+      Шапка: компания крупно, под ней три блока — что за опрос и по какому проекту,
+      когда и кто спрашивает, кого спрашиваем. Ровно как в макете старого решения.
+
+      ⚠ Рисуется только над самой анкетой. На отказе и на «спасибо» она была бы не к месту:
+      человеку в этот момент нужна одна фраза, а не реквизиты. Отсутствует целиком, когда
+      снимка нет, — тогда страница начинается с названия анкеты, как и раньше.
+    -->
+    <header
+      v-if="survey && header && !sent"
+      class="masthead"
+    >
+      <h1
+        v-if="header.company"
+        class="company"
+      >
+        {{ header.company }}
+      </h1>
+      <div class="facts">
+        <div class="fact">
+          <svg
+            class="glyph"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5" />
+          </svg>
+          <div class="lines">
+            <div class="caption">
+              {{ survey.title }}
+            </div>
+            <div
+              v-if="header.project"
+              class="value"
+            >
+              {{ header.project }}
+            </div>
+          </div>
+        </div>
+
+        <div class="fact">
+          <svg
+            class="glyph"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM4 10h16M8 3v4M16 3v4" />
+          </svg>
+          <div class="lines">
+            <div class="caption">
+              {{ issuedAtLabel(header.issuedAt) }}
+            </div>
+            <div
+              v-if="header.manager"
+              class="value"
+            >
+              {{ header.manager }}
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="header.respondent"
+          class="fact"
+        >
+          <svg
+            class="glyph"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" />
+          </svg>
+          <div class="lines">
+            <div class="value">
+              {{ header.respondent }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
     <div
       v-if="broken"
       class="card"
@@ -193,43 +307,58 @@ async function submit() {
       <p>{{ denial.detail }}</p>
     </div>
 
-    <form
+    <!--
+      Полоса с брендовой картинкой слева и анкета справа — раскладка макета. Полоса
+      декоративная и потому `aria-hidden`: экранному диктору в ней нечего читать,
+      а фоном она не встанет, если картинку не отдали, — колонка просто схлопнется.
+    -->
+    <div
       v-else-if="survey"
-      class="card"
-      @submit.prevent="submit"
+      class="sheet"
     >
-      <h1>{{ survey.title }}</h1>
+      <div
+        class="strip"
+        aria-hidden="true"
+      />
 
-      <section
-        v-for="(section, si) in survey.sections"
-        :key="section.key"
-        class="section"
+      <form
+        class="card"
+        @submit.prevent="submit"
       >
-        <h2>{{ section.title }}</h2>
+        <h1 v-if="!header">
+          {{ survey.title }}
+        </h1>
 
-        <fieldset
-          v-for="(question, qi) in section.questions"
-          :key="question.key"
-          class="question"
+        <section
+          v-for="(section, si) in survey.sections"
+          :key="section.key"
+          class="section"
         >
-          <legend :id="`q${si}-${qi}`">
-            <span
-              v-for="(line, i) in paragraphs(question.title)"
-              :key="i"
-              class="line"
-            >{{ line }}</span>
-            <span
-              v-if="paragraphs(question.title).length === 0"
-              class="line muted"
-            >{{ question.key }}</span>
-          </legend>
+          <h2>{{ section.title }}</h2>
 
-          <div
-            v-if="question.type === 'scale'"
-            class="scale"
-            :class="{ untouched: typeof answers[question.key] !== 'number' }"
+          <fieldset
+            v-for="(question, qi) in section.questions"
+            :key="question.key"
+            class="question"
           >
-            <!--
+            <legend :id="`q${si}-${qi}`">
+              <span
+                v-for="(line, i) in paragraphs(question.title)"
+                :key="i"
+                class="line"
+              >{{ line }}</span>
+              <span
+                v-if="paragraphs(question.title).length === 0"
+                class="line muted"
+              >{{ question.key }}</span>
+            </legend>
+
+            <div
+              v-if="question.type === 'scale'"
+              class="scale"
+              :class="{ untouched: typeof answers[question.key] !== 'number' }"
+            >
+              <!--
               ⚠ Подпись ползунка связывается ПО ИДЕНТИФИКАТОРУ, а не кладётся текстом
               в `aria-label`. Формулировку пишет сотрудник портала, и в значении атрибута
               она никем как разметка не читается — но сериализация HTML не экранирует там
@@ -238,66 +367,67 @@ async function submit() {
               номеров секции и вопроса, то есть целиком наш: с портала в атрибуты
               не уезжает ничего.
             -->
-            <B24Range
-              class="range"
-              color="air-primary-success"
-              :min="bounds(question).min"
-              :max="bounds(question).max"
-              :step="1"
-              :model-value="knobAt(question)"
-              :aria-labelledby="`q${si}-${qi}`"
-              @update:model-value="answers[question.key] = Number($event)"
-            />
-            <output class="value">{{ scaleLabel(question) }}</output>
-          </div>
+              <B24Range
+                class="range"
+                color="air-primary-success"
+                :min="bounds(question).min"
+                :max="bounds(question).max"
+                :step="1"
+                :model-value="knobAt(question)"
+                :aria-labelledby="`q${si}-${qi}`"
+                @update:model-value="answers[question.key] = Number($event)"
+              />
+              <output class="value">{{ scaleLabel(question) }}</output>
+            </div>
 
-          <template v-else>
-            <textarea
-              v-model="answers[question.key] as string"
-              class="text"
-              rows="4"
-            />
-            <p
-              v-if="usedBytes(question.key) > MAX_TEXT_BYTES * 0.75"
-              class="counter"
-              :class="{ over: usedBytes(question.key) > MAX_TEXT_BYTES }"
-            >
-              {{ usedBytes(question.key) }} из {{ MAX_TEXT_BYTES }} байт
-            </p>
-          </template>
-        </fieldset>
-      </section>
+            <template v-else>
+              <textarea
+                v-model="answers[question.key] as string"
+                class="text"
+                rows="4"
+              />
+              <p
+                v-if="usedBytes(question.key) > MAX_TEXT_BYTES * 0.75"
+                class="counter"
+                :class="{ over: usedBytes(question.key) > MAX_TEXT_BYTES }"
+              >
+                {{ usedBytes(question.key) }} из {{ MAX_TEXT_BYTES }} байт
+              </p>
+            </template>
+          </fieldset>
+        </section>
 
-      <p
-        v-for="problem in problems"
-        :key="problem.key"
-        class="problem"
-      >
-        {{ problem.detail }}
-      </p>
-      <p
-        v-if="failure"
-        class="problem"
-      >
-        {{ failure }}
-      </p>
-
-      <p class="note">
-        Ответить можно один раз. Незаполненные вопросы останутся без ответа — это нормально.
-      </p>
-      <div class="send-row">
-        <button
-          type="submit"
-          class="send"
-          :disabled="sending"
+        <p
+          v-for="problem in problems"
+          :key="problem.key"
+          class="problem"
         >
-          {{ sending ? 'Отправляем…' : 'Отправить' }}
-        </button>
-      </div>
-      <p class="thanks">
-        Спасибо за ваше время!
-      </p>
-    </form>
+          {{ problem.detail }}
+        </p>
+        <p
+          v-if="failure"
+          class="problem"
+        >
+          {{ failure }}
+        </p>
+
+        <p class="note">
+          Ответить можно один раз. Незаполненные вопросы останутся без ответа — это нормально.
+        </p>
+        <div class="send-row">
+          <button
+            type="submit"
+            class="send"
+            :disabled="sending"
+          >
+            {{ sending ? 'Отправляем…' : 'Отправить' }}
+          </button>
+        </div>
+        <p class="thanks">
+          Спасибо за ваше время!
+        </p>
+      </form>
+    </div>
   </main>
 </template>
 
@@ -333,6 +463,100 @@ async function submit() {
   margin: 0 auto;
 }
 
+/*
+  ─── Шапка ────────────────────────────────────────────────────────────────────────
+  Компания крупно по центру, под ней три блока с иконками. Пропорции из макета:
+  60 px на компанию, 14 px на верхнюю строку блока и 15 px на нижнюю.
+*/
+.masthead {
+  max-width: 46.875rem;
+  margin: 0 auto 3.75rem;
+}
+
+.company {
+  margin: 0 0 3.75rem;
+  font-size: 3.75rem;
+  line-height: 1.05;
+  font-weight: 700;
+  text-align: center;
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.fact {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  /* Три в ряд на десктопе, в столбик на телефоне — как `col-md-4` в макете. */
+  flex: 1 1 13rem;
+  min-width: 0;
+}
+
+/*
+  Иконки — свои контуры, а не шрифт со значками. В макете стоял FontAwesome, но тянуть
+  ради трёх глифов внешний шрифт на страницу с узким CSP значит либо расширять политику,
+  либо возить сотню килобайт. Контуры весят строки.
+*/
+.glyph {
+  flex: none;
+  width: 1.7rem;
+  height: 1.7rem;
+  fill: none;
+  stroke: var(--ink-dim);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lines {
+  min-width: 0;
+}
+
+.caption {
+  margin-bottom: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.fact .value {
+  font-size: 0.95rem;
+  line-height: 1.25;
+}
+
+/*
+  ─── Полоса с картинкой ───────────────────────────────────────────────────────────
+  В макете это `col-md-3` с фоном, повторяющимся по вертикали. Повтор обязателен:
+  анкета бывает длиной в три экрана, а картинка — высотой в один.
+*/
+.sheet {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.strip {
+  flex: 0 0 25%;
+  max-width: 17rem;
+  background-image: url("/brand/survey-strip.jpg");
+  background-repeat: repeat-y;
+  background-position: center top;
+}
+
+.sheet .card {
+  flex: 1;
+  min-width: 0;
+  /* В макете у правой колонки `p-5`, то есть 3rem: без них текст жмётся к картинке. */
+  padding: 0 3rem;
+  margin: 0;
+}
+
 h1 {
   margin: 0 0 3.75rem;
   font-size: 2rem;
@@ -343,8 +567,8 @@ h1 {
 
 /* Заголовок секции — заглавными и без лишнего веса, как в макете. */
 h2 {
-  margin: 0 0 0.25rem;
-  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+  font-size: 1.25rem;
   font-weight: 400;
   text-transform: uppercase;
   letter-spacing: 0.01em;
@@ -428,7 +652,8 @@ legend {
 .value {
   min-width: 1.75rem;
   font-weight: 700;
-  font-size: 0.95rem;
+  /* 18 px, как в макете: оценка — то, ради чего человек сюда пришёл, и она крупнее вопроса. */
+  font-size: 1.125rem;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -436,16 +661,22 @@ legend {
 /*
   ⚠ ЕДИНСТВЕННОЕ ОСОЗНАННОЕ ОТЛИЧИЕ ОТ МАКЕТА. В старом решении нетронутый ползунок стоял
   на нуле и показывал «0» — README присланного архива называет это первым же наблюдением
-  и выводит из него инвариант нового решения. Здесь нетронутый показывает «—» и приглушён:
-  положение ручки у левого края ответом не является, в `answers` лежит `null`.
-*/
-.scale.untouched {
-  opacity: 0.5;
-}
+  и выводит из него инвариант нового решения. Здесь нетронутый показывает «—», а дорожка
+  у него бледнее: положение ручки у левого края ответом не является, в `answers` лежит `null`.
 
+  ⚠ Приглушается ТОЛЬКО насыщенность зелёного, а не вся строка. Первая редакция гасила
+  `opacity: 0.5` на весь блок и красила дорожку в серый — и на первом же снимке стало видно,
+  во что это обходится: при открытии анкеты НЕТРОНУТО ВСЁ, то есть страница целиком выглядела
+  выключенной, а зелёная дорожка — единственный цвет этого макета — не появлялась вовсе,
+  пока человек не начнёт отвечать.
+*/
 .scale.untouched :deep([data-slot="track"]),
 .scale.untouched :deep([data-slot="range"]) {
-  background: rgba(255, 253, 245, 0.3);
+  background: rgba(37, 206, 81, 0.35);
+}
+
+.scale.untouched .value {
+  color: var(--ink-dim);
 }
 
 .text {
@@ -514,6 +745,44 @@ legend {
 }
 
 /* Телефон в первую очередь: по ссылке из письма заходят с него. */
+@media (max-width: 48rem) {
+  /*
+    ⚠ На телефоне полосы НЕТ ВОВСЕ, и это не упрощение, а то, что делает оригинал: на снимке
+    мобильной версии старого решения картинки нет, анкета начинается сразу с первой секции.
+    Промежуточная редакция клала её баннером сверху — и сразу стало видно, во что это
+    обходится: `cover` растягивает узкую вертикальную картинку до неузнаваемого пятна,
+    а на телефон при этом уезжают лишние 290 КБ. `display: none` картинку ещё и не грузит.
+  */
+  .sheet {
+    flex-direction: column;
+  }
+
+  .strip {
+    display: none;
+  }
+
+  .sheet .card {
+    padding: 0;
+  }
+
+  .company {
+    margin-bottom: 2rem;
+    font-size: 2.25rem;
+  }
+
+  .masthead {
+    margin-bottom: 2rem;
+  }
+
+  .facts {
+    gap: 1rem;
+  }
+
+  .fact {
+    flex: 1 1 100%;
+  }
+}
+
 @media (max-width: 30rem) {
   .page {
     padding: 2rem 0.75rem 2.5rem;

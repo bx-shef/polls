@@ -1,7 +1,8 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
-import type { RestCall } from './provision'
+import type { PortalCaller, RestCall } from './provision'
 import { PortalError } from '../domain/portals/portal-error'
+import { logger } from '../utils/logger'
 
 /**
  * A portal-bound REST caller backed by the official SDK.
@@ -53,13 +54,17 @@ export interface PortalAuth {
 }
 
 /**
- * Собрать вызов метода портала.
+ * Собрать вызов метода портала — одиночный и пакетный.
  *
  * `onRefresh` вызывается, когда SDK сам обновил токены: сохранять их обязательно, иначе
  * следующий запуск пойдёт со старой парой, а она после обмена мертва. Персист — только
  * UPDATE, чтобы операция была идемпотентной при нескольких репликах.
+ *
+ * ⚠ Оба вызова возвращаются ОДНИМ объектом поверх ОДНОГО клиента. Второй клиент ради
+ * пакета означал бы второй `RestrictionManager` на тот же портал — два троттлинга,
+ * каждый со своей половиной картины лимитов, и оба неверные.
  */
-export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToken: string, refreshToken: string, expiresIn: number }) => Promise<void>): RestCall {
+export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToken: string, refreshToken: string, expiresIn: number }) => Promise<void>): PortalCaller {
   const client = new B24OAuth(
     {
       applicationToken: auth.applicationToken,
@@ -105,7 +110,7 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
     })
   }
 
-  return async (method, params = {}) => {
+  const call: RestCall = async (method, params = {}) => {
     // ⚠ SDK БРОСАЕТ отказ портала, а не возвращает его результатом. Проверено зондом против
     // настоящего SDK 2.2.0: ответ `400 {"error":"ACCESS_DENIED"}` приезжает исключением
     // `AjaxError`, и ветка `!response.isSuccess` не достигается вовсе. Первая редакция строила
@@ -127,6 +132,55 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
     }
     return response.getData()
   }
+
+  /**
+   * Пакет команд одним обращением.
+   *
+   * ⚠ `isHaltOnError: false` — то есть `halt: 0` в протоколе. Пакет заведён под чтение
+   * нескольких связанных сущностей, и там остановка на первой упавшей команде означает
+   * потерю уже полученного: у сделки может не быть контакта, и это не повод не показать
+   * ни компанию, ни проект. Поведение подтверждено на живом портале 23.09: упавшая
+   * команда приезжает в `result_error`, остальные — в `result`, и пакет успешен.
+   *
+   * ⚠ Наружу отдаём ТОЛЬКО успешные команды. Так их отбирает и сам SDK
+   * (`_extractBatchSimpleData`): у него в данных оказываются лишь те ключи, по которым
+   * пришёл результат. Отсутствие ключа — единственный признак отказа, на который вызывающий
+   * может опереться, и он же самый честный: «данных нет» вместо подделки пустым объектом.
+   *
+   * ⚠ Отказ отдельной команды пишется в журнал ЗДЕСЬ, а не у вызывающего. Иначе он
+   * не пишется нигде: вызывающий видит просто отсутствующий ключ и не отличает
+   * «у сделки нет компании» от «портал отказал в правах». В журнал уходит имя команды
+   * и код отказа — ни параметров, ни данных клиента.
+   */
+  const batch: PortalCaller['batch'] = async (calls) => {
+    let response
+    try {
+      response = await withTimeout(
+        client.actions.v2.batch.make<unknown>({ calls, options: { isHaltOnError: false } }),
+        'batch',
+      )
+    }
+    catch (error) {
+      throw asPortalError(error)
+    }
+
+    if (!response.isSuccess) {
+      // ⚠ `getErrorsByKey`, а не `getErrors`: второй выбрасывает ключи, и в журнале осталось бы
+      // «что-то не отработало» без ответа на вопрос ЧТО. Ключ — имя команды, как мы её назвали.
+      // Код проводится через тот же разбор, что и одиночный вызов: SDK заворачивает отказ
+      // команды в свой `JSSDK_BATCH_SUB_ERROR`, пряча настоящий код внутрь.
+      for (const [name, error] of Object.entries(response.getErrorsByKey())) {
+        logger.warn(
+          { command: name, code: (asPortalError(error) as PortalError).code },
+          'команда пакета не отработала',
+        )
+      }
+    }
+
+    return (response.getData() ?? {}) as Record<string, unknown>
+  }
+
+  return { call, batch }
 }
 
 /**
