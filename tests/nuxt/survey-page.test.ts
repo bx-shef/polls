@@ -36,6 +36,8 @@ const TOKENS = {
   broken: 'd'.repeat(43),
   headed: 'e'.repeat(43),
   partial: 'f'.repeat(43),
+  verdict: 'g'.repeat(43),
+  plain: 'h'.repeat(43),
 }
 
 /** Анкета с одним балльным и одним текстовым вопросом; заголовок — с попыткой инъекции. */
@@ -62,6 +64,14 @@ function serve(token: string, body: unknown, status = 200) {
   }))
 }
 
+/**
+ * Показ и отправка живут на ОДНОМ адресе, и различает их метод. Подделка обязана
+ * различать так же: иначе тест отправки читал бы ответ показа и проходил бы ни на чём.
+ */
+function serveBoth(token: string, get: unknown, post: unknown) {
+  registerEndpoint(`/api/s/${token}`, defineEventHandler(event => event.method === 'POST' ? post : get))
+}
+
 /** Та же анкета, но с шапкой: компания, проект, дата, кто спрашивает и кого. */
 const HEADER = {
   company: 'Ромашка Дистрибуция',
@@ -77,6 +87,11 @@ serve(TOKENS.partial, { ...SURVEY, header: { ...HEADER, company: '', respondent:
 serve(TOKENS.expired, { ok: false, reason: 'expired', title: 'Срок ссылки истёк', detail: 'Попросите новую.' })
 serve(TOKENS.limited, { ok: false, reason: 'rate-limited', title: 'Слишком много попыток', detail: 'Подождите минуту.' }, 429)
 serve(TOKENS.broken, { statusCode: 503, statusMessage: 'Not configured' }, 503)
+serveBoth(TOKENS.verdict, SURVEY, {
+  ok: true,
+  verdicts: [{ section: 'Продукт', text: 'Продолжаем двигаться вперед!' }],
+})
+serveBoth(TOKENS.plain, SURVEY, { ok: true, verdicts: [] })
 
 async function openPage(token: string) {
   return mountSuspended(SurveyPage, { route: `/s/${token}` })
@@ -210,5 +225,44 @@ describe('когда анкету показать нельзя', () => {
 
     expect(page.text()).toContain('Анкета недоступна')
     expect(page.text()).not.toContain('undefined')
+  })
+})
+
+describe('вердикт после отправки', () => {
+  /** Нажать «Отправить» и дождаться перерисовки. */
+  async function submit(token: string) {
+    const page = await openPage(token)
+    await page.find('button[type="submit"]').trigger('submit')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await page.vm.$nextTick()
+    return page
+  }
+
+  it('до отправки вердикта нет ВООБЩЕ', async () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД. Решение владельца 23.09 против практики старого решения: там вердикт
+    // пересчитывался живьём, пока респондент двигал ползунки, — то есть работал подсказкой
+    // «как ответить, чтобы вышло хорошо». Здесь до отправки его нет ни в разметке, ни в теле
+    // ответа: сервер присылает его ОДИН раз, в ответ на POST.
+    const page = await openPage(TOKENS.verdict)
+
+    expect(page.text()).not.toContain('Продолжаем двигаться вперед!')
+    expect(page.find('.verdicts').exists()).toBe(false)
+  })
+
+  it('после отправки показывает текст и название секции', async () => {
+    const page = await submit(TOKENS.verdict)
+
+    expect(page.text()).toContain('Спасибо!')
+    expect(page.text()).toContain('Продукт')
+    expect(page.text()).toContain('Продолжаем двигаться вперед!')
+  })
+
+  it('без настроенных диапазонов блока нет', async () => {
+    // Диапазоны заполнены у одной анкеты из двенадцати. Пустой блок с полоской сверху
+    // читался бы как недогрузившаяся страница.
+    const page = await submit(TOKENS.plain)
+
+    expect(page.text()).toContain('Спасибо!')
+    expect(page.find('.verdicts').exists()).toBe(false)
   })
 })

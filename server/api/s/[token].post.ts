@@ -1,10 +1,12 @@
 import { Buffer } from 'node:buffer'
 import { createError, defineEventHandler, getRequestHeader, getRouterParam, readRawBody, setResponseStatus } from 'h3'
 import { checkAnswers, MAX_TOTAL_BYTES } from '../../domain/surveys/answer'
+import { scoreSurvey } from '../../domain/surveys/scoring'
 import { drainInbox } from '../../answers/deliver'
 import { saveAnswer } from '../../links/store'
 import { logger } from '../../utils/logger'
 import { denied, resolveSurveyAccess } from './-access'
+import { toPublicVerdicts } from './-view'
 
 /**
  * Accepts a filled-in survey.
@@ -89,7 +91,10 @@ export default defineEventHandler(async (event) => {
     logger.warn({}, 'разбор буфера после приёма ответа не удался'),
   )
 
-  return { ok: true as const }
+  // ⚠ Вердикт считается ЗДЕСЬ, после сохранения, и отдаётся один раз — вместе с «спасибо».
+  // Диапазоны при этом наружу не уезжают: страница получает текст, а не границы и не балл.
+  // Решение владельца 23.09; разбор — в `docs/PROCESS.md`, раздел 6.
+  return { ok: true as const, verdicts: toPublicVerdicts(scoreSurvey(access.template, checked.answers)) }
 })
 
 function parseJson(raw: string): unknown {

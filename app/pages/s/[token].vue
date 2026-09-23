@@ -43,6 +43,7 @@ interface SubmitResponse {
   ok?: boolean
   detail?: string
   problems?: { key: string, detail: string }[]
+  verdicts?: { section: string, text: string }[]
 }
 
 const GENERIC_FAILURE = 'Не удалось отправить ответы. Проверьте связь и попробуйте ещё раз.'
@@ -84,6 +85,19 @@ const sending = ref(false)
 const sent = ref(false)
 const problems = ref<{ key: string, detail: string }[]>([])
 const failure = ref('')
+
+/**
+ * Вердикты по секциям — то, что клиент написал про такие оценки.
+ *
+ * ⚠ Приходят ТОЛЬКО в ответ на отправку, и это решение владельца 23.09. В старом решении
+ * вердикт пересчитывался живьём, пока респондент двигал ползунки, — то есть работал
+ * подсказкой «как ответить, чтобы вышло хорошо». Здесь он появляется, когда менять уже
+ * нечего. Границы диапазонов на страницу не уезжают вовсе: сервер присылает готовый текст.
+ *
+ * Пусто — обычное дело: в разобранном наборе диапазоны заполнены у одной анкеты
+ * из двенадцати, и тогда блока просто нет.
+ */
+const verdicts = ref<{ section: string, text: string }[]>([])
 
 const survey = computed(() => data.value?.survey)
 
@@ -189,6 +203,7 @@ async function submit() {
       ignoreResponseError: true,
     })
     if (result?.ok === true) {
+      verdicts.value = result.verdicts ?? []
       sent.value = true
       return
     }
@@ -310,6 +325,24 @@ async function submit() {
     >
       <h1>Спасибо!</h1>
       <p>Ваши ответы получены. Закрывать страницу можно — ничего отправлять больше не нужно.</p>
+
+      <!--
+        ⚠ Тексты писал сотрудник портала, читает посторонний человек — поэтому только `{{ }}`,
+        как и везде на этой странице. Разметки здесь не бывает.
+      -->
+      <section
+        v-if="verdicts.length > 0"
+        class="verdicts"
+      >
+        <p
+          v-for="verdict in verdicts"
+          :key="verdict.section"
+          class="verdict"
+        >
+          <span class="verdict-section">{{ verdict.section }}</span>
+          <span>{{ verdict.text }}</span>
+        </p>
+      </section>
     </div>
 
     <div
@@ -689,6 +722,32 @@ legend {
 }
 
 .scale.untouched .value {
+  color: var(--ink-dim);
+}
+
+/*
+  Вердикт на экране «спасибо»: центр листа, по абзацу на секцию. В макете он стоял
+  под самой секцией, но там и появлялся он живьём, по ходу ответа; здесь показывать
+  нечего, кроме уже закрытой анкеты, и место у него одно.
+*/
+.verdicts {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(255, 253, 245, 0.15);
+}
+
+.verdict {
+  margin: 0 0 1rem;
+  text-align: center;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.verdict-section {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
   color: var(--ink-dim);
 }
 

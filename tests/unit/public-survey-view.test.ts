@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toPublicHeader, toPublicSurvey } from '../../server/api/s/-view'
+import { toPublicHeader, toPublicSurvey, toPublicVerdicts } from '../../server/api/s/-view'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
 /**
@@ -97,5 +97,55 @@ describe('шапка анкеты наружу', () => {
     // в снимок «для отчёта», уехало бы вместе с ними постороннему респонденту.
     expect(Object.keys(toPublicHeader(HEADER, new Date())!).sort())
       .toEqual(['company', 'issuedAt', 'manager', 'project', 'respondent'])
+  })
+})
+
+describe('вердикт после отправки', () => {
+  /** Балл, посчитанный сервером: границы и сам балл наружу уходить не должны. */
+  const SCORE = {
+    overall: 8.5,
+    sections: [
+      {
+        key: 'product',
+        title: 'Продукт',
+        score: 8.5,
+        answered: 3,
+        scored: 3,
+        band: { from: 8, to: 9.5, text: 'Продолжаем двигаться вперед!' },
+      },
+      { key: 'open', title: 'Открытые вопросы', score: null, answered: 0, scored: 0, band: null },
+    ],
+  }
+
+  it('отдаёт текст и название секции', () => {
+    expect(toPublicVerdicts(SCORE)).toEqual([
+      { section: 'Продукт', text: 'Продолжаем двигаться вперед!' },
+    ])
+  })
+
+  it('НЕ отдаёт ни балла, ни границ диапазона', () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД. По границам восстанавливается шкала оценки клиента, по баллу
+    // респондент узнаёт, во что превратились его ползунки. Ни того, ни другого он
+    // в старом решении не видел, и незачем начинать — тем более что инвариант проекта
+    // прямо запрещает отдавать диапазоны в формате показа анкеты.
+    const wire = JSON.stringify(toPublicVerdicts(SCORE))
+
+    expect(wire).not.toContain('8.5')
+    expect(wire).not.toContain('from')
+    expect(wire).not.toContain('to')
+    expect(wire).not.toContain('score')
+  })
+
+  it('секцию без диапазона пропускает', () => {
+    // Диапазоны заполнены у одной анкеты из двенадцати — пустой список обычное дело.
+    expect(toPublicVerdicts({ overall: null, sections: [SCORE.sections[1]!] })).toEqual([])
+  })
+
+  it('пустой текст диапазона за вердикт не считает', () => {
+    // Диапазон с пустым текстом в источнике встречается. Пустой абзац на экране «спасибо»
+    // читается как недогрузившаяся страница.
+    const blank = { ...SCORE.sections[0]!, band: { from: 8, to: 9.5, text: '   ' } }
+
+    expect(toPublicVerdicts({ overall: 8.5, sections: [blank] })).toEqual([])
   })
 })
