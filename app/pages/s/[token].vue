@@ -97,19 +97,32 @@ const survey = computed(() => data.value?.survey)
 const header = computed(() => data.value?.header ?? null)
 
 /**
- * Дата опроса — как в макете: `ДД.ММ.ГГГГ ЧЧ:ММ`.
+ * Дата опроса в поясе РЕСПОНДЕНТА — решение владельца 23.09.
  *
- * ⚠ Считаем сами, а не через `toLocaleString`: на сервере и в браузере респондента разные
- * часовые пояса и разные локали, и SSR отдал бы одну строку, а гидратация подставила другую.
- * Формат ISO приходит с сервера, разбираем его как есть — по UTC, одинаково с обеих сторон.
+ * ⚠ Заполняется ПОСЛЕ монтирования, и это не лень, а единственный способ. Страница
+ * рендерится на сервере, а пояс респондента известен только его браузеру: посчитай мы дату
+ * на сервере — получили бы одну строку в разметке и другую после гидратации, то есть
+ * расхождение, на которое Vue ругается, а человек видит прыгающую дату. До монтирования
+ * строка пустая, и обе стороны рендерят одно и то же.
+ *
+ * ⚠ Формат собирается вручную, а не `toLocaleString`. Пояс здесь про правду, а формат —
+ * про макет: `ДД.ММ.ГГГГ ЧЧ:ММ` одинаков для респондента с любой локалью.
+ *
+ * ⚠ Первая редакция считала по UTC. Портал заказчика живёт в UTC+3, то есть в шапке
+ * стояло время на три часа раньше настоящего — ошибка, которую никто бы не заметил,
+ * пока кто-нибудь не сверил её с письмом.
  */
-function issuedAtLabel(iso: string): string {
+const issuedAtLabel = ref('')
+
+onMounted(() => {
+  const iso = header.value?.issuedAt
+  if (iso === undefined) return
   const at = new Date(iso)
-  if (Number.isNaN(at.getTime())) return ''
+  if (Number.isNaN(at.getTime())) return
   const pad = (value: number) => String(value).padStart(2, '0')
-  return `${pad(at.getUTCDate())}.${pad(at.getUTCMonth() + 1)}.${at.getUTCFullYear()}`
-    + ` ${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}`
-}
+  issuedAtLabel.value = `${pad(at.getDate())}.${pad(at.getMonth() + 1)}.${at.getFullYear()}`
+    + ` ${pad(at.getHours())}:${pad(at.getMinutes())}`
+})
 
 /** Отказ, который мы умеем объяснить. Тело без `title` — это чужая ошибка, а не наш отказ. */
 const denial = computed(() => {
@@ -252,7 +265,7 @@ async function submit() {
           </svg>
           <div class="lines">
             <div class="caption">
-              {{ issuedAtLabel(header.issuedAt) }}
+              {{ issuedAtLabel }}
             </div>
             <div
               v-if="header.manager"
