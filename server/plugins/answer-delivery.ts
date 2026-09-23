@@ -4,6 +4,18 @@ import { purgeDeadPortals } from '../portals/store'
 import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
 import { logger } from '../utils/logger'
 
+/** Как часто убирать истёкшие ответы. Час, а не тик: см. разбор у самого вызова. */
+const PURGE_EVERY_MS = 60 * 60 * 1000
+
+/**
+ * Когда убирали в прошлый раз.
+ *
+ * ⚠ Ноль, а не `Date.now()`: первый заход после подъёма обязан состояться сразу. Иначе
+ * приложение, которое перезапускают чаще раза в час (деплой, перезапуск контейнера),
+ * не убрало бы НИКОГДА — механизм выглядел бы рабочим и не работал.
+ */
+let lastPurgeAt = 0
+
 /**
  * Runs the answer-delivery loop inside the app process.
  *
@@ -65,9 +77,19 @@ export default defineNitroPlugin(() => {
       // первый: упавшая уборка порталов не должна глушить уборку ответов, иначе
       // единственный предельный срок хранения персональных данных отключился бы молча
       // из-за беды в соседнем механизме. Срок и разбор — `purgeExpiredAnswers`.
+      //
+      // ⚠ НЕ ЧАЩЕ РАЗА В ЧАС, и это предохранитель, а не экономия. Потолок за заход
+      // не ограничивает ущерб, пока частота задаётся `ANSWER_DELIVERY_INTERVAL`: он
+      // принимает пять секунд, то есть двенадцать заходов в минуту и 864 тысячи строк
+      // в сутки вместо обещанных «пятидесяти в минуту». Ровно та ловушка, на которой
+      // обжёгся сосед и о которой предупреждает `purgeDeadPortals`. Срок хранения меряется
+      // сутками — минутная точность ему не нужна. Нашёл `/code-review` в PR #53.
       try {
-        const forgotten = await purgeExpiredAnswers(new Date())
-        if (forgotten > 0) logger.warn({ forgotten }, 'истёкшие ответы стёрты из буфера')
+        if (Date.now() - lastPurgeAt >= PURGE_EVERY_MS) {
+          lastPurgeAt = Date.now()
+          const forgotten = await purgeExpiredAnswers(new Date())
+          if (forgotten > 0) logger.warn({ forgotten }, 'истёкшие ответы стёрты из буфера')
+        }
       }
       catch (error) {
         // ⚠ Причину записать можно и здесь: `purgeExpiredAnswers` ходит только в Postgres

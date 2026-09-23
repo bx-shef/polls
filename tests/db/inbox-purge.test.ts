@@ -18,10 +18,35 @@ import { PURGE_GRACE_DAYS } from '../../server/domain/portals/lifecycle'
 
 const enabled = isDatabaseConfigured()
 
+/**
+ * ⚠ УБОРКА ЗОВЁТСЯ ТОЛЬКО ПО СВОЕМУ ПОРТАЛУ, и это не аккуратность, а исправление дефекта.
+ * Первая редакция звала глобальную `purgeExpiredAnswers(now)` — и запуск `pnpm check`
+ * с боевым `DATABASE_URL` НАВСЕГДА стирал истёкшие ответы ЧУЖИХ порталов. Воспроизведено
+ * `/code-review` в PR #53: подсаженный ответ постороннего портала исчезал, а сам набор падал
+ * на числе. Ровно тот дефект, который соседний `inbox-claim.test.ts` описывает как уже
+ * случившийся однажды, — заведённый заново, только не через уборку, а через сам предмет
+ * проверки. Заголовок файла при этом обещал обратное.
+ */
+function purgeOurs(now: Date, limit?: number) {
+  return purgeExpiredAnswers(now, { limit, portalId })
+}
+
 /** Свой домен: чистим ТОЛЬКО его, а не таблицу — см. разбор в `inbox-claim.test.ts`. */
 const TEST_DOMAIN = 'db-purge-test.bitrix24.ru'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Текст и ключ ответа — КОНСТАНТАМИ, и сверяется потом ровно они.
+ *
+ * ⚠ Первая редакция подсаживала «текст ответа живого человека», а проверяла отсутствие
+ * «текстА ответа живого человека» — падежом мимо. Гвард под самый твёрдый инвариант проекта
+ * не мог упасть в принципе: `/code-review` в PR #53 добавил настоящую утечку payload в журнал,
+ * и тест остался зелёным. Ровно тот класс отказа, о котором предупреждает `CLAUDE.md`:
+ * «все тесты зелёные при живой регрессии».
+ */
+const ANSWER_TEXT = 'текст ответа живого человека'
+const ANSWER_KEY = 'q1'
 
 let portalId: string
 
@@ -37,7 +62,7 @@ async function seed(receivedAt: Date, status: string, lastError = 'ACCESS_DENIED
       tokenHash: randomUUID(),
       // Тело намеренно непустое: проверяем, что оно исчезает вместе со строкой,
       // а не остаётся где-то ещё.
-      payload: { answers: { q1: 'текст ответа живого человека' } },
+      payload: { answers: { [ANSWER_KEY]: ANSWER_TEXT } },
       receivedAt,
       nextAttemptAt: receivedAt,
       status,
@@ -77,7 +102,7 @@ describe.skipIf(!enabled)('срок хранения сдавшихся отве
   it('стирает сдавшийся ответ, пролежавший дольше срока', async () => {
     const id = await seed(daysAgo(PURGE_GRACE_DAYS + 1), 'failed')
 
-    expect(await purgeExpiredAnswers(new Date())).toBe(1)
+    expect(await purgeOurs(new Date())).toBe(1)
     expect(await alive(id)).toBe(false)
   })
 
@@ -86,7 +111,7 @@ describe.skipIf(!enabled)('срок хранения сдавшихся отве
     // раньше — стёртый ответ, который ещё можно было доставить.
     const id = await seed(daysAgo(PURGE_GRACE_DAYS - 1), 'failed')
 
-    expect(await purgeExpiredAnswers(new Date())).toBe(0)
+    expect(await purgeOurs(new Date())).toBe(0)
     expect(await alive(id)).toBe(true)
   })
 
@@ -97,13 +122,13 @@ describe.skipIf(!enabled)('срок хранения сдавшихся отве
     // нужного», нарушал бы инвариант «ответ не теряется никогда».
     const id = await seed(daysAgo(365), status)
 
-    expect(await purgeExpiredAnswers(new Date())).toBe(0)
+    expect(await purgeOurs(new Date())).toBe(0)
     expect(await alive(id)).toBe(true)
   })
 
   it('уносит тело ответа вместе со строкой, а не оставляет его', async () => {
     await seed(daysAgo(PURGE_GRACE_DAYS + 1), 'failed')
-    await purgeExpiredAnswers(new Date())
+    await purgeOurs(new Date())
 
     const left = await getDb().execute(
       sql`select count(*)::int as n from ${schema.inbox} where portal_id = ${portalId}`,
@@ -118,7 +143,7 @@ describe.skipIf(!enabled)('срок хранения сдавшихся отве
     const старый = await seed(daysAgo(100), 'failed')
     const свежий = await seed(daysAgo(PURGE_GRACE_DAYS + 1), 'failed')
 
-    expect(await purgeExpiredAnswers(new Date(), 1)).toBe(1)
+    expect(await purgeOurs(new Date(), 1)).toBe(1)
     expect(await alive(старый)).toBe(false)
     expect(await alive(свежий)).toBe(true)
   })
@@ -131,15 +156,31 @@ describe.skipIf(!enabled)('срок хранения сдавшихся отве
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
 
     await seed(daysAgo(PURGE_GRACE_DAYS + 1), 'failed')
-    await purgeExpiredAnswers(new Date())
+    await purgeOurs(new Date())
 
     const written = JSON.stringify(warn.mock.calls)
+    const warnArgs = warn.mock.calls[0]!
     warn.mockRestore()
 
     expect(written).toContain('стёрт по истечении срока')
     expect(written).toContain('ACCESS_DENIED')
-    expect(written).not.toContain('текста ответа живого человека')
-    expect(written).not.toContain('q1')
+    // ⚠ ДОМЕН, а не внутренний идентификатор: после удаления строки журнал — это всё,
+    // что осталось, и `uuid` не отвечает на вопрос «а куда делся ответ» без похода в базу.
+    expect(written).toContain(TEST_DOMAIN)
+    // ⚠ Сверяется РОВНО то, что подсадили, а не похожая строка.
+    expect(written).not.toContain(ANSWER_TEXT)
+    expect(written).not.toContain(ANSWER_KEY)
+    // ⚠ И состав ключей — целиком. Без этого утечка под новым именем поля прошла бы мимо
+    // обеих проверок выше: они знают, чего быть НЕ должно, а этот знает, что должно.
+    expect(Object.keys(warnArgs[0] as object).sort()).toEqual(['domain', 'reason', 'receivedAt'])
+  })
+
+  it('срок хранения ответов — ровно тридцать суток, как решил владелец', () => {
+    // ⚠ Все проверки выше выражены через `PURGE_GRACE_DAYS`, то есть переживут его правку.
+    // А правят его по СОВСЕМ другой причине — там речь про отсрочку мёртвого портала, —
+    // и срок хранения персональных данных молча уехал бы следом. Одна буквальная сверка
+    // делает связку честной: меняешь — видишь. Нашёл `/code-review` в PR #53.
+    expect(PURGE_GRACE_DAYS).toBe(30)
   })
 
   it('на пустом буфере ничего не делает и молчит', async () => {
@@ -147,7 +188,7 @@ describe.skipIf(!enabled)('срок хранения сдавшихся отве
     const { logger } = await import('../../server/utils/logger')
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
 
-    expect(await purgeExpiredAnswers(new Date())).toBe(0)
+    expect(await purgeOurs(new Date())).toBe(0)
     const calls = warn.mock.calls.length
     warn.mockRestore()
 

@@ -225,7 +225,7 @@ describe('разбор застрявших ответов', () => {
   it('повтор с APPLY=1 действительно возвращает строки в pending', () => {
     const { dir, env } = withFakeDocker(['compose.yaml'])
 
-    const { out } = make(dir, ['prod-retry', 'APPLY=1'], env)
+    const { out } = make(dir, ['prod-retry', 'APPLY=1', 'ALL=1'], env)
 
     expect(out).toContain('update inbox')
     expect(out).toContain(`status = 'pending'`)
@@ -237,28 +237,65 @@ describe('разбор застрявших ответов', () => {
     // на первой же попытке. Внешне — «повторил, не помогло».
     const { dir, env } = withFakeDocker(['compose.yaml'])
 
-    const { out } = make(dir, ['prod-retry', 'APPLY=1'], env)
+    const { out } = make(dir, ['prod-retry', 'APPLY=1', 'ALL=1'], env)
 
     expect(out).toContain('attempts = 0')
     expect(out).toContain('next_attempt_at = now()')
   })
 
-  it('повтор сужается по домену портала и по строке', () => {
-    // Почти все причины чинятся на стороне КОНКРЕТНОГО портала, поэтому пачка по домену —
-    // основной случай; отдельная строка нужна, когда чинили точечно.
+  it('повтор сужается по домену портала и по строке — И В ВЕТКЕ ЗАПИСИ ТОЖЕ', () => {
+    // ⚠ Первая редакция гварда проверяла сужение только на сухом прогоне — то есть ровно
+    // не в той ветке, где потеря отбора разрушительна. Нашёл `/code-review` в PR #53.
     const { dir, env } = withFakeDocker(['compose.yaml'])
 
-    expect(make(dir, ['prod-retry', 'DOMAIN=x.bitrix24.ru'], env).out).toContain(`p.domain = 'x.bitrix24.ru'`)
-    expect(make(dir, ['prod-retry', 'ID=00000000-0000-0000-0000-000000000001'], env).out)
-      .toContain(`i.id = '00000000-0000-0000-0000-000000000001'`)
+    for (const apply of [[], ['APPLY=1']]) {
+      const byDomain = make(dir, ['prod-retry', ...apply, 'DOMAIN=x.bitrix24.ru'], env).out
+      expect(byDomain, `домен, APPLY=${apply.length}`).toContain('dom=x.bitrix24.ru')
+
+      const byId = make(dir, ['prod-retry', ...apply, 'ID=00000000-0000-0000-0000-000000000001'], env).out
+      expect(byId, `строка, APPLY=${apply.length}`).toContain('row=00000000-0000-0000-0000-000000000001')
+    }
   })
+
+  it.each([['APPLY=0'], ['APPLY=нет'], ['APPLY=да']])('повтор с %s НЕ записывает', (apply) => {
+    // ⚠ Воспроизведено `/code-review`: проверка была на НЕПУСТОТУ, поэтому `APPLY=0`
+    // и `APPLY=нет` записывали. Оператор, набравший «ноль» в значении «не применять»,
+    // молча менял боевые строки.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    expect(make(dir, ['prod-retry', apply], env).out).not.toContain('update inbox')
+  })
+
+  it('повтор НЕ записывает по переменной окружения — только по аргументу', () => {
+    // ⚠ `make` втягивает окружение в свою таблицу переменных, поэтому однажды
+    // экспортированный `APPLY=1` превращал бы каждый последующий «посмотреть» в «сделать»
+    // до конца сессии. Запись обязана быть отдельным осознанным нажатием.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+
+    expect(make(dir, ['prod-retry', 'ALL=1'], { ...env, APPLY: '1' }).out).not.toContain('update inbox')
+    expect(make(dir, ['prod-retry', 'APPLY=1', 'ALL=1'], env).out).toContain('update inbox')
+  })
+
+  it.each([[`DOMAIN=x' or '1'='1`], ['ID=a;drop table inbox'], ['DOMAIN=портал'], ['ID=не-uuid']])(
+    'повтор ОТКАЗЫВАЕТСЯ работать на значении негодной формы (%s)', (bad) => {
+      // ⚠ Воспроизведено `/code-review`: значения склеивались в SQL, и кавычка внутри
+      // `DOMAIN` не «ломала запрос», а МОЛЧА РОНЯЛА СУЖЕНИЕ — `APPLY=1` обновлял весь флот
+      // вместо одного портала, а единственным следом было `sh: or: not found` в stderr.
+      const { dir, env } = withFakeDocker(['compose.yaml'])
+
+      const { out, code } = make(dir, ['prod-retry', 'APPLY=1', bad], env)
+
+      expect(code).not.toBe(0)
+      expect(out).not.toContain('update inbox')
+    },
+  )
 
   it('повтор трогает ТОЛЬКО failed, даже когда отбора нет', () => {
     // ⚠ Без этого условия цель, запущенная без DOMAIN и ID, вернула бы в очередь и то,
     // что воркер держит прямо сейчас (`sending`), — то есть доставила бы ответ дважды.
     const { dir, env } = withFakeDocker(['compose.yaml'])
 
-    expect(make(dir, ['prod-retry', 'APPLY=1'], env).out).toContain(`i.status = 'failed'`)
+    expect(make(dir, ['prod-retry', 'APPLY=1', 'ALL=1'], env).out).toContain(`i.status = 'failed'`)
   })
 
   it('показ застрявших называет портал и не показывает ответ', () => {
@@ -275,12 +312,32 @@ describe('разбор застрявших ответов', () => {
     expect(out).not.toContain('payload')
   })
 
-  it('показ застрявших не режется по числу строк', () => {
-    // ⚠ Гвард под причину, по которой цель заведена отдельно от `prod-inbox`: тот показывает
-    // первые двадцать по времени, и всплеск свежих `pending` прячет `failed` за край выдачи
-    // ровно тогда, когда буфер и так не в порядке.
+  it('запись БЕЗ отбора требует ALL=1, а сухой прогон — нет', () => {
+    // ⚠ Пустой отбор означает «весь флот», и пустым он становится не только намеренно:
+    // `DOMAIN=$UNSET` в шелле схлопывается в пустую строку молча, и «повторить один портал»
+    // превращается в «повторить все». Смотреть на всё при этом полезно, поэтому запрет
+    // только на записи. Нашёл `/code-review` в PR #53, случаем `DOMAIN=$(echo x)`.
     const { dir, env } = withFakeDocker(['compose.yaml'])
 
-    expect(make(dir, ['prod-stuck'], env).out).not.toContain('limit')
+    const refused = make(dir, ['prod-retry', 'APPLY=1'], env)
+    expect(refused.code).not.toBe(0)
+    expect(refused.out).toContain('ВЕСЬ ФЛОТ')
+    expect(refused.out).not.toContain('update inbox')
+
+    expect(make(dir, ['prod-retry', 'APPLY=1', 'ALL=1'], env).out).toContain('update inbox')
+    expect(make(dir, ['prod-retry'], env).code).toBe(0)
+  })
+
+  it('показ застрявших начинается со счётчика, а не с безразмерного дампа', () => {
+    // ⚠ Первая редакция запрещала потолок вовсе — «чтобы ничего не спрятать». Но цель зовут
+    // ВО ВРЕМЯ АВАРИИ, и застрявших там может быть не двадцать, а тысячи: оператор получил бы
+    // безразмерный дамп в терминал и не узнал бы даже масштаба. Счётчик отвечает на «сколько»
+    // всегда, потолок бережёт терминал, `LINES=` его поднимает. Нашёл `/code-review` в PR #53.
+    const { dir, env } = withFakeDocker(['compose.yaml'])
+    const { out } = make(dir, ['prod-stuck'], env)
+
+    expect(out).toContain('count(*)')
+    expect(out).toContain('limit 200')
+    expect(make(dir, ['prod-stuck', 'LINES=10'], env).out).toContain('limit 10')
   })
 })
