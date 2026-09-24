@@ -36,7 +36,14 @@ import { readAnswers, writeToPortal } from '../server/answers/deliver'
 import { findProcesses } from '../server/b24/write-templates'
 import { readAllPublishedTemplates } from '../server/b24/read-templates'
 import { isDatabaseConfigured } from '../server/db/client'
-import { activityOriginId, buildFindActivityCall } from '../server/domain/answers/timeline-activity'
+import {
+  activityOriginId,
+  bindingKey,
+  buildFindActivityCall,
+  buildListBindingsCall,
+  readBindingKeys,
+  readFoundActivityId,
+} from '../server/domain/answers/timeline-activity'
 import { hashToken } from '../server/domain/links/token'
 import { buildFieldName } from '../server/domain/portals/smart-processes'
 import type { PublishedTemplate } from '../server/domain/invitations/portal-calls'
@@ -287,8 +294,20 @@ async function main(): Promise<number> {
   expect(skipped !== '' && parsed[skipped] === null, `пропущенный вопрос «${skipped}» записан как null, а не нулём`)
 
   step('Дело в истории сделки')
-  const activities = await countActivities(call, issued.itemId)
+  const { count: activities, id: activityId } = await findActivity(call, issued.itemId)
   expect(activities === 1, `дел с нашей меткой: ${activities}`)
+
+  step('Дело видно и в карточке «Опроса»')
+  // ⚠ Дело создаётся владельцем-сделкой, а к элементу «Опроса» привязывается вторым шагом
+  // (issue #44). Проверяется живьём, потому что подделкой этого не доказать: привязка
+  // к НЕСУЩЕСТВУЮЩЕЙ сущности отвечает `{result: true}` — портал молча принимает
+  // идентификатор, которого нет. «Вызов не упал» здесь не значит ничего; значит только
+  // перечитанный список привязок.
+  const bound = await readBindings(call, activityId!)
+  expect(
+    bound.has(bindingKey(surveySp.entityTypeId, issued.itemId)),
+    `дело привязано к элементу «Опроса» (привязок всего: ${bound.size})`,
+  )
 
   step('Повторная доставка не создаёт второго дела')
   // ⚠ Проверяется живьём, потому что подделкой это не доказать. Инвариант проекта:
@@ -298,7 +317,7 @@ async function main(): Promise<number> {
   // при любом обрыве после записи.
   const again = await writeToPortal(call, surveySp, issued.itemId, chosen.schema, bufferedAnswers!)
   expect(again.ok, `повторная запись прошла${again.ok ? '' : `: ${again.reason}`}`)
-  const afterRepeat = await countActivities(call, issued.itemId)
+  const afterRepeat = (await findActivity(call, issued.itemId)).count
   expect(afterRepeat === 1, `дел с нашей меткой после повтора: ${afterRepeat}`)
 
   console.log([
@@ -315,11 +334,23 @@ async function main(): Promise<number> {
   return 0
 }
 
-/** Сколько дел с нашей меткой висит на этом элементе. Ждём ровно одно. */
-async function countActivities(call: ReturnType<typeof hookCall>, itemId: number): Promise<number> {
+/** Сколько дел с нашей меткой висит на этом элементе и какое из них первое. Ждём ровно одно. */
+async function findActivity(
+  call: ReturnType<typeof hookCall>,
+  itemId: number,
+): Promise<{ count: number, id: string | null }> {
   const find = buildFindActivityCall(activityOriginId(itemId))
   const answer = await call(find.method, find.params) as { result?: unknown }
-  return Array.isArray(answer.result) ? answer.result.length : 0
+  return {
+    count: Array.isArray(answer.result) ? answer.result.length : 0,
+    id: readFoundActivityId(answer),
+  }
+}
+
+/** Привязки дела, перечитанные с портала. */
+async function readBindings(call: ReturnType<typeof hookCall>, activityId: string): Promise<Set<string>> {
+  const list = buildListBindingsCall(activityId)
+  return readBindingKeys(await call(list.method, list.params))
 }
 
 /**

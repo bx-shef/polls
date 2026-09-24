@@ -29,11 +29,15 @@ import {
   buildActivityMarkerCall,
   buildActivityTitle,
   buildDeleteActivityCall,
+  bindingKey,
+  buildBindActivityCall,
   buildFindActivityCall,
+  buildListBindingsCall,
   buildTodoActivityCall,
   hasBadSection,
   readCreatedActivityId,
   readMarkApplied,
+  readBindingKeys,
   readFoundActivityId,
 } from '../domain/answers/timeline-activity'
 import { DEAL_ENTITY_TYPE_ID } from '../domain/invitations/portal-calls'
@@ -387,14 +391,20 @@ export async function tryTimelineActivity(
     // ⚠ Инвариант проекта: перед созданием — поиск существующего. Источник правды о том,
     // писали мы уже или нет, — сам портал, а не таблица у нас.
     const find = buildFindActivityCall(activityOriginId(itemId))
-    if (readFoundActivityId(await call(find.method, find.params)) !== null) {
+    const existing = readFoundActivityId(await call(find.method, find.params))
+    if (existing !== null) {
       logger.info({}, 'итог уже записан делом, второго не создаём')
+      // ⚠ Привязку досылаем И ЗДЕСЬ. «Дело есть, а привязки нет» — новое состояние, которого
+      // раньше не бывало: у всех дел, записанных до issue #44, её нет вовсе. Без этой строки
+      // они остались бы без привязки навсегда, потому что второй раз дело не создаётся.
+      await tryBindToSurveyItem(call, existing, survey, itemId)
       return true
     }
 
     return await createMarkedActivity(call, {
       dealId,
       itemId,
+      survey,
       description,
       title: buildActivityTitle(template, score),
       color: hasBadSection(template, score) ? ACTIVITY_COLOR_BAD : ACTIVITY_COLOR_GOOD,
@@ -422,7 +432,15 @@ export async function tryTimelineActivity(
  */
 async function createMarkedActivity(
   call: RestCall,
-  plan: { dealId: number, itemId: number, title: string, description: string, color: string, responsibleId: number },
+  plan: {
+    dealId: number
+    itemId: number
+    survey: SmartProcessRef
+    title: string
+    description: string
+    color: string
+    responsibleId: number
+  },
 ): Promise<boolean> {
   const add = buildTodoActivityCall({
     dealEntityTypeId: DEAL_ENTITY_TYPE_ID,
@@ -455,7 +473,50 @@ async function createMarkedActivity(
   }
 
   logger.info({}, 'итог опроса записан делом в таймлайн сделки')
+
+  // ⚠ Привязка ставится ПОСЛЕ пометки и НЕ входит в компенсацию выше. Дело создано
+  // и находимо — это главное; привязка только добавляет его во вторую ленту. Включи мы её
+  // в компенсацию, отказ привязки сносил бы уже записанный итог.
+  await tryBindToSurveyItem(call, activityId, plan.survey, plan.itemId)
   return true
+}
+
+/**
+ * Привязать дело ещё и к элементу «Опроса».
+ *
+ * ⚠ ЛУЧШИЕ УСИЛИЯ, а не обязательство. Ответ уже в портале, дело в ленте сделки уже есть;
+ * отказ привязки не должен ни ронять доставку, ни запускать компенсирующее удаление. Отказ —
+ * в журнал, и всё. Форма взята у соседа (`activityBindingsWrite.ts`), где оплачена живым
+ * портале.
+ *
+ * ⚠ СНАЧАЛА ЧИТАЕМ, ПОТОМ СТАВИМ. Повторная привязка той же пары — ошибка
+ * (`ACTIVITY_IS_ALREADY_BOUND`), а через SDK до нас доезжает локализованный ТЕКСТ без кода,
+ * то есть отличить её от настоящего отказа нечем. Один лишний вызов дешевле разбора чужой
+ * строки, которая завтра придёт на другом языке.
+ *
+ * ⚠ Что это НЕ доказывает: привязка к несуществующей сущности отвечает `{result: true}` —
+ * портал молча принимает `entityId`, которого нет (замер соседа). Значит «вызов не упал»
+ * не значит ничего, и единственная защита — правильность самих ссылок.
+ */
+async function tryBindToSurveyItem(
+  call: RestCall,
+  activityId: string,
+  survey: SmartProcessRef,
+  itemId: number,
+): Promise<void> {
+  try {
+    const list = buildListBindingsCall(activityId)
+    const already = readBindingKeys(await call(list.method, list.params))
+    if (already.has(bindingKey(survey.entityTypeId, itemId))) return
+
+    const bind = buildBindActivityCall(activityId, survey.entityTypeId, itemId)
+    await call(bind.method, bind.params)
+    logger.info({}, 'дело привязано к элементу «Опроса»')
+  }
+  catch (error) {
+    // Дело в ленте сделки на месте — потеряна только вторая лента.
+    logger.warn({ reason: safeRefusal(error) }, 'дело не привязано к элементу «Опроса»; в сделке оно есть')
+  }
 }
 
 /**
