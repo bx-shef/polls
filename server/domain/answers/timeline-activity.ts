@@ -203,6 +203,11 @@ export function buildFindActivityCall(originId: string): PortalCall {
  * ⚠ Предел — 100 элементов CRM на одно дело. Нам нужна ОДНА дополнительная, запас не наш.
  */
 export function buildBindActivityCall(activityId: string, entityTypeId: number, entityId: number): PortalCall {
+  // ⚠ ПОСЛЕДНЯЯ ПРИВЯЗКА СТАНОВИТСЯ ВЛАДЕЛЬЦЕМ ДЕЛА. Замерено на живом портале 24.09,
+  // в документации метода этого нет: после привязки `crm.activity.get` показывает владельцем
+  // привязанную сущность, а по фильтру владельца прежней сущности дело уже не находится.
+  // Поэтому наш поиск существующего идёт ПО МЕТКЕ (`ORIGINATOR_ID` + `ORIGIN_ID`), а не
+  // по владельцу, — и менять это нельзя, иначе повторная доставка создаст второе дело.
   return { method: 'crm.activity.binding.add', params: { activityId: Number(activityId), entityTypeId, entityId } }
 }
 

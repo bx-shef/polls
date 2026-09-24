@@ -45,7 +45,7 @@ import {
   readFoundActivityId,
 } from '../server/domain/answers/timeline-activity'
 import { hashToken } from '../server/domain/links/token'
-import { buildFieldName } from '../server/domain/portals/smart-processes'
+import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../server/domain/portals/smart-processes'
 import type { PublishedTemplate } from '../server/domain/invitations/portal-calls'
 import { issueLink } from '../server/links/issue-flow'
 import { publicBaseUrl } from '../server/utils/env'
@@ -307,6 +307,17 @@ async function main(): Promise<number> {
   expect(
     bound.has(bindingKey(surveySp.entityTypeId, issued.itemId)),
     `дело привязано к элементу «Опроса» (привязок всего: ${bound.size})`,
+  )
+  // ⚠ И СВЯЗЬ СО СДЕЛКОЙ НА МЕСТЕ — отдельным утверждением, а не «ну она же была».
+  // Замерено на живом портале 24.09: `binding.add` делает ВЛАДЕЛЬЦЕМ дела ту сущность,
+  // которую привязали последней. То есть после привязки `crm.activity.get` показывает
+  // владельцем элемент «Опроса», а не сделку, и по фильтру владельца сделки дело больше
+  // не находится. Лента сделки при этом строится по привязкам, и связь со сделкой
+  // остаётся — вот ровно это здесь и проверяется. Пропади она, дело исчезло бы из ленты
+  // сделки, а заметили бы это глазами в чужой CRM.
+  expect(
+    bound.has(bindingKey(DEAL_ENTITY_TYPE_ID, args.deal)),
+    'связь со сделкой не потерялась',
   )
 
   step('Повторная доставка не создаёт второго дела')
