@@ -1,5 +1,5 @@
 import { Writable } from 'node:stream'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createLogger } from '../../server/utils/logger'
 
 /**
@@ -7,6 +7,21 @@ import { createLogger } from '../../server/utils/logger'
  * клиентов портала. Проверяем не список путей, а то, что реально уходит в поток:
  * список можно расширить и при этом сломать конфигурацию redaction.
  */
+/**
+ * ⚠ УРОВЕНЬ ПРИБИТ, и это не гигиена, а сам смысл файла. `createLogger` берёт уровень
+ * из `LOG_LEVEL` окружения, а почти все проверки ниже — отрицательные: «в строке нет
+ * секрета». При `LOG_LEVEL=warn` вызов `info` не пишет НИЧЕГО, строка остаётся пустой —
+ * и отрицательные проверки проходят, ничего не проверив. То есть в один прекрасный день
+ * у разработчика с тихим логом гвардов на утечку токенов просто нет, а гейт зелёный.
+ *
+ * Поймано ровно так: `pnpm check` запустили с рабочим `.env`, где `LOG_LEVEL=warn`,
+ * и красными стали три ПОЛОЖИТЕЛЬНЫЕ проверки. Три отрицательные при этом молчали.
+ */
+beforeEach(() => {
+  vi.stubEnv('LOG_LEVEL', 'info')
+  return () => vi.unstubAllEnvs()
+})
+
 function captureLine(payload: Record<string, unknown>): string {
   let line = ''
   const sink = new Writable({
@@ -16,6 +31,11 @@ function captureLine(payload: Record<string, unknown>): string {
     },
   })
   createLogger(sink).info(payload, 'проверка')
+
+  // Вторая половина той же защиты: пустая строка означает, что писать было нечего,
+  // а не что секрет вырезан. Отличить одно от другого потом уже нельзя.
+  expect(line, 'логгер не написал ни байта — проверка ниже ничего не значит').not.toBe('')
+
   return line
 }
 
