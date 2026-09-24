@@ -1,6 +1,6 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { defineEventHandler, setResponseStatus } from 'h3'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import SurveyPage from '../../app/pages/s/[token].vue'
 
 /**
@@ -136,6 +136,48 @@ describe('анкета', () => {
     expect(page.find('.scale').classes()).not.toContain('untouched')
   })
 
+  it('сброс ответа возвращает вопрос в «не отвечал»', async () => {
+    // ⚠ ГВАРД ВОССТАНОВЛЕН ПОСЛЕ ПОТЕРИ. На кнопках это делалось повторным нажатием
+    // по выбранному делению, и гвард на это был. Перейдя на ползунок, я унёс и возможность,
+    // и гвард вместе с ней — то есть промах пальцем НАВСЕГДА превращался бы в оценку,
+    // которой человек не ставил. Issue #16 называл это требование прямо: «сохранить снятие
+    // выбора повторным нажатием», — а закрыть issue, потеряв единственное, что от него
+    // осталось живым, значит спрятать регрессию.
+    const page = await openPage(TOKENS.survey)
+
+    await page.findComponent({ name: 'B24Range' }).vm.$emit('update:modelValue', 7)
+    await page.vm.$nextTick()
+    expect(page.find('output.value').text()).toBe('7')
+
+    await page.find('button.clear').trigger('click')
+    await page.vm.$nextTick()
+
+    expect(page.find('output.value').text()).toBe('—')
+    expect(page.find('.scale').classes()).toContain('untouched')
+  })
+
+  it('у нетронутого вопроса кнопки сброса НЕТ', async () => {
+    // Сбрасывать нечего, а кнопка, которая ничего не делает, — это лишняя остановка
+    // при обходе с клавиатуры: на анкете в тринадцать вопросов их было бы тринадцать.
+    const page = await openPage(TOKENS.survey)
+
+    expect(page.find('button.clear').exists()).toBe(false)
+  })
+
+  it('кнопка сброса не тащит текст вопроса в атрибуты', async () => {
+    // ⚠ Тот же запрет, что у подписи ползунка: формулировку пишет сотрудник портала,
+    // а читает посторонний человек. Имя кнопке даёт НАШ текст, связь с вопросом —
+    // идентификатор, собранный из номеров секции и вопроса.
+    const page = await openPage(TOKENS.survey)
+    await page.findComponent({ name: 'B24Range' }).vm.$emit('update:modelValue', 7)
+    await page.vm.$nextTick()
+
+    const clear = page.find('button.clear')
+    expect(clear.attributes('aria-describedby')).toBe('q0-0')
+    expect(clear.attributes('aria-label')).toBeUndefined()
+    expect(clear.text()).toContain('Сбросить ответ')
+  })
+
   it('рендерит текст с портала текстом, а не разметкой', async () => {
     // Формулировку пишет сотрудник портала, читает посторонний респондент — прямой путь
     // для XSS. Закрыт тем, что разметки здесь не бывает вовсе: только `{{ }}`.
@@ -229,12 +271,20 @@ describe('когда анкету показать нельзя', () => {
 })
 
 describe('вердикт после отправки', () => {
-  /** Нажать «Отправить» и дождаться перерисовки. */
+  /**
+   * Нажать «Отправить» и дождаться перерисовки.
+   *
+   * ⚠ Ждём УСЛОВИЯ, а не один такт. Первая редакция отдавала управление ровно на одну
+   * макрозадачу (`setTimeout(…, 0)`) — и этого хватало, когда файл гоняли одного, но
+   * не хватало в полном прогоне, где три проекта `vitest` делят процессор: тест мигал.
+   * Мигающий тест хуже падающего — его перестают читать раньше, чем чинят.
+   */
   async function submit(token: string) {
     const page = await openPage(token)
     await page.find('button[type="submit"]').trigger('submit')
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await page.vm.$nextTick()
+    await vi.waitFor(() => {
+      expect(page.text()).toContain('Спасибо!')
+    })
     return page
   }
 
