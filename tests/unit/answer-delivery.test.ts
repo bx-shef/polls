@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { backoffMinutes, readAnswers, resolveSurveyProcess, tryTimelineActivity, writeToPortal } from '../../server/answers/deliver'
+import {
+  backoffMinutes,
+  readAnswers,
+  resolveSurveyProcess,
+  tryEntityScore,
+  tryTimelineActivity,
+  writeToPortal,
+} from '../../server/answers/deliver'
 import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
@@ -121,7 +128,10 @@ describe('запись ответа в портал', () => {
   it('не отправляет пустой комментарий: портал его отвергает', async () => {
     const empty: SurveyTemplate = { ...TEMPLATE, sections: [{ ...TEMPLATE.sections[0]!, scored: false, questions: [] }] }
     const p = portal()
-    await tryTimelineActivity(p.call, SURVEY, 777, empty, {}, scoreSurvey(empty, {}))
+    // ⚠ Элемент передаётся УЖЕ ПРОЧИТАННЫМ: его читает `writeToPortal` один раз
+    // и раздаёт обоим шагам — таймлайну и полям на сделке.
+    const item = { result: { item: { id: 777, parentId2: 351 } } }
+    await tryTimelineActivity(p.call, SURVEY, 777, empty, {}, scoreSurvey(empty, {}), item)
 
     expect(p.methods()).not.toContain('crm.activity.todo.add')
   })
@@ -350,5 +360,113 @@ describe('пауза перед повтором', () => {
   it('не уходит в ноль и не становится отрицательной', () => {
     expect(backoffMinutes(0)).toBe(1)
     expect(backoffMinutes(-5)).toBe(1)
+  })
+})
+
+/**
+ * Балл в пользовательские поля сделки и контакта (issue #23).
+ *
+ * ⚠ Зачем вообще: балл на элементе «Опроса» не виден ни фильтру в списке сделок, ни роботу
+ * на стадии — элемент дочерняя сущность. Обещанное клиенту «покажи сделки с оценкой ниже семи»
+ * работает только через поле на самой сделке.
+ */
+describe('балл уезжает в сделку и в контакт', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  /** Элемент «Опроса», каким его отдаёт портал: связь со сделкой и снимок контакта. */
+  const ITEM = { result: { item: { id: 777, parentId2: 351, contactId: 12, assignedById: 5 } } }
+  const SCORE = scoreSurvey(TEMPLATE, ANSWERS)
+
+  /** Что ушло в `crm.item.update` по каждой сущности. */
+  function writes(p: ReturnType<typeof portal>) {
+    return p.of('crm.item.update').map(one => one.params as Record<string, unknown>)
+  }
+
+  it('пишет и в сделку, и в контакт', async () => {
+    const p = portal()
+    await tryEntityScore(p.call, ITEM, SCORE)
+
+    expect(writes(p).map(params => params.entityTypeId)).toEqual([2, 3])
+    expect(writes(p).map(params => params.id)).toEqual([351, 12])
+  })
+
+  it('БЕЗ ОБЩЕГО БАЛЛА не пишет ничего — ноль не то же самое, что молчание', async () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД. Тот же инвариант, что у нетронутого ползунка: «нет ответа — это `null`,
+    // а не ноль». Ответили только на текстовые вопросы — общего балла нет; записав в поле
+    // «оценка клиента» ноль, мы выдали бы за молчание худшую возможную оценку, и фильтр
+    // «ниже семи» показал бы менеджеру сделку, по которой никто ничего не оценивал.
+    const p = portal()
+    await tryEntityScore(p.call, ITEM, { sections: [], overall: null })
+
+    expect(p.methods()).not.toContain('crm.item.update')
+  })
+
+  it('без сделки и без контакта говорит об этом в журнал', async () => {
+    // Состояние «ответ в портале, а фильтры по нему не работают» ненаблюдаемо по построению.
+    // Ровно такой исход у связи со сделкой был невидимым месяц.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = portal()
+
+    await tryEntityScore(p.call, { result: { item: { id: 777 } } }, SCORE)
+
+    expect(p.methods()).not.toContain('crm.item.update')
+    expect(JSON.stringify(warn.mock.calls)).toContain('ни сделки, ни контакта')
+  })
+
+  it('отказ по контакту не мешает сделке', async () => {
+    // Сделка важнее: по ней фильтруют. Общий цикл, падающий на первой ошибке, оставил бы
+    // без балла обе сущности из-за одной.
+    const p = portal({
+      'crm.item.update': (params: Record<string, unknown>) => {
+        if (params.entityTypeId === 2) return { result: { item: { id: 351 } } }
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    await tryEntityScore(p.call, ITEM, SCORE)
+
+    expect(writes(p)).toHaveLength(2)
+  })
+
+  it('в журнал не уходит идентификатор клиента портала', async () => {
+    // ⚠ Инвариант проекта: идентификаторы клиентов портала в логи не попадают. Название
+    // сущности и код отказа — можно, номер сделки — нет.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = portal({
+      'crm.item.update': () => {
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    await tryEntityScore(p.call, ITEM, SCORE)
+
+    const written = JSON.stringify(warn.mock.calls)
+    expect(written).toContain('сделка')
+    expect(written).not.toContain('351')
+    expect(written).not.toContain('12')
+  })
+
+  it('неудача записи балла НЕ проваливает доставку', async () => {
+    // Ответ уже в элементе смарт-процесса, то есть в источнике истины. Проваливать доставку
+    // из-за поля на чужой сущности значит поменять местами главное и второстепенное.
+    const p = portal({
+      'crm.item.update': (params: Record<string, unknown>) => {
+        if (params.entityTypeId === 2 || params.entityTypeId === 3) throw new Error('ACCESS_DENIED')
+        return { result: { item: { id: 777 } } }
+      },
+      'crm.item.get': ITEM,
+    })
+
+    await expect(writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)).resolves.toMatchObject({ ok: true })
+  })
+
+  it('элемент читается ОДИН раз на оба шага', async () => {
+    // Раньше его читал только таймлайн. Второй читатель означал бы второй `crm.item.get`
+    // на каждый доставленный ответ — при том что данные в нём одни и те же.
+    const p = portal({ 'crm.item.get': ITEM })
+
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
+
+    expect(p.of('crm.item.get')).toHaveLength(1)
   })
 })

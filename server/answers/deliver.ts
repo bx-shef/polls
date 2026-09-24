@@ -3,6 +3,12 @@ import { callForPortal } from '../b24/from-record'
 import { readStoredRefs } from '../b24/provision'
 import type { RestCall } from '../b24/provision'
 import type { SmartProcessRef } from '../domain/portals/smart-processes'
+import {
+  buildWriteScoreCall,
+  CONTACT_ENTITY,
+  DEAL_ENTITY,
+  type CrmEntity,
+} from '../domain/portals/crm-fields'
 import { getDb, schema } from '../db/client'
 import { buildAnswerComment } from '../domain/answers/comment'
 import { safeRefusal } from '../domain/answers/portal-errors'
@@ -11,6 +17,7 @@ import {
   buildReadSurveyItemCall,
   parentFieldNames,
   readAssignedById,
+  readContactId,
   readParentDealId,
   readUpdatedItemId,
 } from '../domain/answers/portal-calls'
@@ -265,8 +272,76 @@ export async function writeToPortal(
   if (updated === null) return { ok: false, retry: true, reason: 'портал не подтвердил обновление элемента' }
 
   // Дальше — только удобство. Всё, что было обязательным, уже в портале.
-  const reported = await tryTimelineActivity(call, survey, itemId, template, answers, score)
+  //
+  // ⚠ Элемент читается ОДИН раз и раздаётся обоим шагам. Раньше его читал только таймлайн;
+  // с появлением полей на сделке второй читатель означал бы второй `crm.item.get`
+  // на каждый доставленный ответ — при том что данные в нём одни и те же.
+  let item: unknown
+  try {
+    const read = buildReadSurveyItemCall(survey, itemId)
+    item = await call(read.method, read.params)
+  }
+  catch (error) {
+    logger.warn({ reason: safeRefusal(error) }, 'элемент не перечитан; ответ в портале, но ни дела, ни полей не будет')
+    return { ok: true, itemId: updated, reported: false }
+  }
+
+  // ⚠ Порядок: сначала поля на сделке и контакте, потом дело. Поля — это то, ради чего
+  // всё затевалось со стороны клиента (фильтры и роботы по сделкам), а дело — запись
+  // в историю. Упадёт второе — первое уже на месте.
+  await tryEntityScore(call, item, score)
+
+  const reported = await tryTimelineActivity(call, survey, itemId, template, answers, score, item)
   return { ok: true, itemId: updated, reported }
+}
+
+/**
+ * Записать последний балл и дату в сделку и контакт клиента.
+ *
+ * ⚠ ЗАЧЕМ ЭТО ВООБЩЕ. Балл на элементе «Опроса» не виден ни фильтру в списке сделок,
+ * ни роботу на стадии: элемент — дочерняя сущность. Обещанное клиенту «покажи сделки
+ * с оценкой ниже семи» работает только через поле на самой сделке. Issue #23.
+ *
+ * ⚠ Неудача НЕ проваливает доставку: ответ уже в источнике истины. Но и молчать нельзя —
+ * состояние «ответ в портале, а фильтры по нему не работают» ненаблюдаемо по построению,
+ * и это ровно тот класс беды, который у связи со сделкой был невидимым месяц.
+ *
+ * ⚠ Общего балла может не быть (`null`) — например, ответили только на текстовые вопросы.
+ * Тогда писать нечего: ноль в поле «оценка клиента» был бы худшей возможной оценкой,
+ * выданной за молчание.
+ */
+export async function tryEntityScore(
+  call: RestCall,
+  item: unknown,
+  score: ReturnType<typeof scoreSurvey>,
+): Promise<void> {
+  if (score.overall === null) {
+    logger.info({}, 'балл в сделку не записан: общего балла у этого ответа нет')
+    return
+  }
+
+  const targets: { entity: CrmEntity, id: number }[] = [
+    { entity: DEAL_ENTITY, id: readParentDealId(item, DEAL_ENTITY_TYPE_ID) ?? 0 },
+    { entity: CONTACT_ENTITY, id: readContactId(item) },
+  ].filter(target => target.id > 0)
+
+  if (targets.length === 0) {
+    logger.warn({ parentFields: parentFieldNames(item) }, 'балл никуда не записан: у элемента нет ни сделки, ни контакта')
+    return
+  }
+
+  const completedAt = new Date()
+  for (const target of targets) {
+    try {
+      const write = buildWriteScoreCall(target.entity, target.id, score.overall, completedAt)
+      await call(write.method, write.params)
+    }
+    catch (error) {
+      // ⚠ В журнал уходит НАЗВАНИЕ сущности и код отказа, но не идентификатор: он указывает
+      // на конкретного клиента портала, а таким в журнале места нет.
+      logger.warn({ entity: target.entity.title, reason: safeRefusal(error) }, 'балл не записан в сущность CRM')
+    }
+  }
 }
 
 /**
@@ -290,10 +365,10 @@ export async function tryTimelineActivity(
   template: SurveyTemplate,
   answers: Record<string, AnswerValue>,
   score: ReturnType<typeof scoreSurvey>,
+  /** Уже прочитанный элемент «Опроса». Читает его `writeToPortal` — один раз на обоих. */
+  item: unknown,
 ): Promise<boolean> {
   try {
-    const read = buildReadSurveyItemCall(survey, itemId)
-    const item = await call(read.method, read.params)
     const dealId = readParentDealId(item, DEAL_ENTITY_TYPE_ID)
     if (dealId === null) {
       // ⚠ В журнал уходят ИМЕНА полей связи, а не значения: имя описывает схему

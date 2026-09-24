@@ -1,6 +1,14 @@
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { logger } from '../utils/logger'
 import {
+  buildListFieldsCall,
+  planMissingCrmFields,
+  readCrmFieldNames,
+  SCORE_FIELDS,
+  SCORED_ENTITIES,
+  type CrmEntity,
+} from '../domain/portals/crm-fields'
+import {
   buildBindDealTabCall,
   buildDealTabHandlerUrl,
   buildUnbindDealTabCall,
@@ -140,6 +148,17 @@ export interface ProvisionResult extends SmartProcessRefs {
   dealLinked: boolean
   /** Разложили ли мы карточку «Опроса». `false` — там уже была своя раскладка либо не вышло. */
   cardConfigured: boolean
+  /**
+   * Сколько полей заведено на сущностях CRM клиента (сделка, контакт).
+   *
+   * ⚠ `null` означает, что завести их НЕ ВЫШЛО, и это не то же самое, что ноль. Ноль —
+   * «всё уже было на месте», штатный исход повторной установки. `null` — портал отказал,
+   * чаще всего по правам, и тогда обещанное клиенту «отфильтровать сделки с плохой оценкой»
+   * не работает, хотя приложение установлено и всё остальное делает. Вызывающий обязан
+   * это залогировать: ровно такой исход — «установлено, но главного не делает» — уже был
+   * месяц невидимым у связи со сделкой.
+   */
+  crmFields: number | null
 }
 
 /**
@@ -206,6 +225,58 @@ async function listAllFieldNames(call: RestCall, spTypeId: number): Promise<stri
     names.push(...readFieldNames(response))
     start = readNextOffset(response)
   }
+  return names
+}
+
+/**
+ * Завести на сделке и контакте клиента поля «оценка» и «дата опроса».
+ *
+ * ⚠ ДЕЛАЕТСЯ ПРИ УСТАНОВКЕ, а не по отдельной настройке, и это решение стоит назвать.
+ * Альтернатива — заводить поля по галочке в настройках — откладывала бы главное обещание
+ * продукта до экрана настроек, которого ещё нет, и оставляла бы клиента с приложением,
+ * которое «почти работает». Цена обратного выбора записана в шапке `crm-fields.ts`: два
+ * лишних поля в карточке каждой сделки, которые при удалении приложения остаются.
+ *
+ * ⚠ Одно упавшее поле НЕ обрывает остальные — тот же приём и та же причина, что у полей
+ * смарт-процесса: у соседа цикл падал на первой ошибке, и поля ниже по списку не создавались
+ * никогда.
+ *
+ * Возвращает число созданных. Ноль — всё уже было: повторная установка ничего не портит.
+ */
+async function ensureCrmScoreFields(call: RestCall): Promise<number> {
+  let added = 0
+  const failures: string[] = []
+
+  for (const entity of SCORED_ENTITIES) {
+    const existing = await listAllCrmFieldNames(call, entity)
+    for (const plan of planMissingCrmFields(entity, SCORE_FIELDS, existing)) {
+      try {
+        await call(plan.method, plan.params)
+        added++
+      }
+      catch (error) {
+        const code = ((plan.params.fields as { FIELD_NAME?: unknown }).FIELD_NAME)
+        failures.push(`${entity.title}/${String(code)}: ${safeRefusal(error)}`)
+      }
+    }
+  }
+
+  if (failures.length > 0) throw new Error(failures.join('; '))
+  return added
+}
+
+/** Имена пользовательских полей сущности, со всех страниц. */
+async function listAllCrmFieldNames(call: RestCall, entity: CrmEntity): Promise<string[]> {
+  const names: string[] = []
+  let start: number | null = 0
+
+  for (let page = 0; page < MAX_PAGES && start !== null; page++) {
+    const list = buildListFieldsCall(entity, start)
+    const response = await call(list.method, list.params)
+    names.push(...readCrmFieldNames(response))
+    start = readNextOffset(response)
+  }
+
   return names
 }
 
@@ -407,6 +478,19 @@ export async function provisionSmartProcesses(
     logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Опроса» не настроена')
   }
 
+  // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
+  // в карточке «Опроса», а он дочерняя сущность: ни фильтр в списке сделок, ни робот
+  // на стадии до него не дотягиваются (issue #23). Неудача установку НЕ роняет — приложение
+  // без этих полей работает целиком, просто обещание «отфильтровать сделки с плохой оценкой»
+  // остаётся невыполненным, и это видно в журнале.
+  let crmFields: number | null = null
+  try {
+    crmFields = await ensureCrmScoreFields(call)
+  }
+  catch (error) {
+    logger.warn({ reason: safeRefusal(error) }, 'поля оценки на сделке и контакте не заведены')
+  }
+
   return {
     template: template.ref,
     survey: survey.ref,
@@ -417,6 +501,7 @@ export async function provisionSmartProcesses(
     addedFields: addedTemplate + addedSurvey,
     dealLinked,
     cardConfigured,
+    crmFields,
   }
 }
 
