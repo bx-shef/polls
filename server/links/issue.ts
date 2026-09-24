@@ -1,5 +1,6 @@
 import { and, eq, ne } from 'drizzle-orm'
 import { getDb, schema } from '../db/client'
+import type { SurveyHeader } from '../domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../domain/surveys/model'
 
 /**
@@ -113,6 +114,8 @@ export async function insertLink(link: {
   surveyCode: string
   surveyVersion: number
   expiresAt: Date
+  /** Шапка анкеты снимком. Пусто — портал её не отдал; страница обойдётся без неё. */
+  header?: SurveyHeader
 }): Promise<void> {
   await getDb().insert(schema.linkIndex).values({
     portalId: link.portalId,
@@ -121,6 +124,7 @@ export async function insertLink(link: {
     surveyCode: link.surveyCode,
     surveyVersion: link.surveyVersion,
     expiresAt: link.expiresAt,
+    header: link.header ?? null,
     // Сразу `sent`, а не `created`: ссылку отдают человеку в тот же момент, когда выпускают.
     // Состояние `created` живёт для выпуска пачкой, где между выпуском и отправкой есть зазор.
     status: 'sent',

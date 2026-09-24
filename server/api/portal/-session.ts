@@ -4,7 +4,7 @@ import { callForPortal } from '../../b24/from-record'
 import { verifyFrameToken } from '../../b24/frame-auth'
 import { trustedAddress } from '../../domain/links/rate-limit'
 import { countAndDecidePortal } from '../../links/rate'
-import type { RestCall } from '../../b24/provision'
+import type { RestBatch, RestCall } from '../../b24/provision'
 import { findPortalByMemberId, type IssuingPortal } from '../../links/issue'
 import { isDatabaseConfigured } from '../../db/client'
 import { logger } from '../../utils/logger'
@@ -29,6 +29,17 @@ export interface PortalSession {
   /** Кто пришёл. Пишется в журнал выпуска — по нему видно, кто выдал ссылку. */
   userId: number
   /**
+   * Его же имя, как его знает портал. Пусто — у сотрудника не заполнено.
+   *
+   * ⚠ Приезжает даром: проверка фреймового токена идёт методом `profile`, а он отдаёт
+   * `NAME`/`LAST_NAME` вместе с `ID`. Спросить имя отдельно было бы нечем — скоупа
+   * `user`/`user_brief` приложение не запрашивает.
+   *
+   * ⚠ В журнал НЕ пишется. Идентификатора (`userId`) для разбора «кто выдал ссылку»
+   * достаточно, а имя — лишние персональные данные в файле, который переживёт инцидент.
+   */
+  userName: string
+  /**
    * Фреймовый токен сотрудника.
    *
    * ⚠ Живёт только внутри одного запроса и НЕ сохраняется. Нужен там, где надо спросить
@@ -38,6 +49,8 @@ export interface PortalSession {
   authId: string
   /** Вызов портала от имени приложения. */
   call: RestCall
+  /** Он же пакетом: несколько связанных чтений за одно обращение. */
+  batch: RestBatch
 }
 
 /**
@@ -90,12 +103,19 @@ export async function openPortalSession(event: H3Event): Promise<PortalSession> 
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
   }
 
-  const call = callForPortal(portal)
-  if (call === null) {
+  const caller = callForPortal(portal)
+  if (caller === null) {
     // Токенов нет или они не читаются. Наружу — 503: это наша беда, а не вина обратившегося,
     // и повторить запрос осмысленно, когда её починят.
     throw createError({ statusCode: 503, statusMessage: 'Portal not authorised' })
   }
 
-  return { portal, userId: check.userId, authId, call }
+  return {
+    portal,
+    userId: check.userId,
+    userName: check.userName,
+    authId,
+    call: caller.call,
+    batch: caller.batch,
+  }
 }

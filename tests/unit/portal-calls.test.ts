@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCreateSurveyItemCall,
   buildListTemplatesCall,
+  buildDealFactsBatch,
   buildInvitationTitle,
-  buildReadDealCall,
   DEAL_ENTITY_TYPE_ID,
   readCreatedItemId,
   readDealFacts,
   readPublishedTemplates,
+  readSurveyHeader,
 } from '../../server/domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
@@ -216,11 +217,11 @@ describe('клиент сделки в приглашении', () => {
   })
 
   it('читает клиента и название, отсеивая нули и мусор', () => {
-    expect(readDealFacts({ result: { item: { contactId: 2, companyId: '3', title: ' Test ' } } }))
+    expect(readDealFacts({ deal: { item: { contactId: 2, companyId: '3', title: ' Test ' } } }))
       .toEqual({ contactId: 2, companyId: 3, title: 'Test' })
-    expect(readDealFacts({ result: { item: { contactId: 0, companyId: null } } }))
+    expect(readDealFacts({ deal: { item: { contactId: 0, companyId: null } } }))
       .toEqual({ contactId: 0, companyId: 0, title: '' })
-    expect(readDealFacts(null)).toEqual({ contactId: 0, companyId: 0, title: '' })
+    expect(readDealFacts({})).toEqual({ contactId: 0, companyId: 0, title: '' })
   })
 
   it('НЕ передаёт `select` — у метода такого параметра нет', () => {
@@ -228,10 +229,55 @@ describe('клиент сделки в приглашении', () => {
     // и `useOriginalUfNames`; портал молча игнорировал `select`, а комментарий и прежний
     // тест обещали экономию, которой не существует. Обещать несуществующую гарантию хуже,
     // чем не обещать ничего: следующий читатель на неё положится.
-    const call = buildReadDealCall(42)
+    const { deal } = buildDealFactsBatch(42)
 
-    expect(call.params.entityTypeId).toBe(DEAL_ENTITY_TYPE_ID)
-    expect(call.params).not.toHaveProperty('select')
+    expect(deal!.params.entityTypeId).toBe(DEAL_ENTITY_TYPE_ID)
+    expect(deal!.params).not.toHaveProperty('select')
+  })
+
+  it('сделка, компания и контакт — один пакет, а не три вызова', () => {
+    // ⚠ Ссылку выпускают нажатием кнопки в карточке. Три обращения к порталу вместо одного —
+    // это и лимит клиента, и секунды ожидания у сотрудника, и всё это на каждый выпуск.
+    const batch = buildDealFactsBatch(42)
+
+    expect(Object.keys(batch).sort()).toEqual(['company', 'contact', 'deal'])
+    expect(Object.values(batch).every(cmd => cmd.method === 'crm.item.get')).toBe(true)
+  })
+
+  it('компания и контакт адресуются через результат сделки', () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД ПАКЕТА. Без подстановки `$result[…]` их идентификаторы неизвестны
+    // до ответа на первую команду, и пакет распался бы на два обращения — то есть ровно
+    // то, ради устранения чего он и заведён. Форма проверена на живом портале 23.09.
+    const batch = buildDealFactsBatch(42)
+
+    expect(batch.company!.params.id).toBe('$result[deal][item][companyId]')
+    expect(batch.contact!.params.id).toBe('$result[deal][item][contactId]')
+  })
+
+  it('шапка собирается из трёх команд и имени сотрудника', () => {
+    const header = readSurveyHeader({
+      deal: { item: { title: ' Рекламная кампания, осень ' } },
+      company: { item: { title: 'Ромашка Дистрибуция' } },
+      contact: { item: { name: 'Игорь', lastName: 'Петров', secondName: 'Сергеевич' } },
+    }, 'Мария Ковалёва')
+
+    expect(header).toEqual({
+      company: 'Ромашка Дистрибуция',
+      project: 'Рекламная кампания, осень',
+      // Отчество намеренно мимо: шапка, а не паспорт.
+      respondent: 'Игорь Петров',
+      manager: 'Мария Ковалёва',
+    })
+  })
+
+  it('упавшая команда пакета оставляет свою строку шапки пустой, а не ломает выпуск', () => {
+    // ⚠ У сделки может не быть компании — тогда её команда приезжает `NOT_FOUND`
+    // (проверено на живом портале), и в карте успешных команд ключа просто нет.
+    // Это законный исход, а не поломка: страница не нарисует строку, и всё.
+    expect(readSurveyHeader({ deal: { item: { title: 'Проект' } } }, ''))
+      .toEqual({ company: '', project: 'Проект', respondent: '', manager: '' })
+    expect(readSurveyHeader({}, 'Мария'))
+      .toEqual({ company: '', project: '', respondent: '', manager: 'Мария' })
   })
 
   it('ответственный ставится явно — иначе портал повесит дело на владельца токена', () => {

@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import { getDb, schema } from '../db/client'
 import type { LinkStatus } from '../domain/links/access'
+import type { SurveyHeader } from '../domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../domain/surveys/model'
 
 /**
@@ -20,6 +21,10 @@ export interface StoredLink {
   surveyCode: string
   surveyVersion: number
   itemId: number
+  /** Шапка анкеты снимком на момент выпуска. `null` — ссылку выпустили без неё или уже стёрли. */
+  header: SurveyHeader | null
+  /** Когда выпустили. Показывается в шапке — датой опроса. */
+  createdAt: Date
 }
 
 /**
@@ -38,6 +43,8 @@ export async function findLinkByTokenHash(tokenHash: string): Promise<StoredLink
       surveyCode: schema.linkIndex.surveyCode,
       surveyVersion: schema.linkIndex.surveyVersion,
       itemId: schema.linkIndex.itemId,
+      header: schema.linkIndex.header,
+      createdAt: schema.linkIndex.createdAt,
     })
     .from(schema.linkIndex)
     .where(eq(schema.linkIndex.tokenHash, tokenHash))
@@ -45,7 +52,7 @@ export async function findLinkByTokenHash(tokenHash: string): Promise<StoredLink
 
   const row = rows[0]
   if (row === undefined) return null
-  return { ...row, status: row.status as LinkStatus }
+  return { ...row, status: row.status as LinkStatus, header: row.header as SurveyHeader | null }
 }
 
 /**
@@ -100,7 +107,12 @@ export async function saveAnswer(link: StoredLink, tokenHash: string, payload: u
   return getDb().transaction(async (tx) => {
     const closed = await tx
       .update(schema.linkIndex)
-      .set({ status: 'completed' })
+      // ⚠ Шапка стирается ТЕМ ЖЕ запросом, которым ссылка закрывается. В ней лежат имена
+      // компании и контакта — персональные данные клиента портала, а показывать их больше
+      // некому: по закрытой ссылке страница не открывается. Отдельным запросом это можно
+      // забыть, а рассинхронизировать одну запись строки — нечем. Тот же приём и та же
+      // причина, что у снятия отметки мёртвого гранта в `saveRefreshedTokens`.
+      .set({ status: 'completed', header: null })
       .where(and(
         eq(schema.linkIndex.id, link.id),
         // Только из рабочих состояний: повторная отправка по уже закрытой ссылке

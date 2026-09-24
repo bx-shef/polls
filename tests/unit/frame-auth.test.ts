@@ -43,7 +43,30 @@ describe('подтверждение фреймового токена', () => {
     // а сравнение с числом молча даёт ложь.
     const outcome = await verifyFrameToken(DOMAIN, FRAME_TOKEN, answering({ result: { ID: '17' } }))
 
-    expect(outcome).toEqual({ ok: true, userId: 17 })
+    expect(outcome).toEqual({ ok: true, userId: 17, userName: '' })
+  })
+
+  it('заодно приносит имя сотрудника — им подписана шапка анкеты', async () => {
+    // ⚠ Имя берётся ЗДЕСЬ не ради удобства, а потому что взять его больше неоткуда:
+    // `user.get` требует скоуп `user`/`user_brief`, которого приложение не запрашивает.
+    // `profile` отдаёт `NAME`/`LAST_NAME` вместе с `ID`, и этот вызов мы делаем и так —
+    // то есть имя не стоит ни одного лишнего обращения к порталу.
+    const outcome = await verifyFrameToken(
+      DOMAIN,
+      FRAME_TOKEN,
+      answering({ result: { ID: 17, NAME: ' Мария ', LAST_NAME: 'Ковалёва' } }),
+    )
+
+    expect(outcome).toEqual({ ok: true, userId: 17, userName: 'Мария Ковалёва' })
+  })
+
+  it('незаполненное имя — пустая строка, а не «undefined undefined»', async () => {
+    // Такое уезжало бы в шапку анкеты постороннему человеку.
+    const only = await verifyFrameToken(DOMAIN, FRAME_TOKEN, answering({ result: { ID: 17, NAME: 'Мария' } }))
+    const none = await verifyFrameToken(DOMAIN, FRAME_TOKEN, answering({ result: { ID: 17 } }))
+
+    expect(only).toMatchObject({ userName: 'Мария' })
+    expect(none).toMatchObject({ userName: '' })
   })
 
   it('не отправляет токен в адресе — только телом', async () => {

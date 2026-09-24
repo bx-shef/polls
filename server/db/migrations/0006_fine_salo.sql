@@ -1,0 +1,1 @@
+ALTER TABLE "link_index" ADD COLUMN "header" jsonb;

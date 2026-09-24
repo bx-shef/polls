@@ -34,6 +34,8 @@ const REFUSALS: Record<string, string> = {
   'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
 }
 
+definePageMeta({ layout: 'portal' })
+
 const route = useRoute()
 
 const loading = ref(true)
@@ -148,8 +150,15 @@ const expiresLabel = computed(() => {
 </script>
 
 <template>
-  <B24App>
-    <div class="p-4">
+  <B24DashboardPanel id="deal-tab">
+    <template #header>
+      <B24DashboardNavbar
+        :toggle="false"
+        title="Опросы"
+      />
+    </template>
+
+    <template #body>
       <B24Skeleton
         v-if="loading"
         class="h-24 w-full"
@@ -230,6 +239,6 @@ const expiresLabel = computed(() => {
           </div>
         </div>
       </template>
-    </div>
-  </B24App>
+    </template>
+  </B24DashboardPanel>
 </template>
