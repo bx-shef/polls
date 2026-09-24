@@ -120,7 +120,12 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
 
   return score.sections.some((section) => {
     const lowest = lowestByKey.get(section.key)
-    return lowest !== undefined && section.band !== null && section.band.from === lowest.from
+    // ⚠ Сравнение ПО ССЫЛКЕ, а не по границе. `findBand` в `scoring.ts` отдаёт сам элемент
+    // `section.bands`, а не копию, — значит тождество и есть точный ответ на вопрос
+    // «тот ли это диапазон». Прежняя редакция сверяла `from`, и шаблон с двумя диапазонами
+    // от одной границы (ручная правка, импорт из старого решения) красил дело красным вопреки
+    // тому, что клиент написал в анкете. Нашла панель ревью PR #37–#39, issue #42.
+    return lowest !== undefined && section.band !== null && section.band === lowest
   })
 }
 
@@ -177,7 +182,18 @@ export function capTitle(title: string): string {
   return capTo(title, MAX_TITLE_BYTES)
 }
 
-/** Найти уже записанное дело по нашей метке. */
+/**
+ * Найти уже записанное дело по нашей метке.
+ *
+ * ⚠ ПО ВЛАДЕЛЬЦУ НЕ СУЖАЕМ, и это не забывчивость — сужать нельзя. Панель ревью
+ * (issue #42, пункт 2) справедливо заметила, что сделка к этому моменту известна, а фильтр
+ * без неё заставляет `crm.activity.list` смотреть дела всего портала. Но замер 24.09
+ * показал, что `crm.activity.binding.add` ПЕРЕНОСИТ владельца дела на привязанную сущность:
+ * у дела с удавшейся привязкой владелец — элемент «Опроса», у дела без неё — сделка.
+ * Обе формы законны и существуют одновременно, так что сужение по любой из них теряло бы
+ * половину. Пара `ORIGINATOR_ID` + `ORIGIN_ID` уникальна сама по себе и от владельца
+ * не зависит — ею и ищем.
+ */
 export function buildFindActivityCall(originId: string): PortalCall {
   return {
     method: ACTIVITY_LIST_METHOD,
