@@ -116,6 +116,21 @@ export function parentFieldNames(response: unknown): string[] {
 }
 
 /**
+ * Контакт, которого спрашивали, — с элемента «Опроса».
+ *
+ * ⚠ С ЭЛЕМЕНТА, а не со сделки, и это принципиально. На элементе контакт — СНИМОК на момент
+ * выпуска ссылки: мы сами его туда положили. У сделки его могли с тех пор поменять, и балл
+ * уехал бы человеку, которого не спрашивали.
+ *
+ * Ноль — контакта не было или прочитать не вышло; вызывающий просто не запишет ему балл.
+ */
+export function readContactId(response: unknown): number {
+  const raw = (response as { result?: { item?: Record<string, unknown> } } | null)?.result?.item?.contactId
+  const id = Number(typeof raw === 'string' ? raw.trim() : raw)
+  return Number.isInteger(id) && id > 0 ? id : 0
+}
+
+/**
  * Ответственный за элемент «Опрос» — он же тот, кто выпускал ссылку.
  *
  * ⚠ Берём с ЭЛЕМЕНТА, а не со сделки, и не лишним вызовом: элемент мы читаем всё равно,
