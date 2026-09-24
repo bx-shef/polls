@@ -192,6 +192,62 @@ export function buildFindActivityCall(originId: string): PortalCall {
   }
 }
 
+/**
+ * Привязать дело ко второй сущности CRM.
+ *
+ * ⚠ ЗАЧЕМ. Дело создаётся владельцем-сделкой, чтобы попасть в её ленту и в список дел
+ * ответственного. Но элемент «Опроса» — и есть запись о прохождении, и читать итог логично
+ * прямо там: владелец открыл карточку «Опроса» и увидел пустой таймлайн с предложением
+ * «создайте дело» (issue #44). Привязка это чинит, не трогая владельца.
+ *
+ * ⚠ Предел — 100 элементов CRM на одно дело. Нам нужна ОДНА дополнительная, запас не наш.
+ */
+export function buildBindActivityCall(activityId: string, entityTypeId: number, entityId: number): PortalCall {
+  // ⚠ ПОСЛЕДНЯЯ ПРИВЯЗКА СТАНОВИТСЯ ВЛАДЕЛЬЦЕМ ДЕЛА. Замерено на живом портале 24.09,
+  // в документации метода этого нет: после привязки `crm.activity.get` показывает владельцем
+  // привязанную сущность, а по фильтру владельца прежней сущности дело уже не находится.
+  // Поэтому наш поиск существующего идёт ПО МЕТКЕ (`ORIGINATOR_ID` + `ORIGIN_ID`), а не
+  // по владельцу, — и менять это нельзя, иначе повторная доставка создаст второе дело.
+  return { method: 'crm.activity.binding.add', params: { activityId: Number(activityId), entityTypeId, entityId } }
+}
+
+/** Какие привязки уже стоят на деле. */
+export function buildListBindingsCall(activityId: string): PortalCall {
+  return { method: 'crm.activity.binding.list', params: { activityId: Number(activityId) } }
+}
+
+/**
+ * Прочитать уже стоящие привязки в виде ключей «тип:идентификатор».
+ *
+ * ⚠ ЧИТАЕМ ОБА НАПИСАНИЯ КЛЮЧЕЙ, и это не перестраховка. Сосед замерил на своём портале
+ * ВЕРХНИЙ регистр (`ENTITY_TYPE_ID`/`ENTITY_ID`), а наш тестовый портал 24.09 отдал
+ * camelCase (`entityTypeId`/`entityId`) — два измерения, два ответа. Разбор в `docs/PROCESS.md`.
+ * Прочитав только одно написание, мы получили бы пустой набор, сочли привязку отсутствующей
+ * и напоролись на `ACTIVITY_IS_ALREADY_BOUND` — отказ, который через SDK доезжает
+ * локализованным текстом без кода, то есть неотличим от настоящего.
+ *
+ * Ошибка чтения у вызывающего = пустой набор: худшее, что случится, — «уже привязано».
+ */
+export function readBindingKeys(response: unknown): Set<string> {
+  const rows = (response as { result?: unknown } | null)?.result
+  const keys = new Set<string>()
+  if (!Array.isArray(rows)) return keys
+
+  for (const raw of rows) {
+    const row = raw as Record<string, unknown>
+    const type = Number(row.ENTITY_TYPE_ID ?? row.entityTypeId)
+    const id = Number(row.ENTITY_ID ?? row.entityId)
+    if (Number.isInteger(type) && Number.isInteger(id)) keys.add(bindingKey(type, id))
+  }
+
+  return keys
+}
+
+/** Ключ пары. Своя копия формата у вызывающего разошлась бы с этой молча. */
+export function bindingKey(entityTypeId: number, entityId: number): string {
+  return `${entityTypeId}:${entityId}`
+}
+
 /** Идентификатор найденного дела; `null` — такого ещё нет. */
 export function readFoundActivityId(response: unknown): string | null {
   const result = (response as { result?: unknown } | null)?.result

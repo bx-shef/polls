@@ -470,3 +470,101 @@ describe('балл уезжает в сделку и в контакт', () => {
     expect(p.of('crm.item.get')).toHaveLength(1)
   })
 })
+
+/**
+ * Привязка дела к элементу «Опроса» (issue #44).
+ *
+ * Дело создаётся владельцем-сделкой, чтобы попасть в её ленту и в список дел ответственного.
+ * Но элемент «Опроса» — и есть запись о прохождении: владелец открыл его карточку и увидел
+ * пустой таймлайн с предложением «создайте дело». Привязка это чинит, не трогая владельца.
+ */
+describe('дело привязывается и к элементу «Опроса»', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  const ITEM = { result: { item: { id: 777, parentId2: 351, contactId: 12, assignedById: 5 } } }
+
+  /** Что ушло в привязку. */
+  function bindings(p: ReturnType<typeof portal>) {
+    return p.of('crm.activity.binding.add').map(one => one.params)
+  }
+
+  it('после создания дела ставит привязку к «Опросу»', async () => {
+    const p = portal()
+    await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    expect(bindings(p)).toEqual([{ activityId: 9001, entityTypeId: SURVEY.entityTypeId, entityId: 777 }])
+  })
+
+  it('СНАЧАЛА читает уже стоящие, потом ставит', async () => {
+    // ⚠ Повторная привязка той же пары — ошибка `ACTIVITY_IS_ALREADY_BOUND`, а через SDK
+    // до нас доезжает локализованный ТЕКСТ без кода: отличить её от настоящего отказа нечем.
+    // Один лишний вызов дешевле разбора чужой строки, которая завтра придёт на другом языке.
+    const p = portal()
+    await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    const methods = p.methods()
+    expect(methods.indexOf('crm.activity.binding.list'))
+      .toBeLessThan(methods.indexOf('crm.activity.binding.add'))
+  })
+
+  it('уже стоящую привязку второй раз не ставит', async () => {
+    const p = portal({
+      'crm.activity.binding.list': { result: [{ entityTypeId: SURVEY.entityTypeId, entityId: 777 }] },
+    })
+    await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    expect(bindings(p)).toEqual([])
+  })
+
+  it('узнаёт привязку и в ВЕРХНЕМ регистре ключей', async () => {
+    // ⚠ Два измерения, два ответа: сосед на своём портале видел `ENTITY_TYPE_ID`, наш тестовый
+    // портал 24.09 отдал `entityTypeId`. Прочитав только одно написание, мы сочли бы привязку
+    // отсутствующей и напоролись на «уже привязано».
+    const p = portal({
+      'crm.activity.binding.list': { result: [{ ENTITY_TYPE_ID: SURVEY.entityTypeId, ENTITY_ID: 777 }] },
+    })
+    await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    expect(bindings(p)).toEqual([])
+  })
+
+  it('досылает привязку делу, которое уже было записано раньше', async () => {
+    // ⚠ «Дело есть, а привязки нет» — новое состояние, которого раньше не бывало: у всех дел,
+    // записанных до этой правки, привязки нет вовсе. Без этой ветки они остались бы без неё
+    // навсегда — второй раз дело не создаётся.
+    const p = portal({ 'crm.activity.list': { result: [{ ID: 4242 }] } })
+    const done = await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    expect(done).toBe(true)
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
+    expect(bindings(p)).toEqual([{ activityId: 4242, entityTypeId: SURVEY.entityTypeId, entityId: 777 }])
+  })
+
+  it('ОТКАЗ привязки не роняет доставку и не сносит дело', async () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД. Ответ уже в портале, дело в ленте сделки уже есть. Компенсирующее
+    // удаление здесь означало бы, что мы сносим записанный итог из-за второй ленты.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = portal({
+      'crm.activity.binding.add': () => {
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    const done = await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    expect(done).toBe(true)
+    expect(p.methods()).not.toContain('crm.activity.delete')
+    expect(JSON.stringify(warn.mock.calls)).toContain('не привязано')
+  })
+
+  it('не ломает дедупликацию: поиск идёт по метке, а не по привязкам', async () => {
+    // Поиск существующего дела по паре ORIGINATOR_ID + ORIGIN_ID от числа привязок не зависит.
+    // Проверяется отдельно, потому что «дело есть, а привязки нет» — новое состояние.
+    const p = portal({ 'crm.activity.list': { result: [{ ID: 4242 }] } })
+    await tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+    const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
+    expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
+    expect(filter.ORIGIN_ID).toBe(activityOriginId(777))
+  })
+})

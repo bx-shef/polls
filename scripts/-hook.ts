@@ -126,12 +126,66 @@ export function hookBatch(base: string): RestBatch {
  *
  * ⚠ `Stop` печатается как есть: это НАШ текст, написанный для оператора, и пропускать его
  * через фильтр кодов значило бы схлопнуть подробную инструкцию в «код не распознан».
+ *
+ * ⚠ ТРИ ИСХОДА, А НЕ ДВА, и третий оплачен потерянным вечером. Раньше всё, что не `Stop`,
+ * уходило в `safeRefusal`, а он по построению схлопывает незнакомое в «портал отказал, код
+ * не распознан». Живьём этой фразой упала проверка, у которой просто не была поднята
+ * локальная база: `ECONNREFUSED` на 5432 отрапортовался как отказ портала, и следующие
+ * двадцать минут ушли на портал — туда, где всё было в порядке. Диагноз, уводящий не в ту
+ * сторону, хуже отсутствующего: без него человек хотя бы смотрит на стек.
  */
 export function report(error: unknown): number {
   if (error instanceof Stop) {
     console.error(error.message)
     return error.code
   }
-  console.error(`\nНе получилось: ${safeRefusal(error)}`)
+
+  if (!(error instanceof PortalError)) {
+    console.error(`\nНе получилось, и это НЕ отказ портала: ${localFailure(error)}.`)
+    console.error('Беда на нашей стороне — база, сеть, окружение. Портал тут ни при чём.')
+    return 1
+  }
+
+  // ⚠ Машинный код печатается РЯДОМ с фразой, и это не дублирование. `safeRefusal` схлопывает
+  // всё, чего нет в его списке, в одну строку — и правильно делает: список защищает вывод
+  // от чужой прозы, в которой едет присланное значение. Но у операторского скрипта другой
+  // читатель: человек выбирает между «чинить права», «чинить вызов» и «подождать», и без
+  // кода выбрать нечем. Печатается КОД — машинное поле ответа, чужого в нём нет.
+  const detail = error.code === '' ? '' : ` (${error.code})`
+  console.error(`\nНе получилось: ${safeRefusal(error)}${detail}`)
   return 1
+}
+
+/**
+ * Как назвать беду, которая случилась у НАС.
+ *
+ * ⚠ Наружу идут только имя класса и машинный код — ни байта текста ошибки. Соблазн напечатать
+ * `error.message` здесь велик и ровно здесь опасен: до этой ветки доходит в том числе ошибка
+ * доставки ответа, а её текст способен нести присланное респондентом значение.
+ * Имени класса (`DrizzleQueryError`) и кода (`ECONNREFUSED`) хватает, чтобы понять, куда идти.
+ */
+function localFailure(error: unknown): string {
+  const name = error instanceof Error ? error.constructor.name : typeof error
+  const code = systemCode(error)
+  return code === '' ? name : `${name}, ${code}`
+}
+
+/** Форма машинного кода Node и драйверов: `ECONNREFUSED`, `ETIMEDOUT`, `23505`. */
+const SYSTEM_CODE = /^[A-Z][A-Z0-9_]{2,31}$/
+
+/**
+ * Достать машинный код из цепочки `cause`.
+ *
+ * ⚠ Цепочка, а не одно поле: обёртки прячут причину вглубь. `DrizzleQueryError` своего `code`
+ * не имеет вовсе, а `ECONNREFUSED` лежит у него в `cause` — то есть по верхнему уровню
+ * не видно ровно того, ради чего всё и затевалось. Глубина ограничена: `cause` бывает
+ * циклическим.
+ */
+function systemCode(error: unknown, depth = 0): string {
+  if (depth > 4 || error === null || typeof error !== 'object') return ''
+
+  const code = (error as { code?: unknown }).code
+  if (typeof code === 'string' && SYSTEM_CODE.test(code)) return code
+
+  return systemCode((error as { cause?: unknown }).cause, depth + 1)
 }

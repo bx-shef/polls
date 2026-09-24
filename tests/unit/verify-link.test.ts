@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { hookBatch } from '../../scripts/-hook'
+import { hookBatch, report, Stop } from '../../scripts/-hook'
+import { PortalError } from '../../server/domain/portals/portal-error'
 import { buildAnswers } from '../../scripts/verify-link'
 import type { PublishedTemplate } from '../../server/domain/invitations/portal-calls'
 
@@ -140,5 +141,82 @@ describe('пакет через входящий вебхук', () => {
 
     const cmd = (seen[0] as { cmd: Record<string, string> }).cmd
     expect(decodeURIComponent(cmd.company!)).toBe('crm.item.get?id=$result[deal][item][companyId]')
+  })
+})
+
+describe('диагноз, который видит оператор', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  /** Подделка терминала: собирает всё, что скрипт напечатал при отказе. */
+  function printed(error: unknown): string {
+    const lines: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...parts) => void lines.push(parts.join(' ')))
+    report(error)
+    return lines.join('\n')
+  }
+
+  it('беда на нашей стороне НЕ выдаётся за отказ портала', () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД БЛОКА, и он оплачен потерянным вечером. Живьём: не поднята локальная
+    // база, `ECONNREFUSED` на 5432, — а проверка написала «портал отказал, код не распознан»
+    // и отправила чинить портал, где всё было в порядке. Диагноз, уводящий не в ту сторону,
+    // хуже отсутствующего.
+    const failure = new Error('Failed query: select "id" from "portals"')
+    failure.cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' })
+
+    const out = printed(failure)
+
+    expect(out).toContain('НЕ отказ портала')
+    expect(out).not.toContain('портал отказал')
+  })
+
+  it('машинный код достаётся из ЦЕПОЧКИ причин, а не только сверху', () => {
+    // ⚠ Без обхода `cause` видно было бы одно `Error` — то есть ничего. Настоящая обёртка
+    // (`DrizzleQueryError`) своего `code` не имеет вовсе, а `ECONNREFUSED` лежит под ней.
+    const failure = new Error('обёртка')
+    failure.cause = Object.assign(new Error('ниже'), { code: 'ECONNREFUSED' })
+
+    expect(printed(failure)).toContain('ECONNREFUSED')
+  })
+
+  it('циклическая цепочка причин не вешает скрипт', () => {
+    const first = new Error('первая')
+    const second = new Error('вторая')
+    first.cause = second
+    second.cause = first
+
+    expect(printed(first)).toContain('НЕ отказ портала')
+  })
+
+  it('текст нашей ошибки наружу НЕ уходит', () => {
+    // ⚠ До этой ветки доходит в том числе ошибка доставки ответа, а её текст способен нести
+    // присланное респондентом значение. Инвариант «не логировать текст ответа клиента»
+    // действует и в операторском скрипте: печатаем имя класса и код, не сообщение.
+    const failure = new Error('ответ клиента: всё плохо, верните деньги')
+
+    expect(printed(failure)).not.toContain('всё плохо')
+  })
+
+  it('отказ портала называется кодом, а проза портала остаётся при портале', () => {
+    const out = printed(new PortalError('ACCESS_DENIED', 'Access denied: нет прав у пользователя Иванова'))
+
+    expect(out).toContain('ACCESS_DENIED')
+    expect(out).not.toContain('Иванова')
+  })
+
+  it('незнакомый код портала всё равно виден оператору', () => {
+    // `safeRefusal` схлопывает незнакомое в одну фразу — и правильно делает. Но выбор между
+    // «чинить права», «чинить вызов» и «подождать» по этой фразе сделать нельзя, а по коду можно.
+    const out = printed(new PortalError('SOME_NEW_CODE', 'проза портала'))
+
+    expect(out).toContain('SOME_NEW_CODE')
+    expect(out).not.toContain('проза портала')
+  })
+
+  it('наш собственный диагноз печатается как есть', () => {
+    // `Stop` — текст, написанный для оператора. Пропустить его через фильтр кодов значило бы
+    // схлопнуть подробную инструкцию в «код не распознан».
+    const out = printed(new Stop('  ✗ Смарт-процесс «Опрос» не найден. Запустите verify:install.', 2))
+
+    expect(out).toContain('verify:install')
   })
 })
