@@ -424,13 +424,49 @@ async function submit() {
                 @update:model-value="answers[question.key] = Number($event)"
               />
               <output class="value">{{ scaleLabel(question) }}</output>
+
+              <!--
+                ⚠ ЕДИНСТВЕННЫЙ СПОСОБ ВЕРНУТЬСЯ В «НЕ ОТВЕЧАЛ». У ползунка значение есть
+                всегда, и без этой кнопки промах пальцем НАВСЕГДА превращается в оценку,
+                которой человек не ставил. На кнопках это делалось повторным нажатием
+                по выбранному делению; при переходе на ползунок возможность потерялась,
+                и потерялась молча — вместе с гвардом, который её держал (issue #16).
+
+                ⚠ Имя кнопке даёт СВОЙ текст, а связь с вопросом — идентификатор.
+                Формулировку вопроса в атрибут не кладём: на этой странице её пишет
+                сотрудник портала, а читает посторонний человек.
+              -->
+              <span class="clear-slot">
+                <button
+                  v-if="typeof answers[question.key] === 'number'"
+                  type="button"
+                  class="clear"
+                  :aria-describedby="`q${si}-${qi}`"
+                  @click="answers[question.key] = null"
+                >
+                  <span class="visually-hidden">Сбросить ответ</span>
+                  <span aria-hidden="true">×</span>
+                </button>
+              </span>
             </div>
 
             <template v-else>
-              <textarea
+              <!--
+                ⚠ Второй и последний компонент набора на этой странице — и по той же причине,
+                что ползунок: виджеты вопросов общие с порталом. `autoresize` просил владелец,
+                и он здесь не украшение: поле открытого вопроса разобранной анкеты человек
+                заполняет абзацем, а не строкой, и прокрутка внутри четырёх строк на телефоне
+                означает, что написанного не видно целиком.
+
+                `maxrows` стоит, чтобы поле не выросло на весь экран и не увело кнопку
+                «Отправить» за его край: восемнадцать строк — это примерно экран телефона.
+              -->
+              <B24Textarea
                 v-model="answers[question.key] as string"
                 class="text"
-                rows="4"
+                :rows="4"
+                :maxrows="18"
+                autoresize
               />
               <p
                 v-if="usedBytes(question.key) > MAX_TEXT_BYTES * 0.75"
@@ -705,6 +741,44 @@ legend {
 }
 
 /*
+  Место под кнопку сброса зарезервировано всегда, а сама кнопка появляется только
+  у отвеченного вопроса: иначе строка дёргалась бы вбок при первом же касании ползунка.
+*/
+.clear-slot {
+  flex: none;
+  width: 1.5rem;
+  text-align: right;
+}
+
+.clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.clear:hover,
+.clear:focus-visible {
+  color: var(--ink);
+}
+
+/* Имя для экранного диктора, но не для глаза: приём стандартный, не своя выдумка. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*
   ⚠ ЕДИНСТВЕННОЕ ОСОЗНАННОЕ ОТЛИЧИЕ ОТ МАКЕТА. В старом решении нетронутый ползунок стоял
   на нуле и показывал «0» — README присланного архива называет это первым же наблюдением
   и выводит из него инвариант нового решения. Здесь нетронутый показывает «—», а дорожка
@@ -751,16 +825,25 @@ legend {
   color: var(--ink-dim);
 }
 
+/*
+  ⚠ Поле красится СВОИМИ правилами поверх компонента набора: страница живёт на фиксированном
+  тёмном листе заказчика, а набор красит поля по своей теме — на этом листе оно оказалось бы
+  чужим. В макете поле белое с тёмным текстом, как обычное поле формы.
+*/
 .text {
   width: 100%;
   margin-top: 0.4rem;
+}
+
+.text :deep(textarea) {
   padding: 0.6rem 0.7rem;
   border: 1px solid rgba(255, 253, 245, 0.25);
   border-radius: 0.25rem;
   background: #fff;
   color: #17181a;
   font: inherit;
-  resize: vertical;
+  /* Высоту считает `autoresize`; ручная растяжка спорила бы с ним. */
+  resize: none;
 }
 
 .counter {
