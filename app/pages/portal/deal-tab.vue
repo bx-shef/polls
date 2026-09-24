@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { readFramePass } from '~/utils/frame-auth'
+import { isPreview, portalGate } from '~/utils/in-portal'
 import { dealIdFrom } from '~/utils/placement'
 
 /**
@@ -39,6 +40,16 @@ definePageMeta({ layout: 'portal' })
 const route = useRoute()
 
 const loading = ref(true)
+/**
+ * Гейт присутствия в портале — общий с `/app` и `/install` (issue #29).
+ *
+ * ⚠ Здесь была своя обработка «фрейма нет»: «Не удалось связаться с порталом. Обновите
+ * страницу». Снаружи портала это совет, который не может сработать: страница открыта
+ * не оттуда, а не потому, что портал молчит. Вкладка сделки попадает наружу реже своих
+ * соседей — её адрес знает только портал, — но ровно поэтому её и забыли бы перевести.
+ */
+const resolved = ref(false)
+const inPortal = ref(false)
 const issuing = ref('')
 const failure = ref('')
 const notProvisioned = ref(false)
@@ -46,6 +57,12 @@ const surveys = ref<Survey[]>([])
 const dealId = ref<number | null>(null)
 const issued = ref<{ url: string, expiresAt: string } | null>(null)
 const copied = ref(false)
+
+const gate = computed(() => portalGate({
+  resolved: resolved.value,
+  inPortal: inPortal.value,
+  preview: isPreview(route.query.preview),
+}))
 
 /**
  * Связь с порталом. `undefined` ровно до конца `onMounted`.
@@ -63,11 +80,28 @@ useHead({ title: 'Опросы' })
 onMounted(async () => {
   try {
     frame = await initializeB24Frame()
+    inPortal.value = true
+  }
+  catch {
+    // Не внутри портала. Это не ошибка — это единственный способ узнать, где мы.
+    inPortal.value = false
+  }
+  finally {
+    resolved.value = true
+  }
+
+  if (frame === undefined) {
+    loading.value = false
+    return
+  }
+
+  try {
     dealId.value = dealIdFrom(frame.placement.options, route.query)
     await loadSurveys()
   }
   catch {
-    failure.value = 'Не удалось связаться с порталом. Обновите страницу.'
+    // Связь есть, а список не пришёл: вот здесь «обновите страницу» — честный совет.
+    failure.value = 'Не удалось получить список опросов с портала. Обновите страницу.'
   }
   finally {
     loading.value = false
@@ -159,8 +193,18 @@ const expiresLabel = computed(() => {
     </template>
 
     <template #body>
+      <!-- ⚠ ПЕРВЫМ, раньше скелета: снаружи портала нет ни сделки, ни прав на неё, и любой
+           другой текст здесь был бы разговором не о том. Порядок тот же, что у `/install`,
+           и по той же причине — там ветка ниже скелета показывала бесконечную загрузку. -->
+      <B24Alert
+        v-if="gate === 'outside'"
+        color="air-secondary-accent"
+        title="Откройте вкладку из Битрикс24"
+        description="Эта страница живёт внутри портала: ссылку она выпускает для конкретной сделки и без портала не знает ни сделки, ни ваших прав на неё. Откройте карточку сделки и вкладку «Опросы» в ней."
+      />
+
       <B24Skeleton
-        v-if="loading"
+        v-else-if="gate === 'checking' || loading"
         class="h-24 w-full"
       />
 
