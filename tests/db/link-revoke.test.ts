@@ -29,6 +29,23 @@ const PERSON = 'Иванов Пётр Сергеевич'
 let portalId: string
 let otherPortalId: string
 
+/**
+ * Схема версии — раньше ссылки, всегда.
+ *
+ * ⚠ Это не декорация теста, а тот же порядок, что у настоящего выпуска: кэш схемы кладётся
+ * ДО строки ссылки, потому что публичная страница в портал не ходит по инварианту. В issue #21
+ * этот порядок предлагается закрепить внешним ключом базы; подсев схему здесь, мы заранее
+ * живём по правилу, а не узнаём о нём от упавшей миграции.
+ */
+async function seedTemplate(portal: string): Promise<void> {
+  await getDb().insert(schema.surveyTemplates).values({
+    portalId: portal,
+    code: 'brand',
+    version: 1,
+    schema: { code: 'brand', title: 'Бренд-платформа', sections: [] },
+  })
+}
+
 async function seed(portal: string, itemId: number, status = 'sent'): Promise<string> {
   const rows = await getDb()
     .insert(schema.linkIndex)
@@ -71,6 +88,8 @@ describe.skipIf(!enabled)('отзыв ссылки', () => {
     await wipe()
     portalId = await makePortal(TEST_DOMAIN)
     otherPortalId = await makePortal(OTHER_DOMAIN)
+    await seedTemplate(portalId)
+    await seedTemplate(otherPortalId)
   })
 
   afterAll(async () => {
