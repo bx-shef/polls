@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { readFramePass } from '~/utils/frame-auth'
+import { isPreview, portalGate } from '~/utils/in-portal'
 
 /**
  * The setup wizard the portal shows when the app is installed.
@@ -43,6 +44,28 @@ const REASONS: Record<string, string> = {
 const stage = ref<Stage>('starting')
 const failure = ref('')
 
+/**
+ * Гейт присутствия в портале — общий с `/app` и вкладкой сделки (issue #29).
+ *
+ * ⚠ Здесь была своя, более ранняя обработка «фрейма нет»: `stage: 'failed'` с текстом
+ * «Не удалось связаться с порталом. Обновите страницу». Совет, который не может сработать
+ * в принципе: страница открыта не оттуда, а не потому, что портал не ответил. Человек
+ * обновляет её столько раз, сколько у него терпения, и уходит с мыслью, что приложение
+ * сломано.
+ *
+ * ⚠ Состояния `checking` тут тоже не было — интерфейс успевал мелькнуть и схлопнуться.
+ * Мелькание читается как поломка вернее, чем честное ожидание.
+ */
+const route = useRoute()
+const resolved = ref(false)
+const inPortal = ref(false)
+
+const gate = computed(() => portalGate({
+  resolved: resolved.value,
+  inPortal: inPortal.value,
+  preview: isPreview(route.query.preview),
+}))
+
 let frame: B24Frame | undefined
 
 useHead({ title: 'Установка приложения' })
@@ -69,12 +92,17 @@ onMounted(async () => {
   try {
     frame = await initializeB24Frame()
     connected.value = true
+    inPortal.value = true
   }
   catch {
-    stage.value = 'failed'
-    failure.value = 'Не удалось связаться с порталом. Обновите страницу.'
-    return
+    // Не внутри портала. Это не ошибка — это единственный способ узнать, где мы.
+    inPortal.value = false
   }
+  finally {
+    resolved.value = true
+  }
+
+  if (frame === undefined) return
 
   await install()
 })
@@ -205,8 +233,19 @@ async function finishProvisioning() {
     </template>
 
     <template #body>
+      <!-- ⚠ ПЕРВЫМ, раньше скелета, и это не вкусовщина. Снаружи портала установка не
+           начинается вовсе, то есть `stage` навсегда остаётся `starting` — поставь эту ветку
+           ниже, и страница показывала бы скелет бесконечно. Поймано тестом при переводе
+           на гейт: заглушка была написана, отрисовывалась загрузка. -->
+      <B24Alert
+        v-if="gate === 'outside'"
+        color="air-secondary-accent"
+        title="Откройте приложение из Битрикс24"
+        description="Эта страница — мастер установки, и работает он только внутри портала: снаружи у него нет ни гранта администратора, ни доступа к вашей CRM. Установите «Опросы клиентов» из Маркета, и портал откроет мастер сам."
+      />
+
       <B24Skeleton
-        v-if="stage === 'starting' || stage === 'installing'"
+        v-else-if="gate === 'checking' || stage === 'starting' || stage === 'installing'"
         class="h-24 w-full"
       />
 
