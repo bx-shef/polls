@@ -1,10 +1,11 @@
 import { drainInbox, purgeExpiredAnswers, requeueStuck } from '../answers/deliver'
 import { isDatabaseConfigured } from '../db/client'
+import { forgetExpiredLinkHeaders } from '../links/forget'
 import { purgeDeadPortals } from '../portals/store'
 import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
 import { logger } from '../utils/logger'
 
-/** Как часто убирать истёкшие ответы. Час, а не тик: см. разбор у самого вызова. */
+/** Как часто убирать персональные данные с истёкшим сроком. Час, а не тик: см. разбор ниже. */
 const PURGE_EVERY_MS = 60 * 60 * 1000
 
 /**
@@ -84,18 +85,40 @@ export default defineNitroPlugin(() => {
       // в сутки вместо обещанных «пятидесяти в минуту». Ровно та ловушка, на которой
       // обжёгся сосед и о которой предупреждает `purgeDeadPortals`. Срок хранения меряется
       // сутками — минутная точность ему не нужна. Нашёл `/code-review` в PR #53.
-      try {
-        if (Date.now() - lastPurgeAt >= PURGE_EVERY_MS) {
-          lastPurgeAt = Date.now()
+      // ⚠ ЗАМОК ВРЕМЕНИ ОДИН НА ДВА УБОРЩИКА, А `try` У КАЖДОГО СВОЙ. Замок общий, потому
+      // что причина у него одна — частота тика задаётся снаружи (`ANSWER_DELIVERY_INTERVAL`
+      // принимает пять секунд), и потолок за заход без часового замка ущерб не ограничивает.
+      // `try` раздельные, потому что это два независимых предельных срока хранения: упавшая
+      // уборка буфера не должна глушить забывание имён, и наоборот.
+      //
+      // ⚠ Отметка ставится ДО обоих, а не внутри первого. Внутри — и второй уборщик увидел бы
+      // замок уже взведённым, то есть не запустился бы никогда, а выглядел бы рабочим.
+      const purgeDue = Date.now() - lastPurgeAt >= PURGE_EVERY_MS
+      if (purgeDue) lastPurgeAt = Date.now()
+
+      if (purgeDue) {
+        try {
           const forgotten = await purgeExpiredAnswers(new Date())
           if (forgotten > 0) logger.warn({ forgotten }, 'истёкшие ответы стёрты из буфера')
         }
-      }
-      catch (error) {
-        // ⚠ Причину записать можно и здесь: `purgeExpiredAnswers` ходит только в Postgres
-        // и в портал не заглядывает, то есть процитированного ответа клиента в её ошибке
-        // взяться неоткуда. Это ровно та развилка, из-за которой ниже причина НЕ пишется.
-        logger.error({ reason: (error as Error).message }, 'уборка истёкших ответов сорвалась')
+        catch (error) {
+          // ⚠ Причину записать можно и здесь: `purgeExpiredAnswers` ходит только в Postgres
+          // и в портал не заглядывает, то есть процитированного ответа клиента в её ошибке
+          // взяться неоткуда. Это ровно та развилка, из-за которой ниже причина НЕ пишется.
+          logger.error({ reason: (error as Error).message }, 'уборка истёкших ответов сорвалась')
+        }
+
+        // ⚠ Третий уборщик, заведён инвентаризацией базы 25.09: шапка приглашения — имена
+        // людей, и у истёкшей ссылки она держалась вечно, хотя и схема, и `revokeLink`
+        // утверждали обратное. Разбор — в `forgetExpiredLinkHeaders`.
+        try {
+          const forgotten = await forgetExpiredLinkHeaders(new Date())
+          if (forgotten > 0) logger.info({ forgotten }, 'шапки истёкших приглашений забыты')
+        }
+        catch (error) {
+          // Тоже только Postgres: ни портала, ни ответа клиента на этом пути нет.
+          logger.error({ reason: (error as Error).message }, 'забывание шапок сорвалось')
+        }
       }
     }
     catch {
