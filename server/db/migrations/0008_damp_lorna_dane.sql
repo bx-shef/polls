@@ -1,0 +1,1 @@
+DROP TABLE "stage_cache" CASCADE;

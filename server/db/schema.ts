@@ -5,7 +5,6 @@ import {
   integer,
   jsonb,
   pgTable,
-  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -15,9 +14,15 @@ import { sql } from 'drizzle-orm'
 
 /**
  * Минимальная своя схема (`docs/PROCESS.md`, раздел 5). Источник истины — портал;
- * у нас только то, без чего работать нечем: токены, буфер доставки, кэш-индекс ссылок
- * и последняя известная стадия сущностей. Ни одного поля с ответом клиента, живущего
- * дольше, чем нужно для доставки.
+ * у нас только то, без чего работать нечем: токены, буфер доставки, кэш схем версий
+ * и указатель ссылок. Ни одного поля с ответом клиента, живущего дольше, чем нужно
+ * для доставки.
+ *
+ * ⚠ ЧЕТЫРЕ ТАБЛИЦЫ, И КАЖДАЯ ОТВЕЧАЕТ НА ВОПРОС «ПОЧЕМУ НЕ В ПОРТАЛЕ». Инвентаризация
+ * 25.09 по решению владельца: политика — не хранить у себя ничего, кроме токенов
+ * авторизации и того, что полезно и ограничено сроком. Пятая таблица, `stage_cache`,
+ * снесена миграцией `0008`: она стояла пустой, без единого вызывающего. Разбор
+ * и построчная опись — в `docs/PROCESS.md`, раздел «Инвентаризация базы».
  */
 
 /** Порталы, на которые установлено приложение. */
@@ -192,6 +197,13 @@ export const linkIndex = pgTable('link_index', {
    * ⚠ Стирается, когда ссылка приходит в конечное состояние: показывать страницу больше
    * некому, и держать имена дальше незачем. Инвариант «не хранить дольше, чем нужно»
    * написан про ответы, но имена клиента — те же персональные данные.
+   *
+   * ⚠ Состояний ТРИ, и до 25.09 здесь было закрыто два. `markCompleted` и `revokeLink`
+   * обнуляют шапку своим же `UPDATE`, а истечение статусом не отмечалось вовсе — оно
+   * считается на чтении, сравнением `expires_at` с часами. То есть самый обычный исход
+   * опроса (человек не ответил) оставлял имена у нас навсегда, а этот комментарий
+   * утверждал обратное. Третий случай закрыт уборщиком `forgetExpiredLinkHeaders`;
+   * разбор — в `docs/PROCESS.md`, раздел «Инвентаризация базы».
    */
   header: jsonb('header'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
@@ -223,19 +235,4 @@ export const linkIndex = pgTable('link_index', {
     foreignColumns: [surveyTemplates.portalId, surveyTemplates.code, surveyTemplates.version],
     name: 'link_index_template_fk',
   }),
-])
-
-/**
- * Последняя известная стадия сущности.
- * Отдельного события «стадия изменилась» в Битрикс24 нет — разницу считаем сами,
- * сравнивая с этим снимком.
- */
-export const stageCache = pgTable('stage_cache', {
-  portalId: uuid('portal_id').notNull().references(() => portals.id, { onDelete: 'cascade' }),
-  entityType: text('entity_type').notNull(),
-  entityId: bigint('entity_id', { mode: 'number' }).notNull(),
-  lastStage: text('last_stage').notNull(),
-  checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
-}, table => [
-  primaryKey({ columns: [table.portalId, table.entityType, table.entityId] }),
 ])

@@ -57,6 +57,13 @@
       "when": 1790277651897,
       "tag": "0007_overjoyed_hawkeye",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790336234756,
+      "tag": "0008_damp_lorna_dane",
+      "breakpoints": true
     }
   ]
 }
