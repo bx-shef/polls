@@ -9,10 +9,16 @@ import {
   type CrmEntity,
 } from '../domain/portals/crm-fields'
 import {
-  buildBindDealTabCall,
+  DEAL_TAB_PLACEMENT,
+  DEAL_TAB_TITLE,
+  TEMPLATE_TAB_PATH,
+  TEMPLATE_TAB_TITLE,
+  buildBindTabCall,
   buildDealTabHandlerUrl,
-  buildUnbindDealTabCall,
+  buildTabHandlerUrl,
+  buildUnbindTabCall,
   isPlacementAlreadyBound,
+  templateTabPlacement,
 } from '../domain/portals/placements'
 import {
   buildCreateSmartProcessCall,
@@ -530,13 +536,47 @@ export async function provisionSmartProcesses(
  * токенов не работает ничего.
  */
 export async function ensureDealTabPlacement(call: RestCall, baseUrl: string): Promise<boolean> {
-  const handlerUrl = buildDealTabHandlerUrl(baseUrl)
-  if (handlerUrl === null) return false
+  return ensureTabPlacement(call, {
+    placement: DEAL_TAB_PLACEMENT,
+    handlerUrl: buildDealTabHandlerUrl(baseUrl),
+    title: DEAL_TAB_TITLE,
+    titleEn: 'Surveys',
+  })
+}
 
-  const bind = buildBindDealTabCall(handlerUrl)
+/**
+ * Зарегистрировать вкладку конструктора в карточке «Шаблона опроса».
+ *
+ * ⚠ `entityTypeId`, а не `id` смарт-процесса: разбор в `templateTabPlacement`. Ошибка здесь
+ * не молчит — портал отвечает `ERROR_PLACEMENT_NOT_FOUND`, — но и не чинится сама.
+ *
+ * Отказ установку не роняет, как и у вкладки сделки: без конструктора приложение работает,
+ * анкеты приезжают переносом из старого решения.
+ */
+export async function ensureTemplateTabPlacement(
+  call: RestCall,
+  baseUrl: string,
+  entityTypeId: number,
+): Promise<boolean> {
+  return ensureTabPlacement(call, {
+    placement: templateTabPlacement(entityTypeId),
+    handlerUrl: buildTabHandlerUrl(baseUrl, TEMPLATE_TAB_PATH),
+    title: TEMPLATE_TAB_TITLE,
+    titleEn: 'Builder',
+  })
+}
+
+/** Общий порядок регистрации вкладки: снять старую, поставить новую. Разбор — в шапке выше. */
+async function ensureTabPlacement(
+  call: RestCall,
+  tab: { placement: string, handlerUrl: string | null, title: string, titleEn: string },
+): Promise<boolean> {
+  if (tab.handlerUrl === null) return false
+
+  const bind = buildBindTabCall(tab.placement, tab.handlerUrl, tab.title, tab.titleEn)
   if (bind === null) return false
 
-  const unbind = buildUnbindDealTabCall()
+  const unbind = buildUnbindTabCall(tab.placement)
   try {
     await call(unbind.method, unbind.params)
   }

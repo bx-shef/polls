@@ -34,6 +34,18 @@ export function parsePlacementOptions(raw: unknown): Record<string, unknown> {
  * у соседа встречался фрейм, которому портал не положил параметры вовсе.
  */
 export function dealIdFrom(options: unknown, query: Record<string, unknown> = {}): number | null {
+  return placementItemId(options, query)
+}
+
+/**
+ * Идентификатор элемента, ради которого открыта вкладка, — для любой точки `*_DETAIL_TAB`.
+ *
+ * ⚠ Ключ ОДИН И ТОТ ЖЕ у всех точек этого семейства: документация говорит про `ID` и прямо
+ * отмечает, что «идентификатор типа объекта отдельным ключом не приходит». То есть у вкладки
+ * в карточке «Шаблона опроса» контекст выглядит ровно как у сделки, и второй разборщик
+ * означал бы две копии трёх ловушек из шапки этого файла.
+ */
+export function placementItemId(options: unknown, query: Record<string, unknown> = {}): number | null {
   return numericValue(options, 'ID') ?? numericValue(query, 'id') ?? null
 }
 

@@ -26,6 +26,30 @@ export const DEAL_TAB_PLACEMENT = 'CRM_DEAL_DETAIL_TAB'
 /** Название вкладки, как его увидит сотрудник портала. */
 export const DEAL_TAB_TITLE = 'Опросы'
 
+/**
+ * Вкладка в карточке элемента смарт-процесса — там живёт конструктор анкеты.
+ *
+ * ⚠ ЧИСЛО В КОДЕ — `entityTypeId`, А НЕ `id` СМАРТ-ПРОЦЕССА, и различать их здесь обязательно.
+ * Документация точки говорит прямо: «у кода `CRM_DYNAMIC_183_DETAIL_TAB` идентификатор типа
+ * равен 183», и это то же число, что уходит в `crm.item.get` параметром `entityTypeId`.
+ * Спутать легко, потому что РЯДОМ, у имён пользовательских полей, правило ОБРАТНОЕ:
+ * `UF_CRM_10_STATE` собирается из `id` (у нас 10) при `entityTypeId` 1040. Два соседних
+ * механизма берут разные идентификаторы одного и того же смарт-процесса — замерено живьём
+ * и записано в `docs/PROCESS.md`.
+ *
+ * ⚠ Неверный код портал отвергает `ERROR_PLACEMENT_NOT_FOUND`, а не молчит, — то есть ошибка
+ * видна сразу. Это единственная приятная новость в этом абзаце.
+ */
+export function templateTabPlacement(entityTypeId: number): string {
+  return `CRM_DYNAMIC_${entityTypeId}_DETAIL_TAB`
+}
+
+/** Название вкладки конструктора. */
+export const TEMPLATE_TAB_TITLE = 'Конструктор'
+
+/** Путь обработчика вкладки конструктора. */
+export const TEMPLATE_TAB_PATH = '/portal/template-tab'
+
 /** Ответ портала на повторную регистрацию точки, допускающей одну. */
 export const PLACEMENT_ALREADY_BOUND = 'ERROR_PLACEMENT_MAX_COUNT'
 
@@ -41,16 +65,32 @@ export const DEAL_TAB_PATH = '/portal/deal-tab'
  * открывающая чужой сайт.
  */
 export function buildBindDealTabCall(handlerUrl: string): PortalCall | null {
+  return buildBindTabCall(DEAL_TAB_PLACEMENT, handlerUrl, DEAL_TAB_TITLE, 'Surveys')
+}
+
+/**
+ * Регистрация вкладки — общая для всех точек `*_DETAIL_TAB`.
+ *
+ * Вынесено, когда вкладок стало две: у сделки и у «Шаблона опроса». Три свойства из шапки
+ * (контекст приложения, запрет батча, одна регистрация на точку) у них одинаковы, и держать
+ * два одинаковых построителя значило бы однажды починить только один.
+ */
+export function buildBindTabCall(
+  placement: string,
+  handlerUrl: string,
+  title: string,
+  titleEn: string,
+): PortalCall | null {
   const url = handlerUrl.trim()
   if (!/^https:\/\/[^\s/]+\/\S*$/i.test(url)) return null
 
   return {
     method: 'placement.bind',
     params: {
-      PLACEMENT: DEAL_TAB_PLACEMENT,
+      PLACEMENT: placement,
       HANDLER: url,
-      TITLE: DEAL_TAB_TITLE,
-      LANG_ALL: { ru: { TITLE: DEAL_TAB_TITLE }, en: { TITLE: 'Surveys' } },
+      TITLE: title,
+      LANG_ALL: { ru: { TITLE: title }, en: { TITLE: titleEn } },
     },
   }
 }
@@ -69,7 +109,12 @@ export function buildBindDealTabCall(handlerUrl: string): PortalCall | null {
  * свои. Параметра тут нет намеренно — передать в него нечего, кроме как ошибку.
  */
 export function buildUnbindDealTabCall(): PortalCall {
-  return { method: 'placement.unbind', params: { PLACEMENT: DEAL_TAB_PLACEMENT } }
+  return buildUnbindTabCall(DEAL_TAB_PLACEMENT)
+}
+
+/** Снятие регистрации — общее для всех точек. Без `HANDLER`, разбор выше. */
+export function buildUnbindTabCall(placement: string): PortalCall {
+  return { method: 'placement.unbind', params: { PLACEMENT: placement } }
 }
 
 /**
@@ -98,7 +143,12 @@ export function isPlacementAlreadyBound(error: unknown): boolean {
  * открывающую его адрес. Пусто или не `https` — `null`, и регистрация честно не состоится.
  */
 export function buildDealTabHandlerUrl(baseUrl: string): string | null {
+  return buildTabHandlerUrl(baseUrl, DEAL_TAB_PATH)
+}
+
+/** Тот же адрес для любой вкладки: хост портала плюс путь обработчика. */
+export function buildTabHandlerUrl(baseUrl: string, path: string): string | null {
   const trimmed = baseUrl.trim().replace(/\/+$/, '')
   if (!/^https:\/\/[^\s/]+$/i.test(trimmed)) return null
-  return `${trimmed}${DEAL_TAB_PATH}`
+  return `${trimmed}${path}`
 }
