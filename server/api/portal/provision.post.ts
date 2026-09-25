@@ -1,5 +1,6 @@
 import { defineEventHandler } from 'h3'
 import { provisionWithCall } from '../../b24/register'
+import { applyProvisionStatus } from '../../portals/store'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -24,6 +25,10 @@ export default defineEventHandler(async (event) => {
   const session = await openPortalSession(event)
 
   const outcome = await provisionWithCall(session.call, session.portal.domain)
+  // ⚠ Исход ЗАПИСЫВАЕТСЯ, и до разбора issue #12 этого здесь не было: кнопка чинила портал
+  // и оставляла его помеченным `degraded` навсегда. Заметить это было нечем — статус
+  // до появления долечивания не перечитывала ни одна строка кода.
+  await applyProvisionStatus(session.portal.id, outcome)
   logger.info({ domain: session.portal.domain, outcome }, 'портал доустроен')
 
   // Три исхода вместо двух: «не администратор» отличается от «не получилось», потому что

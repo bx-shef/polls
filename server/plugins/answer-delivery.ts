@@ -1,6 +1,7 @@
 import { drainInbox, purgeExpiredAnswers, requeueStuck } from '../answers/deliver'
 import { isDatabaseConfigured } from '../db/client'
 import { forgetExpiredLinkHeaders } from '../links/forget'
+import { healDegradedPortals, requeueStuckProvisioning } from '../portals/heal'
 import { purgeDeadPortals } from '../portals/store'
 import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
 import { logger } from '../utils/logger'
@@ -118,6 +119,25 @@ export default defineNitroPlugin(() => {
         catch (error) {
           // Тоже только Postgres: ни портала, ни ответа клиента на этом пути нет.
           logger.error({ reason: (error as Error).message }, 'забывание шапок сорвалось')
+        }
+
+        // ⚠ Четвёртый — долечивание порталов, застрявших в `degraded` (issue #12). Он
+        // единственный здесь ХОДИТ В ПОРТАЛ: обустройство это 17–19 вызовов под бюджетом
+        // в 45 секунд, и час — та пауза, при которой это не мешает никому.
+        //
+        // ⚠ Возврат брошенных и само лечение — в ОДНОМ `try`, в отличие от соседей выше.
+        // Они независимы, а эти двое нет: возврат готовит работу, которую лечение забирает.
+        // Разнеся их, мы получили бы лечение, которому нечего брать, и молчание вместо
+        // объяснения.
+        try {
+          await requeueStuckProvisioning(new Date())
+          const healed = await healDegradedPortals(new Date())
+          if (healed > 0) logger.warn({ healed }, 'порталы долечены: обустройство прошло со второго раза')
+        }
+        catch (error) {
+          // ⚠ Причину записать можно: ответов клиентов на этом пути нет вовсе. А вот отказы
+          // самого портала сюда не доходят — обустройство разбирает их исходом, не броском.
+          logger.error({ reason: (error as Error).message }, 'долечивание порталов сорвалось')
         }
       }
     }
