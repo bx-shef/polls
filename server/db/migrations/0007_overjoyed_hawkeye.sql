@@ -1,0 +1,1 @@
+ALTER TABLE "link_index" ADD CONSTRAINT "link_index_template_fk" FOREIGN KEY ("portal_id","survey_code","survey_version") REFERENCES "public"."survey_templates"("portal_id","code","version") ON DELETE no action ON UPDATE no action;
