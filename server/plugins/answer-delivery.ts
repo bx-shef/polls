@@ -1,7 +1,7 @@
 import { drainInbox, purgeExpiredAnswers, requeueStuck } from '../answers/deliver'
 import { isDatabaseConfigured } from '../db/client'
 import { forgetExpiredLinkHeaders } from '../links/forget'
-import { healDegradedPortals, requeueStuckProvisioning } from '../portals/heal'
+import { healDegradedPortals, refreshOutdatedPortals, requeueStuckProvisioning } from '../portals/heal'
 import { purgeDeadPortals } from '../portals/store'
 import { deliveryDisabled, deliveryIntervalSeconds } from '../utils/env'
 import { logger } from '../utils/logger'
@@ -133,6 +133,12 @@ export default defineNitroPlugin(() => {
           await requeueStuckProvisioning(new Date())
           const healed = await healDegradedPortals(new Date())
           if (healed > 0) logger.warn({ healed }, 'порталы долечены: обустройство прошло со второго раза')
+
+          // ⚠ Донастройка идёт ПОСЛЕ долечивания и в том же `try`: оба берут портал захватом,
+          // и сломанный важнее устаревшего. Issue #75 — до неё новая настройка портала
+          // из релиза не доезжала до уже установленных клиентов вовсе.
+          const refreshed = await refreshOutdatedPortals(new Date())
+          if (refreshed > 0) logger.warn({ refreshed }, 'порталы донастроены под текущую ревизию')
         }
         catch (error) {
           // ⚠ Причину записать можно: ответов клиентов на этом пути нет вовсе. А вот отказы

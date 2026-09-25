@@ -1,8 +1,10 @@
 import { and, eq, inArray, isNull, lt } from 'drizzle-orm'
 import { callForPortal } from '../b24/from-record'
+import { readStoredRefs } from '../b24/provision'
 import { provisionWithCall } from '../b24/register'
 import { getDb, schema } from '../db/client'
 import { statusAfterProvision, stuckProvisioningBoundary } from '../domain/portals/lifecycle'
+import { PROVISION_REVISION } from '../domain/portals/smart-processes'
 import type { IssuingPortal } from '../links/issue'
 import { logger } from '../utils/logger'
 import { applyProvisionStatus } from './store'
@@ -97,7 +99,7 @@ export async function requeueStuckProvisioning(now: Date): Promise<number> {
  * упадёт на первом же вызове, и единственным следствием будет строка в журнале каждый час
  * до самого стирания.
  */
-async function claimDegradedPortal(now: Date, portalId?: string): Promise<IssuingPortal | null> {
+async function claimPortal(now: Date, from: string, portalId?: string): Promise<IssuingPortal | null> {
   const db = getDb()
 
   // Самый давний первым: портал, которому не везёт дольше всех, и ждёт дольше всех.
@@ -105,7 +107,7 @@ async function claimDegradedPortal(now: Date, portalId?: string): Promise<Issuin
     .select({ id: schema.portals.id })
     .from(schema.portals)
     .where(and(
-      eq(schema.portals.status, 'degraded'),
+      eq(schema.portals.status, from),
       isNull(schema.portals.grantRevokedAt),
       ...(portalId === undefined ? [] : [eq(schema.portals.id, portalId)]),
     ))
@@ -115,7 +117,7 @@ async function claimDegradedPortal(now: Date, portalId?: string): Promise<Issuin
   const rows = await db
     .update(schema.portals)
     .set({ status: 'provisioning', updatedAt: now })
-    .where(and(eq(schema.portals.status, 'degraded'), inArray(schema.portals.id, candidate)))
+    .where(and(eq(schema.portals.status, from), inArray(schema.portals.id, candidate)))
     .returning(PORTAL_COLUMNS)
 
   return rows[0] ?? null
@@ -157,36 +159,121 @@ export async function healDegradedPortals(
 
   let healed = 0
   for (let taken = 0; taken < limit; taken += 1) {
-    const portal = await claimDegradedPortal(now, options.portalId)
+    const portal = await claimPortal(now, 'degraded', options.portalId)
     if (portal === null) break
-
-    let outcome: 'ok' | 'not-admin' | 'no-scope' | 'failed'
-    try {
-      outcome = await provision(portal)
-    }
-    catch (error) {
-      // ⚠ Исключение здесь — это НЕ повод оставить портал захваченным. Обустройство свои
-      // отказы разбирает само и возвращает исходом; сюда доходит то, что оно не поймало,
-      // и портал обязан вернуться в очередь, а не ждать возврата брошенных.
-      logger.error({ domain: portal.domain, reason: (error as Error).message }, 'долечивание сорвалось')
-      outcome = 'failed'
-    }
-
-    // ⚠ `expect: 'provisioning'` — compare-and-swap, и здесь он закрывает переустановку,
-    // случившуюся ПОКА мы обустраивали. Она перезаписывает статус в `active` своими свежими
-    // токенами, и записать поверх неё `degraded` по итогу устаревшей попытки значило бы
-    // пометить сломанным портал, который только что встал заново.
-    const status = statusAfterProvision(outcome)
-    await applyProvisionStatus(portal.id, outcome, 'provisioning')
-
-    if (status === 'active') {
-      healed += 1
-      logger.info({ domain: portal.domain }, 'портал долечен: обустройство прошло')
-    }
-    else {
-      logger.error({ domain: portal.domain, outcome }, 'портал по-прежнему не обустроен')
-    }
+    if (await provisionClaimed(portal, provision, 'долечивание')) healed += 1
   }
 
   return healed
+}
+
+/**
+ * Обустроить захваченный портал и отпустить его.
+ *
+ * ⚠ `expect: 'provisioning'` — compare-and-swap, и он закрывает переустановку, случившуюся
+ * ПОКА мы обустраивали. Она перезаписывает статус в `active` своими свежими токенами, и
+ * записать поверх неё `degraded` по итогу устаревшей попытки значило бы пометить сломанным
+ * портал, который только что встал заново.
+ */
+async function provisionClaimed(
+  portal: IssuingPortal,
+  provision: ProvisionAttempt,
+  what: string,
+): Promise<boolean> {
+  let outcome: 'ok' | 'not-admin' | 'no-scope' | 'failed'
+  try {
+    outcome = await provision(portal)
+  }
+  catch (error) {
+    // ⚠ Исключение здесь — это НЕ повод оставить портал захваченным. Обустройство свои
+    // отказы разбирает само и возвращает исходом; сюда доходит то, что оно не поймало,
+    // и портал обязан вернуться в очередь, а не ждать возврата брошенных.
+    logger.error({ domain: portal.domain, reason: (error as Error).message, what }, 'обустройство сорвалось')
+    outcome = 'failed'
+  }
+
+  const status = statusAfterProvision(outcome)
+  await applyProvisionStatus(portal.id, outcome, 'provisioning')
+
+  if (status === 'active') {
+    logger.info({ domain: portal.domain, what }, 'портал обустроен')
+    return true
+  }
+  logger.error({ domain: portal.domain, outcome, what }, 'портал по-прежнему не обустроен')
+  return false
+}
+
+/**
+ * Донастроить порталы, обустроенные ПРОШЛОЙ ревизией (issue #75).
+ *
+ * ⚠ Зачем вообще. Всё, что настраивает портал, делает обустройство, а зовут его только при
+ * установке, по кнопке «доустроить» и при долечивании сломанного. Портал в статусе `active`
+ * не обустраивался больше никогда — то есть вкладка, добавленная релизом, не появлялась
+ * ни у одного уже установленного клиента, и заметить это было нечем.
+ *
+ * ⚠ Ревизия читается ДО захвата, отдельным дешёвым вызовом. Захватив сначала, мы отбирали бы
+ * каждый активный портал у самого себя раз в час и возвращали бы его обратно — механизм
+ * выглядел бы работающим и делал бы только шум в журнале.
+ *
+ * ⚠ Обустройство идемпотентно по построению: смарт-процессы ищутся перед созданием, поля
+ * добавляются только недостающие, вкладка перерегистрируется. Это не новое свойство, которое
+ * пришлось обеспечивать ради повторов, — оно было с первого дня и до сих пор не использовалось.
+ *
+ * Возвращает, сколько порталов донастроили.
+ */
+export async function refreshOutdatedPortals(
+  now: Date,
+  options: {
+    limit?: number
+    portalId?: string
+    provision?: ProvisionAttempt
+    readRevision?: (portal: IssuingPortal) => Promise<number>
+  } = {},
+): Promise<number> {
+  const limit = options.limit ?? 5
+  const provision = options.provision ?? provisionStoredPortal
+  const readRevision = options.readRevision ?? readPortalRevision
+
+  const active = await getDb()
+    .select(PORTAL_COLUMNS)
+    .from(schema.portals)
+    .where(and(
+      eq(schema.portals.status, 'active'),
+      isNull(schema.portals.grantRevokedAt),
+      ...(options.portalId === undefined ? [] : [eq(schema.portals.id, options.portalId)]),
+    ))
+    .orderBy(schema.portals.updatedAt)
+    .limit(limit)
+
+  let refreshed = 0
+  for (const candidate of active) {
+    let revision: number
+    try {
+      revision = await readRevision(candidate)
+    }
+    catch (error) {
+      // Портал не ответил — не повод считать его устаревшим и идти его настраивать.
+      logger.warn({ domain: candidate.domain, reason: (error as Error).message }, 'ревизия обустройства не прочитана')
+      continue
+    }
+    if (revision >= PROVISION_REVISION) continue
+
+    // Захват тем же приёмом, что у долечивания: `active` → `provisioning` одним `UPDATE`.
+    const portal = await claimPortal(now, 'active', candidate.id)
+    if (portal === null) continue
+
+    logger.warn({ domain: portal.domain, revision, needed: PROVISION_REVISION }, 'портал настроен прошлой ревизией')
+    if (await provisionClaimed(portal, provision, 'донастройка')) refreshed += 1
+  }
+
+  return refreshed
+}
+
+/** Прочитать ревизию у портала его же сохранёнными токенами. */
+async function readPortalRevision(portal: IssuingPortal): Promise<number> {
+  const caller = callForPortal(portal)
+  // Токенов нет или они не читаются — сообщение пишет сам `callForPortal`. Считать такой
+  // портал устаревшим незачем: обустраивать его всё равно нечем.
+  if (caller === null) return PROVISION_REVISION
+  return (await readStoredRefs(caller.call)).revision
 }

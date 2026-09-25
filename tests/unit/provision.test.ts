@@ -518,7 +518,10 @@ describe('идентификаторы на портале', () => {
   it('читает сохранённые', async () => {
     const p = portal({ 'app.option.get': { result: JSON.stringify({ template: TEMPLATE, survey: SURVEY }) } })
 
-    expect(await readStoredRefs(p.call)).toEqual({ template: TEMPLATE, survey: SURVEY })
+    // ⚠ `revision: 0`, хотя в значении её нет вовсе, — и это несущее. Портал, обустроенный
+    // ДО появления отметки (issue #75), обязан выглядеть устаревшим, иначе фоновая донастройка
+    // сочтёт свежими ровно тех клиентов, ради которых она и заведена.
+    expect(await readStoredRefs(p.call)).toEqual({ template: TEMPLATE, survey: SURVEY, revision: 0 })
   })
 
   it.each<[unknown, string]>([
@@ -530,7 +533,20 @@ describe('идентификаторы на портале', () => {
 
     // Не прочитали — найдём смарт-процессы по заголовку и перезапишем. Установка не должна
     // спотыкаться о собственную настройку.
-    expect(await readStoredRefs(p.call)).toEqual({ template: undefined, survey: undefined })
+    expect(await readStoredRefs(p.call)).toEqual({ template: undefined, survey: undefined, revision: 0 })
+  })
+
+  it('ГЛАВНОЕ: ревизия читается числом, а неизвестная — нулём (issue #75)', async () => {
+    // ⚠ Отметка говорит, ЧЕМ настроен портал. Прочитав её слишком щедро, мы объявили бы
+    // настроенными порталы, до которых новая настройка не доезжала, — то есть закрыли бы
+    // дыру видимостью. Ноль здесь означает «настраивали давно или не настраивали вовсе».
+    const ok = portal({ 'app.option.get': { result: JSON.stringify({ template: TEMPLATE, survey: SURVEY, revision: 2 }) } })
+    expect((await readStoredRefs(ok.call)).revision).toBe(2)
+
+    for (const junk of ['0', 'два', '-1', '', null]) {
+      const p = portal({ 'app.option.get': { result: JSON.stringify({ template: TEMPLATE, survey: SURVEY, revision: junk }) } })
+      expect((await readStoredRefs(p.call)).revision).toBe(0)
+    }
   })
 
   it('пишет одним ключом', async () => {
