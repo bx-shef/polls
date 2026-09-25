@@ -23,6 +23,35 @@ interface Survey {
   title: string
 }
 
+/** Выпущенная ссылка, как её отдаёт сервер: состояние уже посчитано там. */
+interface IssuedLink {
+  itemId: number
+  title: string
+  code: string
+  version: number
+  state: 'active' | 'completed' | 'revoked' | 'expired'
+  expiresAt: string
+  completedAt: string
+  score: number | null
+}
+
+/**
+ * Подписи состояний. Словами, а не кодом: вкладку читает менеджер, а не разработчик.
+ *
+ * ⚠ «Отозвана» и «Истекла» разведены намеренно. Обе означают «не откроется», но первая —
+ * это действие человека, а вторая — течение времени, и при разборе «почему клиент не ответил»
+ * разница между ними и есть весь ответ.
+ */
+// ⚠ `as const satisfies`, а не аннотация типом: `color` должен остаться литералом, иначе
+// `B24Badge` не примет строку — у него цвет это перечисление ролей, а не любой текст.
+// Правило проекта «цвет задаётся именем роли» здесь проверяется компилятором.
+const STATES = {
+  active: { label: 'Ждём ответа', color: 'air-primary' },
+  completed: { label: 'Пройдена', color: 'air-primary-success' },
+  revoked: { label: 'Отозвана', color: 'air-secondary' },
+  expired: { label: 'Истекла', color: 'air-secondary' },
+} as const satisfies Record<IssuedLink['state'], { label: string, color: string }>
+
 /**
  * Отказы выпуска, у каждого свой текст.
  *
@@ -57,6 +86,8 @@ const surveys = ref<Survey[]>([])
 const dealId = ref<number | null>(null)
 const issued = ref<{ url: string, expiresAt: string } | null>(null)
 const copied = ref(false)
+const links = ref<IssuedLink[]>([])
+const busyItem = ref(0)
 
 const gate = computed(() => portalGate({
   resolved: resolved.value,
@@ -97,7 +128,9 @@ onMounted(async () => {
 
   try {
     dealId.value = dealIdFrom(frame.placement.options, route.query)
-    await loadSurveys()
+    // Список и выбор грузятся вместе: это два независимых обращения, и ждать их по очереди
+    // значит показывать скелет вдвое дольше без единой причины.
+    await Promise.all([loadSurveys(), loadLinks()])
   }
   catch {
     // Связь есть, а список не пришёл: вот здесь «обновите страницу» — честный совет.
@@ -134,6 +167,75 @@ async function loadSurveys() {
   surveys.value = result.surveys ?? []
 }
 
+/**
+ * Список уже выпущенных ссылок.
+ *
+ * ⚠ Отказ загрузки списка НЕ мешает выпустить новую. Список — это память о прошлом,
+ * а выпуск — работа, которую человек пришёл сделать: уронив вкладку целиком из-за первого,
+ * мы отняли бы второе.
+ */
+async function loadLinks() {
+  if (dealId.value === null) return
+  try {
+    const result = await $fetch<{ ok: boolean, links?: IssuedLink[] }>(
+      '/api/portal/links',
+      { method: 'POST', body: { ...pass(), dealId: dealId.value } },
+    )
+    links.value = result.ok ? result.links ?? [] : []
+  }
+  catch {
+    links.value = []
+  }
+}
+
+/**
+ * Погасить ссылку.
+ *
+ * ⚠ Список перечитывается С СЕРВЕРА, а не правится на месте. Состояние ссылки живёт
+ * на портале, и «поправить у себя» значит показать то, чего там может не быть: отзыв мог
+ * не пройти наполовину, а за время, пока вкладка открыта, ссылку могли пройти.
+ */
+async function revoke(link: IssuedLink) {
+  if (busyItem.value !== 0 || dealId.value === null) return
+  busyItem.value = link.itemId
+  failure.value = ''
+
+  try {
+    const result = await $fetch<{ ok: boolean, reason?: string }>(
+      '/api/portal/revoke',
+      { method: 'POST', body: { ...pass(), dealId: dealId.value, itemId: link.itemId } },
+    )
+    if (!result.ok) failure.value = REFUSALS[result.reason ?? ''] ?? 'Не удалось отозвать ссылку. Попробуйте ещё раз.'
+    await loadLinks()
+  }
+  catch {
+    failure.value = 'Не удалось отозвать ссылку. Попробуйте ещё раз.'
+  }
+  finally {
+    busyItem.value = 0
+  }
+}
+
+/**
+ * Перевыпустить: погасить прежнюю и выпустить новую по той же анкете.
+ *
+ * ⚠ Именно в этом порядке. Клиент потерял письмо — и если сначала выпустить, а потом гасить,
+ * то между двумя вызовами по сделке живут ДВЕ рабочие одноразовые ссылки, и какая из них
+ * «настоящая», не знает никто. Сорвись гашение — останется одна лишняя живая ссылка;
+ * сорвись выпуск после гашения — не останется ни одной, но это видно сразу и чинится кнопкой.
+ */
+async function reissue(link: IssuedLink) {
+  const survey = surveys.value.find(item => item.code === link.code && item.version === link.version)
+  if (survey === undefined) {
+    failure.value = 'Эту анкету сняли с публикации — перевыпустить по ней нельзя. Выберите другую.'
+    return
+  }
+
+  await revoke(link)
+  if (failure.value !== '') return
+  await issue(survey)
+}
+
 async function issue(survey: Survey) {
   if (issuing.value !== '' || dealId.value === null) return
   issuing.value = survey.code
@@ -150,6 +252,7 @@ async function issue(survey: Survey) {
     )
     if (result.ok && result.url !== undefined) {
       issued.value = { url: result.url, expiresAt: result.expiresAt ?? '' }
+      await loadLinks()
       return
     }
     failure.value = REFUSALS[result.reason ?? ''] ?? 'Не удалось выпустить ссылку. Попробуйте ещё раз.'
@@ -173,6 +276,15 @@ async function copyLink() {
     // руками, поэтому это не ошибка, просто кнопка ничего не даёт.
     copied.value = false
   }
+}
+
+/** Дата словами. Пусто — портал её не прислал, и выдумывать нечего. */
+function dateLabel(raw: string): string {
+  if (raw === '') return ''
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime())
+    ? ''
+    : parsed.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
 const expiresLabel = computed(() => {
@@ -237,6 +349,68 @@ const expiresLabel = computed(() => {
       />
 
       <template v-else>
+        <!--
+          ⚠ Список стоит ПЕРВЫМ и показывается всегда, даже когда только что выпустили новую.
+          Ради него задача и заводилась: закрыл вкладку — и узнать, выпускал ли ты что-нибудь
+          по этой сделке, было нельзя, а сам токен не покажется больше никогда.
+        -->
+        <div
+          v-if="links.length > 0"
+          class="mb-4"
+        >
+          <p class="mb-2 font-semibold">
+            Выпущенные ссылки
+          </p>
+          <div class="flex flex-col gap-2">
+            <B24Card
+              v-for="link in links"
+              :key="link.itemId"
+              class="p-3"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <B24Badge :color="STATES[link.state].color">
+                  {{ STATES[link.state].label }}
+                </B24Badge>
+                <span class="font-semibold">{{ link.title || link.code }}</span>
+                <span class="text-sm opacity-70">
+                  {{ link.state === 'completed'
+                    ? `пройдена ${dateLabel(link.completedAt)}`
+                    : dateLabel(link.expiresAt) ? `действует до ${dateLabel(link.expiresAt)}` : '' }}
+                </span>
+                <span
+                  v-if="link.score !== null"
+                  class="text-sm opacity-70"
+                >
+                  балл {{ link.score }}
+                </span>
+              </div>
+
+              <div
+                v-if="link.state === 'active'"
+                class="mt-2 flex gap-2"
+              >
+                <B24Button
+                  size="sm"
+                  color="air-secondary-no-accent"
+                  :loading="busyItem === link.itemId"
+                  :disabled="busyItem !== 0 || issuing !== ''"
+                  @click="revoke(link)"
+                >
+                  Отозвать
+                </B24Button>
+                <B24Button
+                  size="sm"
+                  color="air-secondary-accent"
+                  :disabled="busyItem !== 0 || issuing !== ''"
+                  @click="reissue(link)"
+                >
+                  Перевыпустить
+                </B24Button>
+              </div>
+            </B24Card>
+          </div>
+        </div>
+
         <div v-if="issued === null">
           <p class="mb-3">
             Выберите опрос — ссылка выпустится для этой сделки и будет действовать 30 дней.

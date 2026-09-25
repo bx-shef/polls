@@ -51,6 +51,12 @@ let issueReply: unknown = { ok: true, url: 'https://опрос.рф/s/' + 'a'.re
 let issueCalls = 0
 let surveysReply: unknown = { ok: true, surveys: SURVEYS }
 
+/** Что отдаёт список выпущенных ссылок и чем отвечает отзыв. */
+let linksReply: unknown = { ok: true, links: [] }
+let revokeReply: unknown = { ok: true }
+/** Порядок обращений: на нём держится главный гвард перевыпуска. */
+let order: string[] = []
+
 registerEndpoint('/api/portal/surveys', defineEventHandler(async (event) => {
   await readBody(event)
   return surveysReply
@@ -59,7 +65,20 @@ registerEndpoint('/api/portal/surveys', defineEventHandler(async (event) => {
 registerEndpoint('/api/portal/issue', defineEventHandler(async (event) => {
   await readBody(event)
   issueCalls += 1
+  order.push('issue')
   return issueReply
+}))
+
+registerEndpoint('/api/portal/links', defineEventHandler(async (event) => {
+  await readBody(event)
+  order.push('links')
+  return linksReply
+}))
+
+registerEndpoint('/api/portal/revoke', defineEventHandler(async (event) => {
+  await readBody(event)
+  order.push('revoke')
+  return revokeReply
 }))
 
 async function openTab() {
@@ -72,10 +91,25 @@ async function settle() {
   for (let tick = 0; tick < 6; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
 }
 
+/** Одна живая ссылка в списке — то, что видит менеджер, открывший вкладку второй раз. */
+const ACTIVE_LINK = {
+  itemId: 54,
+  title: 'Оценка работы по проекту',
+  code: 'default',
+  version: 3,
+  state: 'active',
+  expiresAt: '2026-10-16T00:00:00.000Z',
+  completedAt: '',
+  score: null,
+}
+
 beforeEach(() => {
   placementOptions = { ID: '42' }
   frameWorks = true
   issueCalls = 0
+  linksReply = { ok: true, links: [] }
+  revokeReply = { ok: true }
+  order = []
   surveysReply = { ok: true, surveys: SURVEYS }
   issueReply = { ok: true, url: 'https://опрос.рф/s/' + 'a'.repeat(43), expiresAt: '2026-10-16T00:00:00.000Z' }
 })
@@ -204,5 +238,76 @@ describe('вкладка в карточке сделки', () => {
     await settle()
 
     expect(page.text()).not.toContain('Откройте вкладку из Битрикс24')
+  })
+
+  it('показывает уже выпущенные ссылки, а не только что выпущенную', async () => {
+    // ⚠ Ради этого задача и заводилась (issue #20). Закрыл вкладку — и узнать, выпускал ли
+    // ты что-нибудь по этой сделке, было нельзя: сам токен не покажется больше никогда,
+    // у нас лежит только его хеш.
+    linksReply = { ok: true, links: [ACTIVE_LINK] }
+    const page = await openTab()
+    await settle()
+
+    expect(page.text()).toContain('Выпущенные ссылки')
+    expect(page.text()).toContain('Ждём ответа')
+  })
+
+  it('отзыв перечитывает список с сервера, а не правит его на месте', async () => {
+    // ⚠ Состояние ссылки живёт на портале. Поправив список у себя, мы показали бы то,
+    // чего там может не оказаться: отзыв мог пройти наполовину, а за время, пока вкладка
+    // открыта, ссылку могли пройти.
+    linksReply = { ok: true, links: [ACTIVE_LINK] }
+    const page = await openTab()
+    await settle()
+    order = []
+
+    await page.findAll('button').find(button => button.text().includes('Отозвать'))!.trigger('click')
+    await settle()
+
+    expect(order).toEqual(['revoke', 'links'])
+  })
+
+  it('ГЛАВНОЕ: перевыпуск гасит ПРЕЖДЕ, чем выпускает новую', async () => {
+    // ⚠ Порядок — весь смысл перевыпуска. Выпусти мы сначала, и между двумя вызовами
+    // по сделке живут ДВЕ рабочие одноразовые ссылки, а какая из них «настоящая»,
+    // не знает никто: обе открываются, обе одноразовые. Issue #20 называет это прямо.
+    linksReply = { ok: true, links: [ACTIVE_LINK] }
+    const page = await openTab()
+    await settle()
+    order = []
+
+    await page.findAll('button').find(button => button.text().includes('Перевыпустить'))!.trigger('click')
+    await settle()
+
+    expect(order.indexOf('revoke')).toBeLessThan(order.indexOf('issue'))
+    expect(issueCalls).toBe(1)
+  })
+
+  it('не гасит прежнюю, если анкету сняли с публикации', async () => {
+    // Иначе менеджер остался бы без обеих: старую погасили, новую выпустить нечем.
+    linksReply = { ok: true, links: [{ ...ACTIVE_LINK, code: 'снятая', version: 9 }] }
+    const page = await openTab()
+    await settle()
+    order = []
+
+    await page.findAll('button').find(button => button.text().includes('Перевыпустить'))!.trigger('click')
+    await settle()
+
+    expect(order).toEqual([])
+    expect(page.text()).toContain('сняли с публикации')
+  })
+
+  it('упавший список не мешает выпустить ссылку', async () => {
+    // Список — память о прошлом, выпуск — работа, за которой человек пришёл. Уронив вкладку
+    // из-за первого, мы отняли бы второе.
+    linksReply = { ok: false, reason: 'not-provisioned' }
+    const page = await openTab()
+    await settle()
+
+    await page.findAll('button').find(button => button.text().includes('Оценка'))!.trigger('click')
+    await settle()
+
+    expect(issueCalls).toBe(1)
+    expect(page.text()).toContain('Ссылка выпущена')
   })
 })
