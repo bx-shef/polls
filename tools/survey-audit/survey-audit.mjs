@@ -52,13 +52,43 @@ const round = (x, d = 2) => Math.round(x * 10 ** d) / 10 ** d;
 
 /**
  * Границы корзин для шкалы. По умолчанию NPS-образные, пересчитываются под любую шкалу.
+ *
+ * ⚠ ТРИ КОРЗИНЫ ОБЯЗАНЫ БЫТЬ НЕПУСТЫМИ И НЕ ПЕРЕСЕКАТЬСЯ, и прежняя формула этого
+ * не обеспечивала. На шкале 1–3 выходило `bottom = top = 2`: значение 2 попадало
+ * и в верхнюю корзину, и в нижнюю, `inMid` уходил в минус, сумма долей превышала единицу,
+ * а подпись средней корзины рендерилась как «3–1». На 1–5 средняя корзина оказывалась
+ * пустой с подписью «4–3». Разбор старого решения держался на шкале 0–10, поэтому
+ * на данных заказчика это не всплывало — всплыло бы на первом же опросе с короткой шкалой,
+ * а «один из списка» с тремя вариантами обсуждается прямо сейчас. Нашёл `/code-review`
+ * на панели PR #1, issue #3.
+ *
+ * Правило теперь такое:
+ *
+ * 1. Верх — «почти максимум»: десятая часть размаха сверху. На 0–10 это 9–10, как у NPS.
+ * 2. Низ — шестьдесят процентов размаха снизу, как было.
+ * 3. Низ ПРИЖИМАЕТСЯ так, чтобы между корзинами оставалось хотя бы одно значение.
+ *    Это и есть то, чего не хватало: на коротких шкалах шестьдесят процентов съедают
+ *    середину целиком.
+ *
  * @param {number} min
  * @param {number} max
- * @returns {{bottom: number, top: number}} bottom — верх нижней корзины, top — низ верхней.
+ * @returns {{bottom: number, top: number} | null} `null` — шкала короче трёх делений,
+ *   корзин на ней не бывает: между «низом» и «верхом» нечему лежать. Вызывающий обязан
+ *   это проверить и не считать долей, а не подставлять своё.
  */
 export function bucketBounds(min, max) {
   const span = max - min;
-  return { bottom: min + Math.round(span * 0.6), top: max - 1 };
+  // Меньше трёх делений — делить не на что. Честный отказ лучше трёх корзин,
+  // две из которых совпадают.
+  if (!Number.isFinite(span) || span < 2) return null;
+
+  const top = max - Math.round(span * 0.1);
+  const raw = min + Math.round(span * 0.6);
+  // Между корзинами обязано остаться хотя бы одно значение — иначе середина пуста,
+  // а её подпись читается задом наперёд.
+  const bottom = Math.min(raw, top - 2);
+
+  return { bottom, top };
 }
 
 /**
@@ -72,7 +102,7 @@ function analyseDistribution(scaleAnswers, t) {
 
   const min = Math.min(...scaleAnswers.map((a) => a.scaleMin ?? 0));
   const max = Math.max(...scaleAnswers.map((a) => a.scaleMax ?? 10));
-  const { bottom, top } = bucketBounds(min, max);
+  const bounds = bucketBounds(min, max);
 
   const counts = new Map();
   for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
@@ -80,19 +110,35 @@ function analyseDistribution(scaleAnswers, t) {
     .sort((a, b) => a[0] - b[0])
     .map(([v, n]) => ({ value: v, n, share: round(share(n, values.length), 4) }));
 
-  const inTop = values.filter((v) => v >= top).length;
-  const inBottom = values.filter((v) => v <= bottom).length;
-  const inMid = values.length - inTop - inBottom;
   const topTwo = sum(byValue.filter((b) => b.value >= max - 1).map((b) => b.n));
 
-  return {
+  const common = {
     n: values.length,
     scale: { min, max },
-    buckets: { top: `${top}–${max}`, mid: `${bottom + 1}–${top - 1}`, bottom: `${min}–${bottom}` },
     byValue,
     avg: round(sum(values) / values.length),
     mode: byValue.slice().sort((a, b) => b.n - a.n)[0].value,
     topTwoShare: round(share(topTwo, values.length), 4),
+    /** Среднее осмысленно только на невырожденном распределении. */
+    averageIsMeaningful: share(topTwo, values.length) < t.degenerateTopTwoShare,
+  };
+
+  // ⚠ На шкале короче трёх делений корзин НЕ БЫВАЕТ, и отчёт говорит об этом прямо,
+  // а не показывает доли, которые не сходятся в единицу. Гистограмма и среднее при этом
+  // остаются: они осмысленны на любой шкале.
+  if (bounds === null) {
+    return { ...common, buckets: null, shares: null, index: null,
+      bucketsSkipped: 'шкала короче трёх делений — корзины на ней не считаются' };
+  }
+
+  const { bottom, top } = bounds;
+  const inTop = values.filter((v) => v >= top).length;
+  const inBottom = values.filter((v) => v <= bottom).length;
+  const inMid = values.length - inTop - inBottom;
+
+  return {
+    ...common,
+    buckets: { top: `${top}–${max}`, mid: `${bottom + 1}–${top - 1}`, bottom: `${min}–${bottom}` },
     shares: {
       top: round(share(inTop, values.length), 4),
       mid: round(share(inMid, values.length), 4),
@@ -100,8 +146,7 @@ function analyseDistribution(scaleAnswers, t) {
     },
     /** Индекс «доля верхней корзины минус доля нижней», в пунктах. NPS-подобный, но не NPS. */
     index: Math.round((share(inTop, values.length) - share(inBottom, values.length)) * 100),
-    /** Среднее осмысленно только на невырожденном распределении. */
-    averageIsMeaningful: share(topTwo, values.length) < t.degenerateTopTwoShare,
+    bucketsSkipped: null,
   };
 }
 
@@ -131,6 +176,44 @@ function detectDefaultValueSpike(dist) {
 }
 
 /**
+ * Шкала группы — согласованная по ВСЕМ её строкам, а не взятая из первой.
+ *
+ * ⚠ Прежняя редакция читала `rows[0].scaleMin ?? 0` и распространяла это на всю группу.
+ * Две беды сразу. Если у первой строки границ не было, молча подставлялось 0–10 — и вопрос
+ * уже никогда не получал вердикт `ritual` или `unanswerable`, потому что считался по чужой
+ * шкале. Если строки расходились между собой, побеждала случайная. Молчаливость здесь
+ * и есть проблема: инструмент выдаёт правдоподобный отчёт, в котором часть вопросов
+ * оценена не по своей шкале. Нашёл `/code-review` на панели PR #1, issue #3.
+ *
+ * Берём самую широкую из объявленных и ГОВОРИМ ВСЛУХ, если пришлось догадываться
+ * или если строки разошлись.
+ *
+ * @param {AnswerRecord[]} rows
+ * @returns {{min: number, max: number, assumed: boolean, mixed: boolean}}
+ */
+function resolveGroupScale(rows) {
+  const mins = [...new Set(rows.map((r) => r.scaleMin).filter((v) => Number.isFinite(v)))];
+  const maxs = [...new Set(rows.map((r) => r.scaleMax).filter((v) => Number.isFinite(v)))];
+
+  return {
+    min: mins.length > 0 ? Math.min(...mins) : 0,
+    max: maxs.length > 0 ? Math.max(...maxs) : 10,
+    /** Границ не объявила ни одна строка — 0–10 это наша догадка, а не данные. */
+    assumed: mins.length === 0 && maxs.length === 0,
+    /** Строки группы объявили разные границы — взята самая широкая. */
+    mixed: mins.length > 1 || maxs.length > 1,
+  };
+}
+
+/** Оговорки к шкале словами — их читает человек в отчёте. */
+function scaleNotes(scale) {
+  const notes = [];
+  if (scale.assumed) notes.push(`Границы шкалы не заданы ни одной строкой — считали по ${scale.min}–${scale.max}.`);
+  if (scale.mixed) notes.push(`Строки объявили РАЗНЫЕ границы шкалы — взята самая широкая, ${scale.min}–${scale.max}.`);
+  return notes;
+}
+
+/**
  * Метрики и вердикт по каждому балльному вопросу.
  * @param {AnswerRecord[]} scaleAnswers
  * @param {typeof DEFAULT_THRESHOLDS} t
@@ -146,22 +229,23 @@ function analyseQuestions(scaleAnswers, t) {
   const out = [];
   for (const [key, rows] of groups) {
     const [survey, question] = key.split('\u0000');
-    const min = rows[0].scaleMin ?? 0;
-    const max = rows[0].scaleMax ?? 10;
-    const { bottom, top } = bucketBounds(min, max);
+    const scale = resolveGroupScale(rows);
+    const bounds = bucketBounds(scale.min, scale.max);
     const values = rows.map((r) => Number(r.value)).filter((v) => Number.isFinite(v));
     if (values.length === 0) continue;
 
-    const topShare = share(values.filter((v) => v >= top).length, values.length);
-    const lowShare = share(values.filter((v) => v <= bottom).length, values.length);
-    const minShare = share(values.filter((v) => v === min).length, values.length);
+    // ⚠ Доля на минимуме считается ВСЕГДА: границ корзин она не требует, а вердикт
+    // «неприменимый вопрос» держится именно на ней.
+    const minShare = share(values.filter((v) => v === scale.min).length, values.length);
+    const topShare = bounds === null ? null : share(values.filter((v) => v >= bounds.top).length, values.length);
+    const lowShare = bounds === null ? null : share(values.filter((v) => v <= bounds.bottom).length, values.length);
 
     let verdict = 'working';
     let why = 'Вопрос различает респондентов.';
     if (values.length < t.minN) {
       verdict = 'insufficient-data';
       why = `Ответов ${values.length} при пороге ${t.minN} — выводы не делаем.`;
-    } else if (topShare > t.ritualTopShare) {
+    } else if (topShare !== null && topShare > t.ritualTopShare) {
       verdict = 'ritual';
       why = `${Math.round(topShare * 100)} % ответов в верхней корзине — вопрос почти не различает клиентов.`;
     } else if (minShare > t.unanswerableShare) {
@@ -173,15 +257,21 @@ function analyseQuestions(scaleAnswers, t) {
       survey,
       question,
       n: values.length,
+      scale,
       avg: round(sum(values) / values.length),
-      topShare: round(topShare, 4),
-      lowShare: round(lowShare, 4),
+      topShare: topShare === null ? null : round(topShare, 4),
+      lowShare: lowShare === null ? null : round(lowShare, 4),
       minShare: round(minShare, 4),
       verdict,
-      why,
+      // ⚠ Оговорки приписываются к объяснению, а не прячутся в соседнее поле: отчёт читают
+      // глазами, и «вердикт посчитан по шкале, о которой мы догадались» обязано стоять рядом
+      // с самим вердиктом.
+      why: [why, ...scaleNotes(scale), ...(bounds === null ? ['Шкала короче трёх делений — корзины не считались.'] : [])].join(' '),
     });
   }
-  return out.sort((a, b) => a.topShare - b.topShare);
+  // ⚠ Сортировка терпит `null`: у вопроса на короткой шкале верхней корзины нет вовсе,
+  // и такие уходят в конец, а не превращают порядок в кашу.
+  return out.sort((a, b) => (a.topShare ?? 2) - (b.topShare ?? 2));
 }
 
 /**
