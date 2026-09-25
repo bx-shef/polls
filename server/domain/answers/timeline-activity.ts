@@ -27,8 +27,6 @@ import type { PortalCall } from '../portals/smart-processes'
 export const ACTIVITY_ADD_METHOD = 'crm.activity.todo.add'
 /** Метод, которым метка и тип описания наносятся следом. */
 export const ACTIVITY_UPDATE_METHOD = 'crm.activity.update'
-/** Метод, которым снимается дело, которое не удалось сделать находимым. */
-export const ACTIVITY_DELETE_METHOD = 'crm.activity.delete'
 /** Метод поиска по метке. */
 export const ACTIVITY_LIST_METHOD = 'crm.activity.list'
 
@@ -358,11 +356,6 @@ export function buildActivityMarkerCall(activityId: string, originId: string): P
       },
     },
   }
-}
-
-/** Снять дело, которое не удалось сделать находимым. */
-export function buildDeleteActivityCall(activityId: string): PortalCall {
-  return { method: ACTIVITY_DELETE_METHOD, params: { id: Number(activityId) } }
 }
 
 /**
