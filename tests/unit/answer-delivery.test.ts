@@ -230,7 +230,12 @@ describe('дело пишется один раз', () => {
 
     const fields = p.of('crm.activity.update')[0]!.params.fields as Record<string, unknown>
     expect(fields.ORIGIN_ID).toBe(activityOriginId(777))
-    // 2 — bbCode по `crm.enum.contenttype` с живого портала (3 там HTML, а не BB).
+    // ⚠ ДВОЙКА ЗДЕСЬ НЕСУЩАЯ, и с 25.09 больше, чем была. `2` — bbCode по
+    // `crm.enum.contenttype` с живого портала (`3` там HTML). Замер ленты показал, что при
+    // двойке она рисует `<b>` и `<a href>` буквально, тегами, — и ровно на этом стоит решение
+    // НЕ снимать обезвреживание угловых скобок в `neutralizeMarkup`, но и не считать его
+    // обязательным. Поменяв это значение на `3`, надо сначала повторить пробу на живом
+    // портале: `<img src=x onerror=…>` от постороннего человека в чужой CRM — навсегда.
     expect(fields.DESCRIPTION_TYPE).toBe(2)
   })
 
