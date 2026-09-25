@@ -1,10 +1,11 @@
-import { eq, sql } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
 import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
+import { applyProvisionStatus } from '../portals/store'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
@@ -104,16 +105,13 @@ export async function registerPortal(portal: RegisterPortal): Promise<'ok' | 'de
   // а вот второго события установки не будет. Поэтому здесь портал уже установлен,
   // а неудача обустройства переводит его в `degraded`.
   //
-  // ⚠ `degraded` сегодня НИКТО не читает: ни проверка здоровья (она про инфраструктуру
-  // целиком, не про отдельный портал), ни фоновая задача — её нет. Портал, застрявший
-  // в этом статусе, чинится только переустановкой руками. Автоматическое долечивание —
-  // отдельная задача, см. `docs/BACKLOG.md`.
+  // ⚠ `degraded` теперь ЧИТАЕТСЯ: фоновое долечивание перечитывает такие порталы раз в час
+  // и пробует обустроить их снова сохранёнными токенами (`server/portals/heal.ts`, issue #12).
+  // До этого статус не читала ни одна строка кода, и застрявший портал чинился только
+  // переустановкой руками — о необходимости которой администратору никто не говорил.
   const outcome = await provisionPortal({ ...portal, id: portalId, storedRefreshToken })
+  await applyProvisionStatus(portalId, outcome)
   if (outcome !== 'ok') {
-    await getDb()
-      .update(schema.portals)
-      .set({ status: 'degraded', updatedAt: new Date() })
-      .where(eq(schema.portals.memberId, portal.memberId))
     logger.warn({ domain: portal.domain, outcome }, 'портал установлен, но не обустроен')
   }
 

@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm'
 import { getDb, schema } from '../db/client'
-import { purgeBoundary } from '../domain/portals/lifecycle'
+import { purgeBoundary, statusAfterProvision } from '../domain/portals/lifecycle'
 import { logger } from '../utils/logger'
 
 /**
@@ -170,4 +170,38 @@ async function countLivePortals(): Promise<number> {
     .from(schema.portals)
     .where(ne(schema.portals.status, 'deleted'))
   return rows[0]?.n ?? 0
+}
+
+/**
+ * Записать исход обустройства в статус портала.
+ *
+ * ⚠ Заведено разбором issue #12: писателей статуса было двое (установка ставила `degraded`
+ * при неудаче, уборщик — `deleted`), а вот кнопка «доустроить» в мастере статус НЕ трогала
+ * вовсе. То есть она честно чинила портал и оставляла его помеченным сломанным — навсегда,
+ * потому что `degraded` больше никто не перечитывал. Теперь исход записывают все трое,
+ * одной функцией.
+ *
+ * `expect` — compare-and-swap для фонового долечивания: оно захватывает портал статусом
+ * `provisioning`, и записать исход устаревшей попытки поверх переустановки, случившейся
+ * тем временем, нельзя. Вызывающие, у которых портал в руках синхронно, его не передают.
+ *
+ * Возвращает, записали ли: `false` у долечивания значит «портал забрали, исход неактуален».
+ */
+export async function applyProvisionStatus(
+  portalId: string,
+  outcome: 'ok' | 'not-admin' | 'no-scope' | 'failed',
+  expect?: string,
+): Promise<boolean> {
+  const rows = await getDb()
+    .update(schema.portals)
+    .set({ status: statusAfterProvision(outcome), updatedAt: new Date() })
+    .where(and(
+      eq(schema.portals.id, portalId),
+      // Стёртый портал не воскрешаем статусом: он уже не наш.
+      ne(schema.portals.status, 'deleted'),
+      ...(expect === undefined ? [] : [eq(schema.portals.status, expect)]),
+    ))
+    .returning({ id: schema.portals.id })
+
+  return rows.length > 0
 }
