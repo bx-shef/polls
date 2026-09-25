@@ -3,6 +3,7 @@ import {
   buildCompleteSurveyCall,
   buildReadSurveyItemCall,
   parentFieldNames,
+  readAssignedById,
   readParentDealId,
   readUpdatedItemId,
 } from '../../server/domain/answers/portal-calls'
@@ -146,5 +147,35 @@ describe('подтверждение портала', () => {
       { result: { item: { id: 0 } } }, { result: { item: { id: -1 } } }]) {
       expect(readUpdatedItemId(body)).toBeNull()
     }
+  })
+})
+
+describe('ответственный за элемент «Опроса»', () => {
+  /**
+   * ⚠ Границы — по следам панели ревью (issue #42, пункт 4). У близнеца
+   * (`readParentDealId`) эти случаи проверены, а здесь был только счастливый путь, где
+   * `assignedById` всегда число. Портал же отдаёт числа строками, а отсутствующее поле —
+   * как угодно, и цена ошибки видна не сразу: дело с итогом опроса достанется чужому
+   * сотруднику или повиснет без ответственного.
+   */
+  it('читает число и число, присланное строкой', () => {
+    expect(readAssignedById({ result: { item: { assignedById: 5 } } })).toBe(5)
+    expect(readAssignedById({ result: { item: { assignedById: '5' } } })).toBe(5)
+    expect(readAssignedById({ result: { item: { assignedById: ' 5 ' } } })).toBe(5)
+  })
+
+  it('на всём, что не похоже на идентификатора, отвечает нулём', () => {
+    // Ноль значит «не прочитали»: вызывающий просто не отправит поле, и портал поставит
+    // ответственным владельца токена. Это лучше, чем отправить мусор и получить отказ
+    // на всей записи итога.
+    for (const raw of [0, -1, 1.5, '', '  ', 'пятый', null, undefined, {}, []]) {
+      expect(readAssignedById({ result: { item: { assignedById: raw } } }), String(raw)).toBe(0)
+    }
+  })
+
+  it('на пустом ответе не выдумывает', () => {
+    expect(readAssignedById({ result: {} })).toBe(0)
+    expect(readAssignedById({ result: { item: {} } })).toBe(0)
+    expect(readAssignedById(null)).toBe(0)
   })
 })
