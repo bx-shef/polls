@@ -234,9 +234,15 @@ describe('дело пишется один раз', () => {
     expect(fields.DESCRIPTION_TYPE).toBe(2)
   })
 
-  it('непомеченное дело СНИМАЕТСЯ, а не остаётся висеть', async () => {
-    // ⚠ Непомеченное дело хуже, чем никакого: поиск его не найдёт, а следующая доставка
-    // напишет второе. Компенсация закрывает всё, кроме смерти процесса между двумя вызовами.
+  it('непомеченное дело ОСТАЁТСЯ, а не снимается', async () => {
+    // ⚠ ГЛАВНЫЙ ГВАРД ISSUE #45, и он перевернул прежнее решение. Здесь стояла компенсация:
+    // непомеченное дело снималось, чтобы следующая доставка не создала второе. Замер
+    // на живом портале 24.09 показал, что она своей цели не достигает — `crm.activity.delete`
+    // убирает дело, а его ЗАПИСЬ В ЛЕНТЕ СДЕЛКИ ОСТАЁТСЯ НАВСЕГДА, с тем же заголовком
+    // и тем же полным текстом описания. Снять её нечем.
+    //
+    // То есть удаление меняло «дело, которое может задвоиться» на «мёртвый текст в ленте»
+    // и при повторной доставке давало ровно ту картину, из-за которой заведён issue #45.
     const p = portal({
       'crm.activity.update': () => {
         throw new Error('ACCESS_DENIED')
@@ -245,8 +251,67 @@ describe('дело пишется один раз', () => {
 
     const outcome = await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
-    expect(outcome).toEqual({ ok: true, itemId: 777, reported: false })
-    expect(p.of('crm.activity.delete')[0]!.params.id).toBe(9001)
+    expect(p.methods()).not.toContain('crm.activity.delete')
+    // И доставка считается доложенной: дело в ленте сделки есть, менеджер видит итог
+    // и кнопки. Ненаходимым оно осталось только для нас.
+    expect(outcome).toEqual({ ok: true, itemId: 777, reported: true })
+  })
+
+  it('метку пробует ВТОРОЙ раз, прежде чем сдаться', async () => {
+    // Метка — единственное, что делает дело находимым, а `crm.activity.update` идемпотентен.
+    // Цена повтора — один вызов на пути отказа; цена отказа — дубль в ленте клиента.
+    let attempts = 0
+    const p = portal({
+      'crm.activity.update': () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('OPERATION_TIME_LIMIT')
+        return { result: true }
+      },
+    })
+
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
+
+    expect(attempts).toBe(2)
+    expect(p.methods()).not.toContain('crm.activity.delete')
+  })
+
+  it('перед повтором ПЕРЕСПРАШИВАЕТ портал: метка могла лечь', async () => {
+    // ⚠ Исключение означает «мы не дождались ответа», а не «портал ничего не сделал»:
+    // наш таймаут и обрыв сети выглядят одинаково, при том что запрос мог примениться.
+    // Нашлось по метке — второй вызов не нужен.
+    let attempts = 0
+    let searches = 0
+    const p = portal({
+      'crm.activity.update': () => {
+        attempts += 1
+        throw new Error('таймаут')
+      },
+      // Первый поиск — это дедупликация перед созданием, и дела ещё нет. Второй —
+      // переспрос после неудачной пометки, и вот тут портал говорит, что метка легла.
+      'crm.activity.list': () => {
+        searches += 1
+        return searches === 1 ? { result: [] } : { result: [{ ID: '9001' }] }
+      },
+    })
+
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
+
+    expect(attempts).toBe(1)
+    expect(searches).toBe(2)
+  })
+
+  it('больше двух попыток не делает', async () => {
+    let attempts = 0
+    const p = portal({
+      'crm.activity.update': () => {
+        attempts += 1
+        return { result: false }
+      },
+    })
+
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
+
+    expect(attempts).toBe(2)
   })
 
   it('не считает записью ответ без идентификатора', async () => {
