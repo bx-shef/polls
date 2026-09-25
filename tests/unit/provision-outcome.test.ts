@@ -41,7 +41,49 @@ function portal(answers: Record<string, unknown | (() => unknown)> = {}) {
   return { call, calls }
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+})
+
+describe('вкладки приложения', () => {
+  it('ГЛАВНОЕ: конструктор вешается на «Шаблон опроса» по entityTypeId', async () => {
+    // ⚠ У смарт-процесса ДВА числа, и они разные: у «Шаблона опроса» `entityTypeId = 1038`,
+    // `id = 8`. Код точки встраивания собирается из ПЕРВОГО, а имена пользовательских полей —
+    // из ВТОРОГО, и оба механизма живут в одном обустройстве. Плюс рядом есть второй
+    // смарт-процесс, «Опрос» (1040/10), на который вкладку вешать нельзя вовсе: конструктор
+    // правит анкету, а не ответ клиента.
+    //
+    // Цена ошибки — тихая: портал ответит `ERROR_PLACEMENT_NOT_FOUND`, отказ регистрации
+    // установку не роняет, и снаружи это выглядит как успешная установка без вкладки.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal()
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    const bound = p.call.mock.calls
+      .filter(([method]) => method === 'placement.bind')
+      .map(([, params]) => (params as Record<string, unknown>).PLACEMENT)
+
+    expect(bound).toContain('CRM_DYNAMIC_1038_DETAIL_TAB')
+    expect(bound).not.toContain('CRM_DYNAMIC_1040_DETAIL_TAB')
+    expect(bound).not.toContain('CRM_DYNAMIC_8_DETAIL_TAB')
+  })
+
+  it('вкладка сделки остаётся на месте', async () => {
+    // Вторая вкладка не должна вытеснить первую: точки разные, регистрации независимы.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal()
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    const bound = p.call.mock.calls
+      .filter(([method]) => method === 'placement.bind')
+      .map(([, params]) => (params as Record<string, unknown>).PLACEMENT)
+
+    expect(bound).toContain('CRM_DEAL_DETAIL_TAB')
+  })
+})
 
 describe('исход обустройства', () => {
   it('ГЛАВНОЕ: без прав администратора — `not-admin`, и портал не трогаем', async () => {

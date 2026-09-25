@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { ensureDealTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
+import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
@@ -217,6 +217,18 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       logger.warn({ domain: portal.domain }, 'вкладка в карточке сделки не зарегистрирована')
     }
 
+    // ⚠ Вторая вкладка — конструктор анкеты в карточке «Шаблона опроса». Код точки собирается
+    // из `entityTypeId`, а НЕ из `id` смарт-процесса: соседний механизм, имена полей, берёт
+    // как раз `id`, и перепутать их — вопрос одной буквы. Разбор в `templateTabPlacement`.
+    const builderPlaced = await ensureTemplateTabPlacement(
+      budgeted,
+      publicBaseUrl(),
+      result.template.entityTypeId,
+    )
+    if (!builderPlaced) {
+      logger.warn({ domain: portal.domain }, 'вкладка конструктора не зарегистрирована')
+    }
+
     if (!result.dealLinked) {
       // ⚠ Приложение установилось, но главного не делает: элемент «Опрос» не привяжется
       // к сделке, и итог не вернётся в карточку. Чаще всего это тариф, запрещающий правку
@@ -233,6 +245,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         created: [result.createdTemplate, result.createdSurvey],
         addedFields: result.addedFields,
         placed,
+        builderPlaced,
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
       },
