@@ -40,6 +40,7 @@ import {
   TEMPLATE_FIELDS,
   TEMPLATE_SP_TITLE,
   buildFieldEntityId,
+  PROVISION_REVISION,
   type PortalCall,
   type SmartProcessField,
   type SmartProcessRef,
@@ -128,6 +129,19 @@ export interface SmartProcessRefs {
   survey: SmartProcessRef
 }
 
+/**
+ * Что портал помнит о своём обустройстве: идентификаторы и ревизия.
+ *
+ * ⚠ Ревизия лежит ТАМ ЖЕ, где идентификаторы, а не у нас в базе, и это следование инварианту
+ * «источник истины — портал». Своя колонка была бы дешевле в чтении — фильтр в SQL вместо
+ * вызова на портал, — но завела бы второй источник правды о том, как настроен чужой портал,
+ * ровно рядом с первым. Цена честного варианта: один `app.option.get` на портал в час.
+ */
+export interface StoredProvision extends Partial<SmartProcessRefs> {
+  /** `0` — портал обустраивался до появления ревизий либо не обустраивался вовсе. */
+  revision: number
+}
+
 export interface ProvisionResult extends SmartProcessRefs {
   createdTemplate: boolean
   createdSurvey: boolean
@@ -181,24 +195,52 @@ export async function isPortalAdmin(call: RestCall): Promise<boolean> {
 }
 
 /** Прочитать сохранённые на портале идентификаторы. Портал — источник истины, не мы. */
-export async function readStoredRefs(call: RestCall): Promise<Partial<SmartProcessRefs>> {
+export async function readStoredRefs(call: RestCall): Promise<StoredProvision> {
   const response = await call('app.option.get', { option: SP_REFS_OPTION }) as { result?: unknown } | null
   const raw = response?.result
-  if (typeof raw !== 'string' || raw === '') return {}
+  if (typeof raw !== 'string' || raw === '') return { revision: 0 }
   try {
-    const parsed = JSON.parse(raw) as Partial<SmartProcessRefs>
-    return { template: validRef(parsed.template), survey: validRef(parsed.survey) }
+    const parsed = JSON.parse(raw) as Partial<SmartProcessRefs> & { revision?: unknown }
+    const revision = Number(parsed.revision)
+    return {
+      template: validRef(parsed.template),
+      survey: validRef(parsed.survey),
+      // ⚠ Ноль, а не текущая ревизия: портал, обустроенный ДО появления отметки, обязан
+      // выглядеть устаревшим. Подставив текущую, мы объявили бы настроенным всё, что уже
+      // установлено, — то есть закрыли бы ровно ту дыру, ради которой отметка и заводится.
+      revision: Number.isInteger(revision) && revision > 0 ? revision : 0,
+    }
   }
   catch {
     // Испорченное значение не должно мешать установке: не прочитали — значит найдём
     // смарт-процессы по заголовку и перезапишем.
-    return {}
+    return { revision: 0 }
   }
 }
 
 /** Записать идентификаторы на портал. Требует прав администратора. */
 export async function storeRefs(call: RestCall, refs: SmartProcessRefs): Promise<void> {
   await call('app.option.set', { options: { [SP_REFS_OPTION]: JSON.stringify(refs) } })
+}
+
+/**
+ * Отметить, какой ревизией обустроен портал.
+ *
+ * ⚠ Пишется ПОСЛЕДНИМ шагом обустройства и отдельным вызовом, а не вместе с идентификаторами.
+ * Идентификаторы нужны следующим шагам той же цепочки — без них не собрать имена полей, — а
+ * отметка означает «всё, что обещает эта ревизия, сделано». Записав её вместе с ними, мы бы
+ * объявили портал настроенным до того, как зарегистрировали вкладки.
+ *
+ * ⚠ Мягкие отказы отметку НЕ отменяют, и это осознанный размен. Связь со сделкой не настроится
+ * на тарифе, который запрещает править смарт-процессы; вкладка не встанет, если публичный адрес
+ * не задан. Считая такой портал вечно устаревшим, мы ходили бы к нему с семнадцатью вызовами
+ * каждый час — без единого шанса что-то изменить. Эти отказы и без того пишутся в журнал
+ * громко, ошибкой.
+ */
+export async function storeProvisionRevision(call: RestCall, refs: SmartProcessRefs): Promise<void> {
+  await call('app.option.set', {
+    options: { [SP_REFS_OPTION]: JSON.stringify({ ...refs, revision: PROVISION_REVISION }) },
+  })
 }
 
 function validRef(ref: SmartProcessRef | undefined): SmartProcessRef | undefined {

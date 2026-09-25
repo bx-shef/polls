@@ -1,11 +1,12 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
+import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
+import { PROVISION_REVISION } from '../domain/portals/smart-processes'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
@@ -239,9 +240,15 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       )
     }
 
+    // ⚠ Отметка ревизии — ПОСЛЕДНИМ шагом, после вкладок. Записав её раньше, мы объявили бы
+    // портал настроенным до того, как настроили: следующая фоновая проверка сочла бы его
+    // свежим и вкладку регистрировать не стала бы. Issue #75.
+    await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
+
     logger.info(
       {
         domain: portal.domain,
+        revision: PROVISION_REVISION,
         created: [result.createdTemplate, result.createdSurvey],
         addedFields: result.addedFields,
         placed,

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { sql } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { getDb, isDatabaseConfigured, schema } from '../../server/db/client'
-import { healDegradedPortals, requeueStuckProvisioning } from '../../server/portals/heal'
+import { healDegradedPortals, refreshOutdatedPortals, requeueStuckProvisioning } from '../../server/portals/heal'
 import { PROVISION_STUCK_MINUTES } from '../../server/domain/portals/lifecycle'
 
 /**
@@ -232,5 +232,126 @@ describe.skipIf(!enabled)('возврат брошенного обустрой�
     await healDegradedPortals(new Date(), { portalId: id, provision: reinstallDuringHeal })
 
     expect(await statusOf(id)).toBe('active')
+  })
+})
+
+describe.skipIf(!enabled)('донастройка под текущую ревизию', () => {
+  beforeEach(async () => {
+    await wipe()
+  })
+
+  afterAll(async () => {
+    if (!enabled) return
+    await wipe()
+  })
+
+  /** Портал отвечает заданной ревизией, не ходя никуда. */
+  const saying = (revision: number) => async () => revision
+
+  it('ГЛАВНОЕ: портал прошлой ревизии донастраивается', async () => {
+    // ⚠ То, чего не было вовсе (issue #75): портал в статусе `active` не обустраивался больше
+    // никогда, и вкладка, добавленная релизом, не появлялась ни у одного уже установленного
+    // клиента. Заметить это было нечем — установка-то давно прошла успешно.
+    const id = await makePortal(TEST_DOMAIN, 'active')
+    const portal = fakeProvision('ok')
+
+    expect(await refreshOutdatedPortals(new Date(), {
+      portalId: id,
+      provision: portal.attempt,
+      readRevision: saying(1),
+    })).toBe(1)
+
+    expect(portal.calls).toEqual([TEST_DOMAIN])
+    expect(await statusOf(id)).toBe('active')
+  })
+
+  it('свежий портал НЕ трогаем вовсе', async () => {
+    // ⚠ Обустройство — 17–19 вызовов в чужой портал. Ходить туда каждый час без причины
+    // значит шуметь в журнале клиента и жечь его лимиты. Ревизия читается ДО захвата
+    // именно поэтому.
+    const id = await makePortal(TEST_DOMAIN, 'active')
+    const portal = fakeProvision('ok')
+
+    expect(await refreshOutdatedPortals(new Date(), {
+      portalId: id,
+      provision: portal.attempt,
+      readRevision: saying(999),
+    })).toBe(0)
+
+    expect(portal.calls).toEqual([])
+    expect(await statusOf(id)).toBe('active')
+  })
+
+  it('сломанный портал НЕ отбираем у долечивания — и даже не спрашиваем его о ревизии', async () => {
+    // ⚠ `degraded` — работа соседнего уборщика. Взяв его здесь, мы получили бы два
+    // обустройства одного портала за один тик: сначала донастройка, потом долечивание.
+    //
+    // ⚠ Вторая половина утверждения появилась из обратной проверки, и без неё гвард был
+    // пустым: захват всё равно требует статус `active`, поэтому снятие отбора в самой
+    // ВЫБОРКЕ не краснело ничем. А цена у него есть — вопрос о ревизии это вызов на портал,
+    // и задавать его тому, кого мы всё равно не возьмём, значит шуметь у клиента даром.
+    const id = await makePortal(TEST_DOMAIN, 'degraded')
+    const portal = fakeProvision('ok')
+    let asked = 0
+
+    expect(await refreshOutdatedPortals(new Date(), {
+      portalId: id,
+      provision: portal.attempt,
+      readRevision: async () => {
+        asked += 1
+        return 1
+      },
+    })).toBe(0)
+
+    expect(asked).toBe(0)
+    expect(portal.calls).toEqual([])
+  })
+
+  it('портал с мёртвым грантом пропускаем', async () => {
+    const id = await makePortal(TEST_DOMAIN, 'active')
+    await getDb().execute(sql`update ${schema.portals} set grant_revoked_at = now() where id = ${id}`)
+    const portal = fakeProvision('ok')
+
+    expect(await refreshOutdatedPortals(new Date(), {
+      portalId: id,
+      provision: portal.attempt,
+      readRevision: saying(1),
+    })).toBe(0)
+
+    expect(portal.calls).toEqual([])
+  })
+
+  it('не прочитали ревизию — пропускаем, а не считаем устаревшим', async () => {
+    // ⚠ Портал молчит — это не повод идти его настраивать. Считая молчание устареванием,
+    // мы ходили бы к недоступному порталу по семнадцать раз каждый час.
+    const id = await makePortal(TEST_DOMAIN, 'active')
+    const portal = fakeProvision('ok')
+    const silent = async () => {
+      throw new Error('ECONNRESET')
+    }
+
+    expect(await refreshOutdatedPortals(new Date(), {
+      portalId: id,
+      provision: portal.attempt,
+      readRevision: silent,
+    })).toBe(0)
+
+    expect(portal.calls).toEqual([])
+    expect(await statusOf(id)).toBe('active')
+  })
+
+  it('неудачная донастройка оставляет портал сломанным, а не захваченным', async () => {
+    // Дальше его подберёт долечивание — и это правильно: портал действительно настроен
+    // не тем, чем обещает текущая версия приложения.
+    const id = await makePortal(TEST_DOMAIN, 'active')
+    const portal = fakeProvision('failed')
+
+    expect(await refreshOutdatedPortals(new Date(), {
+      portalId: id,
+      provision: portal.attempt,
+      readRevision: saying(1),
+    })).toBe(0)
+
+    expect(await statusOf(id)).toBe('degraded')
   })
 })
