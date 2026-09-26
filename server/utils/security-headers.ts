@@ -107,9 +107,14 @@ export function securityHeadersFor(path: string, nonce?: string): Record<string,
     return { ...common, 'Content-Security-Policy': buildPublicPageCsp(nonce), 'X-Robots-Tag': 'noindex, nofollow' }
   }
 
-  // Лендинг — единственная страница, которой в выдаче место. Политика у неё та же, что
-  // у публичной анкеты: она тоже вне портала, и встраивать её в чужие страницы незачем.
-  if (isLanding(path)) {
+  // Лендинг и справка — страницы, которым в выдаче место. Политика у них та же, что
+  // у публичной анкеты: они вне портала, и встраивать их в чужие страницы незачем.
+  //
+  // ⚠ Справку портал тоже показывает — в слайдере, — но НЕ открывая `/help` напрямую: слайдер
+  // приложения открывает наш `/app`, и тот уже внутри документа переходит на справку
+  // (`app/utils/help.ts`). Поэтому `frame-ancestors 'none'` ей не мешает, а прямой адрес
+  // `/help` в чужом фрейме так и остаётся запрещённым.
+  if (isLanding(path) || isPublicDocument(path)) {
     return { ...common, 'Content-Security-Policy': buildPublicPageCsp(nonce) }
   }
 
@@ -136,7 +141,18 @@ export function securityHeadersFor(path: string, nonce?: string): Record<string,
  */
 export function needsNonce(path: string): boolean {
   if (path.startsWith('/api/')) return false
-  return path.startsWith('/s/') || isLanding(path)
+  return path.startsWith('/s/') || isLanding(path) || isPublicDocument(path)
+}
+
+/**
+ * Публичные документы помимо лендинга: справка и её текстовая копия для ИИ-помощника.
+ *
+ * Сравнение точное, как у лендинга: префиксом под «справку» попало бы что угодно, что начинается
+ * с тех же букв.
+ */
+function isPublicDocument(path: string): boolean {
+  const withoutQuery = path.split('?')[0] ?? ''
+  return withoutQuery === '/help' || withoutQuery === '/llms.txt'
 }
 
 /**

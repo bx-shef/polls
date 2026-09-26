@@ -623,14 +623,21 @@ async function save(): Promise<void> {
             title="Эта версия уже опубликована"
             description="Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию."
           />
+          <HelpLink
+            v-if="published"
+            anchor="edit-survey"
+            label="Как устроены версии?"
+            class="mt-2"
+          />
         </B24Card>
 
         <!-- ⚠ Претензии показываются ВЫШЕ самой анкеты. Их читают, когда собираются
              публиковать, и спрятав их под список разделов мы бы заставили человека сначала
              пролистать то, что он и так знает. -->
         <B24Card v-if="blocking.length > 0">
-          <div class="font-semibold">
-            Пока нельзя опубликовать
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-semibold">Пока нельзя опубликовать</span>
+            <HelpLink anchor="publish-blocked" />
           </div>
           <ul class="mt-2 flex flex-col gap-2">
             <li

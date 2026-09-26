@@ -1,4 +1,4 @@
-import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { defineEventHandler, readBody } from 'h3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -42,13 +42,19 @@ const AUTH = {
 
 /** Есть ли связь с порталом: `false` — SDK не смог договориться с родительским окном. */
 let frameWorks = true
+/** Что портал положил во фрейм. У обычного открытия из меню — ничего. */
+let placementOptions: unknown = {}
 
 vi.mock('@bitrix24/b24jssdk', () => ({
   initializeB24Frame: async () => {
     if (!frameWorks) throw new Error('нет связи с порталом')
-    return { auth: { getAuthData: () => AUTH } }
+    return { auth: { getAuthData: () => AUTH }, placement: { options: placementOptions } }
   },
 }))
+
+/** Куда страница попросила увести фрейм. */
+const { navigated } = vi.hoisted(() => ({ navigated: vi.fn() }))
+mockNuxtImport('navigateTo', () => navigated)
 
 const SURVEYS = [{ code: 'default', version: 3, title: 'Оценка работы по проекту' }]
 
@@ -58,6 +64,7 @@ let surveysThrows = false
 
 registerEndpoint('/api/portal/surveys', defineEventHandler(async (event) => {
   await readBody(event)
+  surveysAsked += 1
   if (surveysThrows) throw new Error('портал недоступен')
   return surveysReply
 }))
@@ -72,10 +79,16 @@ async function settle() {
   for (let tick = 0; tick < 6; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
 }
 
+/** Сколько раз страница спросила список анкет. */
+let surveysAsked = 0
+
 beforeEach(() => {
   frameWorks = true
+  placementOptions = {}
   surveysThrows = false
   surveysReply = { ok: true, surveys: SURVEYS }
+  surveysAsked = 0
+  navigated.mockClear()
 })
 
 describe('страница приложения', () => {
@@ -150,5 +163,33 @@ describe('страница приложения', () => {
 
     expect(page.text()).toContain('Опубликованных анкет пока нет')
     expect(page.text()).toContain('Шаблон опроса')
+  })
+})
+
+/**
+ * Этот же адрес портал открывает слайдером, когда кнопка «Что это значит?» просит справку.
+ *
+ * ⚠ `openSliderAppPage` переоткрывает НАШ адрес приложения, а раздел приезжает в `place` —
+ * другого канала у него нет (разбор — `app/utils/help.ts`). Если `/app` его не прочитает, слайдер
+ * справки покажет список анкет, и снаружи это неотличимо от «кнопка сломана».
+ */
+describe('слайдер справки', () => {
+  it('ведёт фрейм на раздел справки и сам не рисуется', async () => {
+    placementOptions = { place: 'help-scores' }
+
+    await openApp()
+    await settle()
+
+    expect(navigated).toHaveBeenCalledWith({ path: '/help', hash: '#scores' }, { replace: true })
+    // Список анкет в слайдере справки — разговор не о том, и лишний вызов в портал.
+    expect(surveysAsked).toBe(0)
+  })
+
+  it('обычное открытие из меню никуда не уводит', async () => {
+    await openApp()
+    await settle()
+
+    expect(navigated).not.toHaveBeenCalled()
+    expect(surveysAsked).toBe(1)
   })
 })

@@ -103,6 +103,21 @@ describe('выбор заголовков по адресу', () => {
     }
   })
 
+  it('справке и её тексту для ИИ-помощника — публичную политику и место в выдаче', () => {
+    // Справку читают снаружи портала: модератор Маркета, поиск, человек по ссылке. Портал показывает
+    // её в слайдере, но переходом внутри своего `/app`, а не открывая `/help` во фрейме.
+    for (const path of ['/help', '/llms.txt']) {
+      expect(securityHeadersFor(path)['Content-Security-Policy']).toBe(publicPageCsp)
+      expect(securityHeadersFor(path)['X-Robots-Tag']).toBeUndefined()
+    }
+    expect(needsNonce('/help')).toBe(true)
+    expect(securityHeadersFor('/help', 'abc')['Content-Security-Policy']).toContain(`'nonce-abc'`)
+  })
+
+  it('не путает справку с путями, которые с неё начинаются', () => {
+    expect(securityHeadersFor('/helpdesk')['Content-Security-Policy']).toBe(portalCsp)
+  })
+
   it('виджет поля в карточке портал может встроить', () => {
     // ⚠ Поле своего типа открывается во фрейме ВНУТРИ карточки, и `frame-ancestors 'none'`
     // публичной политики сделал бы его пустым прямоугольником — без единой ошибки на нашей

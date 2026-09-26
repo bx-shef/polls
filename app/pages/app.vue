@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
+import { FAQ } from '#shared/faq'
 import { readFramePass } from '~/utils/frame-auth'
+import { helpRouteFor } from '~/utils/help'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
 /**
@@ -82,6 +84,16 @@ onMounted(async () => {
     return
   }
 
+  // ⚠ Этот же адрес портал открывает слайдером, когда кнопка «Что это значит?» просит справку:
+  // `openSliderAppPage` переоткрывает НАШ адрес приложения, а раздел справки приезжает в `place`.
+  // Страница сама не рисуется, а ведёт фрейм в справку — список анкет в слайдере справки был бы
+  // разговором не о том. Разбор канала — в `app/utils/help.ts`.
+  const help = helpRouteFor(frame.placement.options, FAQ.map(entry => entry.id))
+  if (help !== null) {
+    await navigateTo({ path: help.path, hash: help.hash }, { replace: true })
+    return
+  }
+
   try {
     await loadSurveys(frame)
   }
@@ -142,12 +154,17 @@ async function loadSurveys(connection: B24Frame) {
         :description="failure"
       />
 
-      <B24Alert
-        v-else-if="notProvisioned"
-        color="air-primary-warning"
-        title="Приложение ещё настраивается"
-        description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение от имени администратора."
-      />
+      <template v-else-if="notProvisioned">
+        <B24Alert
+          color="air-primary-warning"
+          title="Приложение ещё настраивается"
+          description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение от имени администратора."
+        />
+        <HelpLink
+          anchor="not-working"
+          class="mt-2"
+        />
+      </template>
 
       <template v-else>
         <!-- Заголовка здесь НЕТ: его несёт шапка панели. Две одинаковые строки подряд
@@ -184,6 +201,13 @@ async function loadSurveys(connection: B24Frame) {
           title="Где выпускать ссылку"
           description="Откройте любую сделку и перейдите на вкладку «Опросы» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё."
         />
+
+        <div class="mt-4">
+          <HelpLink
+            anchor="send-survey"
+            label="Справка: как отправить опрос и где увидеть ответ"
+          />
+        </div>
       </template>
     </template>
   </B24DashboardPanel>

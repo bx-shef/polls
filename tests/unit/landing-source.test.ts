@@ -31,7 +31,7 @@ describe('исходник лендинга', () => {
     // Список путей записан здесь вручную, а не выведен из роутера: выведенный из роутера,
     // он подтверждал бы сам себя — появись в проекте пустая страница `/eula`, тест
     // позеленел бы, ничего не проверив.
-    const pages = ['/', '/app', '/install', '/portal/deal-tab']
+    const pages = ['/', '/app', '/install', '/portal/deal-tab', '/help']
 
     for (const [, href] of SOURCE.matchAll(/<a[^>]+href="([^"]+)"/g)) {
       if (href === undefined || !href.startsWith('/')) continue
