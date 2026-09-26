@@ -50,8 +50,18 @@ export interface SmartProcessRef {
  * |---|---|
  * | 1 | всё до вкладки конструктора |
  * | 2 | вкладка конструктора в карточке «Шаблона опроса» (PR #74) |
+ * | 3 | поле своего типа «Результат опроса» на «Опросе» и виджет в раскладке его карточки |
  */
-export const PROVISION_REVISION = 2
+export const PROVISION_REVISION = 3
+
+/**
+ * Ревизия, с которой в карточке «Опроса» стоит виджет результата.
+ *
+ * ⚠ Отдельной константой, а не `PROVISION_REVISION`: правка чужой раскладки — разовая миграция
+ * порталов, обустроенных ДО неё. Сравнивая с текущей ревизией, мы повторяли бы правку при каждом
+ * следующем подъёме — и возвращали бы виджет клиенту, который его убрал.
+ */
+export const RESULT_FIELD_REVISION = 3
 
 /** Пользовательское поле смарт-процесса. */
 export interface SmartProcessField {
@@ -106,6 +116,16 @@ export const SURVEY_FIELDS: readonly SmartProcessField[] = [
   { postfix: 'ANSWERS', userTypeId: 'string', label: 'Ответы (JSON)', settings: { ROWS: 10 } },
   { postfix: 'SCORES', userTypeId: 'string', label: 'Баллы по секциям (JSON)', settings: { ROWS: 5 } },
 ]
+
+/**
+ * Постфикс поля с виджетом результата — поля НАШЕГО типа (`userfield-type.ts`).
+ *
+ * ⚠ Не в `SURVEY_FIELDS`, и это не забывчивость. Те поля стандартных типов и заводятся одним
+ * циклом; у этого тип свой, и его полный код у каждого портала свой — он известен только
+ * после регистрации типа и вопроса `app.info`. Поэтому заводит его отдельный шаг обустройства.
+ * Значения у поля нет: виджет читает `ANSWERS` и `SCORES` того же элемента.
+ */
+export const SURVEY_RESULT_FIELD = 'RESULT'
 
 /**
  * `entityId`, под которым создаётся поле смарт-процесса: `CRM_<id СП>`.
@@ -181,8 +201,17 @@ export function buildCreateSmartProcessCall(title: string): PortalCall {
   }
 }
 
-/** Создание одного пользовательского поля. */
-export function buildCreateFieldCall(spTypeId: number, field: SmartProcessField): PortalCall {
+/**
+ * Создание одного пользовательского поля.
+ *
+ * Тип здесь шире, чем в `SmartProcessField`: кроме стандартных типов сюда приходит полный код
+ * нашего собственного, `rest_<ID приложения>_<код>`, а он у каждого портала свой. Сами описания
+ * полей остаются на узком перечне — опечатка в них по-прежнему ловится компилятором.
+ */
+export function buildCreateFieldCall(
+  spTypeId: number,
+  field: Omit<SmartProcessField, 'userTypeId'> & { userTypeId: string },
+): PortalCall {
   return {
     method: 'userfieldconfig.add',
     params: {
@@ -265,11 +294,17 @@ export function findTypeByTitle(types: readonly Record<string, unknown>[], title
 
 /** Имена существующих полей из ответа `userfieldconfig.list`. */
 export function readFieldNames(response: unknown): string[] {
+  return readFields(response).map(field => field.name)
+}
+
+/** Поля из ответа `userfieldconfig.list` — с именем и типом. Безымянные пропускаются. */
+export function readFields(response: unknown): { name: string, userTypeId: string }[] {
   const fields = (response as { result?: { fields?: unknown } } | null)?.result?.fields
   if (!Array.isArray(fields)) return []
   return fields
-    .map(field => (field as { fieldName?: unknown })?.fieldName)
-    .filter((name): name is string => typeof name === 'string' && name !== '')
+    .map(field => field as { fieldName?: unknown, userTypeId?: unknown } | null)
+    .filter(field => typeof field?.fieldName === 'string' && field.fieldName !== '')
+    .map(field => ({ name: field!.fieldName as string, userTypeId: typeof field!.userTypeId === 'string' ? field!.userTypeId : '' }))
 }
 
 /**
@@ -494,7 +529,7 @@ function toRelationParams(relation: TypeRelation): Record<string, unknown> {
  * ⚠ Клиент раскладывается на `CONTACT_ID` и `COMPANY_ID`: отдельного поля «Клиент»
  * в `crm.item.fields` нет, хотя интерфейс показывает его одной строкой.
  */
-export function buildCardSections(spTypeId: number): Record<string, unknown>[] {
+export function buildCardSections(spTypeId: number, resultField: boolean): Record<string, unknown>[] {
   const own = (postfix: string) => ({ name: buildFieldName(spTypeId, postfix) })
 
   return [
@@ -520,17 +555,76 @@ export function buildCardSections(spTypeId: number): Record<string, unknown>[] {
       elements: [own('TEMPLATE_CODE'), own('TEMPLATE_VERSION'), own('STATE'), own('EXPIRES_AT')],
     },
     {
-      name: 'survey_result',
+      name: CARD_RESULT_SECTION,
       title: 'Результат',
       type: 'section',
+      // ⚠ Виджет ПОКА НАД JSON-полями, а не вместо них, — и это первый шаг из двух, а не
+      // компромисс. Что портал рисует пустое поле своего типа в режиме просмотра, живьём ещё
+      // не проверено; убрав JSON сразу, мы при промахе оставили бы менеджера без ответов вовсе.
+      // JSON уходит из раскладки вторым шагом, после живой проверки. Разбор — `docs/PROCESS.md`,
+      // раздел 9. Решение по итогам панели ревью PR #80.
       elements: [
         { ...own('SCORE'), optionFlags: 1 },
         own('COMPLETED_AT'),
+        // `optionFlags: 1` обязателен: значения у поля нет никогда, а пустое поле карточка
+        // в режиме просмотра прячет — виджет не открылся бы ни разу.
+        ...(resultField ? [{ ...own(SURVEY_RESULT_FIELD), optionFlags: 1 }] : []),
         own('SCORES'),
         own('ANSWERS'),
       ],
     },
   ]
+}
+
+/** Имя нашего раздела с результатом. По нему узнаём свой раздел в чужой раскладке. */
+export const CARD_RESULT_SECTION = 'survey_result'
+
+/**
+ * Поставить виджет в раскладку, которая УЖЕ стоит на портале.
+ *
+ * ⚠ Существует ради порталов, установленных до поля своего типа. Раскладку мы ставим только
+ * на пустом месте (`hasCardConfig`), значит у них она своя и новое поле в неё не попадёт
+ * никогда: оно появится на элементе, но в карточке его не будет. Ровно тот класс отказа,
+ * ради которого заводилась ревизия обустройства (issue #75), — новое не доезжает
+ * до установленных.
+ *
+ * ⚠ Трогаем РОВНО ОДНО место — свой раздел `survey_result`, и только если виджета нет нигде.
+ * Раскладка перезаписывается целиком и на всех пользователей, поэтому правило узкое:
+ * - виджет уже где-то стоит (его поставили мы или переложил клиент) — ничего;
+ * - нашего раздела нет (клиент собрал карточку по-своему) — ничего: его раскладка, его решение;
+ * - хоть один раздел пришёл в непонятной форме — ничего: не разобрав, не пишем, как у связей;
+ * - иначе виджет встаёт в наш раздел над первым JSON-полем (JSON остаётся — см. `buildCardSections`).
+ *   Всё остальное уходит обратно в портал как пришло.
+ *
+ * ⚠ Вызывается ОДИН РАЗ — при переходе портала на ревизию 3, а не при каждом обустройстве.
+ * Иначе клиент, сам убравший виджет, получал бы его обратно при каждой переустановке —
+ * от этого `hasCardConfig` и защищает. Нашёл `/review`.
+ *
+ * `null` — менять нечего.
+ */
+export function planResultFieldInCard(current: unknown, spTypeId: number): Record<string, unknown>[] | null {
+  const sections = (current as { result?: unknown } | null)?.result
+  if (!Array.isArray(sections)) return null
+
+  const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
+  // ⚠ Не массив — не пишем. Отдав `[]` вместо непонятного, мы заменили бы раздел одним
+  // виджетом и стёрли бы у всех пользователей то, что в нём было. Нашёл `/code-review`.
+  if (!sections.every(section => Array.isArray(elementsOf(section)))) return null
+
+  const same = (name: unknown, postfix: string) =>
+    typeof name === 'string' && normalizeFieldName(name) === normalizeFieldName(buildFieldName(spTypeId, postfix))
+  const rows = (section: unknown) => elementsOf(section) as (Record<string, unknown> | null)[]
+
+  if (sections.some(section => rows(section).some(element => same(element?.name, SURVEY_RESULT_FIELD)))) return null
+
+  const index = sections.findIndex(section => (section as { name?: unknown } | null)?.name === CARD_RESULT_SECTION)
+  if (index === -1) return null
+
+  const elements = [...rows(sections[index])]
+  const at = elements.findIndex(element => same(element?.name, 'SCORES') || same(element?.name, 'ANSWERS'))
+  elements.splice(at === -1 ? elements.length : at, 0, { name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 })
+
+  return sections.map((section, i) => i === index ? { ...(section as Record<string, unknown>), elements } : section as Record<string, unknown>)
 }
 
 /** Прочитать общую настройку карточки. `scope: 'C'` — общая, не личная. */
@@ -552,10 +646,10 @@ export function hasCardConfig(response: unknown): boolean {
   return Array.isArray(result) && result.length > 0
 }
 
-/** Записать общую раскладку карточки. */
-export function buildSetCardConfigCall(entityTypeId: number, spTypeId: number): PortalCall {
+/** Записать общую раскладку карточки — нашу с нуля или поправленную `planResultFieldInCard`. */
+export function buildSetCardConfigCall(entityTypeId: number, sections: Record<string, unknown>[]): PortalCall {
   return {
     method: 'crm.item.details.configuration.set',
-    params: { entityTypeId, scope: 'C', data: buildCardSections(spTypeId) },
+    params: { entityTypeId, scope: 'C', data: sections },
   }
 }

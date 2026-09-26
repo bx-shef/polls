@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 
 /**
  * Обустройство портала целиком, поверх подделки вызова. Проверяем то, чья поломка
@@ -38,6 +39,10 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     if (method === 'crm.type.list') return { result: { types: [] } }
     if (method === 'userfieldconfig.list') return { result: { fields: [] } }
     if (method === 'userfieldconfig.add') return { result: { field: 1 } }
+    // Тип поля не зарегистрирован, приложение на портале под номером 219 — форма ответов
+    // из документации `userfieldtype.list` и `app.info`.
+    if (method === 'userfieldtype.list') return { result: [] }
+    if (method === 'app.info') return { result: { ID: 219, INSTALLED: true } }
     // ⚠ Умолчание — смарт-процесс, СОЗДАННЫЙ С `isClientEnabled`: Контакт и Компания
     // стоят родителями и помечены `isPredefined`, а Сделки среди них НЕТ. Это не выдумка
     // подделки, а дословная форма ответа из документации `crm.type.get`, и именно это
@@ -319,7 +324,7 @@ describe('раскладка карточки «Опроса»', () => {
   it('показывает сделку и клиента, а не прячет их', async () => {
     // Ради этого раскладка и ставится: умолчание портала клало «Сделку» и «Клиента»
     // в «Скрытые поля», и карточка не отвечала ни «по какой сделке», ни «кого спрашивали».
-    const sections = buildCardSections(SURVEY.id)
+    const sections = buildCardSections(SURVEY.id, true)
     const shown = sections.flatMap(s => (s.elements as { name: string, optionFlags?: number }[]))
 
     for (const name of ['PARENT_ID_2', 'CONTACT_ID', 'COMPANY_ID']) {
@@ -342,6 +347,212 @@ describe('раскладка карточки «Опроса»', () => {
 
     expect(result.cardConfigured).toBe(false)
     expect(result.dealLinked).toBe(true)
+  })
+})
+
+/**
+ * Поле своего типа «Результат опроса» — виджет над JSON-полями в карточке «Опроса».
+ *
+ * ⚠ Первая редакция меняла адрес обработчика через `userfieldtype.delete` + `add` — по образцу
+ * вкладок, где снятие безвредно. У типа поля так нельзя: на нём висят поля в карточках клиента,
+ * а что с ними делает удаление типа, документация не говорит. Нашлось при сверке с документацией
+ * до первого выката: у метода правки `HANDLER` есть прямым текстом. Отсюда гвард ниже.
+ *
+ * ⚠ Остальные гварды блока — находки панели ревью PR #80: поле до `installFinish`, чужое поле
+ * с нашим именем, повтор правки раскладки у клиента, который убрал виджет сам.
+ */
+describe('поле «Результат опроса»', () => {
+  const HANDLER = 'https://polls.example/uf/survey-result'
+  const FIELD = `UF_CRM_${SURVEY.id}_RESULT`
+  const OUR_TYPE = `rest_219_${SURVEY_RESULT_TYPE}`
+  const WITH_WIDGET = { resultHandlerUrl: HANDLER }
+
+  /** Раскладка, которую обустройство отправило в портал, — именами полей. */
+  function sentLayout(p: ReturnType<typeof portal>): string[] {
+    const data = p.of('crm.item.details.configuration.set')[0]!.params.data as { elements: { name: string }[] }[]
+    return data.flatMap(section => section.elements.map(element => element.name))
+  }
+
+  /** Создание именно нашего поля — среди прочих `userfieldconfig.add`. */
+  function resultFieldAdds(p: ReturnType<typeof portal>) {
+    return p.of('userfieldconfig.add').filter(c => (c.params.field as { fieldName: string }).fieldName === FIELD)
+  }
+
+  /** Поле виджета уже стоит на «Опросе» — с таким типом. */
+  function withField(userTypeId: string) {
+    return {
+      'userfieldconfig.list': (params: Record<string, unknown>) =>
+        (params.filter as { entityId: string }).entityId === `CRM_${SURVEY.id}`
+          ? { result: { fields: [{ fieldName: FIELD, userTypeId }] } }
+          : { result: { fields: [] } },
+    }
+  }
+
+  it('на чистом портале: тип, полный код, поле — и виджет в раскладке над JSON', async () => {
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(result.resultField).toBe('ok')
+    expect(p.of('userfieldtype.add')[0]!.params.HANDLER).toBe(HANDLER)
+    // Поле — по ПОЛНОМУ коду: короткий портал не примет («Invalid custom type specified»).
+    expect((resultFieldAdds(p)[0]!.params.field as { userTypeId: string }).userTypeId).toBe(OUR_TYPE)
+    // ⚠ JSON пока ОСТАЁТСЯ — виджет над ним. Убрать JSON до живой проверки значило бы при промахе
+    // оставить менеджера без ответов вовсе.
+    const layout = sentLayout(p)
+    expect(layout.indexOf(FIELD)).toBeGreaterThan(-1)
+    expect(layout.indexOf(FIELD)).toBeLessThan(layout.indexOf(`UF_CRM_${SURVEY.id}_ANSWERS`))
+  })
+
+  it('поле заводится ДО раскладки карточки', async () => {
+    // ⚠ Раскладка ставит в карточку имена полей. Поставив туда поле, которого ещё нет,
+    // мы полагались бы на неописанное поведение портала с несуществующим именем.
+    const p = portal()
+
+    await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    const order = p.calls.map(c => c.method)
+    const fieldAt = p.calls.findIndex(c => c.method === 'userfieldconfig.add' && (c.params.field as { fieldName: string }).fieldName === FIELD)
+    expect(fieldAt).toBeGreaterThan(-1)
+    expect(fieldAt).toBeLessThan(order.indexOf('crm.item.details.configuration.set'))
+  })
+
+  it('ГЛАВНОЕ: до `installFinish` ничего не регистрирует и откладывает шаг', async () => {
+    // ⚠ Мастер установки обустраивает портал ДО `installFinish()`, а поле своего типа портал
+    // до него не примет. Первая редакция `INSTALLED` не смотрела, и на каждом портале из Маркета
+    // виджет не появился бы никогда. Нашли `/review` и `/code-review`.
+    const p = portal({ 'app.info': { result: { ID: 219, INSTALLED: false } } })
+
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(result.resultField).toBe('deferred')
+    expect(p.of('userfieldtype.add')).toHaveLength(0)
+    expect(resultFieldAdds(p)).toHaveLength(0)
+    expect(sentLayout(p)).not.toContain(FIELD)
+    // Остальная установка идёт как шла.
+    expect(result.dealLinked).toBe(true)
+  })
+
+  it('НИКОГДА не снимает тип — адрес меняет правкой', async () => {
+    const p = portal({
+      'userfieldtype.list': { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER: 'https://old.example/uf/survey-result' }] },
+    })
+
+    await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(p.of('userfieldtype.delete')).toHaveLength(0)
+    expect(p.of('userfieldtype.add')).toHaveLength(0)
+    expect(p.of('userfieldtype.update')[0]!.params.HANDLER).toBe(HANDLER)
+  })
+
+  it('тип и поле на месте — не регистрирует и не создаёт их заново', async () => {
+    const p = portal({
+      'userfieldtype.list': { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER }] },
+      ...withField(OUR_TYPE),
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(result.resultField).toBe('ok')
+    expect(p.of('userfieldtype.add')).toHaveLength(0)
+    expect(p.of('userfieldtype.update')).toHaveLength(0)
+    expect(resultFieldAdds(p)).toHaveLength(0)
+  })
+
+  it('поле с нашим именем, но чужого типа — не трогает и виджет не ставит', async () => {
+    // ⚠ Так бывает у «усыновлённого» смарт-процесса (строковое поле клиента) и после
+    // переустановки (наш тип со старым идентификатором приложения). Удалять нельзя: в клиентском
+    // поле могут быть данные. Нашли `/review` и `/code-review`.
+    const p = portal(withField('string'))
+
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(result.resultField).toBe('failed')
+    expect(p.of('userfieldconfig.delete')).toHaveLength(0)
+    expect(resultFieldAdds(p)).toHaveLength(0)
+    expect(sentLayout(p)).not.toContain(FIELD)
+  })
+
+  it.each<[string, Record<string, unknown>]>([
+    ['регистрация типа', { 'userfieldtype.add': () => { throw new Error('ACCESS_DENIED') } }],
+    ['правка адреса', {
+      'userfieldtype.list': { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER: 'https://old.example/x' }] },
+      'userfieldtype.update': () => { throw new Error('ERROR_CORE') },
+    }],
+    ['создание поля', {
+      'userfieldconfig.add': (params: Record<string, unknown>) => {
+        if ((params.field as { fieldName: string }).fieldName === FIELD) throw new Error('Invalid custom type specified')
+        return { result: { field: 1 } }
+      },
+    }],
+  ])('отказ на шаге «%s» установку не роняет, а виджета в раскладке нет', async (_step, answers) => {
+    // Ставить в карточку поле, которого нет, нельзя: пустое место вместо виджета хуже простыни.
+    const p = portal(answers)
+
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(result.resultField).toBe('failed')
+    expect(result.dealLinked).toBe(true)
+    expect(sentLayout(p)).toContain(`UF_CRM_${SURVEY.id}_ANSWERS`)
+    expect(sentLayout(p)).not.toContain(FIELD)
+  })
+
+  it('без идентификатора приложения поле не заводит', async () => {
+    // Собрать полный код не из чего, а угадывать его мы не будем.
+    const p = portal({ 'app.info': { result: { INSTALLED: true } } })
+
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(result.resultField).toBe('failed')
+    expect(resultFieldAdds(p)).toHaveLength(0)
+  })
+
+  it('без адреса обработчика шаг не делается вовсе', async () => {
+    // Хост не `https` — регистрация честно не состоится, как у вкладок.
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call, {}, { resultHandlerUrl: null })
+
+    expect(result.resultField).toBe('failed')
+    expect(p.of('app.info')).toHaveLength(0)
+    expect(p.of('userfieldtype.list')).toHaveLength(0)
+  })
+
+  it('ставит виджет в раскладку, которую приложение поставило раньше', async () => {
+    // ⚠ Ради установленных порталов: раскладку целиком мы ставим только на пустом месте,
+    // и без этого шага виджет у них не появился бы никогда (тот же класс, что issue #75).
+    const p = portal({
+      'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, false) },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 2 })
+
+    expect(result.cardConfigured).toBe(true)
+    expect(sentLayout(p)).toContain(FIELD)
+    expect(sentLayout(p)).toContain(`UF_CRM_${SURVEY.id}_SCORES`)
+  })
+
+  it('правка раскладки разовая: у портала на ревизии виджета её не повторяет', async () => {
+    // ⚠ Клиент убрал виджет из карточки сам — следующее обустройство (переустановка, долечивание)
+    // не должно возвращать его обратно для всех пользователей. Нашёл `/review`.
+    const p = portal({
+      'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, false) },
+      ...withField(OUR_TYPE),
+    })
+
+    await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 3 })
+
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+  })
+
+  it('чужую раскладку без нашего раздела не трогает и ради виджета', async () => {
+    const p = portal({
+      'crm.item.details.configuration.get': { result: [{ name: 'своё', title: 'Своё', elements: [] }] },
+    })
+
+    await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
   })
 })
 

@@ -59,3 +59,48 @@ function numericValue(source: unknown, key: string): number | null {
   }
   return null
 }
+
+/** Что портал передал фрейму поля нашего типа. */
+export interface FieldContext {
+  /** Карточка в режиме правки. Виджет и тогда только показывает: `setValue` мы не зовём. */
+  editing: boolean
+  /** Чей это объект: `CRM_<id смарт-процесса>`. Пусто — портал не прислал. */
+  entityId: string
+  /** Тип объекта из `ENTITY_DATA`. `null` — не прислал. */
+  entityTypeId: number | null
+  /** Номер элемента. `null` — новая, ещё не сохранённая карточка: портал шлёт там `0`. */
+  itemId: number | null
+}
+
+/**
+ * Разобрать параметры фрейма поля своего типа.
+ *
+ * ⚠ ИСТОЧНИКОВ ДВА, и расходятся они не по нашей вине. Официальный гайд «Как встроить виджет
+ * в лид в виде пользовательского поля» перечисляет `MODE`, `ENTITY_ID`, `ENTITY_VALUE_ID`.
+ * Соседнее приложение (`nuxt-uf-legat-info`, `app/pages/handler/uf.legat-info.html.client.vue`)
+ * на живых порталах читает `ENTITY_DATA.entityId` и `ENTITY_DATA.entityTypeId`, которых
+ * в гайде нет. Берём документированное первым, наблюдаемое — вторым: расхождение мы не выбирали,
+ * и промах любого из двух значил бы поле, которое не показывает ничего.
+ *
+ * Те же три ловушки, что у вкладок (шапка файла): строка вместо объекта, чужой регистр ключей,
+ * пустые параметры. Поэтому разбор здесь, а не обращением по точке в странице.
+ */
+export function fieldContext(options: unknown): FieldContext {
+  const bag = parsePlacementOptions(options)
+  const data = parsePlacementOptions(valueOf(bag, 'ENTITY_DATA'))
+  const mode = valueOf(bag, 'MODE')
+  const entityId = valueOf(bag, 'ENTITY_ID')
+
+  return {
+    editing: typeof mode === 'string' && mode.trim().toLowerCase() === 'edit',
+    entityId: typeof entityId === 'string' ? entityId.trim() : '',
+    entityTypeId: numericValue(data, 'entityTypeId'),
+    itemId: numericValue(bag, 'ENTITY_VALUE_ID') ?? numericValue(data, 'entityId'),
+  }
+}
+
+/** Значение ключа без учёта регистра, как есть. */
+function valueOf(bag: Record<string, unknown>, key: string): unknown {
+  const found = Object.keys(bag).find(name => name.toLowerCase() === key.toLowerCase())
+  return found === undefined ? undefined : bag[found]
+}
