@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { buildTabHandlerUrl, templateTabPlacement } from '../../server/domain/portals/placements'
-import { buildGetTemplateItemCall, readTemplateItem } from '../../server/domain/templates/portal-calls'
+import {
+  buildGetTemplateItemCall,
+  buildNewVersionCall,
+  buildPublishTemplateCall,
+  nextVersion,
+  readTemplateItem,
+  readVersionsOfCode,
+} from '../../server/domain/templates/portal-calls'
 
 /**
  * Вкладка конструктора: код точки встраивания и чтение элемента шаблона.
@@ -118,5 +125,86 @@ describe('отметка изменения', () => {
     // Пустая отметка проверку ПРОПУСКАЕТ: отказывать из-за отсутствующего поля значило бы
     // сломать сохранение целиком ради защиты от редкой гонки.
     expect(readTemplateItem({ result: { item: { id: 42 } } }, TEMPLATE)?.updatedAt).toBe('')
+  })
+})
+
+describe('публикация версии', () => {
+  it('ГЛАВНОЕ: номер считается по ВСЕМ версиям кода, а не по открытой', () => {
+    // ⚠ Версия — внешний ключ: по паре «код + версия» живут кэш схемы, выпущенные ссылки
+    // и вся статистика. Выдав занятый номер, мы склеили бы две разные анкеты в одну,
+    // и прошлые ответы стали бы неотличимы от новых.
+    expect(nextVersion([1, 2, 5])).toBe(6)
+    // Порядок не важен: берём наибольший, а не последний.
+    expect(nextVersion([5, 1, 2])).toBe(6)
+  })
+
+  it('первая версия — единица, а не ноль', () => {
+    // ⚠ Ноль означает «версии ещё нет» (черновик). Опубликованная нулевая была бы
+    // неотличима от неопубликованной.
+    expect(nextVersion([])).toBe(1)
+    expect(nextVersion([0, 0])).toBe(1)
+  })
+
+  it('мусор в номерах не двигает счётчик', () => {
+    expect(nextVersion([Number.NaN, -3, 1.5, 2])).toBe(3)
+  })
+
+  it('версии чужого кода не считаются', () => {
+    // Коды разных анкет живут в одном смарт-процессе, и номера у них свои.
+    const response = {
+      result: {
+        items: [
+          { UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: '2' },
+          { UF_CRM_8_CODE: 'game', UF_CRM_8_VERSION: '7' },
+          { UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: '0' },
+        ],
+      },
+    }
+
+    expect(readVersionsOfCode(response, TEMPLATE, 'brand')).toEqual([2])
+  })
+
+  it('публикация ставит состояние, номер и дату', () => {
+    const call = buildPublishTemplateCall(
+      TEMPLATE,
+      42,
+      { code: 'brand', title: 'Бренд', sections: [] },
+      3,
+      new Date('2026-09-26T10:00:00Z'),
+    )
+
+    const fields = (call.params as Record<string, unknown>).fields as Record<string, unknown>
+    expect(call.method).toBe('crm.item.update')
+    expect(fields.UF_CRM_8_STATE).toBe('published')
+    expect(fields.UF_CRM_8_VERSION).toBe(3)
+    expect(fields.UF_CRM_8_PUBLISHED_AT).toBe('2026-09-26')
+    // Заголовок карточки — тот же, что название в схеме: в списке видят первый,
+    // респондент в ссылке — второе, и разойтись им нельзя.
+    expect(fields.title).toBe('Бренд')
+  })
+
+  it('ГЛАВНОЕ: новая версия несёт ТЕ ЖЕ ключи вопросов', () => {
+    // ⚠ В этом весь смысл переноса. Ответ по вопросу `q17` первой версии и ответ на него же
+    // во второй — один и тот же вопрос, и сравнивать их можно только пока ключ тот же.
+    // Выдав новые, мы получили бы вторую версию, не сравнимую с первой ничем.
+    const call = buildNewVersionCall(TEMPLATE, {
+      code: 'brand',
+      title: 'Бренд',
+      sections: [{
+        key: 'product',
+        title: 'Продукт',
+        scored: true,
+        questions: [{ key: 'q17', sourceKey: 'q17', title: 'A', type: 'scale', weight: 1, scored: true }],
+        bands: [],
+      }],
+    })
+
+    const fields = (call.params as Record<string, unknown>).fields as Record<string, unknown>
+    expect(call.method).toBe('crm.item.add')
+    expect(fields.UF_CRM_8_STATE).toBe('draft')
+    // Номер выдаётся публикацией, а не созданием: брошенный черновик оставил бы дыру.
+    expect(fields.UF_CRM_8_VERSION).toBe(0)
+    const schema = JSON.parse(fields.UF_CRM_8_SCHEMA as string) as { sections: { questions: { key: string }[] }[] }
+    expect(schema.sections[0]!.questions[0]!.key).toBe('q17')
   })
 })

@@ -131,3 +131,131 @@ export function buildSaveSchemaCall(
     },
   }
 }
+
+/**
+ * Следующий номер версии для кода анкеты.
+ *
+ * ⚠ Считается по ВСЕМ версиям этого кода на портале, а не по той, что открыта. Версия — это
+ * внешний ключ: по паре «код + версия» живут кэш схемы, выпущенные ссылки и вся статистика.
+ * Выдав номер, который уже был, мы склеили бы две разные анкеты в одну и сделали бы прошлые
+ * ответы неотличимыми от новых.
+ *
+ * ⚠ Начинаем с единицы, а не с нуля: ноль у нас означает «версии ещё нет» (черновик),
+ * и опубликованная нулевая версия была бы неотличима от неопубликованной.
+ */
+export function nextVersion(existing: readonly number[]): number {
+  const highest = existing.reduce((top, value) => (Number.isInteger(value) && value > top ? value : top), 0)
+  return highest + 1
+}
+
+/**
+ * Черновик этого кода, если он уже есть. `null` — нет.
+ *
+ * ⚠ Инвариант проекта: перед созданием — поиск существующего. Без него каждое нажатие
+ * «создать новую версию» (или повтор запроса после обрыва) заводило бы ещё один черновик
+ * той же анкеты, и каждый публиковался бы отдельной версией.
+ */
+export function findDraftOfCode(response: unknown, template: SmartProcessRef, code: string): number | null {
+  const items = (response as { result?: { items?: unknown } } | null)?.result?.items
+  if (!Array.isArray(items)) return null
+
+  const codeField = buildFieldName(template.id, 'CODE')
+  const stateField = buildFieldName(template.id, 'STATE')
+
+  for (const raw of items) {
+    const item = raw as Record<string, unknown>
+    if (item[codeField] !== code || item[stateField] !== TEMPLATE_STATE_DRAFT) continue
+    const id = Number(item.id)
+    if (Number.isInteger(id) && id > 0) return id
+  }
+  return null
+}
+
+/** Версии, уже занятые этим кодом. Читает ответ `crm.item.list`. */
+export function readVersionsOfCode(response: unknown, template: SmartProcessRef, code: string): number[] {
+  const items = (response as { result?: { items?: unknown } } | null)?.result?.items
+  if (!Array.isArray(items)) return []
+
+  const codeField = buildFieldName(template.id, 'CODE')
+  const versionField = buildFieldName(template.id, 'VERSION')
+
+  return items
+    .filter(item => (item as Record<string, unknown>)[codeField] === code)
+    .map(item => Number((item as Record<string, unknown>)[versionField]))
+    .filter(version => Number.isInteger(version) && version > 0)
+}
+
+/**
+ * Опубликовать версию.
+ *
+ * ⚠ Название карточки перезаписывается названием из схемы — тем же вызовом. В списке
+ * смарт-процесса человек видит заголовок, а респондент в ссылке — название из схемы,
+ * и разъехавшись они дают карточку, которая называется одним, а показывает другое.
+ *
+ * ⚠ Дата публикации ставится ЗДЕСЬ И СЕЙЧАС: это единственное поле, по которому потом
+ * восстанавливают, когда анкета вышла.
+ */
+export function buildPublishTemplateCall(
+  template: SmartProcessRef,
+  itemId: number,
+  schema: SurveyTemplate,
+  version: number,
+  publishedAt: Date,
+): PortalCall {
+  return {
+    method: 'crm.item.update',
+    params: {
+      entityTypeId: template.entityTypeId,
+      id: itemId,
+      useOriginalUfNames: 'Y',
+      fields: {
+        title: schema.title,
+        [buildFieldName(template.id, 'CODE')]: schema.code,
+        [buildFieldName(template.id, 'VERSION')]: version,
+        [buildFieldName(template.id, 'STATE')]: TEMPLATE_STATE_PUBLISHED,
+        [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify(schema),
+        [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10),
+      },
+    },
+  }
+}
+
+/**
+ * Завести новую версию черновиком — копией опубликованной.
+ *
+ * ⚠ Это и есть «правка» опубликованной версии, единственная разрешённая её форма. Инвариант:
+ * опубликованная версия неизменяема, потому что по ней уже собрана статистика, а ссылки,
+ * отправленные людям, ведут именно на неё.
+ *
+ * ⚠ Ключи вопросов переносятся КАК ЕСТЬ. В этом весь смысл переноса: ответ, собранный
+ * по вопросу `q17` первой версии, и ответ на него же во второй — это один и тот же вопрос,
+ * и сравнивать их можно только пока ключ тот же. Выдав новые, мы получили бы вторую версию,
+ * не сравнимую с первой ничем.
+ */
+export function buildNewVersionCall(
+  template: SmartProcessRef,
+  schema: SurveyTemplate,
+  assignedById = 0,
+): PortalCall {
+  return {
+    method: 'crm.item.add',
+    params: {
+      entityTypeId: template.entityTypeId,
+      useOriginalUfNames: 'Y',
+      fields: {
+        title: schema.title,
+        // ⚠ Ответственный ставится ЯВНО. Элемент создаётся токеном ПРИЛОЖЕНИЯ, поэтому портал
+        // проставил бы владельца токена — администратора, ставившего приложение, — а не того,
+        // кто нажал «создать новую версию». На портале, где сотрудник видит только свои
+        // элементы, автор получил бы отказ в карточке, которую сам же и завёл.
+        ...(assignedById > 0 ? { assignedById } : {}),
+        [buildFieldName(template.id, 'CODE')]: schema.code,
+        // Ноль — «версии ещё нет». Номер выдаётся публикацией, а не созданием: между ними
+        // черновик могут бросить, и занятый впустую номер оставил бы дыру в нумерации.
+        [buildFieldName(template.id, 'VERSION')]: 0,
+        [buildFieldName(template.id, 'STATE')]: TEMPLATE_STATE_DRAFT,
+        [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify(schema),
+      },
+    },
+  }
+}

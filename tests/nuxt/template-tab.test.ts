@@ -28,12 +28,22 @@ let frameWorks = true
 let placementOptions: unknown = { ID: '42' }
 let reply: unknown
 
+/** Куда вкладка попросила портал открыть слайдер. */
+let sliderPath = ''
+
 vi.mock('@bitrix24/b24jssdk', () => ({
   initializeB24Frame: async () => {
     if (!frameWorks) throw new Error('нет связи с порталом')
     return {
       auth: { getAuthData: () => AUTH },
       placement: { options: placementOptions },
+      slider: {
+        // Форма списана с SDK: `getUrl` знает адрес портала, `openPath` принимает URL.
+        getUrl: (path: string) => new URL(path, 'https://shef.bitrix24.ru'),
+        openPath: async (url: URL) => {
+          sliderPath = url.pathname
+        },
+      },
     }
   },
 }))
@@ -50,6 +60,15 @@ let saveReply: unknown = null
 registerEndpoint('/api/portal/template-save', defineEventHandler(async (event) => {
   sent = await readBody(event) as Record<string, unknown>
   return saveReply ?? { ok: true, problems: [], template: { ...PUBLISHED.template, state: 'draft' } }
+}))
+
+/** Что ушло на публикацию и что ответил сервер. */
+let released: Record<string, unknown> | null = null
+let releaseReply: unknown = null
+
+registerEndpoint('/api/portal/template-publish', defineEventHandler(async (event) => {
+  released = await readBody(event) as Record<string, unknown>
+  return releaseReply ?? { ok: true, action: 'publish', version: 4 }
 }))
 
 const DRAFT = {
@@ -99,6 +118,9 @@ beforeEach(() => {
   reply = PUBLISHED
   sent = null
   saveReply = null
+  released = null
+  releaseReply = null
+  sliderPath = ''
 })
 
 /** Открыть вкладку и вернуть смонтированное — чтобы можно было нажимать кнопки. */
@@ -292,5 +314,100 @@ describe('правка черновика', () => {
 
     expect(button(mounted, 'Сохранить')).toBeUndefined()
     expect(mounted.text()).toContain('Сохранено')
+  })
+})
+
+describe('публикация и новая версия', () => {
+  it('ГЛАВНОЕ: у опубликованной версии ровно одно действие — новая версия', async () => {
+    // ⚠ Инвариант: опубликованная неизменяема, по ней уже собрана статистика, а ссылки
+    // у людей ведут именно на неё. Новая версия — единственная разрешённая форма её правки,
+    // и кнопки «Опубликовать» рядом быть не должно: публиковать уже опубликованное нечего.
+    const mounted = await mount()
+
+    expect(button(mounted, 'Создать новую версию')).toBeDefined()
+    expect(button(mounted, 'Опубликовать')).toBeUndefined()
+    expect(button(mounted, 'Править')).toBeUndefined()
+  })
+
+  it('черновик с ошибками опубликовать НЕЛЬЗЯ', async () => {
+    // ⚠ Сохранить черновик с дырой в диапазонах можно — иначе его негде доделывать. А вот
+    // опубликовать нельзя: опубликованную версию уже не починить, только выпустить новую,
+    // и ссылки, ушедшие людям, останутся на сломанной.
+    reply = {
+      ...PUBLISHED,
+      template: { ...PUBLISHED.template, state: 'draft', version: 0 },
+    }
+    const mounted = await mount()
+
+    expect(button(mounted, 'Опубликовать')!.attributes('disabled')).toBeDefined()
+    expect(mounted.text()).toContain('Сначала исправьте то, что мешает')
+  })
+
+  it('здоровый черновик публикуется и перечитывается', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    // ⚠ Двух шагов мало: публикация, потом ПЕРЕЧИТКА состояния с портала, и только затем
+    // сообщение. Перечитка вынесена из `try` публикации намеренно — её отказ не должен
+    // выглядеть как несостоявшаяся публикация.
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(released!.action).toBe('publish')
+    expect(mounted.text()).toContain('опубликована как версия 4')
+  })
+
+  it('отказ публикации объясняется и не ломает экран', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    releaseReply = { ok: false, reason: 'invalid' }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('пока в ней есть то, что мешает')
+    expect(button(mounted, 'Опубликовать')).toBeDefined()
+  })
+})
+
+describe('карточка новой версии', () => {
+  it('ГЛАВНОЕ: адрес собирается с типом объекта, который прислал сервер', async () => {
+    // ⚠ Вкладка тип объекта НЕ ЗНАЕТ: портал кладёт во фрейм только идентификатор элемента,
+    // а тип отдельным ключом не приходит вовсе. Прежняя редакция читала его из строки запроса,
+    // которой у обработчика нет, и всегда получала ноль — адрес выходил `/crm/type//details/N/`,
+    // слайдер открывал сломанную страницу, и запасной текст не срабатывал: `openPath`
+    // на это не ругается. Нашёл `/code-review`.
+    releaseReply = { ok: true, action: 'new-version', itemId: 77, entityTypeId: 1038 }
+    const mounted = await mount()
+
+    await button(mounted, 'Создать новую версию')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(sliderPath).toBe('/crm/type/1038/details/77/')
+  })
+
+  it('без типа объекта называет номер карточки, а не молчит', async () => {
+    // Слайдер не открыть — значит человек должен хотя бы знать, что искать в списке.
+    releaseReply = { ok: true, action: 'new-version', itemId: 77 }
+    const mounted = await mount()
+
+    await button(mounted, 'Создать новую версию')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(sliderPath).toBe('')
+    expect(mounted.text()).toContain('№77')
+  })
+
+  it('черновик уже был — открываем его, а не заводим второй', async () => {
+    // ⚠ Инвариант: перед созданием — поиск существующего. Без него каждое нажатие заводило бы
+    // ещё один черновик той же анкеты, и каждый публиковался бы отдельной версией.
+    releaseReply = { ok: true, action: 'new-version', itemId: 55, entityTypeId: 1038, reused: true }
+    const mounted = await mount()
+
+    await button(mounted, 'Создать новую версию')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('уже был заведён раньше')
+    expect(sliderPath).toBe('/crm/type/1038/details/55/')
   })
 })
