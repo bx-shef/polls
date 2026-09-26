@@ -43,6 +43,15 @@ registerEndpoint('/api/portal/template', defineEventHandler(async (event) => {
   return reply
 }))
 
+/** Что вкладка отправила на сохранение — проверяем именно это, а не только вид кнопок. */
+let sent: Record<string, unknown> | null = null
+let saveReply: unknown = null
+
+registerEndpoint('/api/portal/template-save', defineEventHandler(async (event) => {
+  sent = await readBody(event) as Record<string, unknown>
+  return saveReply ?? { ok: true, problems: [], template: { ...PUBLISHED.template, state: 'draft' } }
+}))
+
 const DRAFT = {
   ok: true,
   problems: [],
@@ -88,7 +97,22 @@ beforeEach(() => {
   frameWorks = true
   placementOptions = { ID: '42' }
   reply = PUBLISHED
+  sent = null
+  saveReply = null
 })
+
+/** Открыть вкладку и вернуть смонтированное — чтобы можно было нажимать кнопки. */
+async function mount() {
+  const page = await import('../../app/pages/portal/template-tab.vue')
+  const mounted = await mountSuspended(page.default)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  return mounted
+}
+
+/** Найти кнопку по подписи. Ищем по тексту: его видит человек, а не по классу. */
+function button(mounted: Awaited<ReturnType<typeof mount>>, label: string) {
+  return mounted.findAll('button').find(b => b.text().includes(label))
+}
 
 describe('вкладка конструктора', () => {
   it('ГЛАВНОЕ: снаружи портала объясняет, а не грузится вечно', async () => {
@@ -179,5 +203,94 @@ describe('вкладка конструктора', () => {
     const text = await open()
 
     expect(text).toContain('Приложение ещё настраивается')
+  })
+})
+
+describe('правка черновика', () => {
+  it('ГЛАВНОЕ: у опубликованной версии кнопки «Править» НЕТ ВОВСЕ', async () => {
+    // ⚠ Не «есть, но отказывает». Предлагать действие, которое заведомо не сработает, —
+    // способ потратить чужое время: человек нажмёт, наберёт правки и узнает о запрете
+    // в конце. Настоящий запрет при этом на сервере (вкладка могла быть открыта час назад),
+    // здесь только честный вид.
+    const mounted = await mount()
+
+    expect(button(mounted, 'Править')).toBeUndefined()
+    expect(mounted.text()).toContain('уже опубликована')
+  })
+
+  it('черновик правится, и поля появляются', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+
+    await button(mounted, 'Править')!.trigger('click')
+
+    expect(mounted.findAll('input').length).toBeGreaterThan(0)
+    expect(button(mounted, 'Сохранить')).toBeDefined()
+    expect(button(mounted, 'Добавить раздел')).toBeDefined()
+  })
+
+  it('ГЛАВНОЕ: новый вопрос уезжает БЕЗ ключа', async () => {
+    // ⚠ Ключ выдаёт сервер: генератор живёт в домене, а `app/` в серверные модули не ходит
+    // по правилу проекта. Своя копия генератора в браузере была бы вторым словарём на одну
+    // вещь. А ещё ключи обязаны не переиспользоваться после удаления — и это свойство
+    // держится одним генератором, а не двумя похожими.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+
+    await button(mounted, 'Править')!.trigger('click')
+    await button(mounted, 'Добавить вопрос')!.trigger('click')
+    await button(mounted, 'Сохранить')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const schema = sent!.schema as { sections: { questions: { key: string }[] }[] }
+    expect(schema.sections[0]!.questions.some(q => q.key === '')).toBe(true)
+  })
+
+  it('ГЛАВНОЕ: отказ сохранения НЕ вытирает форму с правками', async () => {
+    // ⚠ Нашёл `/code-review`. Отказ писался в общий `failure`, а тот стоит в ветке выше
+    // редактора и подменяет его собой целиком: правки исчезали с экрана, совет «сократите
+    // тексты» выполнить было нечем, и оставалось перезагрузить страницу, потеряв работу.
+    // Проверяем не текст отказа — его проверял и прежний тест, — а то, что форма ЖИВА.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    saveReply = { ok: false, reason: 'too-big' }
+    const mounted = await mount()
+
+    await button(mounted, 'Править')!.trigger('click')
+    const before = mounted.findAll('input').length
+    await button(mounted, 'Сохранить')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('Сократите тексты')
+    expect(mounted.findAll('input')).toHaveLength(before)
+    expect(button(mounted, 'Сохранить')).toBeDefined()
+  })
+
+  it('отказ «уже опубликовали» объясняется словами', async () => {
+    // Версию могли опубликовать, пока вкладка была открыта. «Попробуйте ещё раз» здесь —
+    // обман: сколько ни пробуй, опубликованная версия не примет правок.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    saveReply = { ok: false, reason: 'published' }
+    const mounted = await mount()
+
+    await button(mounted, 'Править')!.trigger('click')
+    await button(mounted, 'Сохранить')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('создайте новую версию')
+  })
+
+  it('после сохранения правим то, что СОХРАНИЛОСЬ', async () => {
+    // ⚠ Копия выбрасывается намеренно: сервер раздал ключи новым вопросам. Продолжив править
+    // прежнюю копию, мы отправили бы эти ключи обратно пустыми — и при следующем сохранении
+    // им выдали бы новые, оторвав уже собранные ответы от их вопросов.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+
+    await button(mounted, 'Править')!.trigger('click')
+    await button(mounted, 'Сохранить')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(button(mounted, 'Сохранить')).toBeUndefined()
+    expect(mounted.text()).toContain('Сохранено')
   })
 })

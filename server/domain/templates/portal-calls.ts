@@ -27,6 +27,17 @@ export interface TemplateItem {
   /** `draft` | `published` | что угодно ещё, что успели записать руками. */
   state: string
   /**
+   * Когда портал последний раз менял элемент.
+   *
+   * ⚠ Нужно для защиты от одновременной правки: вкладка возвращает это значение вместе
+   * со схемой, и запись отказывает, если оно разошлось. Без него две открытые вкладки молча
+   * затирают работу друг друга, и обеим показано «Сохранено». Нашёл `/code-review`.
+   *
+   * Пусто — портал не отдал отметку. Тогда проверять нечем, и запись идёт как раньше:
+   * отказывать из-за отсутствующего поля значило бы сломать сохранение целиком.
+   */
+  updatedAt: string
+  /**
    * Разобранная схема либо `null`, если поле пустое или в нём не JSON.
    *
    * ⚠ `null` — это НЕ ошибка чтения, а законное состояние: элемент, созданный на портале
@@ -80,10 +91,43 @@ export function readTemplateItem(response: unknown, template: SmartProcessRef): 
     // единицу мы бы назвали черновик первой версией, которой никто не публиковал.
     version: Number.isInteger(version) && version > 0 ? version : 0,
     state: asText(bag[buildFieldName(template.id, 'STATE')]),
+    updatedAt: asText(bag.updatedTime),
     schema: parseTemplateSchema(bag[buildFieldName(template.id, 'SCHEMA')]),
   }
 }
 
 function asText(raw: unknown): string {
   return typeof raw === 'string' ? raw.trim() : ''
+}
+
+/**
+ * Записать схему в черновик.
+ *
+ * ⚠ Название элемента пишется ТЕМ ЖЕ вызовом, что и схема. Заголовок карточки на портале
+ * и название анкеты в схеме — одна и та же вещь для человека, и разойтись им нельзя:
+ * в списке смарт-процесса он видит заголовок, а в ссылке, которую получит респондент, —
+ * название из схемы.
+ *
+ * ⚠ Схема уезжает СТРОКОЙ: поле текстовое, и читаем мы его обратно тоже из строки. Отдав
+ * объект, мы положились бы на то, что портал сериализует его так же, как мы ожидаем прочесть.
+ * Тот же приём, что у создания шаблона переносом.
+ */
+export function buildSaveSchemaCall(
+  template: SmartProcessRef,
+  itemId: number,
+  schema: SurveyTemplate,
+): PortalCall {
+  return {
+    method: 'crm.item.update',
+    params: {
+      entityTypeId: template.entityTypeId,
+      id: itemId,
+      useOriginalUfNames: 'Y',
+      fields: {
+        title: schema.title,
+        [buildFieldName(template.id, 'CODE')]: schema.code,
+        [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify(schema),
+      },
+    },
+  }
 }
