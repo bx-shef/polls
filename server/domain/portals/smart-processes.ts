@@ -54,6 +54,15 @@ export interface SmartProcessRef {
  */
 export const PROVISION_REVISION = 3
 
+/**
+ * Ревизия, с которой в карточке «Опроса» стоит виджет результата.
+ *
+ * ⚠ Отдельной константой, а не `PROVISION_REVISION`: правка чужой раскладки — разовая миграция
+ * порталов, обустроенных ДО неё. Сравнивая с текущей ревизией, мы повторяли бы правку при каждом
+ * следующем подъёме — и возвращали бы виджет клиенту, который его убрал.
+ */
+export const RESULT_FIELD_REVISION = 3
+
 /** Пользовательское поле смарт-процесса. */
 export interface SmartProcessField {
   /**
@@ -285,11 +294,17 @@ export function findTypeByTitle(types: readonly Record<string, unknown>[], title
 
 /** Имена существующих полей из ответа `userfieldconfig.list`. */
 export function readFieldNames(response: unknown): string[] {
+  return readFields(response).map(field => field.name)
+}
+
+/** Поля из ответа `userfieldconfig.list` — с именем и типом. Безымянные пропускаются. */
+export function readFields(response: unknown): { name: string, userTypeId: string }[] {
   const fields = (response as { result?: { fields?: unknown } } | null)?.result?.fields
   if (!Array.isArray(fields)) return []
   return fields
-    .map(field => (field as { fieldName?: unknown })?.fieldName)
-    .filter((name): name is string => typeof name === 'string' && name !== '')
+    .map(field => field as { fieldName?: unknown, userTypeId?: unknown } | null)
+    .filter(field => typeof field?.fieldName === 'string' && field.fieldName !== '')
+    .map(field => ({ name: field!.fieldName as string, userTypeId: typeof field!.userTypeId === 'string' ? field!.userTypeId : '' }))
 }
 
 /**
@@ -543,18 +558,19 @@ export function buildCardSections(spTypeId: number, resultField: boolean): Recor
       name: CARD_RESULT_SECTION,
       title: 'Результат',
       type: 'section',
-      // ⚠ Виджет ВМЕСТО двух JSON-полей, а не рядом с ними: ради этого он и заведён.
-      // Сами поля остаются на элементе — в них данные, и виджет читает именно их. Без виджета
-      // (тип не зарегистрировался) раскладка возвращается к JSON: простыня хуже читается,
-      // но пустая карточка без ответов хуже простыни.
+      // ⚠ Виджет ПОКА НАД JSON-полями, а не вместо них, — и это первый шаг из двух, а не
+      // компромисс. Что портал рисует пустое поле своего типа в режиме просмотра, живьём ещё
+      // не проверено; убрав JSON сразу, мы при промахе оставили бы менеджера без ответов вовсе.
+      // JSON уходит из раскладки вторым шагом, после живой проверки. Разбор — `docs/PROCESS.md`,
+      // раздел 9. Решение по итогам панели ревью PR #80.
       elements: [
         { ...own('SCORE'), optionFlags: 1 },
         own('COMPLETED_AT'),
-        ...(resultField
-          // `optionFlags: 1` обязателен: значения у поля нет никогда, а пустое поле карточка
-          // в режиме просмотра прячет — виджет не открылся бы ни разу.
-          ? [{ ...own(SURVEY_RESULT_FIELD), optionFlags: 1 }]
-          : [own('SCORES'), own('ANSWERS')]),
+        // `optionFlags: 1` обязателен: значения у поля нет никогда, а пустое поле карточка
+        // в режиме просмотра прячет — виджет не открылся бы ни разу.
+        ...(resultField ? [{ ...own(SURVEY_RESULT_FIELD), optionFlags: 1 }] : []),
+        own('SCORES'),
+        own('ANSWERS'),
       ],
     },
   ]
@@ -576,8 +592,13 @@ export const CARD_RESULT_SECTION = 'survey_result'
  * Раскладка перезаписывается целиком и на всех пользователей, поэтому правило узкое:
  * - виджет уже где-то стоит (его поставили мы или переложил клиент) — ничего;
  * - нашего раздела нет (клиент собрал карточку по-своему) — ничего: его раскладка, его решение;
- * - иначе из нашего раздела уходят два JSON-поля, и на место первого из них встаёт виджет.
- *   Остальные разделы и элементы уходят обратно в портал как пришли, до байта.
+ * - хоть один раздел пришёл в непонятной форме — ничего: не разобрав, не пишем, как у связей;
+ * - иначе виджет встаёт в наш раздел над первым JSON-полем (JSON остаётся — см. `buildCardSections`).
+ *   Всё остальное уходит обратно в портал как пришло.
+ *
+ * ⚠ Вызывается ОДИН РАЗ — при переходе портала на ревизию 3, а не при каждом обустройстве.
+ * Иначе клиент, сам убравший виджет, получал бы его обратно при каждой переустановке —
+ * от этого `hasCardConfig` и защищает. Нашёл `/review`.
  *
  * `null` — менять нечего.
  */
@@ -585,28 +606,25 @@ export function planResultFieldInCard(current: unknown, spTypeId: number): Recor
   const sections = (current as { result?: unknown } | null)?.result
   if (!Array.isArray(sections)) return null
 
+  const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
+  // ⚠ Не массив — не пишем. Отдав `[]` вместо непонятного, мы заменили бы раздел одним
+  // виджетом и стёрли бы у всех пользователей то, что в нём было. Нашёл `/code-review`.
+  if (!sections.every(section => Array.isArray(elementsOf(section)))) return null
+
   const same = (name: unknown, postfix: string) =>
     typeof name === 'string' && normalizeFieldName(name) === normalizeFieldName(buildFieldName(spTypeId, postfix))
-  const elementsOf = (section: unknown) => {
-    const elements = (section as { elements?: unknown } | null)?.elements
-    return Array.isArray(elements) ? elements as Record<string, unknown>[] : []
-  }
+  const rows = (section: unknown) => elementsOf(section) as (Record<string, unknown> | null)[]
 
-  if (sections.some(section => elementsOf(section).some(element => same(element?.name, SURVEY_RESULT_FIELD)))) return null
+  if (sections.some(section => rows(section).some(element => same(element?.name, SURVEY_RESULT_FIELD)))) return null
 
   const index = sections.findIndex(section => (section as { name?: unknown } | null)?.name === CARD_RESULT_SECTION)
   if (index === -1) return null
 
-  const elements = elementsOf(sections[index])
-  const isJson = (element: Record<string, unknown>) => same(element?.name, 'SCORES') || same(element?.name, 'ANSWERS')
-  const at = elements.findIndex(isJson)
-  const kept = elements.filter(element => !isJson(element))
-  const widget = { name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 }
-  // Считаем позицию в УЖЕ отфильтрованном списке: JSON-полей до первого из них нет, значит
-  // индекс первого JSON совпадает с местом в `kept`.
-  kept.splice(at === -1 ? kept.length : at, 0, widget)
+  const elements = [...rows(sections[index])]
+  const at = elements.findIndex(element => same(element?.name, 'SCORES') || same(element?.name, 'ANSWERS'))
+  elements.splice(at === -1 ? elements.length : at, 0, { name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 })
 
-  return sections.map((section, i) => i === index ? { ...(section as Record<string, unknown>), elements: kept } : section as Record<string, unknown>)
+  return sections.map((section, i) => i === index ? { ...(section as Record<string, unknown>), elements } : section as Record<string, unknown>)
 }
 
 /** Прочитать общую настройку карточки. `scope: 'C'` — общая, не личная. */

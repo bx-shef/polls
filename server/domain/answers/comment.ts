@@ -1,5 +1,6 @@
 import type { AnswerValue } from '../surveys/answer'
 import type { SurveyTemplate } from '../surveys/model'
+import { NO_SCORE_NOTE, formatScore, partialScoreNote } from '../surveys/result-view'
 import type { SectionScore, SurveyScore } from '../surveys/scoring'
 
 /**
@@ -64,7 +65,7 @@ export function buildAnswerComment(
   }
 
   if (score.overall !== null) {
-    lines.push('', RULE, bold(`Итоговый балл: ${format(score.overall)}`))
+    lines.push('', RULE, bold(`Итоговый балл: ${formatScore(score.overall)}`))
   }
 
   // Заголовок один, без единого раздела с содержимым, — это не запись, а шум.
@@ -90,8 +91,8 @@ function sectionLines(
       // ради этого в поле «Ответы (JSON)» — не работа человека. Нашёл владелец: «у нас
       // 2 вопроса и 1 комментарий, в деле такого не видно».
       if (typeof value !== 'number') continue
-      const max = question.scale === undefined ? '' : ` из ${format(question.scale.max)}`
-      body.push(`${label(question.title)} ${format(value)}${max}`)
+      const max = question.scale === undefined ? '' : ` из ${formatScore(question.scale.max)}`
+      body.push(`${label(question.title)} ${formatScore(value)}${max}`)
       continue
     }
 
@@ -112,15 +113,14 @@ function sectionLines(
 
   const head: string[] = []
   if (scored) {
-    const partial = score!.answered < score!.scored
-      // ⚠ Неполноту показываем словами. Балл, посчитанный по двум вопросам из пяти, выглядит
-      // точно так же, как посчитанный по пяти, — и менеджер сравнил бы несравнимое.
-      ? ` (по ${score!.answered} из ${score!.scored} вопросов)`
-      : ''
-    head.push(bold(`${section.title}: ${format(score!.score!)}${partial}`))
+    // ⚠ Неполноту показываем словами. Балл, посчитанный по двум вопросам из пяти, выглядит
+    // точно так же, как посчитанный по пяти, — и менеджер сравнил бы несравнимое.
+    // Подписи общие с виджетом в карточке «Опроса»: одно прохождение, два места показа.
+    const partial = partialScoreNote(score!.answered, score!.scored)
+    head.push(bold(`${section.title}: ${formatScore(score!.score!)}${partial === '' ? '' : ` (${partial})`}`))
   }
   else if (section.scored) {
-    head.push(bold(`${section.title}: без оценки — ни один вопрос не заполнен`))
+    head.push(bold(`${section.title}: ${NO_SCORE_NOTE}`))
   }
   else if (section.title !== '') {
     head.push(bold(section.title))
@@ -138,11 +138,6 @@ function sectionLines(
 /** Подпись вопроса жирным. Двоеточие не приписываем к тому, что и так кончается знаком. */
 function label(title: string): string {
   return bold(/[?!:.]$/.test(title) ? title : `${title}:`)
-}
-
-/** Балл в русской записи: запятая, а не точка, и без хвостовых нулей. */
-function format(score: number): string {
-  return String(score).replace('.', ',')
 }
 
 /**

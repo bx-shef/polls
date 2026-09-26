@@ -202,8 +202,10 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // Адрес виджета уходит внутрь: поле своего типа заводится ДО раскладки карточки,
     // а раскладка — часть обустройства смарт-процессов. Почему именно в таком порядке —
     // у самого шага в `provisionSmartProcesses`.
-    const resultHandlerUrl = buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH)
-    const result = await provisionSmartProcesses(budgeted, known, resultHandlerUrl)
+    const result = await provisionSmartProcesses(budgeted, known, {
+      resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH),
+      previousRevision: known.revision,
+    })
     await storeRefs(budgeted, { template: result.template, survey: result.survey })
 
     if (result.adoptedTemplate || result.adoptedSurvey) {
@@ -238,7 +240,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
 
     // Отказ поля своего типа установку не роняет: без виджета результат виден прежними
     // JSON-полями, просто хуже. Но «виджета нет» должно узнаваться из журнала, а не от клиента.
-    if (!result.resultField) {
+    if (result.resultField === 'failed') {
       logger.warn({ domain: portal.domain }, 'поле «Результат опроса» не заведено — в карточке остаётся JSON')
     }
 
@@ -255,7 +257,13 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // ⚠ Отметка ревизии — ПОСЛЕДНИМ шагом, после вкладок. Записав её раньше, мы объявили бы
     // портал настроенным до того, как настроили: следующая фоновая проверка сочла бы его
     // свежим и вкладку регистрировать не стала бы. Issue #75.
-    await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
+    //
+    // ⚠ И НЕ ставится вовсе, если поле виджета отложено: установка ещё не завершена, и портал
+    // его не принял бы. Без отметки фоновая донастройка вернётся к порталу после `installFinish`
+    // и доделает шаг; с отметкой не вернулась бы никогда. Нашли `/review` и `/code-review`.
+    if (result.resultField !== 'deferred') {
+      await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
+    }
 
     logger.info(
       {

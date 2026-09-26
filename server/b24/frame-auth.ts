@@ -36,6 +36,11 @@ export type EntityCheck
   = | { ok: true }
     | { ok: false, reason: 'denied' | 'unreachable' }
 
+/** Проверка элемента смарт-процесса: вместе с доступом отдаёт и сам элемент, как его видит сотрудник. */
+export type ItemCheck
+  = | { ok: true, item: Record<string, unknown> }
+    | { ok: false, reason: 'denied' | 'unreachable' }
+
 /**
  * Спросить портал, настоящий ли это фреймовый токен.
  *
@@ -110,6 +115,12 @@ export async function verifyDealAccess(
  *
  * ⚠ Спрашиваем ЕГО токеном, а не своим: смысл проверки ровно в том, чтобы решал портал
  * по своим правам, а не мы по своим догадкам о них.
+ *
+ * ⚠ ЭЛЕМЕНТ ОТДАЁТСЯ ВМЕСТЕ С ОТВЕТОМ, и это не удобство. Виджет результата в карточке «Опроса»
+ * читает ответы клиента; прочитав их второй раз токеном приложения, мы обошли бы права на поля,
+ * которые портал применил бы к сотруднику, и заплатили бы лишним вызовом за каждое открытие
+ * карточки. Имена полей — в исходной форме (`useOriginalUfNames`), как во всех наших чтениях.
+ * Нашёл `/code-review` в PR #80.
  */
 export async function verifyItemAccess(
   domain: string,
@@ -117,14 +128,23 @@ export async function verifyItemAccess(
   entityTypeId: number,
   itemId: number,
   fetchFn: typeof fetch = fetch,
-): Promise<EntityCheck> {
-  const response = await callAsUser(domain, authId, 'crm.item.get', { entityTypeId, id: itemId }, fetchFn)
+): Promise<ItemCheck> {
+  const response = await callAsUser(
+    domain,
+    authId,
+    'crm.item.get',
+    { entityTypeId, id: itemId, useOriginalUfNames: 'Y' },
+    fetchFn,
+  )
   if (!response.ok) {
     return { ok: false, reason: response.reason === 'unreachable' ? 'unreachable' : 'denied' }
   }
 
-  const id = Number((response.body as { result?: { item?: { id?: unknown } } } | null)?.result?.item?.id)
-  return Number.isInteger(id) && id > 0 ? { ok: true } : { ok: false, reason: 'denied' }
+  const item = (response.body as { result?: { item?: unknown } } | null)?.result?.item
+  const id = Number((item as { id?: unknown } | null | undefined)?.id)
+  return Number.isInteger(id) && id > 0 && item !== null && typeof item === 'object'
+    ? { ok: true, item: item as Record<string, unknown> }
+    : { ok: false, reason: 'denied' }
 }
 
 type UserCall

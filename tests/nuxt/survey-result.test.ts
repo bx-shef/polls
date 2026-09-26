@@ -23,18 +23,21 @@ let placementOptions: unknown = {}
 let reply: unknown = null
 let sent: Record<string, unknown> | null = null
 
-/** Сколько раз страница попросила портал подогнать размер. */
-const resized = vi.fn(async () => {})
+/** Команды, которые страница отправила порталу, — ради подгонки размера. */
+const resized = vi.fn(async (_command: string, _params: Record<string, unknown>) => {})
 /** Запись значения в поле. Её не должно быть НИКОГДА — на этом держится «только чтение». */
 const setValue = vi.fn(async () => {})
 
 vi.mock('@bitrix24/b24jssdk', () => ({
+  // Перечень команд — как в SDK: страница шлёт `resizeWindow` через него, а не строкой.
+  MessageCommands: { resizeWindow: 'resizeWindow' },
   initializeB24Frame: async () => {
     if (!frameWorks) throw new Error('нет связи с порталом')
     return {
       auth: { getAuthData: () => AUTH },
       placement: { options: placementOptions, call: setValue, setValue },
-      parent: { resizeWindowAuto: resized },
+      // Форма списана с SDK: `fitWindow` шлёт команду через `parent.message.send`.
+      parent: { message: { send: resized } },
     }
   },
 }))
@@ -53,7 +56,8 @@ const COMPLETED = {
     {
       key: 'product',
       title: 'Продукт',
-      score: 0,
+      score: '0',
+      note: 'по 1 из 2 вопросов',
       answers: [
         { key: 'q1', title: 'Качество', value: '0', scale: 'из 10' },
         { key: 'q2', title: 'Сроки', value: '—', scale: '' },
@@ -62,7 +66,8 @@ const COMPLETED = {
     {
       key: 'open',
       title: 'Открытые вопросы',
-      score: null,
+      score: '',
+      note: '',
       answers: [
         { key: 'q3', title: 'Что улучшить?', value: '<b>жирный</b> <img src=x onerror=alert(1)>', scale: '' },
       ],
@@ -109,6 +114,8 @@ describe('виджет результата опроса', () => {
     expect(text).toContain('0 из 10')
     expect(text).toContain('балл 0')
     expect(text).toContain('—')
+    // Неполнота балла — словами, как в деле ленты сделки.
+    expect(text).toContain('по 1 из 2 вопросов')
   })
 
   it('отдаёт серверу номер элемента И оба признака карточки', async () => {
@@ -132,11 +139,16 @@ describe('виджет результата опроса', () => {
     expect(page.text()).toContain('<b>жирный</b>')
   })
 
-  it('подгоняет высоту поля под содержимое', async () => {
+  it('подгоняет высоту поля, оставляя ширину резиновой', async () => {
+    // ⚠ Числом ширину слать нельзя: портал прибил бы фрейм к ширине первого показа.
+    // И высота — числом по своему корню, а не документу: оболочка стоит `min-h-screen`.
     await mountSuspended(await SurveyResult())
     await settle()
 
-    expect(resized).toHaveBeenCalled()
+    const [command, params] = resized.mock.calls.at(-1)!
+    expect(command).toBe('resizeWindow')
+    expect(params.width).toBe('100%')
+    expect(typeof params.height).toBe('number')
   })
 
   it('в режиме правки предупреждает и НЕ пишет значение в поле', async () => {
@@ -157,6 +169,38 @@ describe('виджет результата опроса', () => {
     await settle()
 
     expect(page.text()).toContain('Клиент ещё не прошёл опрос')
+  })
+
+  it('по истёкшей ссылке не обещает ответа, которого не будет', async () => {
+    reply = { ok: true, completed: false, state: 'expired' }
+
+    const page = await mountSuspended(await SurveyResult())
+    await settle()
+
+    expect(page.text()).toContain('Срок ссылки истёк')
+    expect(page.text()).not.toContain('сразу после ответа')
+  })
+
+  it('в режиме просмотра без номера элемента говорит о сбое, а не «ещё не ответил»', async () => {
+    // ⚠ Новой карточки в режиме просмотра не бывает. Промах разбора контекста выглядел бы как
+    // «клиент ещё не прошёл опрос» на заполненном опросе. Нашёл `/review`.
+    placementOptions = { MODE: 'view', ENTITY_ID: 'CRM_8' }
+
+    const page = await mountSuspended(await SurveyResult())
+    await settle()
+
+    expect(sent).toBeNull()
+    expect(page.text()).toContain('Портал не сообщил, какой опрос открыт')
+  })
+
+  it('без признаков карточки не советует удалить поле', async () => {
+    reply = { ok: false, reason: 'no-owner' }
+
+    const page = await mountSuspended(await SurveyResult())
+    await settle()
+
+    expect(page.text()).toContain('Обновите карточку')
+    expect(page.text()).not.toContain('удалить')
   })
 
   it('в новой карточке сервер не спрашивает', async () => {

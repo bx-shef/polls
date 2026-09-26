@@ -12,9 +12,10 @@ import {
   buildUpdateTypeCall,
   findRegisteredType,
   fullTypeCode,
+  isOurFieldType,
   isSurveyCard,
   planTypeRegistration,
-  readAppId,
+  readAppInfo,
 } from '../../server/domain/portals/userfield-type'
 
 /**
@@ -81,8 +82,8 @@ describe('полный код типа', () => {
   })
 
   it('читает идентификатор приложения из `app.info` — числом и строкой', () => {
-    expect(readAppId({ result: { ID: 219 } })).toBe(219)
-    expect(readAppId({ result: { ID: '219' } })).toBe(219)
+    expect(readAppInfo({ result: { ID: 219, INSTALLED: true } }).id).toBe(219)
+    expect(readAppInfo({ result: { ID: '219', INSTALLED: true } }).id).toBe(219)
   })
 
   it.each<[unknown, string]>([
@@ -92,7 +93,37 @@ describe('полный код типа', () => {
     [{ result: { ID: '' } }, 'пустая строка — не ноль'],
     [null, 'ничего'],
   ])('без идентификатора отвечает null (%#: %s)', (response) => {
-    expect(readAppId(response)).toBeNull()
+    expect(readAppInfo(response).id).toBeNull()
+  })
+
+  it.each<[unknown, string]>([
+    [false, 'как в документации'],
+    ['N', 'флагом портала'],
+    [0, 'нулём'],
+  ])('видит незавершённую установку (%#: %s)', (flag) => {
+    // ⚠ До `installFinish` поле своего типа портал не примет — шаг надо отложить.
+    expect(readAppInfo({ result: { ID: 219, INSTALLED: flag } }).installed).toBe(false)
+  })
+
+  it('без признака считает установку завершённой', () => {
+    // Иначе на портале, который признак не шлёт, шаг откладывался бы вечно.
+    expect(readAppInfo({ result: { ID: 219 } }).installed).toBe(true)
+    expect(readAppInfo({ result: { ID: 219, INSTALLED: true } }).installed).toBe(true)
+  })
+})
+
+describe('наш ли тип у поля', () => {
+  it('узнаёт свой полный код — в любом регистре', () => {
+    expect(isOurFieldType(`rest_219_${SURVEY_RESULT_TYPE}`, 219)).toBe(true)
+    expect(isOurFieldType(`REST_219_${SURVEY_RESULT_TYPE.toUpperCase()}`, 219)).toBe(true)
+  })
+
+  it.each<[unknown, string]>([
+    ['string', 'строковое поле клиента на «усыновлённом» смарт-процессе'],
+    [`rest_7_${SURVEY_RESULT_TYPE}`, 'наш тип, но от прошлой установки приложения'],
+    [undefined, 'портал тип не назвал'],
+  ])('чужое не признаёт (%#: %s)', (userTypeId) => {
+    expect(isOurFieldType(userTypeId, 219)).toBe(false)
   })
 })
 
@@ -135,11 +166,15 @@ describe('раскладка карточки с нуля', () => {
   const widget = buildFieldName(SURVEY.id, SURVEY_RESULT_FIELD)
   const json = [buildFieldName(SURVEY.id, 'SCORES'), buildFieldName(SURVEY.id, 'ANSWERS')]
 
-  it('ставит виджет ВМЕСТО двух JSON-полей', () => {
+  it('ставит виджет НАД JSON-полями, а JSON пока оставляет', () => {
+    // ⚠ Первый шаг из двух: что портал рисует пустое поле своего типа, живьём ещё не проверено.
+    // Убрав JSON сразу, мы при промахе оставили бы менеджера без ответов. Панель ревью PR #80.
     const names = namesIn(buildCardSections(SURVEY.id, true))
 
-    expect(names).toContain(widget)
-    for (const name of json) expect(names).not.toContain(name)
+    for (const name of json) {
+      expect(names).toContain(name)
+      expect(names.indexOf(widget)).toBeLessThan(names.indexOf(name))
+    }
   })
 
   it('показывает виджет всегда, хотя значения у поля нет', () => {
@@ -151,8 +186,8 @@ describe('раскладка карточки с нуля', () => {
     expect(elements.find(e => e.name === widget)?.optionFlags).toBe(1)
   })
 
-  it('без поля виджета остаётся при JSON', () => {
-    // Тип не зарегистрировался — лучше простыня, чем карточка без ответов вовсе.
+  it('без поля виджета его и не ставит', () => {
+    // Тип не зарегистрировался — имя несуществующего поля в раскладке было бы пустым местом.
     const names = namesIn(buildCardSections(SURVEY.id, false))
 
     expect(names).not.toContain(widget)
@@ -180,10 +215,10 @@ describe('виджет в раскладку, которая уже стоит',
     ]
   }
 
-  it('ставит виджет на место первого JSON-поля, а сами JSON-поля убирает', () => {
+  it('ставит виджет над первым JSON-полем и ничего не убирает', () => {
     const planned = planResultFieldInCard({ result: installed() }, SURVEY.id)
 
-    expect(namesIn(planned)).toEqual(['UF_CRM_8_SCORE', 'UF_CRM_8_COMPLETED_AT', 'UF_CRM_8_RESULT'])
+    expect(namesIn(planned)).toEqual(['UF_CRM_8_SCORE', 'UF_CRM_8_COMPLETED_AT', 'UF_CRM_8_RESULT', 'UF_CRM_8_SCORES', 'UF_CRM_8_ANSWERS'])
   })
 
   it('остальное уходит обратно как пришло', () => {
@@ -202,7 +237,18 @@ describe('виджет в раскладку, которая уже стоит',
     const layout = installed()
     ;(layout[1]!.elements as { name: string }[])[2]!.name = 'UF_CRM8_SCORES'
 
-    expect(namesIn(planResultFieldInCard({ result: layout }, SURVEY.id))).not.toContain('UF_CRM8_SCORES')
+    expect(namesIn(planResultFieldInCard({ result: layout }, SURVEY.id))).toEqual(
+      ['UF_CRM_8_SCORE', 'UF_CRM_8_COMPLETED_AT', 'UF_CRM_8_RESULT', 'UF_CRM8_SCORES', 'UF_CRM_8_ANSWERS'],
+    )
+  })
+
+  it('не пишет, если хоть один раздел пришёл в непонятной форме', () => {
+    // ⚠ Отдав `[]` вместо непонятного `elements`, мы заменили бы раздел одним виджетом и стёрли бы
+    // у всех пользователей то, что в нём было: раскладка перезаписывается целиком. Нашёл `/code-review`.
+    const layout = installed()
+    layout[1]!.elements = { 0: { name: 'UF_CRM_8_SCORE' } }
+
+    expect(planResultFieldInCard({ result: layout }, SURVEY.id)).toBeNull()
   })
 
   it('дописывает виджет в конец, если JSON-поля клиент уже убрал', () => {

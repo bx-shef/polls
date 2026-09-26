@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import {
   NO_ANSWER,
+  NO_SCORE_NOTE,
   asScore,
   buildResultSections,
+  formatScore,
   readAnswersField,
   readScoresField,
   showAnswer,
@@ -88,10 +90,10 @@ describe('поля элемента', () => {
   })
 
   it('читает баллы разделов и не превращает пропуск в ноль', () => {
-    const scores = readScoresField('[{"key":"product","score":0},{"key":"open","score":null},{"score":5}]')
+    const scores = readScoresField('[{"key":"product","score":0,"answered":2,"scored":2},{"key":"open","score":null},{"score":5}]')
 
-    expect(scores.get('product')).toBe(0)
-    expect(scores.get('open')).toBeNull()
+    expect(scores.get('product')).toEqual({ score: 0, answered: 2, scored: 2 })
+    expect(scores.get('open')!.score).toBeNull()
     // Строка без ключа пропускается: приписать её некуда.
     expect(scores.size).toBe(2)
   })
@@ -99,7 +101,7 @@ describe('поля элемента', () => {
 
 describe('разделы результата', () => {
   const answers = { q1: 0, q2: null, q3: 'Быстрее отвечать\nи чаще звонить', q4: '2026-10-01' }
-  const sections = buildResultSections(TEMPLATE, answers, new Map([['product', 0]]))
+  const sections = buildResultSections(TEMPLATE, answers, new Map([['product', { score: 0, answered: 1, scored: 2 }]]))
 
   it('показывает вопросы словами, в порядке анкеты', () => {
     expect(sections.map(s => s.title)).toEqual(['Продукт', 'Открытые вопросы'])
@@ -115,8 +117,28 @@ describe('разделы результата', () => {
   })
 
   it('балл раздела ноль остаётся нулём, а раздел без балла — без балла', () => {
-    expect(sections[0]!.score).toBe(0)
-    expect(sections[1]!.score).toBeNull()
+    expect(sections[0]!.score).toBe('0')
+    expect(sections[1]!.score).toBe('')
+  })
+
+  it('неполноту балла говорит словами — теми же, что дело в ленте сделки', () => {
+    // ⚠ Балл по одному вопросу из двух выглядит так же, как по двум, и менеджер сравнил бы
+    // несравнимое. Лента сделки пишет это словами — виджет обязан писать так же. Нашли `/review`
+    // и `/code-review` в PR #80.
+    expect(sections[0]!.note).toBe('по 1 из 2 вопросов')
+    expect(sections[1]!.note).toBe('')
+  })
+
+  it('оцениваемый раздел без единого ответа говорит «без оценки», а не молчит', () => {
+    const bare = buildResultSections(TEMPLATE, { q1: null, q2: null }, new Map([['product', { score: null, answered: 0, scored: 2 }]]))
+
+    expect(bare[0]!.score).toBe('')
+    expect(bare[0]!.note).toBe(NO_SCORE_NOTE)
+  })
+
+  it('балл пишет по-русски, через запятую', () => {
+    expect(formatScore(7.5)).toBe('7,5')
+    expect(formatScore(8)).toBe('8')
   })
 
   it('текст отдаёт как есть, дату — по-русски', () => {

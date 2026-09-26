@@ -16,8 +16,8 @@ import { buildFieldEntityId, type PortalCall, type SmartProcessRef } from './sma
  * владельца 26.09.
  *
  * ⚠ Требует КОНТЕКСТА ПРИЛОЖЕНИЯ и прав администратора; вебхуком тип не зарегистрировать
- * (документация метода). В батч `userfieldtype.*` не кладутся — `ERROR_BATCH_METHOD_NOT_ALLOWED`
- * есть в списке их ошибок.
+ * (документация метода). `userfieldtype.add` и `userfieldtype.update` в батч не кладутся —
+ * `ERROR_BATCH_METHOD_NOT_ALLOWED` есть в списке их ошибок; список зовём отдельно заодно.
  */
 
 /**
@@ -112,29 +112,67 @@ export function planTypeRegistration(existing: { handler: string } | null, handl
   return existing.handler === handlerUrl ? 'keep' : 'update'
 }
 
+/** Что обустройству нужно знать о приложении на этом портале. */
+export interface AppInfo {
+  /** Локальный идентификатор приложения; `null` — портал его не назвал. */
+  id: number | null
+  /** Завершена ли установка (`installFinish`). */
+  installed: boolean
+}
+
 /**
- * Идентификатор приложения на этом портале — из ответа `app.info`.
+ * Разобрать ответ `app.info`.
  *
- * ⚠ Он ЛОКАЛЬНЫЙ: у каждого портала свой, поэтому полный код типа не константа, а вопрос
- * к порталу при каждом обустройстве.
+ * ⚠ ИДЕНТИФИКАТОР ЛОКАЛЬНЫЙ: у каждого портала свой, поэтому полный код типа не константа,
+ * а вопрос к порталу при каждом обустройстве.
+ *
+ * ⚠ `INSTALLED` ЧИТАЕТСЯ, и это не формальность. Мастер установки обустраивает портал ДО
+ * `installFinish()`, а до него поле своего типа портал не примет: официальный гайд прямо
+ * называет незавершённую установку причиной отказа «Invalid custom type specified».
+ * Первая редакция `INSTALLED` не смотрела — на каждом портале, поставленном из Маркета,
+ * виджет не появился бы никогда. Нашли `/review` и `/code-review` независимо.
+ *
+ * Незавершённой считаем установку только по ЯВНОМУ отказу (`false`, `N`, `0`). Портал,
+ * не приславший признак, считаем установленным: иначе шаг откладывался бы на нём вечно,
+ * а отказ портала на создании поля и так читается.
  */
-export function readAppId(response: unknown): number | null {
-  const raw = (response as { result?: { ID?: unknown } } | null)?.result?.ID
+export function readAppInfo(response: unknown): AppInfo {
+  const result = (response as { result?: { ID?: unknown, INSTALLED?: unknown } } | null)?.result
+  const raw = result?.ID
   const id = Number(typeof raw === 'string' ? raw.trim() : raw)
-  return Number.isInteger(id) && id > 0 ? id : null
+  const flag = result?.INSTALLED
+  const refused = flag === false || flag === 0 || (typeof flag === 'string' && ['n', '0', 'false'].includes(flag.trim().toLowerCase()))
+  return {
+    id: Number.isInteger(id) && id > 0 ? id : null,
+    installed: !refused,
+  }
 }
 
 /**
  * Полный код типа, по которому создаётся поле: `rest_<ID приложения>_<код>`.
  *
  * ⚠ Формат взят из официального гайда «Как встроить виджет в лид в виде пользовательского
- * поля»: там полный код собирается ровно так, из `app.info`. У самого `userfieldtype.add`
+ * поля»: там полный код собирается ровно так, из `app.info` (см. `readAppInfo`). У самого `userfieldtype.add`
  * формат записан как «`rest__` + значение» — это та же строка с потерянным в вёрстке
  * идентификатором, а не другое правило. Сверять с `userfieldconfig.getTypes` отдельным
  * вызовом незачем: ошибись формат — портал откажет на создании поля, и отказ этот читается.
  */
 export function fullTypeCode(appId: number): string {
   return `rest_${appId}_${SURVEY_RESULT_TYPE}`
+}
+
+/**
+ * Наш ли это тип у поля, которое уже стоит на «Опросе».
+ *
+ * ⚠ Имени поля мало. `UF_CRM_<id>_RESULT` может оказаться строковым полем клиента на
+ * «усыновлённом» смарт-процессе либо нашим, но на типе со СТАРЫМ идентификатором приложения
+ * — после переустановки с очисткой данных идентификатор новый. В обоих случаях в карточку
+ * встало бы мёртвое поле. Нашли `/review` и `/code-review`. Чужое поле мы при этом НЕ удаляем
+ * и не пересоздаём: в клиентском могут быть данные, а в старом нашем — нет ничего, что стоило бы
+ * риска удаления на чужом портале. Виджета тогда просто нет, JSON-поля на месте.
+ */
+export function isOurFieldType(userTypeId: unknown, appId: number): boolean {
+  return typeof userTypeId === 'string' && userTypeId.trim().toLowerCase() === fullTypeCode(appId)
 }
 
 /**
@@ -148,7 +186,14 @@ export function fullTypeCode(appId: number): string {
  * ⚠ Признаков два, и засчитывается любой. `ENTITY_ID` (`CRM_<id смарт-процесса>`) — то, что
  * обещает документация точки встраивания; `ENTITY_DATA.entityTypeId` — то, что соседнее
  * приложение (`nuxt-uf-legat-info`) читает на живых порталах. Нет ни одного — отказ: показать
- * чужой результат хуже, чем не показать ничего.
+ * чужой результат хуже, чем не показать ничего. Оговорка: в типах SDK (`IPlacementUF`)
+ * `ENTITY_ID` — закрытый перечень сущностей, и варианта `CRM_<id>` в нём нет. Это не опровергает
+ * документацию (перечень там просто старый), но и не подтверждает — вопрос к живой проверке.
+ *
+ * ⚠ ЭТО НЕ ГРАНИЦА ПРАВ. Оба признака присылает страница, и подделать их можно. Защищает функция
+ * от ошибки администратора (поле поставили не туда), а не от злоумышленника: видит ли человек
+ * элемент, решает портал его же токеном (`verifyItemAccess`) — и полагаться здесь на эту функцию
+ * как на проверку доступа нельзя. Отметила панель ревью PR #80.
  */
 export function isSurveyCard(owner: { entityId: string, entityTypeId: number | null }, survey: SmartProcessRef): boolean {
   return owner.entityId.toUpperCase() === buildFieldEntityId(survey.id)

@@ -89,6 +89,13 @@ describe('контекст поля своего типа', () => {
     expect(fieldContext(raw)).toEqual({ editing: false, entityId: 'CRM_8', entityTypeId: 1046, itemId: 15 })
   })
 
+  it('находит ключи независимо от регистра — и в `ENTITY_DATA` тоже', () => {
+    // Шапка файла: регистр ключей не наш. Без этого теста регистрозависимое сравнение
+    // проходило все проверки — нашли `/code-review` и тестировщик мутацией.
+    expect(fieldContext({ mode: 'edit', entity_id: 'CRM_8', entity_value_id: '15', entity_data: { entitytypeid: '1046' } }))
+      .toEqual({ editing: true, entityId: 'CRM_8', entityTypeId: 1046, itemId: 15 })
+  })
+
   it('новая карточка — это «элемента нет», а не элемент номер ноль', () => {
     // Документация: у ещё не сохранённой карточки `ENTITY_VALUE_ID` может быть `0`.
     expect(fieldContext({ MODE: 'edit', ENTITY_ID: 'CRM_8', ENTITY_VALUE_ID: 0 }).itemId).toBeNull()

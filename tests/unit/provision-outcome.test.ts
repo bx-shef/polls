@@ -162,3 +162,37 @@ describe('что уходит в журнал', () => {
     expect(записи).not.toContain('токен')
   })
 })
+
+/**
+ * Отметка ревизии и незавершённая установка.
+ *
+ * ⚠ Гвард под находку панели ревью PR #80. Мастер установки обустраивает портал ДО
+ * `installFinish()`, и поле своего типа в этот момент портал не примет. Отметь мы ревизию
+ * всё равно — фоновая донастройка к порталу не вернулась бы никогда, и виджета не было бы
+ * ни у одного клиента, поставившего приложение из Маркета.
+ */
+describe('отметка ревизии', () => {
+  /** Записали ли в `app.option` отметку ревизии (а не только идентификаторы). */
+  function revisionStored(p: ReturnType<typeof portal>): boolean {
+    return p.call.mock.calls
+      .filter(([method]) => method === 'app.option.set')
+      .some(([, params]) => JSON.stringify(params).includes('revision'))
+  }
+
+  it('НЕ ставится, пока установка не завершена', async () => {
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({ 'app.info': { result: { ID: 219, INSTALLED: false } } })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+    expect(revisionStored(p)).toBe(false)
+  })
+
+  it('ставится, когда установка завершена', async () => {
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({ 'app.info': { result: { ID: 219, INSTALLED: true } } })
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    expect(revisionStored(p)).toBe(true)
+  })
+})

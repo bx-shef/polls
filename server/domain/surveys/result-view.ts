@@ -26,9 +26,42 @@ export interface ResultAnswer {
 export interface ResultSection {
   key: string
   title: string
-  /** Балл раздела; `null` — раздел балла не даёт или в нём не ответили ни на что балльное. */
-  score: number | null
+  /** Балл раздела по-русски («7,5»); пусто — раздел балла не даёт или не оценён. */
+  score: string
+  /** «по 1 из 5 вопросов» у неполного балла, «без оценки…» у неоценённого; пусто у остальных. */
+  note: string
   answers: ResultAnswer[]
+}
+
+/** Балл раздела из поля `SCORES`: сам балл и то, по скольким вопросам он посчитан. */
+export interface SectionScoreRow {
+  score: number | null
+  answered: number
+  scored: number
+}
+
+/**
+ * Подпись раздела, в котором не ответили ни на один балльный вопрос.
+ *
+ * ⚠ Общая с делом в ленте сделки (`server/domain/answers/comment.ts`): одно прохождение
+ * показывается в двух местах, и расходиться словами они не должны. Нашли `/review`
+ * и `/code-review` в PR #80.
+ */
+export const NO_SCORE_NOTE = 'без оценки — ни один вопрос не заполнен'
+
+/** Балл в русской записи: запятая, а не точка, и без хвостовых нулей. Общий с лентой сделки. */
+export function formatScore(score: number): string {
+  return String(score).replace('.', ',')
+}
+
+/**
+ * Неполнота балла словами: «по 2 из 5 вопросов». Пусто, если ответили на всё.
+ *
+ * ⚠ Балл, посчитанный по двум вопросам из пяти, выглядит точно так же, как посчитанный
+ * по пяти, — и менеджер сравнил бы несравнимое. Общая с лентой сделки.
+ */
+export function partialScoreNote(answered: number, scored: number): string {
+  return answered < scored ? `по ${answered} из ${scored} вопросов` : ''
 }
 
 /** Прочерк на месте пропущенного ответа. */
@@ -48,14 +81,14 @@ export function readAnswersField(raw: unknown): Record<string, unknown> | null {
 }
 
 /** Разобрать поле `SCORES`: баллы разделов по ключу раздела. Нечитаемые строки пропускаются. */
-export function readScoresField(raw: unknown): Map<string, number | null> {
+export function readScoresField(raw: unknown): Map<string, SectionScoreRow> {
   const parsed = parseJson(raw)
-  const scores = new Map<string, number | null>()
+  const scores = new Map<string, SectionScoreRow>()
   if (!Array.isArray(parsed)) return scores
 
-  for (const row of parsed as { key?: unknown, score?: unknown }[]) {
+  for (const row of parsed as { key?: unknown, score?: unknown, answered?: unknown, scored?: unknown }[]) {
     if (typeof row?.key !== 'string') continue
-    scores.set(row.key, asScore(row.score))
+    scores.set(row.key, { score: asScore(row.score), answered: count(row.answered), scored: count(row.scored) })
   }
   return scores
 }
@@ -70,13 +103,14 @@ export function readScoresField(raw: unknown): Map<string, number | null> {
 export function buildResultSections(
   template: SurveyTemplate | null,
   answers: Record<string, unknown>,
-  scores: Map<string, number | null>,
+  scores: Map<string, SectionScoreRow>,
 ): ResultSection[] {
   if (template === null) {
     return [{
       key: '',
       title: 'Ответы',
-      score: null,
+      score: '',
+      note: '',
       answers: Object.entries(answers).map(([key, value]) => ({ key, title: key, value: showAnswer(value), scale: '' })),
     }]
   }
@@ -84,7 +118,7 @@ export function buildResultSections(
   return template.sections.map(section => ({
     key: section.key,
     title: section.title,
-    score: scores.get(section.key) ?? null,
+    ...sectionScore(section.scored, scores.get(section.key)),
     answers: section.questions.map((question) => {
       const value = question.type === 'date' ? showDate(answers[question.key]) : showAnswer(answers[question.key])
       return {
@@ -98,6 +132,25 @@ export function buildResultSections(
       }
     }),
   }))
+}
+
+/**
+ * Балл раздела и подпись к нему — теми же правилами, что в деле ленты сделки.
+ *
+ * ⚠ Оцениваемый раздел говорит о себе ВСЕГДА, даже без единого ответа: «без оценки» — это
+ * сигнал, а молчание неотличимо от «раздела не было».
+ */
+function sectionScore(scoredSection: boolean, score: SectionScoreRow | undefined): { score: string, note: string } {
+  if (score !== undefined && score.score !== null) {
+    return { score: formatScore(score.score), note: partialScoreNote(score.answered, score.scored) }
+  }
+  return { score: '', note: scoredSection ? NO_SCORE_NOTE : '' }
+}
+
+/** Счётчик вопросов: целое неотрицательное, иначе ноль. */
+function count(raw: unknown): number {
+  const value = Number(raw)
+  return Number.isInteger(value) && value >= 0 ? value : 0
 }
 
 /**
