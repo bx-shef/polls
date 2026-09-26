@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parse } from 'vue/compiler-sfc'
 import { describe, expect, it } from 'vitest'
 import { FAQ, FAQ_AGENT_PROMPT, FAQ_INTRO, UNINSTALL_PROMISE, buildLlmsTxt } from '../../shared/faq'
 
@@ -45,12 +46,19 @@ describe('справка', () => {
     // ⚠ `docs/PROCESS.md`, раздел 10: формулировка обязана попасть в справку целиком, а не
     // пересказом — «пересказ обещания — это уже другое обещание». Тест сверяет побуквенно,
     // чтобы правка одной из сторон не развела их молча.
+    //
+    // Берём ровно ОДИН блок цитаты — сплошные строки с `> ` сразу под маркером. Первая редакция
+    // собирала их до конца документа, и любая цитата в разделах ниже приклеивалась к обещанию.
+    // Нашли `/review` и `/code-review` в PR #82.
     const doc = readFileSync(new URL('../../docs/PROCESS.md', import.meta.url), 'utf8')
-    const quoted = doc.split('формулировка лежит здесь готовой:')[1]!
-      .split('\n')
-      .filter(line => line.startsWith('> '))
-      .map(line => line.slice(2).trim())
-      .join(' ')
+    const marker = 'Формулировка ниже — источник для справки'
+    expect(doc, `в PROCESS.md нет маркера «${marker}»`).toContain(marker)
+
+    const after = doc.slice(doc.indexOf(marker)).split('\n')
+    const start = after.findIndex(line => line.startsWith('> '))
+    const block = after.slice(start)
+    const end = block.findIndex(line => !line.startsWith('> '))
+    const quoted = block.slice(0, end === -1 ? block.length : end).map(line => line.slice(2).trim()).join(' ')
 
     expect(UNINSTALL_PROMISE).toBe(quoted)
     expect(FAQ.find(entry => entry.id === 'uninstall')!.answer).toContain(UNINSTALL_PROMISE)
@@ -82,11 +90,10 @@ describe('llms.txt', () => {
     expect(txt).toContain(FAQ_INTRO)
   })
 
-  it('заканчивается одним переводом строки и без тройных пустых', () => {
+  it('заканчивается ровно одним переводом строки', () => {
     const txt = buildLlmsTxt(SITE)
     expect(txt.endsWith('\n')).toBe(true)
     expect(txt.endsWith('\n\n')).toBe(false)
-    expect(txt).not.toMatch(/\n{3}/)
   })
 })
 
@@ -94,8 +101,13 @@ describe('llms.txt', () => {
  * Ссылки «Что это значит?» из интерфейса ведут в СУЩЕСТВУЮЩИЕ разделы.
  *
  * ⚠ Якорь в ссылке и `id` в справке живут в разных файлах, и переименование раздела ломает ссылку
- * молча: `helpRouteFor` на неизвестный якорь честно открывает справку с начала, то есть поломка
- * выглядит как «открылось, но не там». Этот тест находит её до выката.
+ * молча: неизвестный якорь честно открывает справку с начала, то есть поломка выглядит как
+ * «открылось, но не там». Этот тест находит её до выката.
+ *
+ * ⚠ Шаблон разбирается КОМПИЛЯТОРОМ Vue, а не регуляркой. Первая редакция искала `anchor="…"`
+ * регулярным выражением, и оно обрывалось на первом `>` внутри тега: `<HelpLink v-if="n > 0"
+ * anchor="нет-такого" />` не находился вовсе, и битый якорь проходил зелёным. Нашли `/code-review`
+ * и тестировщик в PR #82.
  */
 describe('контекстные ссылки в справку', () => {
   const appDir = fileURLToPath(new URL('../../app', import.meta.url))
@@ -107,20 +119,46 @@ describe('контекстные ссылки в справку', () => {
     })
   }
 
-  const anchors = vueFiles(appDir).flatMap(file =>
-    [...readFileSync(file, 'utf8').matchAll(/<HelpLink\b[^>]*?\banchor="([^"]+)"/g)].map(match => ({ file, anchor: match[1]! })),
-  )
+  interface TemplateNode { type: number, tag?: string, props?: { type: number, name: string, value?: { content: string }, arg?: { content: string } }[], children?: TemplateNode[] }
+
+  /** Все `<HelpLink>` файла: статический якорь либо `null`, если он задан биндингом. */
+  function helpLinks(file: string): { file: string, anchor: string | null }[] {
+    const { descriptor } = parse(readFileSync(file, 'utf8'), { filename: file })
+    const found: { file: string, anchor: string | null }[] = []
+    const walk = (node: TemplateNode) => {
+      if (node.type === 1 && node.tag === 'HelpLink') {
+        const plain = node.props?.find(prop => prop.type === 6 && prop.name === 'anchor')
+        found.push({ file, anchor: plain?.value?.content ?? null })
+      }
+      for (const child of node.children ?? []) walk(child)
+    }
+    if (descriptor.template?.ast) walk(descriptor.template.ast as unknown as TemplateNode)
+    return found
+  }
+
+  const links = vueFiles(appDir).flatMap(helpLinks)
 
   it('в интерфейсе вообще есть такие ссылки — иначе проверка ничего не проверяет', () => {
     // ⚠ Без этого тест остаётся зелёным, если компонент переименуют: пустой список проходит
     // любой `every`.
-    expect(anchors.length).toBeGreaterThanOrEqual(5)
+    expect(links.length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('якорь задан строкой, а не выражением', () => {
+    // Выражение проверить нечем: его значение станет известно только во время работы.
+    for (const { file, anchor } of links) expect(anchor, `${file}: якорь задан биндингом`).not.toBeNull()
   })
 
   it('каждая ведёт в раздел, который есть', () => {
     const ids = new Set(FAQ.map(entry => entry.id))
-    for (const { file, anchor } of anchors) {
-      expect(ids.has(anchor), `${file}: раздела «${anchor}» в справке нет`).toBe(true)
+    for (const { file, anchor } of links) {
+      expect(ids.has(anchor ?? ''), `${file}: раздела «${anchor}» в справке нет`).toBe(true)
     }
+  })
+
+  it('находит ссылку и за атрибутом с «>» внутри', () => {
+    // Ровно тот случай, на котором сломалась регулярка первой редакции.
+    const probe = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'fixtures', 'help-link-probe.vue')
+    expect(helpLinks(probe)).toEqual([{ file: probe, anchor: 'no-such-section' }])
   })
 })

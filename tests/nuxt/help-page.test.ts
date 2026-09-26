@@ -1,5 +1,5 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FAQ, FAQ_AGENT_PROMPT } from '../../shared/faq'
 
 /**
@@ -12,7 +12,15 @@ import { FAQ, FAQ_AGENT_PROMPT } from '../../shared/faq'
  */
 
 let frameWorks = true
-const opened = vi.fn(async (_params: Record<string, unknown>) => {})
+/**
+ * Как портал отвечает на просьбу открыть слайдер.
+ *
+ * ⚠ По умолчанию — НИКАК, пока слайдер не закроют: так ведёт себя настоящий портал, и промис
+ * висит всё время, пока человек читает справку. Подделка, отвечающая сразу, скрывала бы, что кнопка
+ * ждёт завершения, — именно так первая редакция и прошла тесты с недостижимым запасным путём.
+ */
+let answer: () => Promise<unknown> = () => new Promise(() => {})
+const opened = vi.fn((_params: Record<string, unknown>) => answer())
 
 vi.mock('@bitrix24/b24jssdk', () => ({
   initializeB24Frame: async () => {
@@ -21,13 +29,28 @@ vi.mock('@bitrix24/b24jssdk', () => ({
   },
 }))
 
+/** Новая вкладка браузера — запасной путь кнопки. Подменена на каждый тест и снимается в `afterEach`. */
+let newTab = vi.spyOn(window, 'open').mockImplementation(() => null)
+
 beforeEach(() => {
   frameWorks = true
+  answer = () => new Promise(() => {})
   opened.mockClear()
+  newTab = vi.spyOn(window, 'open').mockImplementation(() => null)
+})
+
+afterEach(() => {
+  // В `afterEach`, а не в конце теста: упавшая проверка иначе оставила бы подмену на весь файл.
+  newTab.mockRestore()
 })
 
 async function settle() {
   for (let tick = 0; tick < 6; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+}
+
+/** Дольше, чем кнопка ждёт быстрого ответа портала (`SLIDER_ANSWER_MS`). */
+async function outwait() {
+  await new Promise(resolve => setTimeout(resolve, 1100))
 }
 
 describe('страница справки', () => {
@@ -64,17 +87,52 @@ describe('кнопка «Что это значит?»', () => {
     expect(opened).toHaveBeenCalledWith({ place: 'help-scores', bx24_width: 720, bx24_title: 'Справка' })
   })
 
+  it('пока слайдер открыт, новую вкладку не открывает', async () => {
+    // Портал молчит, пока слайдер не закроют, — это штатно, а не отказ.
+    const link = await mountLink()
+
+    await link.find('[data-testid="help-link"]').trigger('click')
+    await outwait()
+
+    expect(newTab).not.toHaveBeenCalled()
+  })
+
+  it.each<[string, () => Promise<unknown>]>([
+    ['ответ-ошибка, как в мобильном клиенте', async () => ({ result: 'error', errorCode: 'METHOD_NOT_SUPPORTED_ON_DEVICE' })],
+    ['исключение', async () => { throw new Error('портал отказал') }],
+  ])('в портале, получив отказ, открывает новую вкладку (%s)', async (_case, refusal) => {
+    // ⚠ Главный случай кнопки. Первая редакция ждала завершения промиса, и внутри портала запасной
+    // путь был недостижим: кнопка молчала. Нашли `/review`, `/code-review` и тестировщик в PR #82.
+    answer = refusal
+    const link = await mountLink()
+
+    await link.find('[data-testid="help-link"]').trigger('click')
+    await settle()
+
+    expect(opened).toHaveBeenCalled()
+    expect(newTab).toHaveBeenCalledWith('/help#scores', '_blank', 'noopener')
+  })
+
   it('вне портала открывает справку в новой вкладке, а не молчит', async () => {
-    // ⚠ Кнопка, которая молча ничего не делает, снаружи неотличима от поломки.
     frameWorks = false
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     const link = await mountLink()
 
     await link.find('[data-testid="help-link"]').trigger('click')
     await settle()
 
     expect(opened).not.toHaveBeenCalled()
-    expect(open).toHaveBeenCalledWith('/help#scores', '_blank', 'noopener')
-    open.mockRestore()
+    expect(newTab).toHaveBeenCalledWith('/help#scores', '_blank', 'noopener')
+  })
+
+  it('двойной щелчок не просит второй слайдер', async () => {
+    // Иначе поверх вкладки легли бы два одинаковых слайдера. Нашёл `/code-review`.
+    const link = await mountLink()
+    const button = link.find('[data-testid="help-link"]')
+
+    await button.trigger('click')
+    await button.trigger('click')
+    await settle()
+
+    expect(opened).toHaveBeenCalledTimes(1)
   })
 })

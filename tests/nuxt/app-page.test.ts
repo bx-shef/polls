@@ -185,6 +185,16 @@ describe('слайдер справки', () => {
     expect(surveysAsked).toBe(0)
   })
 
+  it('чужую форму якоря в адрес не несёт — открывает справку с начала', async () => {
+    // `place` приходит от портала, то есть снаружи.
+    placementOptions = { place: 'help-../s/abc' }
+
+    await openApp()
+    await settle()
+
+    expect(navigated).toHaveBeenCalledWith({ path: '/help', hash: '' }, { replace: true })
+  })
+
   it('обычное открытие из меню никуда не уводит', async () => {
     await openApp()
     await settle()

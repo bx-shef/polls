@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
-import { FAQ } from '#shared/faq'
 import { readFramePass } from '~/utils/frame-auth'
 import { helpRouteFor } from '~/utils/help'
 import { isPreview, portalGate } from '~/utils/in-portal'
@@ -88,9 +87,21 @@ onMounted(async () => {
   // `openSliderAppPage` переоткрывает НАШ адрес приложения, а раздел справки приезжает в `place`.
   // Страница сама не рисуется, а ведёт фрейм в справку — список анкет в слайдере справки был бы
   // разговором не о том. Разбор канала — в `app/utils/help.ts`.
-  const help = helpRouteFor(frame.placement.options, FAQ.map(entry => entry.id))
+  //
+  // ⚠ Переход обычный, из `onMounted`, и это держится на том, что `/app` НЕ пререндерится.
+  // Документация SDK предупреждает: у пререндеренной входной страницы Nuxt после гидратации молча
+  // возвращает исходный адрес, и переход тихо отменяется. Сделав `/app` пререндеренной, переводить
+  // сюда и паттерн из документации (`onNuxtReady` + `router.replace`). Нашёл программист панели PR #82.
+  const help = helpRouteFor(frame.placement.options)
   if (help !== null) {
-    await navigateTo({ path: help.path, hash: help.hash }, { replace: true })
+    try {
+      await navigateTo({ path: help.path, hash: help.hash }, { replace: true })
+    }
+    catch {
+      // Переход внутри приложения не удался (например, не догрузилась страница после выката) —
+      // тогда полной загрузкой: справку портал встраивать разрешает. Вечный скелет хуже.
+      window.location.assign(`${help.path}${help.hash}`)
+    }
     return
   }
 
@@ -205,7 +216,7 @@ async function loadSurveys(connection: B24Frame) {
         <div class="mt-4">
           <HelpLink
             anchor="send-survey"
-            label="Справка: как отправить опрос и где увидеть ответ"
+            label="Как отправить опрос?"
           />
         </div>
       </template>

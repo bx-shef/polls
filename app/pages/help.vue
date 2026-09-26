@@ -8,7 +8,7 @@ import { FAQ, FAQ_AGENT_PROMPT, FAQ_INTRO } from '#shared/faq'
  * ссылкой снаружи (карточка Маркета, письмо, поиск) и кнопкой «Что это значит?» внутри портала,
  * где она рисуется в слайдере поверх карточки. Своя вёрстка лендинга в слайдере портала выглядела бы
  * чужой страницей, а светлая тема `b24ui` — своей в обоих случаях. Решение соседнего проекта
- * (`client-bank-alfa-by`, `app/pages/help.vue`).
+ * (`client-bank-alfa-by`, `app/pages/help.vue`). Исключение записано в `app/layouts/portal.vue`.
  *
  * ⚠ ГЕЙТА ПРИСУТСТВИЯ В ПОРТАЛЕ ЗДЕСЬ НЕТ, и он был бы вреден. Гейт закрывает страницы, которым
  * нечего показать без фрейма, а справка — текст и работает где угодно. Закрыв её гейтом, мы сделали
@@ -20,18 +20,41 @@ import { FAQ, FAQ_AGENT_PROMPT, FAQ_INTRO } from '#shared/faq'
 
 definePageMeta({ layout: 'portal' })
 
-useSeoMeta({
-  title: 'Справка — Опросы клиентов для Битрикс24',
-  description: 'Как отправить опрос клиенту из сделки, где увидеть ответ, как читать баллы, '
-    + 'как изменить анкету и где хранятся ответы.',
+const TITLE = 'Справка — Опросы клиентов'
+const DESCRIPTION = 'Как отправить опрос клиенту из сделки, где увидеть ответ, как читать баллы, '
+  + 'как изменить анкету и где хранятся ответы.'
+
+useHead({
+  title: TITLE,
+  meta: [
+    { name: 'description', content: DESCRIPTION },
+    { property: 'og:title', content: TITLE },
+    { property: 'og:description', content: DESCRIPTION },
+    { property: 'og:type', content: 'website' },
+    { property: 'og:locale', content: 'ru_RU' },
+  ],
+  link: [{ rel: 'canonical', href: 'https://polls.bx-shef.by/help' }],
 })
+
+/** Оглавление: страница длинная, а приходят на неё с одним конкретным вопросом. */
+const TOC = FAQ.map(entry => ({ label: entry.question, to: `#${entry.id}` }))
+
+/**
+ * Где лежит справка простым текстом — полным адресом.
+ *
+ * ⚠ Полным, а не `/llms.txt`: инструкцию копируют, чтобы вставить в чужой чат с ИИ-помощником,
+ * и относительный адрес там не значит ничего. А внутри слайдера портала человек даже не видит,
+ * на каком домене открыта справка. Первая редакция копировала одну инструкцию «отвечай только
+ * по этому документу» — без документа. Нашли `/review` и `/code-review` в PR #82.
+ */
+const llmsUrl = `${useRequestURL().origin}/llms.txt`
 
 const copied = ref(false)
 
-/** Скопировать инструкцию для ИИ-помощника. Буфер недоступен — в iframe это бывает, текст и так на экране. */
+/** Скопировать инструкцию вместе с адресом справки. Буфер недоступен — в iframe бывает, текст и так на экране. */
 async function copyPrompt(): Promise<void> {
   try {
-    await navigator.clipboard.writeText(FAQ_AGENT_PROMPT)
+    await navigator.clipboard.writeText(`${FAQ_AGENT_PROMPT}\n\nДокумент: ${llmsUrl}`)
     copied.value = true
   }
   catch {
@@ -42,29 +65,15 @@ async function copyPrompt(): Promise<void> {
 
 <template>
   <div class="mx-auto flex w-full max-w-[820px] flex-col gap-6 px-4 py-8">
-    <div class="flex flex-col gap-2">
-      <h1 class="text-2xl font-semibold">
-        Справка
-      </h1>
-      <p class="opacity-80">
-        {{ FAQ_INTRO }}
-      </p>
-    </div>
+    <B24PageHeader
+      title="Справка"
+      :description="FAQ_INTRO"
+    />
 
-    <!-- Оглавление: страница длинная, а приходят на неё с одним конкретным вопросом. -->
-    <nav
+    <B24PageLinks
       data-testid="faq-toc"
-      class="flex flex-col gap-1"
-    >
-      <B24Link
-        v-for="entry in FAQ"
-        :key="entry.id"
-        :to="`#${entry.id}`"
-        class="text-sm"
-      >
-        {{ entry.question }}
-      </B24Link>
-    </nav>
+      :links="TOC"
+    />
 
     <section
       v-for="entry in FAQ"
@@ -92,8 +101,9 @@ async function copyPrompt(): Promise<void> {
           Для ИИ-помощника
         </h2>
         <p class="text-sm opacity-80">
-          Если вы пользуетесь ИИ-помощником, дайте ему эту инструкцию — он будет отвечать по этой справке,
-          а не выдумывать названия кнопок. Та же справка простым текстом лежит по адресу /llms.txt.
+          Если вы пользуетесь ИИ-помощником, дайте ему эту инструкцию вместе с адресом справки —
+          он будет отвечать по ней, а не выдумывать названия кнопок. Справка простым текстом:
+          {{ llmsUrl }}
         </p>
         <pre class="whitespace-pre-wrap text-xs opacity-90">{{ FAQ_AGENT_PROMPT }}</pre>
         <div>

@@ -1,4 +1,4 @@
-import { parsePlacementOptions } from './placement'
+import { placementValue } from './placement'
 
 /**
  * Opening the help in the portal's slider, straight at the right section.
@@ -30,23 +30,52 @@ export function helpPlace(anchor: string): string {
 }
 
 /**
+ * Форма якоря: та же, что у `id` разделов справки (её держит `tests/unit/faq.test.ts`).
+ *
+ * ⚠ Проверка по ФОРМЕ, а не по списку разделов. Список пришлось бы тянуть в `/app` вместе со всем
+ * текстом справки — десятки килобайт в чанк главной страницы, которые грузятся при каждом открытии
+ * из меню. А защищает здесь именно форма: из `place` в адрес не может попасть ничего, кроме
+ * строчных латинских букв, цифр и дефиса. Неизвестный, но правильный по форме якорь открывает
+ * справку с начала — у страницы просто нет раздела с таким `id`. Нашёл `/code-review` в PR #82.
+ */
+const ANCHOR_SHAPE = /^[a-z][a-z0-9-]{0,40}$/
+
+/**
  * Куда вести фрейм, открытый с этими параметрами: `/help` с якорем, `/help` без него или никуда.
  *
- * ⚠ Якорь СВЕРЯЕТСЯ с разделами справки, а не подставляется как есть. `place` приходит из портала,
- * то есть снаружи, и непроверенное значение уехало бы прямо в адрес фрейма. Заодно это ловит
- * опечатку в ссылке: неизвестный якорь открывает справку с начала, а не пустое место.
- *
- * Разделы приходят параметром (`FAQ.map(entry => entry.id)` у вызывающего), а не импортом
- * `shared/faq.ts` отсюда: код `app/` берёт общий модуль только через `#shared` — относительный путь
- * сборка выносит наружу с неверным адресом (поймано сборкой), — а юнит-тестам этот псевдоним
- * недоступен. Чистая функция от списка разделов проверяется и без Nuxt.
+ * ⚠ Якорь из `place` проверяется, а не подставляется как есть: `place` приходит из портала, то есть
+ * снаружи, и непроверенное значение уехало бы прямо в адрес фрейма.
  */
-export function helpRouteFor(options: unknown, anchors: readonly string[]): { path: '/help', hash: string } | null {
-  const bag = parsePlacementOptions(options)
-  const key = Object.keys(bag).find(name => name.toLowerCase() === 'place')
-  const place = key === undefined ? undefined : bag[key]
+export function helpRouteFor(options: unknown): { path: '/help', hash: string } | null {
+  const place = placementValue(options, 'place')
   if (typeof place !== 'string' || !place.startsWith(HELP_PLACE_PREFIX)) return null
 
   const anchor = place.slice(HELP_PLACE_PREFIX.length)
-  return { path: '/help', hash: anchors.includes(anchor) ? `#${anchor}` : '' }
+  return { path: '/help', hash: ANCHOR_SHAPE.test(anchor) ? `#${anchor}` : '' }
+}
+
+/**
+ * Сколько ждать быстрого ответа портала на просьбу открыть слайдер, миллисекунд.
+ *
+ * ⚠ Ждём именно БЫСТРЫЙ ответ, а не завершение. Промис `openSliderAppPage` портал завершает, когда
+ * слайдер ЗАКРЫВАЮТ: пока человек читает справку, он висит, и это штатно. Отказ же приходит сразу
+ * ответом-ошибкой — так его разбирает сам SDK в `openPath` (`result: 'error'`,
+ * `METHOD_NOT_SUPPORTED_ON_DEVICE` в мобильном клиенте). Ждать завершения значило бы никогда
+ * не дождаться отказа — первая редакция так и делала, и запасной путь внутри портала был
+ * недостижим. Нашли `/review`, `/code-review` и тестировщик в PR #82.
+ */
+export const SLIDER_ANSWER_MS = 1000
+
+/** Пометка «портал за отведённое время не ответил» — то есть слайдер открыт и ждёт закрытия. */
+export const SLIDER_PENDING = Symbol('slider-pending')
+
+/**
+ * Отказал ли портал открыть слайдер.
+ *
+ * `SLIDER_PENDING` — не отказ: слайдер открыт. Ответ-ошибка или исключение — отказ.
+ */
+export function isSliderRefusal(answer: unknown): boolean {
+  if (answer === SLIDER_PENDING) return false
+  if (answer instanceof Error) return true
+  return (answer as { result?: unknown } | null)?.result === 'error'
 }

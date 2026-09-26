@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPublicPageCsp, needsNonce, portalCsp, securityHeadersFor } from '../../server/utils/security-headers'
+import { buildHelpPageCsp, buildPublicPageCsp, needsNonce, portalCsp, securityHeadersFor } from '../../server/utils/security-headers'
 
 /**
  * Гвард под переезд заголовков из nginx в приложение.
@@ -104,14 +104,28 @@ describe('выбор заголовков по адресу', () => {
   })
 
   it('справке и её тексту для ИИ-помощника — публичную политику и место в выдаче', () => {
-    // Справку читают снаружи портала: модератор Маркета, поиск, человек по ссылке. Портал показывает
-    // её в слайдере, но переходом внутри своего `/app`, а не открывая `/help` во фрейме.
-    for (const path of ['/help', '/llms.txt']) {
-      expect(securityHeadersFor(path)['Content-Security-Policy']).toBe(publicPageCsp)
-      expect(securityHeadersFor(path)['X-Robots-Tag']).toBeUndefined()
-    }
+    // Справку читают снаружи портала: модератор Маркета, поиск, человек по ссылке.
+    expect(securityHeadersFor('/help')['Content-Security-Policy']).toBe(buildHelpPageCsp())
+    expect(securityHeadersFor('/llms.txt')['Content-Security-Policy']).toBe(publicPageCsp)
+    for (const path of ['/help', '/llms.txt']) expect(securityHeadersFor(path)['X-Robots-Tag']).toBeUndefined()
     expect(needsNonce('/help')).toBe(true)
     expect(securityHeadersFor('/help', 'abc')['Content-Security-Policy']).toContain(`'nonce-abc'`)
+  })
+
+  it('справку портал встроить может, а инлайновые скрипты ей по-прежнему нельзя', () => {
+    // ⚠ При полной перезагрузке фрейма после выката адресом документа в слайдере становится `/help`,
+    // и `frame-ancestors 'none'` дал бы пустой слайдер. Нашли `/review` и `/code-review` в PR #82.
+    const help = buildHelpPageCsp('abc')
+    expect(directive(help, 'frame-ancestors')).toBe(directive(portalCsp, 'frame-ancestors'))
+    expect(directive(help, 'script-src')).toBe(`script-src 'self' 'nonce-abc'`)
+  })
+
+  it('справку по /help/ и /HELP отдаёт под той же политикой', () => {
+    // ⚠ Роутер отдаёт эти адреса той же страницей; без нормализации она уходила под портальную
+    // политику с `unsafe-inline`. Нашёл `/review` запросом к собранному приложению.
+    for (const path of ['/help/', '/HELP', '/help?x=1']) {
+      expect(securityHeadersFor(path)['Content-Security-Policy'], path).toBe(buildHelpPageCsp())
+    }
   })
 
   it('не путает справку с путями, которые с неё начинаются', () => {
