@@ -81,6 +81,10 @@ const SAVE_REFUSALS: Record<string, string> = {
   'denied': 'У вас нет доступа к этой анкете — править её нельзя.',
   'stale': 'Анкету изменили в другом месте, пока вы правили эту. Обновите страницу, чтобы не затереть чужую работу.',
   'not-saved': 'Портал не подтвердил запись. Анкета НЕ сохранена — попробуйте ещё раз.',
+  'invalid': 'Анкету нельзя опубликовать, пока в ней есть то, что мешает. Список выше.',
+  'no-schema': 'В анкете нет схемы — сначала соберите её и сохраните.',
+  'not-published': 'Новую версию заводят от опубликованной. Эта ещё черновик.',
+  'no-action': 'Вкладка не сказала порталу, что именно сделать. Обновите страницу.',
   'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
 }
 
@@ -108,6 +112,11 @@ const saved = ref(false)
  * и потерять работу. Нашёл `/code-review`.
  */
 const saveFailure = ref('')
+
+/** Идёт ли публикация или заведение новой версии. Кнопки на это время гаснут. */
+const releasing = ref(false)
+/** Что сказать после удачного действия: «опубликовано» или «версия заведена». */
+const releaseNote = ref('')
 
 /**
  * Черновик под правкой — СВОЯ копия, а не тот же объект.
@@ -277,6 +286,110 @@ function onTypeChange(question: Question): void {
 function scaleOf(question: Question): { min: number, max: number } {
   question.scale ??= { min: 0, max: 10 }
   return question.scale
+}
+
+/**
+ * Опубликовать черновик или завести новую версию от опубликованной.
+ *
+ * ⚠ Одно действие на два роута не делится: они взаимно исключают друг друга по инварианту,
+ * и решает состояние, а не кнопка. Проверку состояния сервер делает сам — вкладка лишь
+ * показывает ту кнопку, которая сейчас осмысленна.
+ */
+async function release(action: 'publish' | 'new-version'): Promise<void> {
+  if (itemId.value === null || frame === undefined) return
+
+  const pass = readFramePass(frame.auth.getAuthData())
+  if (pass === null) {
+    saveFailure.value = 'Портал не передал данные авторизации. Обновите страницу.'
+    return
+  }
+
+  releasing.value = true
+  saveFailure.value = ''
+  releaseNote.value = ''
+
+  /**
+   * Удалась ли публикация.
+   *
+   * ⚠ Перечитка состояния идёт ПОСЛЕ этого `try`, а не внутри него: её отказ внутри показывал
+   * бы «связь прервалась» на удавшейся публикации — то есть человек считал бы, что анкета
+   * НЕ вышла, хотя она уже вышла. Нашёл `/code-review`.
+   */
+  let releasedVersion = 0
+
+  try {
+    const answer = await $fetch<
+      | { ok: true, action: string, version?: number, itemId?: number, entityTypeId?: number, reused?: boolean }
+      | { ok: false, reason: string, problems?: Problem[] }
+    >('/api/portal/template-publish', {
+      method: 'POST',
+      body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value, action },
+    })
+
+    if (!answer.ok) {
+      saveFailure.value = SAVE_REFUSALS[answer.reason] ?? 'Не получилось. Попробуйте ещё раз.'
+      // ⚠ Претензии от сервера ЗАБИРАЕМ. Отказ говорит «список выше», а список на экране —
+      // это то, что вкладка прочитала при открытии; схему на портале могли поправить
+      // с тех пор, и человек получил бы совет чинить то, чего не видит.
+      if (answer.problems !== undefined) problems.value = answer.problems
+    }
+    else if (answer.action === 'publish') {
+      releasedVersion = answer.version ?? 0
+    }
+    else {
+      releaseNote.value = answer.reused === true
+        ? 'Черновик новой версии уже был заведён раньше — открываю его.'
+        : 'Новая версия заведена черновиком — правьте её в открывшейся карточке.'
+      await openCard(answer.itemId ?? 0, answer.entityTypeId ?? 0)
+    }
+  }
+  catch {
+    saveFailure.value = 'Связь с порталом прервалась. Проверьте и попробуйте ещё раз.'
+  }
+  finally {
+    releasing.value = false
+  }
+
+  if (releasedVersion === 0) return
+
+  releaseNote.value = `Анкета опубликована как версия ${releasedVersion}.`
+  try {
+    await loadTemplate()
+  }
+  catch {
+    releaseNote.value += ' Обновите страницу, чтобы увидеть новое состояние.'
+  }
+}
+
+/**
+ * Открыть карточку новой версии слайдером портала.
+ *
+ * ⚠ Новая версия — ДРУГОЙ элемент, а вкладка привязана к текущему: сама она туда перейти
+ * не может. Слайдер кладётся поверх и закрывается крестиком портала, так что работа остаётся
+ * на месте. Отказ слайдера молчаливым не оставляем: без карточки человек не найдёт версию,
+ * которую только что завёл.
+ */
+async function openCard(newItemId: number, typeId: number): Promise<void> {
+  // ⚠ `entityTypeId` приходит ОТ СЕРВЕРА. Вкладка его не знает: портал кладёт во фрейм только
+  // идентификатор элемента, а тип объекта отдельным ключом не приходит вовсе — так написано
+  // в документации точки встраивания. Прежняя редакция читала его из строки запроса, которой
+  // у обработчика нет, и всегда получала ноль: адрес выходил `/crm/type//details/N/`,
+  // слайдер открывал сломанную страницу, а запасной текст не срабатывал — `openPath`
+  // на это не ругается. Нашёл `/code-review`.
+  if (newItemId <= 0 || typeId <= 0) {
+    releaseNote.value = `${releaseNote.value} Карточка №${newItemId} — откройте её в списке шаблонов.`
+    return
+  }
+  try {
+    // ⚠ `openPath` принимает URL, а не строку: путь сначала собирается `getUrl` — он знает
+    // адрес портала, а мы его знать не обязаны. Приём взят у соседнего приложения, где он
+    // работает в бою.
+    const path = frame!.slider.getUrl(`/crm/type/${typeId}/details/${newItemId}/`)
+    await frame!.slider.openPath(path, 1100)
+  }
+  catch {
+    releaseNote.value = `Новая версия заведена черновиком — карточка №${newItemId}. Откройте её в списке шаблонов.`
+  }
 }
 
 async function save(): Promise<void> {
@@ -451,7 +564,44 @@ async function save(): Promise<void> {
               v-if="saved"
               class="text-sm text-(--ui-color-text-secondary)"
             >Сохранено.</span>
+
+            <!-- ⚠ Публикация видна, только пока нет правок под рукой: публиковать то, что
+                 не сохранено, нельзя — сервер берёт схему с портала, а не из формы, и человек
+                 опубликовал бы прошлую редакцию, считая, что выпустил свою. -->
+            <B24Button
+              v-if="!draft"
+              color="air-primary-success"
+              :label="releasing ? 'Публикую…' : 'Опубликовать'"
+              :disabled="releasing || blocking.length > 0"
+              @click="release('publish')"
+            />
+            <span
+              v-if="!draft && blocking.length > 0"
+              class="text-sm text-(--ui-color-text-secondary)"
+            >Сначала исправьте то, что мешает.</span>
           </div>
+
+          <!-- ⚠ У опубликованной версии действие ровно одно, и это и есть разрешённая форма
+               её правки: новая версия. Инвариант — опубликованная неизменяема, по ней уже
+               собрана статистика, а ссылки у людей ведут именно на неё. -->
+          <div
+            v-else
+            class="mt-3 flex flex-wrap items-center gap-2"
+          >
+            <B24Button
+              color="air-primary"
+              :label="releasing ? 'Завожу…' : 'Создать новую версию'"
+              :disabled="releasing"
+              @click="release('new-version')"
+            />
+          </div>
+
+          <p
+            v-if="releaseNote"
+            class="mt-2 text-sm text-(--ui-color-text-secondary)"
+          >
+            {{ releaseNote }}
+          </p>
 
           <!-- ⚠ Отказ сохранения живёт ЗДЕСЬ, рядом с кнопками, а не в общей ветке отказа
                выше: та подменяет собой весь редактор, и правки исчезали бы вместе с ним. -->
