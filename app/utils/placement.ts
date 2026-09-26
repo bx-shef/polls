@@ -87,9 +87,9 @@ export interface FieldContext {
  */
 export function fieldContext(options: unknown): FieldContext {
   const bag = parsePlacementOptions(options)
-  const data = parsePlacementOptions(valueOf(bag, 'ENTITY_DATA'))
-  const mode = valueOf(bag, 'MODE')
-  const entityId = valueOf(bag, 'ENTITY_ID')
+  const data = parsePlacementOptions(placementValue(bag, 'ENTITY_DATA'))
+  const mode = placementValue(bag, 'MODE')
+  const entityId = placementValue(bag, 'ENTITY_ID')
 
   return {
     editing: typeof mode === 'string' && mode.trim().toLowerCase() === 'edit',
@@ -99,8 +99,15 @@ export function fieldContext(options: unknown): FieldContext {
   }
 }
 
-/** Значение ключа без учёта регистра, как есть. */
-function valueOf(bag: Record<string, unknown>, key: string): unknown {
+/**
+ * Значение ключа параметров фрейма без учёта регистра, как есть.
+ *
+ * ⚠ Экспортировано, чтобы второго разборщика не появлялось: справка читает `place` этой же
+ * функцией (`app/utils/help.ts`). Своя копия означала бы две копии трёх ловушек из шапки файла —
+ * и следующую найденную чинили бы в одной из них. Нашли `/review` и `/code-review` в PR #82.
+ */
+export function placementValue(options: unknown, key: string): unknown {
+  const bag = parsePlacementOptions(options)
   const found = Object.keys(bag).find(name => name.toLowerCase() === key.toLowerCase())
   return found === undefined ? undefined : bag[found]
 }

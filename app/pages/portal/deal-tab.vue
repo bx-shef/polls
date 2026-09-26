@@ -327,12 +327,17 @@ const expiresLabel = computed(() => {
         :description="failure"
       />
 
-      <B24Alert
-        v-else-if="notProvisioned"
-        color="air-primary-warning"
-        title="Приложение ещё настраивается"
-        description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение или обратитесь к администратору."
-      />
+      <template v-else-if="notProvisioned">
+        <B24Alert
+          color="air-primary-warning"
+          title="Приложение ещё настраивается"
+          description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение или обратитесь к администратору."
+        />
+        <HelpLink
+          anchor="not-working"
+          class="mt-2"
+        />
+      </template>
 
       <B24Alert
         v-else-if="dealId === null"
@@ -341,12 +346,20 @@ const expiresLabel = computed(() => {
         description="Откройте вкладку из карточки сделки — ссылка выпускается для конкретной сделки."
       />
 
-      <B24Alert
-        v-else-if="surveys.length === 0"
-        color="air-secondary-accent"
-        title="Опросов пока нет"
-        description="Выпускать нечего: на портале нет ни одной опубликованной анкеты. Они появляются после переноса из старого решения."
-      />
+      <!-- ⚠ «Появляются после переноса из старого решения» здесь было правдой до конструктора.
+           Теперь анкету собирают сами, и совет обязан вести туда, где это делается. -->
+      <template v-else-if="surveys.length === 0">
+        <B24Alert
+          color="air-secondary-accent"
+          title="Опросов пока нет"
+          description="Выпускать нечего: на портале нет ни одной опубликованной анкеты. Соберите и опубликуйте её на вкладке «Конструктор» в карточке «Шаблона опроса»."
+        />
+        <HelpLink
+          anchor="edit-survey"
+          label="Как собрать анкету?"
+          class="mt-2"
+        />
+      </template>
 
       <template v-else>
         <!--
@@ -358,9 +371,15 @@ const expiresLabel = computed(() => {
           v-if="links.length > 0"
           class="mb-4"
         >
-          <p class="mb-2 font-semibold">
-            Выпущенные ссылки
-          </p>
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <p class="font-semibold">
+              Выпущенные ссылки
+            </p>
+            <HelpLink
+              anchor="link-states"
+              label="Что значат состояния?"
+            />
+          </div>
           <div class="flex flex-col gap-2">
             <B24Card
               v-for="link in links"
@@ -412,9 +431,14 @@ const expiresLabel = computed(() => {
         </div>
 
         <div v-if="issued === null">
-          <p class="mb-3">
+          <p class="mb-1">
             Выберите опрос — ссылка выпустится для этой сделки и будет действовать 30 дней.
           </p>
+          <HelpLink
+            anchor="send-survey"
+            label="Как это работает?"
+            class="mb-3"
+          />
           <div class="flex flex-col gap-2">
             <B24Button
               v-for="survey in surveys"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { readFramePass } from '~/utils/frame-auth'
+import { helpRouteFor } from '~/utils/help'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
 /**
@@ -82,6 +83,28 @@ onMounted(async () => {
     return
   }
 
+  // ⚠ Этот же адрес портал открывает слайдером, когда кнопка «Что это значит?» просит справку:
+  // `openSliderAppPage` переоткрывает НАШ адрес приложения, а раздел справки приезжает в `place`.
+  // Страница сама не рисуется, а ведёт фрейм в справку — список анкет в слайдере справки был бы
+  // разговором не о том. Разбор канала — в `app/utils/help.ts`.
+  //
+  // ⚠ Переход обычный, из `onMounted`, и это держится на том, что `/app` НЕ пререндерится.
+  // Документация SDK предупреждает: у пререндеренной входной страницы Nuxt после гидратации молча
+  // возвращает исходный адрес, и переход тихо отменяется. Сделав `/app` пререндеренной, переводить
+  // сюда и паттерн из документации (`onNuxtReady` + `router.replace`). Нашёл программист панели PR #82.
+  const help = helpRouteFor(frame.placement.options)
+  if (help !== null) {
+    try {
+      await navigateTo({ path: help.path, hash: help.hash }, { replace: true })
+    }
+    catch {
+      // Переход внутри приложения не удался (например, не догрузилась страница после выката) —
+      // тогда полной загрузкой: справку портал встраивать разрешает. Вечный скелет хуже.
+      window.location.assign(`${help.path}${help.hash}`)
+    }
+    return
+  }
+
   try {
     await loadSurveys(frame)
   }
@@ -142,12 +165,17 @@ async function loadSurveys(connection: B24Frame) {
         :description="failure"
       />
 
-      <B24Alert
-        v-else-if="notProvisioned"
-        color="air-primary-warning"
-        title="Приложение ещё настраивается"
-        description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение от имени администратора."
-      />
+      <template v-else-if="notProvisioned">
+        <B24Alert
+          color="air-primary-warning"
+          title="Приложение ещё настраивается"
+          description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение от имени администратора."
+        />
+        <HelpLink
+          anchor="not-working"
+          class="mt-2"
+        />
+      </template>
 
       <template v-else>
         <!-- Заголовка здесь НЕТ: его несёт шапка панели. Две одинаковые строки подряд
@@ -184,6 +212,13 @@ async function loadSurveys(connection: B24Frame) {
           title="Где выпускать ссылку"
           description="Откройте любую сделку и перейдите на вкладку «Опросы» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё."
         />
+
+        <div class="mt-4">
+          <HelpLink
+            anchor="send-survey"
+            label="Как отправить опрос?"
+          />
+        </div>
       </template>
     </template>
   </B24DashboardPanel>

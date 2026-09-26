@@ -57,7 +57,7 @@ export const portalCsp = [
  * за загрузку, через `<script>` выполняют что угодно сразу. Сузить его — отдельная работа
  * со своей проверкой, а не заодно.
  */
-export function buildPublicPageCsp(nonce?: string): string {
+export function buildPublicPageCsp(nonce?: string, frameAncestors = `'none'`): string {
   return [
     `default-src 'self'`,
     `script-src 'self'${nonce === undefined ? '' : ` 'nonce-${nonce}'`}`,
@@ -66,10 +66,25 @@ export function buildPublicPageCsp(nonce?: string): string {
     `connect-src 'self'`,
     `object-src 'none'`,
     `frame-src 'none'`,
-    `frame-ancestors 'none'`,
+    `frame-ancestors ${frameAncestors}`,
     `base-uri 'none'`,
     `form-action 'self'`,
   ].join('; ')
+}
+
+/**
+ * Policy for the help page: the public one, but the portal may frame it.
+ *
+ * ⚠ Встраивание порталом разрешено, и это не ослабление ради удобства. В слайдере справка
+ * открывается переходом внутри нашего `/app`, но при ПОЛНОЙ перезагрузке фрейма — после выката
+ * Nuxt перезагружает страницу, у которой не догрузился кусок, — адресом документа становится
+ * уже `/help`. С `frame-ancestors 'none'` браузер отказывался бы его рисовать, и человек видел бы
+ * пустой слайдер. Секретов в справке нет: это тот же текст, что лежит в открытом `/llms.txt`.
+ * Остальное — как у публичной страницы: без `unsafe-inline` и `unsafe-eval`. Нашли `/review`
+ * и `/code-review` в PR #82.
+ */
+export function buildHelpPageCsp(nonce?: string): string {
+  return buildPublicPageCsp(nonce, bitrix24Origins)
 }
 
 /**
@@ -107,9 +122,13 @@ export function securityHeadersFor(path: string, nonce?: string): Record<string,
     return { ...common, 'Content-Security-Policy': buildPublicPageCsp(nonce), 'X-Robots-Tag': 'noindex, nofollow' }
   }
 
-  // Лендинг — единственная страница, которой в выдаче место. Политика у неё та же, что
-  // у публичной анкеты: она тоже вне портала, и встраивать её в чужие страницы незачем.
-  if (isLanding(path)) {
+  // Лендинг, справка и её текст для ИИ-помощника — страницы, которым в выдаче место. Политика
+  // у них публичная, как у анкеты: без `unsafe-inline` и `unsafe-eval`. Справку вдобавок может
+  // встроить портал — почему, разобрано у `buildHelpPageCsp`.
+  if (isHelp(path)) {
+    return { ...common, 'Content-Security-Policy': buildHelpPageCsp(nonce) }
+  }
+  if (isLanding(path) || isLlmsText(path)) {
     return { ...common, 'Content-Security-Policy': buildPublicPageCsp(nonce) }
   }
 
@@ -136,7 +155,31 @@ export function securityHeadersFor(path: string, nonce?: string): Record<string,
  */
 export function needsNonce(path: string): boolean {
   if (path.startsWith('/api/')) return false
-  return path.startsWith('/s/') || isLanding(path)
+  return path.startsWith('/s/') || isLanding(path) || isHelp(path)
+}
+
+/**
+ * Путь без строки запроса, без хвостовой косой черты и в нижнем регистре.
+ *
+ * ⚠ Роутер Nuxt отдаёт одну и ту же страницу и по `/help/`, и по `/HELP`. Сравнивая путь как есть,
+ * мы отдавали бы справку по `/help/` под ПОРТАЛЬНОЙ политикой — с `unsafe-inline` и `noindex`.
+ * Нашёл `/review` в PR #82 — запросом к собранному приложению.
+ */
+function normalized(path: string): string {
+  return (path.split('?')[0] ?? '').replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * Справка. Сравнение точное после нормализации: префиксом под «справку» попало бы что угодно,
+ * что начинается с тех же букв.
+ */
+function isHelp(path: string): boolean {
+  return normalized(path) === '/help'
+}
+
+/** Текст справки для ИИ-помощника. */
+function isLlmsText(path: string): boolean {
+  return normalized(path) === '/llms.txt'
 }
 
 /**
