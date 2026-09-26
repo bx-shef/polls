@@ -41,6 +41,13 @@ interface Section {
   bands: Band[]
 }
 
+/** Претензия к схеме, посчитанная сервером: `app/` в домен не ходит по правилу проекта. */
+interface Problem {
+  level: 'error' | 'warning'
+  where: string
+  message: string
+}
+
 interface TemplateItem {
   id: number
   code: string
@@ -67,6 +74,11 @@ const failure = ref('')
 const notProvisioned = ref(false)
 const itemId = ref<number | null>(null)
 const template = ref<TemplateItem | null>(null)
+const problems = ref<Problem[]>([])
+
+/** Что мешает публикации, и что просто стоит знать. Разведены: первое запрещает, второе нет. */
+const blocking = computed(() => problems.value.filter(p => p.level === 'error'))
+const notes = computed(() => problems.value.filter(p => p.level === 'warning'))
 
 const gate = computed(() => portalGate({
   resolved: resolved.value,
@@ -126,7 +138,7 @@ async function loadTemplate() {
   }
 
   const answer = await $fetch<
-    { ok: true, template: TemplateItem } | { ok: false, reason: string }
+    { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: string }
   >('/api/portal/template', {
     method: 'POST',
     body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value },
@@ -134,6 +146,11 @@ async function loadTemplate() {
 
   if (answer.ok) {
     template.value = answer.template
+    // ⚠ `?? []` — не перестраховка, а стык версий. Страница и сервер выкатываются одним
+    // образом, но окно между ними есть всегда: открытая вкладка живёт в браузере дольше
+    // перезапуска контейнера. Ответ без этого поля уронил бы страницу целиком, и снаружи
+    // это выглядело бы как «конструктор перестал работать».
+    problems.value = answer.problems ?? []
     return
   }
   // «Не настроено» и «нет элемента» различаются текстом: первое лечит администратор,
@@ -228,6 +245,41 @@ async function loadTemplate() {
             title="Эта версия уже опубликована"
             description="Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию."
           />
+        </B24Card>
+
+        <!-- ⚠ Претензии показываются ВЫШЕ самой анкеты. Их читают, когда собираются
+             публиковать, и спрятав их под список разделов мы бы заставили человека сначала
+             пролистать то, что он и так знает. -->
+        <B24Card v-if="blocking.length > 0">
+          <div class="font-semibold">
+            Пока нельзя опубликовать
+          </div>
+          <ul class="mt-2 flex flex-col gap-2">
+            <li
+              v-for="(problem, index) in blocking"
+              :key="`e${index}`"
+              class="text-sm"
+            >
+              <span class="font-medium">{{ problem.where }}.</span>
+              <span class="ml-1">{{ problem.message }}</span>
+            </li>
+          </ul>
+        </B24Card>
+
+        <B24Card v-if="notes.length > 0">
+          <div class="font-semibold">
+            Стоит знать
+          </div>
+          <ul class="mt-2 flex flex-col gap-2">
+            <li
+              v-for="(problem, index) in notes"
+              :key="`w${index}`"
+              class="text-sm text-(--ui-color-text-secondary)"
+            >
+              <span class="font-medium">{{ problem.where }}.</span>
+              <span class="ml-1">{{ problem.message }}</span>
+            </li>
+          </ul>
         </B24Card>
 
         <B24Alert

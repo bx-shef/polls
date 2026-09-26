@@ -7,6 +7,7 @@ import type {
   SurveySection,
   SurveyTemplate,
 } from '../surveys/model'
+import { findScaleGaps, sectionScale } from '../surveys/validate'
 
 /**
  * Turns the legacy module's `b_option` rows into normalized survey templates.
@@ -174,7 +175,11 @@ function readSections(
       title: typeof source.NAME === 'string' ? source.NAME : '',
       scored: key !== OPEN_SECTION_KEY,
       questions,
-      bands: readBands(template, key, source.TERMS, sectionScale(questions), warnings),
+      // ⚠ Шкала — по вопросам, ИДУЩИМ В ОЦЕНКУ, а не по всем балльным. Вопрос с весом 0
+      // в источнике означал «не считать», и его шкала в балл секции не попадает никогда;
+      // взяв её, мы объявили бы непокрытым отрезок, до которого балл не доходит. Тот же
+      // отбор делает конструктор (`validate.ts`), и разъехаться им нельзя.
+      bands: readBands(template, key, source.TERMS, sectionScale(questions.filter(q => q.scored && q.type === 'scale')), warnings),
     })
   }
 
@@ -373,36 +378,19 @@ function readBands(
 
   bands.sort((a, b) => a.from - b.from)
   reportGaps(template, section, bands, scale, warnings)
+  // Сортировка здесь остаётся, хотя `findScaleGaps` и сама считает покрытие по множеству:
+  // отсортированные диапазоны уезжают в саму схему, и по ним же потом ищет `findBand`.
   return bands
-}
-
-/**
- * Шкала секции — по её балльным вопросам.
- *
- * Нужна, чтобы было с чем сравнивать края диапазонов интерпретации. Во всём разобранном
- * наборе шкала везде `0…10`, но брать её константой значит поверить в это навсегда.
- * `null` — считать нечем: в секции нет балльных вопросов, и диапазонам там взяться неоткуда.
- */
-function sectionScale(questions: readonly SurveyQuestion[]): { min: number, max: number } | null {
-  const scales = questions.map(q => q.scale).filter((s): s is { min: number, max: number } => s !== undefined)
-  if (scales.length === 0) return null
-  return {
-    min: Math.min(...scales.map(s => s.min)),
-    max: Math.max(...scales.map(s => s.max)),
-  }
 }
 
 /**
  * Пожаловаться на дыры в покрытии шкалы.
  *
- * Границы диапазонов в источнике смежные (…6–7.5, 7.5–8…), поэтому дырой между диапазонами
- * считается только настоящий разрыв: следующий начинается ВЫШЕ конца предыдущего.
- *
- * ⚠ Края шкалы проверяются отдельно, и это не педантизм. Сначала здесь сравнивались только
- * соседние пары — и та единственная дыра, ради которой вся проверка писалась, не ловилась:
- * у анкеты `digital` диапазоны шли с 4 и между собой стыковались вплотную, а непокрытым
- * оставался отрезок 0–4. Клиент с плохой оценкой не видел никакого текста, а отчёт о переносе
- * сказал бы «дыр нет». Нашла панель ревью PR #14.
+ * ⚠ САМА ПРОВЕРКА ЖИВЁТ В `server/domain/surveys/validate.ts`, а здесь только перевод её
+ * ответа в формат отчёта о переносе. Вынесена туда, когда у неё появился второй вызывающий —
+ * конструктор анкет: та же проверка, написанная второй раз, разошлась бы с первой с первой
+ * же правки. Разбор дефекта, ради которого она писалась (непокрытый отрезок 0–4 у анкеты
+ * `digital`), остался вместе с кодом.
  */
 function reportGaps(
   template: string,
@@ -411,23 +399,8 @@ function reportGaps(
   scale: { min: number, max: number } | null,
   warnings: ImportWarning[],
 ): void {
-  if (bands.length === 0) return
-
-  if (scale !== null && bands[0]!.from > scale.min) {
-    warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${scale.min}–${bands[0]!.from}`))
-  }
-
-  for (let i = 1; i < bands.length; i++) {
-    const previous = bands[i - 1]!
-    const current = bands[i]!
-    if (current.from > previous.to) {
-      warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${previous.to}–${current.from}`))
-    }
-  }
-
-  const last = bands[bands.length - 1]!
-  if (scale !== null && last.to < scale.max) {
-    warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${last.to}–${scale.max}`))
+  for (const gap of findScaleGaps(bands, scale)) {
+    warnings.push(warn('band-gap', template, section, `шкала не покрыта на отрезке ${gap}`))
   }
 }
 
