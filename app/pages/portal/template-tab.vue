@@ -12,10 +12,16 @@ import { placementItemId } from '~/utils/placement'
  * списком анкет означал бы второй список поверх того, что портал уже показывает, — и первый
  * же вопрос «почему здесь видно, а там нет» упёрся бы в права, которых мы не знаем.
  *
- * ⚠ Сегодня вкладка ПОКАЗЫВАЕТ схему, а не правит её. И даже в таком виде она заменяет
- * текстовое поле «Схема анкеты (JSON)», в котором человек видит простыню в одну строку.
- * Редактор — следующим шагом; разделено потому, что показ уже полезен, а правка требует
- * решений про неизменяемость опубликованной версии.
+ * ⚠ ЧЕРНОВИК ПРАВИТСЯ, ОПУБЛИКОВАННАЯ ВЕРСИЯ ТОЛЬКО ПОКАЗЫВАЕТСЯ. Это инвариант проекта,
+ * и вкладка говорит о нём ДО правок, а не в момент отказа сохранить: человек, открывший
+ * опубликованную анкету, должен узнать правило раньше, чем потратит двадцать минут.
+ * Запрет при этом держится НЕ интерфейсом — сервер перечитывает состояние с портала
+ * и отказывает сам, потому что вкладка могла быть открыта час назад.
+ *
+ * ⚠ КЛЮЧИ ВОПРОСОВ ЗДЕСЬ НЕ ВЫДАЮТСЯ. Новый вопрос уезжает с пустым ключом, и ключ ему даёт
+ * сервер: генератор живёт в домене, а `app/` в серверные модули не ходит по правилу проекта.
+ * Своя копия генератора в браузере была бы вторым словарём на одну вещь — и разошлась бы
+ * с первым ровно тогда, когда правят одну из двух.
  */
 
 interface Band {
@@ -53,6 +59,8 @@ interface TemplateItem {
   code: string
   version: number
   state: string
+  /** Отметка изменения с портала: уезжает обратно, чтобы поймать правку из соседней вкладки. */
+  updatedAt?: string
   schema: { code: string, title: string, sections: Section[] } | null
 }
 
@@ -62,6 +70,19 @@ const QUESTION_TYPES = {
   text: 'Текстовый',
   date: 'Дата',
 } as const satisfies Record<Question['type'], string>
+
+/** Отказы сохранения: у каждого свой текст, потому что чинятся они по-разному. */
+const SAVE_REFUSALS: Record<string, string> = {
+  'published': 'Эту версию уже опубликовали, пока вкладка была открыта. Править её нельзя — создайте новую версию.',
+  'not-object': 'Анкета не сохранилась: сервер не разобрал присланное. Обновите страницу.',
+  'too-big': 'Анкета слишком большая. Сократите тексты вопросов или разбейте её на две.',
+  'too-many': 'Слишком много разделов или вопросов. Разбейте анкету на две.',
+  'no-item': 'Анкета не найдена. Возможно, карточку удалили, пока вкладка была открыта.',
+  'denied': 'У вас нет доступа к этой анкете — править её нельзя.',
+  'stale': 'Анкету изменили в другом месте, пока вы правили эту. Обновите страницу, чтобы не затереть чужую работу.',
+  'not-saved': 'Портал не подтвердил запись. Анкета НЕ сохранена — попробуйте ещё раз.',
+  'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
+}
 
 definePageMeta({ layout: 'portal' })
 
@@ -75,6 +96,26 @@ const notProvisioned = ref(false)
 const itemId = ref<number | null>(null)
 const template = ref<TemplateItem | null>(null)
 const problems = ref<Problem[]>([])
+const saving = ref(false)
+const saved = ref(false)
+
+/**
+ * Отказ СОХРАНЕНИЯ — отдельно от отказа загрузки.
+ *
+ * ⚠ Общий `failure` стоит в ветке `v-else-if` выше редактора и подменяет его собой целиком.
+ * То есть неудачное сохранение вытирало с экрана форму вместе со всеми правками, и совет
+ * «сократите тексты вопросов» выполнить было уже нечем — оставалось перезагрузить страницу
+ * и потерять работу. Нашёл `/code-review`.
+ */
+const saveFailure = ref('')
+
+/**
+ * Черновик под правкой — СВОЯ копия, а не тот же объект.
+ *
+ * ⚠ Правка напрямую по ответу сервера означала бы, что отменить её нечем: исходного
+ * состояния уже нет. Копия даёт «отменить» бесплатно — достаточно перечитать.
+ */
+const draft = ref<{ code: string, title: string, sections: Section[] } | null>(null)
 
 /** Что мешает публикации, и что просто стоит знать. Разведены: первое запрещает, второе нет. */
 const blocking = computed(() => problems.value.filter(p => p.level === 'error'))
@@ -89,9 +130,12 @@ const gate = computed(() => portalGate({
 /** Опубликованная версия неизменяема — это инвариант проекта, и он виден человеку сразу. */
 const published = computed(() => template.value?.state === 'published')
 
+/** Что показываем: правимый черновик или сохранённое. Второе — у опубликованной версии. */
+const shown = computed(() => draft.value ?? template.value?.schema ?? null)
+
 /** Сколько вопросов во всей анкете: первое, что спрашивают, открыв чужой шаблон. */
 const questionCount = computed(
-  () => (template.value?.schema?.sections ?? []).reduce((total, s) => total + s.questions.length, 0),
+  () => (shown.value?.sections ?? []).reduce((total, s) => total + s.questions.length, 0),
 )
 
 let frame: B24Frame | undefined
@@ -158,6 +202,128 @@ async function loadTemplate() {
   notProvisioned.value = answer.reason === 'not-provisioned'
   if (!notProvisioned.value) itemId.value = null
 }
+
+/** Начать правку: копия схемы либо пустая анкета, если схемы ещё нет. */
+function edit(): void {
+  const schema = template.value?.schema
+  // ⚠ Название пустое, а НЕ равно коду. `pnpm publish:templates` считает элемент, у которого
+  // имя совпадает с кодом, безымянным и отказывается его публиковать — то есть подставленный
+  // код тихо создавал анкету, которую нельзя выпустить. Пустое поле честно попросит название,
+  // и о нём же скажет проверка. Нашёл `/code-review`.
+  draft.value = schema === null || schema === undefined
+    ? { code: template.value?.code ?? '', title: '', sections: [] }
+    : JSON.parse(JSON.stringify(schema)) as typeof draft.value
+  saved.value = false
+  saveFailure.value = ''
+}
+
+/** Отменить: просто выбросить копию. Сохранённое никуда не девалось. */
+function cancel(): void {
+  draft.value = null
+  saved.value = false
+  saveFailure.value = ''
+}
+
+function addSection(): void {
+  // Ключ пустой намеренно: его выдаст сервер. Разбор — в шапке файла.
+  draft.value?.sections.push({ key: '', title: 'Новый раздел', scored: false, questions: [], bands: [] })
+}
+
+function removeSection(index: number): void {
+  draft.value?.sections.splice(index, 1)
+}
+
+function addQuestion(section: Section): void {
+  section.questions.push({ key: '', title: '', type: 'scale', weight: 1, scored: true, scale: { min: 0, max: 10 } })
+}
+
+function removeQuestion(section: Section, index: number): void {
+  section.questions.splice(index, 1)
+}
+
+function addBand(section: Section): void {
+  section.bands.push({ from: 0, to: 0, text: '' })
+}
+
+function removeBand(section: Section, index: number): void {
+  section.bands.splice(index, 1)
+}
+
+/**
+ * Включить или выключить балльность вопроса.
+ *
+ * ⚠ Шкала появляется и исчезает вместе с типом, а не живёт сама по себе: у небалльного
+ * вопроса она ничего не значит, и оставшись в схеме выглядела бы настройкой, которая
+ * почему-то не работает. Сервер её всё равно не примет — здесь то же правило, чтобы человек
+ * видел согласованную форму, а не узнавал о расхождении после сохранения.
+ */
+function onTypeChange(question: Question): void {
+  if (question.type === 'scale') {
+    question.scale ??= { min: 0, max: 10 }
+    return
+  }
+  delete question.scale
+  question.scored = false
+}
+
+/**
+ * Шкала вопроса для правки — создаётся, если её нет.
+ *
+ * ⚠ Поля шкалы висели на `question.scale`, а сервер выбрасывает шкалу, у которой хоть одна
+ * граница пуста. Очистив `min`, автор получал балльный вопрос БЕЗ полей шкалы: починить его
+ * во вкладке стало нечем, а публикацию он блокировал навсегда. Нашёл `/code-review`.
+ * Теперь поля есть всегда, пока вопрос балльный, — а «шкала не задана» скажет проверка.
+ */
+function scaleOf(question: Question): { min: number, max: number } {
+  question.scale ??= { min: 0, max: 10 }
+  return question.scale
+}
+
+async function save(): Promise<void> {
+  if (draft.value === null || itemId.value === null || frame === undefined) return
+
+  const pass = readFramePass(frame.auth.getAuthData())
+  if (pass === null) {
+    failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
+    return
+  }
+
+  saving.value = true
+  saveFailure.value = ''
+  try {
+    const answer = await $fetch<
+      { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: string }
+    >('/api/portal/template-save', {
+      method: 'POST',
+      body: {
+        memberId: pass.memberId,
+        authId: pass.authId,
+        itemId: itemId.value,
+        schema: draft.value,
+        updatedAt: template.value?.updatedAt ?? '',
+      },
+    })
+
+    if (!answer.ok) {
+      saveFailure.value = SAVE_REFUSALS[answer.reason] ?? 'Сохранить не получилось. Попробуйте ещё раз.'
+      return
+    }
+
+    template.value = answer.template
+    problems.value = answer.problems ?? []
+    // ⚠ Копия выбрасывается: дальше правят то, что РЕАЛЬНО сохранилось. Сервер раздал ключи
+    // новым вопросам и мог подставить код анкеты, и продолжать править прежнюю копию значило бы
+    // отправить эти ключи обратно пустыми — то есть выдать им новые при следующем сохранении.
+    draft.value = null
+    saved.value = true
+  }
+  catch {
+    saveFailure.value = 'Не удалось сохранить анкету. Проверьте связь и попробуйте ещё раз.'
+  }
+  finally {
+    saving.value = false
+  }
+}
 </script>
 
 <template>
@@ -212,7 +378,26 @@ async function loadTemplate() {
       >
         <B24Card>
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-lg font-semibold">{{ template.schema?.title || template.code || 'Без названия' }}</span>
+            <B24Input
+              v-if="draft"
+              v-model="draft.title"
+              class="min-w-[220px] grow"
+              placeholder="Название анкеты — его видит отвечающий"
+            />
+            <span
+              v-else
+              class="text-lg font-semibold"
+            >{{ shown?.title || template.code || 'Без названия' }}</span>
+            <!-- ⚠ Код спрашиваем, только пока его нет. Он внешний ключ: по нему живут
+                 выпущенные ссылки и вся статистика версий, и менять его у существующей
+                 анкеты значит оторвать новую версию от собственной истории. Поэтому
+                 у заполненного он показан текстом и правке не подлежит. -->
+            <B24Input
+              v-if="draft && !template.code"
+              v-model="draft.code"
+              class="w-48"
+              placeholder="код: латиницей"
+            />
             <B24Badge
               v-if="published"
               color="air-primary-success"
@@ -232,8 +417,51 @@ async function loadTemplate() {
 
           <p class="mt-2 text-sm text-(--ui-color-text-secondary)">
             Код анкеты: {{ template.code || '—' }}. Разделов:
-            {{ template.schema?.sections.length ?? 0 }}, вопросов: {{ questionCount }}.
+            {{ shown?.sections.length ?? 0 }}, вопросов: {{ questionCount }}.
           </p>
+
+          <!-- ⚠ Кнопок правки у опубликованной версии нет вовсе, а не «есть, но отказывают»:
+               предлагать действие, которое заведомо не сработает, — это способ потратить
+               чужое время. Настоящий запрет при этом на сервере, здесь только честный вид. -->
+          <div
+            v-if="!published"
+            class="mt-3 flex flex-wrap items-center gap-2"
+          >
+            <B24Button
+              v-if="!draft"
+              color="air-primary"
+              label="Править"
+              @click="edit"
+            />
+            <template v-else>
+              <B24Button
+                color="air-primary-success"
+                :label="saving ? 'Сохраняю…' : 'Сохранить'"
+                :disabled="saving"
+                @click="save"
+              />
+              <B24Button
+                color="air-secondary"
+                label="Отменить"
+                :disabled="saving"
+                @click="cancel"
+              />
+            </template>
+            <span
+              v-if="saved"
+              class="text-sm text-(--ui-color-text-secondary)"
+            >Сохранено.</span>
+          </div>
+
+          <!-- ⚠ Отказ сохранения живёт ЗДЕСЬ, рядом с кнопками, а не в общей ветке отказа
+               выше: та подменяет собой весь редактор, и правки исчезали бы вместе с ним. -->
+          <B24Alert
+            v-if="saveFailure"
+            class="mt-3"
+            color="air-primary-alert"
+            title="Не сохранилось"
+            :description="saveFailure"
+          />
 
           <!-- ⚠ Про неизменяемость сказано ЗДЕСЬ, а не в момент отказа сохранить. Человек,
                открывший опубликованную анкету, должен узнать правило до того, как потратит
@@ -283,58 +511,182 @@ async function loadTemplate() {
         </B24Card>
 
         <B24Alert
-          v-if="template.schema === null"
+          v-if="shown === null"
           color="air-primary-warning"
           title="Схема анкеты пуста"
-          description="В этом элементе нет схемы или она записана не как JSON. Так выглядит карточка, созданная на портале вручную."
+          description="В этом элементе нет схемы или она записана не как JSON. Так выглядит карточка, созданная на портале вручную — нажмите «Править», чтобы собрать анкету."
         />
 
+        <!-- ⚠ Ключ строки — ИНДЕКС, а не ключ раздела, и только в режиме правки. У только что
+             добавленного раздела ключа ещё нет (его выдаст сервер), и два новых подряд имели бы
+             одинаковый пустой ключ — Vue переиспользовал бы узлы, и текст из одного поля
+             появлялся бы в другом. В режиме показа ключи уже настоящие. -->
         <B24Card
-          v-for="section in template.schema?.sections ?? []"
-          :key="section.key"
+          v-for="(section, sectionIndex) in shown?.sections ?? []"
+          :key="draft ? `draft-${sectionIndex}` : section.key"
         >
           <div class="flex flex-wrap items-center gap-2">
-            <span class="font-semibold">{{ section.title }}</span>
-            <B24Badge
-              v-if="section.scored"
-              color="air-primary"
-              label="С баллом"
-            />
-            <B24Badge
-              v-else
-              color="air-secondary"
-              label="Без балла"
-            />
+            <template v-if="draft">
+              <B24Input
+                v-model="section.title"
+                class="min-w-[200px] grow"
+                placeholder="Название раздела"
+              />
+              <B24Checkbox
+                v-model="section.scored"
+                label="С баллом"
+              />
+              <B24Button
+                color="air-secondary-alert"
+                label="Удалить раздел"
+                @click="removeSection(sectionIndex)"
+              />
+            </template>
+            <template v-else>
+              <span class="font-semibold">{{ section.title }}</span>
+              <B24Badge
+                v-if="section.scored"
+                color="air-primary"
+                label="С баллом"
+              />
+              <B24Badge
+                v-else
+                color="air-secondary"
+                label="Без балла"
+              />
+            </template>
           </div>
 
           <ul class="mt-3 flex flex-col gap-2">
             <li
-              v-for="question in section.questions"
-              :key="question.key"
+              v-for="(question, questionIndex) in section.questions"
+              :key="draft ? `dq-${questionIndex}` : question.key"
               class="text-sm"
             >
-              <span>{{ question.title }}</span>
-              <span class="ml-2 text-(--ui-color-text-secondary)">
-                {{ QUESTION_TYPES[question.type] }}<template v-if="question.scale">, шкала {{ question.scale.min }}–{{ question.scale.max }}</template><template v-if="!question.scored">, не идёт в оценку</template>
-              </span>
+              <div
+                v-if="draft"
+                class="flex flex-wrap items-center gap-2"
+              >
+                <B24Input
+                  v-model="question.title"
+                  class="min-w-[220px] grow"
+                  placeholder="Формулировка вопроса"
+                />
+                <select
+                  v-model="question.type"
+                  class="rounded border border-(--ui-color-design-outline-stroke) px-2 py-1 text-sm"
+                  @change="onTypeChange(question)"
+                >
+                  <option
+                    v-for="(label, value) in QUESTION_TYPES"
+                    :key="value"
+                    :value="value"
+                  >
+                    {{ label }}
+                  </option>
+                </select>
+                <template v-if="question.type === 'scale'">
+                  <B24Input
+                    v-model.number="scaleOf(question).min"
+                    class="w-20"
+                    type="number"
+                  />
+                  <B24Input
+                    v-model.number="scaleOf(question).max"
+                    class="w-20"
+                    type="number"
+                  />
+                  <B24Checkbox
+                    v-model="question.scored"
+                    label="В оценку"
+                  />
+                  <B24Input
+                    v-if="question.scored"
+                    v-model.number="question.weight"
+                    class="w-20"
+                    type="number"
+                  />
+                </template>
+                <B24Button
+                  color="air-secondary-alert"
+                  label="Убрать"
+                  @click="removeQuestion(section, questionIndex)"
+                />
+              </div>
+              <template v-else>
+                <span>{{ question.title }}</span>
+                <span class="ml-2 text-(--ui-color-text-secondary)">
+                  {{ QUESTION_TYPES[question.type] }}<template v-if="question.scale">, шкала {{ question.scale.min }}–{{ question.scale.max }}</template><template v-if="!question.scored">, не идёт в оценку</template>
+                </span>
+              </template>
             </li>
           </ul>
 
-          <!-- Диапазоны показываются вместе с секцией: это то, что увидит респондент,
+          <B24Button
+            v-if="draft"
+            class="mt-2"
+            color="air-tertiary"
+            label="Добавить вопрос"
+            @click="addQuestion(section)"
+          />
+
+          <!-- Диапазоны показываются вместе с разделом: это то, что увидит респондент,
                и единственное место, где видно, покрывают ли они шкалу без дыр. -->
           <ul
-            v-if="section.bands.length > 0"
+            v-if="section.bands.length > 0 || draft"
             class="mt-3 flex flex-col gap-1 border-t border-(--ui-color-design-outline-stroke) pt-3"
           >
             <li
-              v-for="band in section.bands"
-              :key="`${band.from}-${band.to}`"
+              v-for="(band, bandIndex) in section.bands"
+              :key="draft ? `db-${bandIndex}` : `${band.from}-${band.to}`"
               class="text-sm text-(--ui-color-text-secondary)"
             >
-              {{ band.from }}–{{ band.to }}: {{ band.text }}
+              <div
+                v-if="draft"
+                class="flex flex-wrap items-center gap-2"
+              >
+                <B24Input
+                  v-model.number="band.from"
+                  class="w-20"
+                  type="number"
+                />
+                <B24Input
+                  v-model.number="band.to"
+                  class="w-20"
+                  type="number"
+                />
+                <B24Input
+                  v-model="band.text"
+                  class="min-w-[220px] grow"
+                  placeholder="Что увидит отвечающий с такой оценкой"
+                />
+                <B24Button
+                  color="air-secondary-alert"
+                  label="Убрать"
+                  @click="removeBand(section, bandIndex)"
+                />
+              </div>
+              <template v-else>
+                {{ band.from }}–{{ band.to }}: {{ band.text }}
+              </template>
             </li>
           </ul>
+
+          <B24Button
+            v-if="draft"
+            class="mt-2"
+            color="air-tertiary"
+            label="Добавить диапазон"
+            @click="addBand(section)"
+          />
         </B24Card>
+
+        <B24Button
+          v-if="draft"
+          color="air-secondary"
+          label="Добавить раздел"
+          @click="addSection"
+        />
       </div>
     </template>
   </B24DashboardPanel>

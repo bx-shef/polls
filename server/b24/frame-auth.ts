@@ -100,6 +100,33 @@ export async function verifyDealAccess(
   return Number.isInteger(id) && id > 0 ? { ok: true } : { ok: false, reason: 'denied' }
 }
 
+/**
+ * Видит ли сотрудник элемент смарт-процесса.
+ *
+ * ⚠ Заведено для ЗАПИСИ схемы анкеты, и довод у записи другой, чем у чтения. Пишем мы токеном
+ * ПРИЛОЖЕНИЯ — у него права администратора, — поэтому «а можно ли этому человеку» обязаны
+ * спросить сами. Без этого сотрудник с любым фреймовым пропуском мог бы прислать чужой
+ * `itemId` и переписать анкету, к которой портал его не подпускает. Нашёл `/code-review`.
+ *
+ * ⚠ Спрашиваем ЕГО токеном, а не своим: смысл проверки ровно в том, чтобы решал портал
+ * по своим правам, а не мы по своим догадкам о них.
+ */
+export async function verifyItemAccess(
+  domain: string,
+  authId: string,
+  entityTypeId: number,
+  itemId: number,
+  fetchFn: typeof fetch = fetch,
+): Promise<EntityCheck> {
+  const response = await callAsUser(domain, authId, 'crm.item.get', { entityTypeId, id: itemId }, fetchFn)
+  if (!response.ok) {
+    return { ok: false, reason: response.reason === 'unreachable' ? 'unreachable' : 'denied' }
+  }
+
+  const id = Number((response.body as { result?: { item?: { id?: unknown } } } | null)?.result?.item?.id)
+  return Number.isInteger(id) && id > 0 ? { ok: true } : { ok: false, reason: 'denied' }
+}
+
 type UserCall
   = | { ok: true, body: unknown }
     | { ok: false, reason: 'rejected' | 'unreachable' }

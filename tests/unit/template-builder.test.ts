@@ -64,7 +64,7 @@ describe('чтение элемента шаблона', () => {
       result: { item: { id: '42', UF_CRM_8_CODE: 'brand', UF_CRM_8_STATE: 'draft', UF_CRM_8_SCHEMA: '' } },
     }, TEMPLATE)
 
-    expect(item).toEqual({ id: 42, code: 'brand', version: 0, state: 'draft', schema: null })
+    expect(item).toEqual({ id: 42, code: 'brand', version: 0, state: 'draft', updatedAt: '', schema: null })
   })
 
   it('версии нет — ноль, а не единица', () => {
@@ -99,5 +99,24 @@ describe('чтение элемента шаблона', () => {
     expect(readTemplateItem({ result: {} }, TEMPLATE)).toBeNull()
     expect(readTemplateItem({ result: { item: { id: 0 } } }, TEMPLATE)).toBeNull()
     expect(readTemplateItem(null, TEMPLATE)).toBeNull()
+  })
+})
+
+describe('отметка изменения', () => {
+  it('читается с портала — на ней держится защита от одновременной правки', () => {
+    // ⚠ Вкладка возвращает это значение при сохранении, и запись отказывает, если оно
+    // разошлось. Без него две открытые вкладки молча затирают работу друг друга, и обеим
+    // показано «Сохранено». Нашёл `/code-review`.
+    const item = readTemplateItem({
+      result: { item: { id: 42, updatedTime: '2026-09-26T06:00:00+03:00' } },
+    }, TEMPLATE)
+
+    expect(item?.updatedAt).toBe('2026-09-26T06:00:00+03:00')
+  })
+
+  it('портал не отдал отметку — пусто, и проверять будет нечем', () => {
+    // Пустая отметка проверку ПРОПУСКАЕТ: отказывать из-за отсутствующего поля значило бы
+    // сломать сохранение целиком ради защиты от редкой гонки.
+    expect(readTemplateItem({ result: { item: { id: 42 } } }, TEMPLATE)?.updatedAt).toBe('')
   })
 })
