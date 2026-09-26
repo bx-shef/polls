@@ -7,6 +7,8 @@ import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
 import { PROVISION_REVISION } from '../domain/portals/smart-processes'
+import { buildTabHandlerUrl } from '../domain/portals/placements'
+import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
@@ -197,7 +199,11 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     if (!await isPortalAdmin(budgeted)) return 'not-admin'
 
     const known = await readStoredRefs(budgeted)
-    const result = await provisionSmartProcesses(budgeted, known)
+    // Адрес виджета уходит внутрь: поле своего типа заводится ДО раскладки карточки,
+    // а раскладка — часть обустройства смарт-процессов. Почему именно в таком порядке —
+    // у самого шага в `provisionSmartProcesses`.
+    const resultHandlerUrl = buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH)
+    const result = await provisionSmartProcesses(budgeted, known, resultHandlerUrl)
     await storeRefs(budgeted, { template: result.template, survey: result.survey })
 
     if (result.adoptedTemplate || result.adoptedSurvey) {
@@ -230,6 +236,12 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       logger.warn({ domain: portal.domain }, 'вкладка конструктора не зарегистрирована')
     }
 
+    // Отказ поля своего типа установку не роняет: без виджета результат виден прежними
+    // JSON-полями, просто хуже. Но «виджета нет» должно узнаваться из журнала, а не от клиента.
+    if (!result.resultField) {
+      logger.warn({ domain: portal.domain }, 'поле «Результат опроса» не заведено — в карточке остаётся JSON')
+    }
+
     if (!result.dealLinked) {
       // ⚠ Приложение установилось, но главного не делает: элемент «Опрос» не привяжется
       // к сделке, и итог не вернётся в карточку. Чаще всего это тариф, запрещающий правку
@@ -253,6 +265,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         addedFields: result.addedFields,
         placed,
         builderPlaced,
+        resultField: result.resultField,
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
       },

@@ -103,6 +103,14 @@ describe('выбор заголовков по адресу', () => {
     }
   })
 
+  it('виджет поля в карточке портал может встроить', () => {
+    // ⚠ Поле своего типа открывается во фрейме ВНУТРИ карточки, и `frame-ancestors 'none'`
+    // публичной политики сделал бы его пустым прямоугольником — без единой ошибки на нашей
+    // стороне. Путь не под `/portal/**`, поэтому проверяем его отдельно, а не надеемся на префикс.
+    expect(securityHeadersFor('/uf/survey-result')['Content-Security-Policy']).toBe(portalCsp)
+    expect(securityHeadersFor('/uf/survey-result')['X-Robots-Tag']).toBe('noindex, nofollow')
+  })
+
   it('не путает лендинг с путём, который с него начинается', () => {
     // `startsWith('/')` накрыл бы всё приложение: с косой черты начинается любой путь.
     expect(securityHeadersFor('/app')['Content-Security-Policy']).not.toBe(publicPageCsp)

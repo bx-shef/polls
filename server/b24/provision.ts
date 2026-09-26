@@ -21,6 +21,18 @@ import {
   templateTabPlacement,
 } from '../domain/portals/placements'
 import {
+  SURVEY_RESULT_TITLE,
+  buildListTypesCall,
+  buildRegisterTypeCall,
+  buildUpdateTypeCall,
+  findRegisteredType,
+  fullTypeCode,
+  planTypeRegistration,
+  readAppId,
+} from '../domain/portals/userfield-type'
+import {
+  buildCardSections,
+  buildCreateFieldCall,
   buildCreateSmartProcessCall,
   buildReadCardConfigCall,
   buildReadTypeCall,
@@ -29,6 +41,7 @@ import {
   hasCardConfig,
   findTypeByTitle,
   planDealRelation,
+  planResultFieldInCard,
   readTypeRelations,
   planMissingFields,
   readCreatedRef,
@@ -36,10 +49,13 @@ import {
   readNextOffset,
   readTypes,
   SURVEY_FIELDS,
+  SURVEY_RESULT_FIELD,
   SURVEY_SP_TITLE,
   TEMPLATE_FIELDS,
   TEMPLATE_SP_TITLE,
   buildFieldEntityId,
+  buildFieldName,
+  normalizeFieldName,
   PROVISION_REVISION,
   type PortalCall,
   type SmartProcessField,
@@ -166,8 +182,19 @@ export interface ProvisionResult extends SmartProcessRefs {
    * залогировать. Ровно этот исход месяц был невидимым.
    */
   dealLinked: boolean
-  /** Разложили ли мы карточку «Опроса». `false` — там уже была своя раскладка либо не вышло. */
+  /**
+   * Записали ли мы раскладку карточки «Опроса» — с нуля или поставив виджет в свой раздел.
+   * `false` — там уже всё стояло, раскладка чужая либо не вышло.
+   */
   cardConfigured: boolean
+  /**
+   * Заведено ли поле своего типа «Результат опроса».
+   *
+   * ⚠ `false` установку не роняет: данные на месте, просто в карточке вместо виджета
+   * остаются JSON-поля. Но вызывающий обязан это залогировать — иначе «виджета нет»
+   * узнаётся от клиента, а не из журнала.
+   */
+  resultField: boolean
   /**
    * Сколько полей заведено на сущностях CRM клиента (сделка, контакт).
    *
@@ -464,19 +491,33 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 /**
  * Разложить карточку «Опроса» так, чтобы в ней было видно главное.
  *
- * ⚠ Только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает раскладку
- * целиком и сразу для всех пользователей — это настройка клиента, а не наша. Разложивший
- * карточку под себя получал бы нашу при каждой переустановке; такого мы уже натворили бы
- * со связями, если бы не сливали их. Поэтому сначала читаем, и ставим, только если пусто.
+ * ⚠ Целиком — только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает
+ * раскладку целиком и сразу для всех пользователей — это настройка клиента, а не наша.
+ * Разложивший карточку под себя получал бы нашу при каждой переустановке; такого мы уже
+ * натворили бы со связями, если бы не сливали их. Поэтому сначала читаем, и ставим, только
+ * если пусто.
  *
- * Возвращает, стоит ли раскладка нашей. `false` здесь — и «не поставили», и «там уже своя»:
+ * ⚠ Если раскладка уже стоит — единственная правка, которую мы себе позволяем: поставить
+ * виджет в СВОЙ раздел вместо двух JSON-полей (`planResultFieldInCard`, там же — почему
+ * это не посягательство на чужую раскладку). Иначе порталы, установленные раньше, не увидели
+ * бы виджета никогда.
+ *
+ * `resultField` — заведено ли поле виджета. Без него раскладка остаётся при JSON: ставить
+ * в карточку поле, которого на элементе нет, значит показать пустое место вместо ответов.
+ *
+ * Возвращает, записали ли мы раскладку. `false` здесь — и «не поставили», и «там уже своя»:
  * различать их незачем, действие одно и то же — не трогать.
  */
-async function ensureCardConfig(call: RestCall, ref: SmartProcessRef): Promise<boolean> {
+async function ensureCardConfig(call: RestCall, ref: SmartProcessRef, resultField: boolean): Promise<boolean> {
   const read = buildReadCardConfigCall(ref.entityTypeId)
-  if (hasCardConfig(await call(read.method, read.params))) return false
+  const current = await call(read.method, read.params)
 
-  const set = buildSetCardConfigCall(ref.entityTypeId, ref.id)
+  const sections = !hasCardConfig(current)
+    ? buildCardSections(ref.id, resultField)
+    : resultField ? planResultFieldInCard(current, ref.id) : null
+  if (sections === null) return false
+
+  const set = buildSetCardConfigCall(ref.entityTypeId, sections)
   await call(set.method, set.params)
   return true
 }
@@ -490,6 +531,7 @@ async function ensureCardConfig(call: RestCall, ref: SmartProcessRef): Promise<b
 export async function provisionSmartProcesses(
   call: RestCall,
   known: Partial<SmartProcessRefs> = {},
+  resultHandlerUrl: string | null = null,
 ): Promise<ProvisionResult> {
   // Список запрашиваем, только если хоть один идентификатор неизвестен, — и один раз на оба.
   const types = known.template !== undefined && known.survey !== undefined ? [] : await listAllTypes(call)
@@ -515,12 +557,26 @@ export async function provisionSmartProcesses(
     logger.warn({ reason: safeRefusal(error) }, 'связь «Опроса» со сделкой не настроена')
   }
 
+  // ⚠ Поле виджета — ДО раскладки карточки, и порядок здесь не случайный. Раскладка
+  // ставит в карточку имена полей; поставив туда поле, которого ещё нет, мы полагались бы
+  // на то, как портал поведёт себя с несуществующим именем, — а это нигде не описано.
+  // Неудача установку не роняет: данные на месте, раскладка просто остаётся при JSON.
+  let resultField = false
+  if (resultHandlerUrl !== null) {
+    try {
+      resultField = await ensureSurveyResultField(call, resultHandlerUrl, survey.ref)
+    }
+    catch (error) {
+      logger.warn({ reason: safeRefusal(error) }, 'поле «Результат опроса» не заведено')
+    }
+  }
+
   // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
   // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
   // мы поменяли бы местами главное и второстепенное.
   let cardConfigured = false
   try {
-    cardConfigured = await ensureCardConfig(call, survey.ref)
+    cardConfigured = await ensureCardConfig(call, survey.ref, resultField)
   }
   catch (error) {
     logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Опроса» не настроена')
@@ -549,6 +605,7 @@ export async function provisionSmartProcesses(
     addedFields: addedTemplate + addedSurvey,
     dealLinked,
     cardConfigured,
+    resultField,
     crmFields,
   }
 }
@@ -633,4 +690,52 @@ async function ensureTabPlacement(
   catch (error) {
     return isPlacementAlreadyBound(error) || isPlacementAlreadyBound((error as Error).message)
   }
+}
+
+/**
+ * Завести на «Опросе» поле своего типа — с нашим виджетом вместо простыни JSON.
+ *
+ * ⚠ ПОРЯДОК ОБЯЗАТЕЛЕН: регистрация типа → идентификатор приложения → поле.
+ * - Тип регистрируется, если его нет, и ПРАВИТСЯ, если адрес обработчика сменился
+ *   (`planTypeRegistration`). Снимать и регистрировать заново нельзя: на типе висят поля
+ *   в карточках клиента, и что с ними делает удаление типа, документация не говорит.
+ * - Поле создаётся по ПОЛНОМУ коду `rest_<ID приложения>_<код>`, а ID у каждого портала свой —
+ *   его отдаёт `app.info`. Так собирает код официальный гайд по виджету в поле.
+ *
+ * ⚠ Отдельными вызовами, не батчем: `userfieldtype.*` отвечают в батче
+ * `ERROR_BATCH_METHOD_NOT_ALLOWED`.
+ *
+ * ⚠ Отказ любого шага БРОСАЕТСЯ, а не превращается в `false` молча: вызывающий пишет его
+ * в журнал с причиной. У соседнего приложения регистрация шла батчем без проверки результата,
+ * и провалившаяся уезжала в «установлено»: приложение считалось поставленным, а типа на портале
+ * не было. `false` здесь — только «портал не назвал идентификатор приложения».
+ */
+export async function ensureSurveyResultField(
+  call: RestCall,
+  handlerUrl: string,
+  survey: SmartProcessRef,
+): Promise<boolean> {
+  const listing = buildListTypesCall()
+  const plan = planTypeRegistration(findRegisteredType(await call(listing.method, listing.params)), handlerUrl)
+  if (plan !== 'keep') {
+    const register = plan === 'add' ? buildRegisterTypeCall(handlerUrl) : buildUpdateTypeCall(handlerUrl)
+    await call(register.method, register.params)
+  }
+
+  const appId = readAppId(await call('app.info', {}))
+  if (appId === null) {
+    logger.warn({}, 'портал не назвал идентификатор приложения — поле «Результат опроса» не заведено')
+    return false
+  }
+
+  const name = buildFieldName(survey.id, SURVEY_RESULT_FIELD)
+  const existing = await listAllFieldNames(call, survey.id)
+  // Сверка по канонической форме имени: `userfieldconfig.list` отдаёт его в другом написании,
+  // и прямое сравнение считало бы существующее поле отсутствующим (разбор — у `buildFieldName`).
+  if (existing.some(field => normalizeFieldName(field) === normalizeFieldName(name))) return true
+
+  // Тем же билдером, что и прочие поля смарт-процесса: отличается только тип.
+  const add = buildCreateFieldCall(survey.id, { postfix: SURVEY_RESULT_FIELD, userTypeId: fullTypeCode(appId), label: SURVEY_RESULT_TITLE })
+  await call(add.method, add.params)
+  return true
 }

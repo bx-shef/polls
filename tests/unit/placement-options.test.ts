@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dealIdFrom, parsePlacementOptions } from '../../app/utils/placement'
+import { dealIdFrom, fieldContext, parsePlacementOptions } from '../../app/utils/placement'
 
 /**
  * Чтение того, ради какой сделки портал открыл нашу вкладку. Форма этих данных не наша
@@ -57,5 +57,44 @@ describe('идентификатор сделки', () => {
   ])('не выдумывает сделку из негодного значения (%#: %s)', (options) => {
     // Выпустить ссылку не для той сделки хуже, чем не выпустить вовсе.
     expect(dealIdFrom(options)).toBeNull()
+  })
+})
+
+/**
+ * Поле своего типа: портал передаёт другой набор ключей, чем вкладкам.
+ *
+ * ⚠ Источников два, и они расходятся: официальный гайд по виджету в поле обещает `ENTITY_ID`
+ * и `ENTITY_VALUE_ID`, а соседнее приложение на живых порталах читает `ENTITY_DATA`. Тесты
+ * держат оба — промах любого значил бы поле, которое не показывает ничего.
+ */
+describe('контекст поля своего типа', () => {
+  it('читает ключи из документации', () => {
+    expect(fieldContext({ MODE: 'view', ENTITY_ID: 'CRM_8', ENTITY_VALUE_ID: '15', FIELD_NAME: 'UF_CRM_8_RESULT' }))
+      .toEqual({ editing: false, entityId: 'CRM_8', entityTypeId: null, itemId: 15 })
+  })
+
+  it('различает режим правки', () => {
+    expect(fieldContext({ MODE: 'edit', ENTITY_VALUE_ID: 15 }).editing).toBe(true)
+  })
+
+  it('берёт `ENTITY_DATA`, когда документированных ключей нет', () => {
+    // Так читает соседнее приложение (`nuxt-uf-legat-info`) на живых порталах.
+    expect(fieldContext({ MODE: 'view', ENTITY_DATA: { entityTypeId: '1046', entityId: '15' } }))
+      .toEqual({ editing: false, entityId: '', entityTypeId: 1046, itemId: 15 })
+  })
+
+  it('разбирает параметры строкой — вместе с вложенным `ENTITY_DATA`', () => {
+    const raw = JSON.stringify({ MODE: 'view', ENTITY_ID: 'CRM_8', ENTITY_DATA: { entityTypeId: 1046, entityId: 15 } })
+
+    expect(fieldContext(raw)).toEqual({ editing: false, entityId: 'CRM_8', entityTypeId: 1046, itemId: 15 })
+  })
+
+  it('новая карточка — это «элемента нет», а не элемент номер ноль', () => {
+    // Документация: у ещё не сохранённой карточки `ENTITY_VALUE_ID` может быть `0`.
+    expect(fieldContext({ MODE: 'edit', ENTITY_ID: 'CRM_8', ENTITY_VALUE_ID: 0 }).itemId).toBeNull()
+  })
+
+  it('не падает на пустом', () => {
+    expect(fieldContext(undefined)).toEqual({ editing: false, entityId: '', entityTypeId: null, itemId: null })
   })
 })

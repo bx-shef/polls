@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 
 /**
  * Обустройство портала целиком, поверх подделки вызова. Проверяем то, чья поломка
@@ -38,6 +39,10 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     if (method === 'crm.type.list') return { result: { types: [] } }
     if (method === 'userfieldconfig.list') return { result: { fields: [] } }
     if (method === 'userfieldconfig.add') return { result: { field: 1 } }
+    // Тип поля не зарегистрирован, приложение на портале под номером 219 — форма ответов
+    // из документации `userfieldtype.list` и `app.info`.
+    if (method === 'userfieldtype.list') return { result: [] }
+    if (method === 'app.info') return { result: { ID: 219 } }
     // ⚠ Умолчание — смарт-процесс, СОЗДАННЫЙ С `isClientEnabled`: Контакт и Компания
     // стоят родителями и помечены `isPredefined`, а Сделки среди них НЕТ. Это не выдумка
     // подделки, а дословная форма ответа из документации `crm.type.get`, и именно это
@@ -319,7 +324,7 @@ describe('раскладка карточки «Опроса»', () => {
   it('показывает сделку и клиента, а не прячет их', async () => {
     // Ради этого раскладка и ставится: умолчание портала клало «Сделку» и «Клиента»
     // в «Скрытые поля», и карточка не отвечала ни «по какой сделке», ни «кого спрашивали».
-    const sections = buildCardSections(SURVEY.id)
+    const sections = buildCardSections(SURVEY.id, true)
     const shown = sections.flatMap(s => (s.elements as { name: string, optionFlags?: number }[]))
 
     for (const name of ['PARENT_ID_2', 'CONTACT_ID', 'COMPANY_ID']) {
@@ -342,6 +347,145 @@ describe('раскладка карточки «Опроса»', () => {
 
     expect(result.cardConfigured).toBe(false)
     expect(result.dealLinked).toBe(true)
+  })
+})
+
+/**
+ * Поле своего типа «Результат опроса» — виджет вместо двух JSON-полей в карточке «Опроса».
+ *
+ * ⚠ Первая редакция меняла адрес обработчика через `userfieldtype.delete` + `add` — по образцу
+ * вкладок, где снятие безвредно. У типа поля так нельзя: на нём висят поля в карточках клиента,
+ * а что с ними делает удаление типа, документация не говорит. Нашлось при сверке с документацией
+ * до первого выката: у метода правки `HANDLER` есть прямым текстом. Отсюда гвард ниже.
+ */
+describe('поле «Результат опроса»', () => {
+  const HANDLER = 'https://polls.example/uf/survey-result'
+  const FIELD = `UF_CRM_${SURVEY.id}_RESULT`
+
+  /** Раскладка, которую обустройство отправило в портал, — именами полей. */
+  function sentLayout(p: ReturnType<typeof portal>): string[] {
+    const data = p.of('crm.item.details.configuration.set')[0]!.params.data as { elements: { name: string }[] }[]
+    return data.flatMap(section => section.elements.map(element => element.name))
+  }
+
+  /** Создание именно нашего поля — среди прочих `userfieldconfig.add`. */
+  function resultFieldAdds(p: ReturnType<typeof portal>) {
+    return p.of('userfieldconfig.add').filter(c => (c.params.field as { fieldName: string }).fieldName === FIELD)
+  }
+
+  it('на чистом портале: тип, полный код, поле — и виджет в раскладке вместо JSON', async () => {
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(result.resultField).toBe(true)
+    expect(p.of('userfieldtype.add')[0]!.params.HANDLER).toBe(HANDLER)
+    // Поле — по ПОЛНОМУ коду: короткий портал не примет («Invalid custom type specified»).
+    expect((resultFieldAdds(p)[0]!.params.field as { userTypeId: string }).userTypeId).toBe(`rest_219_${SURVEY_RESULT_TYPE}`)
+    expect(sentLayout(p)).toContain(FIELD)
+    expect(sentLayout(p)).not.toContain(`UF_CRM_${SURVEY.id}_ANSWERS`)
+  })
+
+  it('поле заводится ДО раскладки карточки', async () => {
+    // ⚠ Раскладка ставит в карточку имена полей. Поставив туда поле, которого ещё нет,
+    // мы полагались бы на неописанное поведение портала с несуществующим именем.
+    const p = portal()
+
+    await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    const order = p.calls.map(c => c.method)
+    const fieldAt = p.calls.findIndex(c => c.method === 'userfieldconfig.add' && (c.params.field as { fieldName: string }).fieldName === FIELD)
+    expect(fieldAt).toBeGreaterThan(-1)
+    expect(fieldAt).toBeLessThan(order.indexOf('crm.item.details.configuration.set'))
+  })
+
+  it('НИКОГДА не снимает тип — адрес меняет правкой', async () => {
+    const p = portal({
+      'userfieldtype.list': { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER: 'https://old.example/uf/survey-result' }] },
+    })
+
+    await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(p.of('userfieldtype.delete')).toHaveLength(0)
+    expect(p.of('userfieldtype.add')).toHaveLength(0)
+    expect(p.of('userfieldtype.update')[0]!.params.HANDLER).toBe(HANDLER)
+  })
+
+  it('повторное обустройство ничего не пишет: тип на месте, поле на месте', async () => {
+    const p = portal({
+      'userfieldtype.list': { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER }] },
+      'userfieldconfig.list': { result: { fields: [{ fieldName: FIELD }] } },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(result.resultField).toBe(true)
+    expect(p.of('userfieldtype.add')).toHaveLength(0)
+    expect(p.of('userfieldtype.update')).toHaveLength(0)
+    expect(resultFieldAdds(p)).toHaveLength(0)
+  })
+
+  it('отказ регистрации установку не роняет, а карточка остаётся при JSON', async () => {
+    // Карточка без ответов хуже простыни: ставить в неё поле, которого нет, нельзя.
+    const p = portal({
+      'userfieldtype.add': () => {
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(result.resultField).toBe(false)
+    expect(result.dealLinked).toBe(true)
+    expect(resultFieldAdds(p)).toHaveLength(0)
+    expect(sentLayout(p)).toContain(`UF_CRM_${SURVEY.id}_ANSWERS`)
+    expect(sentLayout(p)).not.toContain(FIELD)
+  })
+
+  it('без идентификатора приложения поле не заводит', async () => {
+    // Собрать полный код не из чего, а угадывать его мы не будем.
+    const p = portal({ 'app.info': { result: {} } })
+
+    const result = await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(result.resultField).toBe(false)
+    expect(resultFieldAdds(p)).toHaveLength(0)
+  })
+
+  it('без адреса обработчика шаг не делается вовсе', async () => {
+    // Хост не `https` — регистрация честно не состоится, как у вкладок.
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call, {}, null)
+
+    expect(result.resultField).toBe(false)
+    expect(p.of('userfieldtype.list')).toHaveLength(0)
+  })
+
+  it('ставит виджет в раскладку, которую приложение поставило раньше', async () => {
+    // ⚠ Ради установленных порталов: раскладку целиком мы ставим только на пустом месте,
+    // и без этого шага виджет у них не появился бы никогда (тот же класс, что issue #75).
+    const p = portal({
+      'crm.item.details.configuration.get': {
+        result: buildCardSections(SURVEY.id, false),
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(result.cardConfigured).toBe(true)
+    expect(sentLayout(p)).toContain(FIELD)
+    expect(sentLayout(p)).not.toContain(`UF_CRM_${SURVEY.id}_SCORES`)
+  })
+
+  it('чужую раскладку без нашего раздела не трогает и ради виджета', async () => {
+    const p = portal({
+      'crm.item.details.configuration.get': { result: [{ name: 'своё', title: 'Своё', elements: [] }] },
+    })
+
+    await provisionSmartProcesses(p.call, {}, HANDLER)
+
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
   })
 })
 
