@@ -45,11 +45,16 @@ registerEndpoint('/api/portal/template', defineEventHandler(async (event) => {
 
 const DRAFT = {
   ok: true,
+  problems: [],
   template: { id: 42, code: 'brand', version: 0, state: 'draft', schema: null },
 }
 
 const PUBLISHED = {
   ok: true,
+  problems: [
+    { level: 'error', where: 'Раздел «Продукт»', message: 'Шкала не покрыта на отрезке 6–10.' },
+    { level: 'warning', where: 'Анкета', message: 'Диапазон не сработает никогда.' },
+  ],
   template: {
     id: 42,
     code: 'brand',
@@ -129,6 +134,30 @@ describe('вкладка конструктора', () => {
     expect(text).toContain('шкала 0–10')
     expect(text).toContain('не идёт в оценку')
     expect(text).toContain('Плохо')
+  })
+
+  it('показывает, что мешает опубликовать, и отдельно — что стоит знать', async () => {
+    // ⚠ Претензии считает СЕРВЕР: `app/` не имеет права импортировать серверные модули,
+    // а проверка живёт в домене, рядом с расчётом баллов. Вкладка их только показывает —
+    // и обязана разводить запрещающие и необязательные, иначе человек либо испугается
+    // замечания, либо не заметит запрета.
+    const text = await open()
+
+    expect(text).toContain('Пока нельзя опубликовать')
+    expect(text).toContain('Шкала не покрыта на отрезке 6–10')
+    expect(text).toContain('Стоит знать')
+  })
+
+  it('переживает ответ без списка претензий', async () => {
+    // ⚠ Стык версий: открытая вкладка живёт в браузере дольше перезапуска контейнера,
+    // поэтому старый ответ у новой страницы — штатный случай, а не «такого не бывает».
+    // Без защиты страница падала целиком, и снаружи это выглядело как поломка конструктора.
+    reply = { ok: true, template: PUBLISHED.template }
+
+    const text = await open()
+
+    expect(text).toContain('Бренд-платформа')
+    expect(text).not.toContain('Пока нельзя опубликовать')
   })
 
   it('без идентификатора элемента говорит, откуда открывать', async () => {

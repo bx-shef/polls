@@ -1,6 +1,7 @@
 import { defineEventHandler, readBody } from 'h3'
 import { readStoredRefs } from '../../b24/provision'
 import { buildGetTemplateItemCall, readTemplateItem } from '../../domain/templates/portal-calls'
+import { validateTemplate } from '../../domain/surveys/validate'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -38,5 +39,13 @@ export default defineEventHandler(async (event) => {
   const item = readTemplateItem(await session.call(get.method, get.params), refs.template)
   if (item === null) return { ok: false as const, reason: 'no-item' as const }
 
-  return { ok: true as const, template: item }
+  // ⚠ Претензии к схеме считает СЕРВЕР, а не вкладка, и это не про удобство: `app/` не имеет
+  // права импортировать серверные модули (правило проекта, проверяется скриптом в CI),
+  // а проверка живёт в домене — рядом с расчётом баллов, который она и обслуживает.
+  // Вторая копия правил в браузере разошлась бы с первой на первой же правке.
+  return {
+    ok: true as const,
+    template: item,
+    problems: item.schema === null ? [] : validateTemplate(item.schema),
+  }
 })
