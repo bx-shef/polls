@@ -11,6 +11,7 @@ import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal
 import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
+import { LAST_SCORE_CODE, crmFieldName } from '../../server/domain/portals/crm-fields'
 import { ACTIVITY_ORIGINATOR_ID, activityOriginId } from '../../server/domain/answers/timeline-activity'
 import { logger } from '../../server/utils/logger'
 
@@ -460,15 +461,37 @@ describe('балл уезжает в сделку и в контакт', () => {
     expect(writes(p).map(params => params.id)).toEqual([351, 12])
   })
 
-  it('БЕЗ ОБЩЕГО БАЛЛА не пишет ничего — ноль не то же самое, что молчание', async () => {
-    // ⚠ ГЛАВНЫЙ ГВАРД. Тот же инвариант, что у нетронутого ползунка: «нет ответа — это `null`,
-    // а не ноль». Ответили только на текстовые вопросы — общего балла нет; записав в поле
-    // «оценка клиента» ноль, мы выдали бы за молчание худшую возможную оценку, и фильтр
-    // «ниже семи» показал бы менеджеру сделку, по которой никто ничего не оценивал.
+  it('БЕЗ ОБЩЕГО БАЛЛА поле не трогает, а не ставит нулём', async () => {
+    // Общего балла нет только у анкеты без балльных разделов вовсе: оценивать было нечего,
+    // и ноль в «оценке клиента» был бы оценкой, которую никто не ставил. ⚠ До 28.09 этот тест
+    // держал и другое — «пропустил все балльные вопросы → ничего не пишем». Решением владельца
+    // это отменено: пропуск входит в балл низшей оценкой, и такой клиент итог ИМЕЕТ — см.
+    // следующий тест. Не «чините» подсчёт обратно по старому названию.
     const p = portal()
     await tryEntityScore(p.call, ITEM, { sections: [], overall: null })
 
     expect(p.methods()).not.toContain('crm.item.update')
+  })
+
+  it('пропуск всех балльных вопросов доезжает до сделки низшим баллом', async () => {
+    // Решение владельца 28.09 (issue #84, пункт 5): фильтр «ниже семи» обязан показать и сделку,
+    // где клиент промолчал. Балл берётся из настоящего подсчёта, а не собирается руками —
+    // прежний гвард был зелёным ровно потому, что `overall: null` подставлялся вручную.
+    const skipped: SurveyTemplate = {
+      code: 'brand',
+      title: 'Оценка',
+      sections: [{
+        key: 'product',
+        title: 'Продукт',
+        scored: true,
+        bands: [],
+        questions: [{ key: 'P1', sourceKey: 'P1', title: 'Качество', type: 'scale', weight: 100, scored: true, scale: { min: 0, max: 10 } }],
+      }],
+    }
+    const p = portal()
+    await tryEntityScore(p.call, ITEM, scoreSurvey(skipped, { P1: null }))
+
+    expect(writes(p).map(params => (params.fields as Record<string, unknown>)[crmFieldName(LAST_SCORE_CODE)])).toEqual([0, 0])
   })
 
   it('без сделки и без контакта говорит об этом в журнал', async () => {

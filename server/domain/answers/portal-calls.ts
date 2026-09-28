@@ -51,8 +51,9 @@ export function buildCompleteSurveyCall(
         [buildFieldName(survey.id, 'SCORES')]: JSON.stringify(
           result.score.sections.map(s => ({ key: s.key, score: s.score, answered: s.answered, scored: s.scored })),
         ),
-        // Общий балл может быть `null` — анкету открыли и отправили, не тронув ни одного
-        // балльного вопроса. Ноль тут был бы ложью, поэтому поле просто не ставится.
+        // Общего балла нет (`null`) только у анкеты без балльных разделов — тогда поле
+        // не ставится, а не пишется нулём. Пропущенные балльные вопросы балл дают — низший
+        // (решение владельца 28.09, `scoring.ts`).
         ...(result.score.overall === null ? {} : { [buildFieldName(survey.id, 'SCORE')]: result.score.overall }),
       },
     },
