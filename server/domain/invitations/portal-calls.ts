@@ -127,6 +127,11 @@ export function buildCreateSurveyItemCall(
     client?: Pick<DealFacts, 'contactId' | 'companyId'>
     /** Кто выпустил ссылку. Ноль — не знаем, портал поставит владельца токена. */
     assignedById?: number
+    /**
+     * Адрес анкеты — в поле «Ссылка на анкету». Решение владельца 28.09 (issue #84, пункт 20):
+     * «это не страшный секрет». У нас по-прежнему лежит только хеш токена.
+     */
+    link: string
   },
 ): PortalCall {
   return {
@@ -153,6 +158,7 @@ export function buildCreateSurveyItemCall(
         // Дата без времени: поле создавалось типом `date`, и портал отрежет время сам —
         // но лучше отдать то, что он ждёт, чем полагаться на его снисходительность.
         [buildFieldName(survey.id, 'EXPIRES_AT')]: invitation.expiresAt.toISOString().slice(0, 10),
+        [buildFieldName(survey.id, 'LINK')]: invitation.link,
       },
     },
   }

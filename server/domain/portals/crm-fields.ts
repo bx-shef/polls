@@ -1,5 +1,6 @@
 import { CONTACT_ENTITY_TYPE_ID, DEAL_ENTITY_TYPE_ID } from './smart-processes'
 import type { PortalCall } from './smart-processes'
+import { ownerLabel } from './naming'
 
 /**
  * The two fields we put on the client's own CRM entities: last survey score and its date.
@@ -64,6 +65,8 @@ export interface CrmEntity {
   addMethod: string
   /** `crm.<entity>.userfield.list` — перечисление уже существующих. */
   listMethod: string
+  /** `crm.<entity>.userfield.update` — правка подписи при переходе на ревизию 4. */
+  updateMethod: string
   /** Тот же тип для `crm.item.update`: обновляем сущности одним методом, как и везде. */
   entityTypeId: number
 }
@@ -72,6 +75,7 @@ export const DEAL_ENTITY: CrmEntity = {
   title: 'сделка',
   addMethod: 'crm.deal.userfield.add',
   listMethod: 'crm.deal.userfield.list',
+  updateMethod: 'crm.deal.userfield.update',
   entityTypeId: DEAL_ENTITY_TYPE_ID,
 }
 
@@ -79,6 +83,7 @@ export const CONTACT_ENTITY: CrmEntity = {
   title: 'контакт',
   addMethod: 'crm.contact.userfield.add',
   listMethod: 'crm.contact.userfield.list',
+  updateMethod: 'crm.contact.userfield.update',
   entityTypeId: CONTACT_ENTITY_TYPE_ID,
 }
 
@@ -125,6 +130,63 @@ export function planMissingCrmFields(
     .map(field => buildCreateCrmFieldCall(entity, field))
 }
 
+/** Поле сущности, как его отдаёт `crm.<entity>.userfield.list`: для правки подписи. */
+export interface ExistingCrmField {
+  id: number
+  name: string
+  /** Подпись в карточке — строка или по языкам; сравниваем русскую. */
+  label: string
+}
+
+/** Поля сущности с идентификатором и подписью. Без имени или без идентификатора — пропускаются. */
+export function readCrmFields(response: unknown): ExistingCrmField[] {
+  const result = (response as { result?: unknown } | null)?.result
+  if (!Array.isArray(result)) return []
+
+  const fields: ExistingCrmField[] = []
+  for (const raw of result) {
+    const row = raw as Record<string, unknown> | null
+    const id = Number(row?.ID)
+    if (typeof row?.FIELD_NAME !== 'string' || row.FIELD_NAME === '' || !Number.isInteger(id) || id <= 0) continue
+    const label = row.EDIT_FORM_LABEL
+    const ru = typeof label === 'string' ? label : (label as { ru?: unknown } | null | undefined)?.ru
+    fields.push({ id, name: row.FIELD_NAME, label: typeof ru === 'string' ? ru : '' })
+  }
+  return fields
+}
+
+/**
+ * Разовая миграция подписей наших полей на сделке и контакте: метка владельца `[sh]`.
+ *
+ * ⚠ Только свои поля, по коду. `EDIT_IN_LIST` здесь не трогаем: он стоял `N` с первого дня
+ * (issue #23), и живой портал это подтвердил 28.09.
+ *
+ * ⚠ Все три подписи сразу: по документации `crm.<entity>.userfield.update` каждая перезаписывается
+ * целиком, а не дополняется. Поменяв одну, мы оставили бы в фильтре и колонке старое имя.
+ */
+export function planCrmFieldLabels(
+  entity: CrmEntity,
+  fields: readonly CrmField[],
+  existing: readonly ExistingCrmField[],
+): PortalCall[] {
+  const byName = new Map(existing.map(field => [normalize(field.name), field]))
+  const calls: PortalCall[] = []
+
+  for (const field of fields) {
+    const found = byName.get(normalize(crmFieldName(field.code)))
+    const label = ownerLabel(field.label)
+    if (found === undefined || found.label === label) continue
+    calls.push({
+      method: entity.updateMethod,
+      params: {
+        id: found.id,
+        fields: { LIST_COLUMN_LABEL: label, LIST_FILTER_LABEL: label, EDIT_FORM_LABEL: label },
+      },
+    })
+  }
+  return calls
+}
+
 /**
  * Создать одно поле.
  *
@@ -136,16 +198,17 @@ export function planMissingCrmFields(
  * оценку клиента, которой клиент не ставил. Портал по умолчанию разрешает правку.
  */
 export function buildCreateCrmFieldCall(entity: CrmEntity, field: CrmField): PortalCall {
+  const label = ownerLabel(field.label)
   return {
     method: entity.addMethod,
     params: {
       fields: {
         FIELD_NAME: field.code,
         USER_TYPE_ID: field.userTypeId,
-        LABEL: field.label,
-        LIST_COLUMN_LABEL: field.label,
-        LIST_FILTER_LABEL: field.label,
-        EDIT_FORM_LABEL: field.label,
+        LABEL: label,
+        LIST_COLUMN_LABEL: label,
+        LIST_FILTER_LABEL: label,
+        EDIT_FORM_LABEL: label,
         SHOW_FILTER: 'Y',
         SHOW_IN_LIST: 'Y',
         EDIT_IN_LIST: 'N',

@@ -2,8 +2,10 @@ import { safeRefusal } from '../domain/answers/portal-errors'
 import { logger } from '../utils/logger'
 import {
   buildListFieldsCall,
+  planCrmFieldLabels,
   planMissingCrmFields,
   readCrmFieldNames,
+  readCrmFields,
   SCORE_FIELDS,
   SCORED_ENTITIES,
   type CrmEntity,
@@ -21,7 +23,7 @@ import {
   templateTabPlacement,
 } from '../domain/portals/placements'
 import {
-  SURVEY_RESULT_TITLE,
+  SURVEY_RESULT_FIELD_LABEL,
   buildListTypesCall,
   buildRegisterTypeCall,
   buildUpdateTypeCall,
@@ -40,7 +42,16 @@ import {
   buildSetCardConfigCall,
   buildUpdateRelationsCall,
   hasCardConfig,
+  hasTemplateExtras,
   findTypeByTitle,
+  buildRenameTypeCall,
+  buildTemplateFeaturesCall,
+  planFieldOwnership,
+  readTypeTitle,
+  LEGACY_SURVEY_SP_TITLES,
+  LEGACY_TEMPLATE_SP_TITLES,
+  OWNERSHIP_REVISION,
+  type SmartProcessKind,
   planDealRelation,
   planResultFieldInCard,
   readTypeRelations,
@@ -222,6 +233,23 @@ export interface ProvisionResult extends SmartProcessRefs {
    * месяц невидимым у связи со сделкой.
    */
   crmFields: number | null
+  /**
+   * Разовая миграция ревизии 4 — метка владельца и закрытие полей. `null` — не требовалась:
+   * портал уже был на ревизии 4 или выше.
+   *
+   * ⚠ `fieldsLocked: false` — поля НЕ закрыты. Вызывающий обязан тогда НЕ отмечать ревизию:
+   * донастройка вернётся к порталу через час и попробует снова. Главное в этой миграции —
+   * закрыть поля, и «не закрыли» не должно выглядеть как «нечего было закрывать».
+   */
+  ownership: OwnershipOutcome | null
+}
+
+/** Итог разовой миграции ревизии 4. */
+export interface OwnershipOutcome {
+  /** Сколько изменяющих вызовов сделано. Ноль — всё уже было на месте. */
+  changes: number
+  /** Закрыты ли наши поля обоих смарт-процессов. */
+  fieldsLocked: boolean
 }
 
 /**
@@ -305,9 +333,9 @@ export async function listAllTypes(call: RestCall): Promise<Record<string, unkno
   return all
 }
 
-/** Все поля смарт-процесса, со всех страниц — с именем и типом. */
-async function listAllFields(call: RestCall, spTypeId: number): Promise<{ name: string, userTypeId: string }[]> {
-  const fields: { name: string, userTypeId: string }[] = []
+/** Все поля смарт-процесса, со всех страниц — с идентификатором, именем, типом и подписью. */
+async function listAllFields(call: RestCall, spTypeId: number): Promise<ReturnType<typeof readFields>> {
+  const fields: ReturnType<typeof readFields> = []
   let start: number | null = 0
   for (let page = 0; page < MAX_PAGES && start !== null; page++) {
     const params: Record<string, unknown> = { moduleId: 'crm', filter: { entityId: buildFieldEntityId(spTypeId) } }
@@ -356,6 +384,21 @@ async function ensureCrmScoreFields(call: RestCall): Promise<number> {
   return added
 }
 
+/** Поля сущности с идентификатором и подписью, со всех страниц. */
+async function listAllCrmFields(call: RestCall, entity: CrmEntity) {
+  const fields: ReturnType<typeof readCrmFields> = []
+  let start: number | null = 0
+
+  for (let page = 0; page < MAX_PAGES && start !== null; page++) {
+    const list = buildListFieldsCall(entity, start)
+    const response = await call(list.method, list.params)
+    fields.push(...readCrmFields(response))
+    start = readNextOffset(response)
+  }
+
+  return fields
+}
+
 /** Имена пользовательских полей сущности, со всех страниц. */
 async function listAllCrmFieldNames(call: RestCall, entity: CrmEntity): Promise<string[]> {
   const names: string[] = []
@@ -386,14 +429,17 @@ async function ensureSmartProcess(
   call: RestCall,
   known: SmartProcessRef | undefined,
   types: readonly Record<string, unknown>[],
-  title: string,
+  titles: readonly string[],
+  kind: SmartProcessKind,
 ): Promise<{ ref: SmartProcessRef, created: boolean, adopted: boolean }> {
   if (known !== undefined) return { ref: known, created: false, adopted: false }
 
-  const found = findTypeByTitle(types, title)
+  const found = findTypeByTitle(types, titles)
   if (found !== null) return { ref: found, created: false, adopted: true }
 
-  const create = buildCreateSmartProcessCall(title)
+  // Создаём под нынешним названием — первым в списке; прежние нужны только поиску.
+  const title = titles[0]!
+  const create = buildCreateSmartProcessCall(title, kind)
   const ref = readCreatedRef(await call(create.method, create.params))
   if (ref === null) {
     throw new Error(`crm.type.add не вернул идентификаторы для «${title}»`)
@@ -558,8 +604,8 @@ export async function provisionSmartProcesses(
   // Список запрашиваем, только если хоть один идентификатор неизвестен, — и один раз на оба.
   const types = known.template !== undefined && known.survey !== undefined ? [] : await listAllTypes(call)
 
-  const template = await ensureSmartProcess(call, known.template, types, TEMPLATE_SP_TITLE)
-  const survey = await ensureSmartProcess(call, known.survey, types, SURVEY_SP_TITLE)
+  const template = await ensureSmartProcess(call, known.template, types, [TEMPLATE_SP_TITLE, ...LEGACY_TEMPLATE_SP_TITLES], 'template')
+  const survey = await ensureSmartProcess(call, known.survey, types, [SURVEY_SP_TITLE, ...LEGACY_SURVEY_SP_TITLES], 'survey')
 
   const addedTemplate = await ensureFields(call, template.ref, TEMPLATE_FIELDS)
   const addedSurvey = await ensureFields(call, survey.ref, SURVEY_FIELDS)
@@ -623,6 +669,14 @@ export async function provisionSmartProcesses(
     logger.warn({ reason: safeRefusal(error) }, 'поля оценки на сделке и контакте не заведены')
   }
 
+  // ⚠ ПОСЛЕ полей и поля виджета: метка и закрытие ложатся на уже существующие поля, и то,
+  // что создано этим же запуском, миграции не нужно — сборщик создания ставит всё сразу.
+  // Разово: при переходе на ревизию 4, см. `OWNERSHIP_REVISION`.
+  let ownership: OwnershipOutcome | null = null
+  if ((options.previousRevision ?? 0) < OWNERSHIP_REVISION) {
+    ownership = await ensureOwnership(call, template, survey, types)
+  }
+
   return {
     template: template.ref,
     survey: survey.ref,
@@ -635,7 +689,89 @@ export async function provisionSmartProcesses(
     cardConfigured,
     resultField,
     crmFields,
+    ownership,
   }
+}
+
+/**
+ * Разовая миграция портала, обустроенного до ревизии 4: метка владельца `[sh]` в названиях
+ * и подписях, наши поля закрыты от правки, у «Шаблона» выключены «Клиент» и роботы
+ * (решения владельца 28.09, issue #84, пункты 12, 16, 19 и 22).
+ *
+ * ⚠ Каждый шаг в своём `try`: отказ одного не мешает остальным и установку не роняет.
+ * Тариф может запрещать правку смарт-процессов (`UPDATE_DYNAMIC_TYPE_RESTRICTED`), а поля
+ * при этом закрыть всё равно нужно — это главное, ради чего миграция и заведена: открытые
+ * поля позволяли подделать ответ клиента и опубликовать шаблон в обход проверок.
+ *
+ * Повторный запуск на готовом портале — ноль изменяющих вызовов.
+ */
+async function ensureOwnership(
+  call: RestCall,
+  template: { ref: SmartProcessRef, created: boolean },
+  survey: { ref: SmartProcessRef, created: boolean },
+  // Список типов, если его уже прочитали при поиске смарт-процессов: второй раз не просим.
+  listed: readonly Record<string, unknown>[],
+): Promise<OwnershipOutcome> {
+  let changes = 0
+  const step = async (what: string, run: () => Promise<number>): Promise<boolean> => {
+    try {
+      changes += await run()
+      return true
+    }
+    catch (error) {
+      logger.warn({ step: what, reason: safeRefusal(error) }, 'метка владельца и закрытие полей: шаг не удался')
+      return false
+    }
+  }
+
+  // ⚠ Только найденные, а не созданные этим запуском: созданный уже носит нынешнее название
+  // и нужные возможности (`buildCreateSmartProcessCall`). Смарт-процесс, которого нет в списке
+  // портала, не трогаем вовсе: `readTypeTitle` ответит `null`, и «переименовать» было бы
+  // вслепую — по идентификатору, который мог уйти в корзину.
+  if (!template.created || !survey.created) {
+    await step('названия и возможности', async () => {
+      const types = listed.length > 0 ? listed : await listAllTypes(call)
+      const rename = (sp: { ref: SmartProcessRef, created: boolean }, title: string) => {
+        const current = sp.created ? title : readTypeTitle(types, sp.ref.id)
+        return current === null || current === title ? [] : [buildRenameTypeCall(sp.ref, title)]
+      }
+      const calls = [
+        ...rename(template, TEMPLATE_SP_TITLE),
+        ...rename(survey, SURVEY_SP_TITLE),
+        ...(!template.created && hasTemplateExtras(types, template.ref.id) === true ? [buildTemplateFeaturesCall(template.ref)] : []),
+      ]
+      for (const one of calls) await call(one.method, one.params)
+      return calls.length
+    })
+  }
+
+  const templateLocked = await step('поля «Шаблона опроса»', async () => {
+    const calls = planFieldOwnership(template.ref.id, TEMPLATE_FIELDS, await listAllFields(call, template.ref.id))
+    for (const one of calls) await call(one.method, one.params)
+    return calls.length
+  })
+
+  const surveyLocked = await step('поля «Результата опросов»', async () => {
+    const ours = [...SURVEY_FIELDS, { postfix: SURVEY_RESULT_FIELD, label: SURVEY_RESULT_FIELD_LABEL }]
+    const calls = planFieldOwnership(survey.ref.id, ours, await listAllFields(call, survey.ref.id))
+    for (const one of calls) await call(one.method, one.params)
+    return calls.length
+  })
+
+  await step('подписи полей сделки и контакта', async () => {
+    let count = 0
+    for (const entity of SCORED_ENTITIES) {
+      const calls = planCrmFieldLabels(entity, SCORE_FIELDS, await listAllCrmFields(call, entity))
+      for (const one of calls) await call(one.method, one.params)
+      count += calls.length
+    }
+    return count
+  })
+
+  // ⚠ Отметку ревизии держит только закрытие полей: это безопасность. Отказ переименования
+  // чаще всего тарифный (`UPDATE_DYNAMIC_TYPE_RESTRICTED`) и не лечится повтором — придержи
+  // мы ревизию из-за него, донастройка переобустраивала бы такой портал каждый час вечно.
+  return { changes, fieldsLocked: templateLocked && surveyLocked }
 }
 
 /**
@@ -776,7 +912,7 @@ export async function ensureSurveyResultField(
   }
 
   // Тем же билдером, что и прочие поля смарт-процесса: отличается только тип.
-  const add = buildCreateFieldCall(survey.id, { postfix: SURVEY_RESULT_FIELD, userTypeId: fullTypeCode(app.id), label: SURVEY_RESULT_TITLE })
+  const add = buildCreateFieldCall(survey.id, { postfix: SURVEY_RESULT_FIELD, userTypeId: fullTypeCode(app.id), label: SURVEY_RESULT_FIELD_LABEL })
   await call(add.method, add.params)
   return 'ok'
 }

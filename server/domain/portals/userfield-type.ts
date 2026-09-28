@@ -32,6 +32,16 @@ export const SURVEY_RESULT_TYPE = 'shef_survey_result'
 /** Подпись типа в административном интерфейсе портала и подпись поля в карточке. */
 export const SURVEY_RESULT_TITLE = 'Результат опроса'
 
+/**
+ * Подпись ПОЛЯ этого типа в карточке — с меткой владельца `[sh]`, как у остальных наших полей.
+ *
+ * ⚠ Название самого ТИПА (`SURVEY_RESULT_TITLE`) у установленных порталов не меняем. Его видит
+ * только администратор в списке типов, а правка типа тем же адресом обработчика упирается
+ * в отказ «Handler already binded» (см. `planTypeRegistration`), и вебхуком её не проверить:
+ * метод требует контекста приложения. Подпись поля правится `userfieldconfig.update`.
+ */
+export const SURVEY_RESULT_FIELD_LABEL = SURVEY_RESULT_TITLE
+
 /** Путь обработчика поля. Относительный: абсолютный собирается из публичного хоста. */
 export const SURVEY_RESULT_HANDLER_PATH = '/uf/survey-result'
 

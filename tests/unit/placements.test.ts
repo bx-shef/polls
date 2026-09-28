@@ -22,8 +22,9 @@ describe('регистрация вкладки', () => {
       params: {
         PLACEMENT: DEAL_TAB_PLACEMENT,
         HANDLER: 'https://polls.bx-shef.by/portal/deal-tab',
-        TITLE: 'Опросы',
-        LANG_ALL: { ru: { TITLE: 'Опросы' }, en: { TITLE: 'Surveys' } },
+        // Решение владельца 28.09 (issue #84, пункт 22): «Ссылки на опросы» с меткой `[sh]`.
+        TITLE: '[sh] Ссылки на опросы',
+        LANG_ALL: { ru: { TITLE: '[sh] Ссылки на опросы' }, en: { TITLE: '[sh] Survey links' } },
       },
     })
   })

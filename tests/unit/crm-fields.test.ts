@@ -7,8 +7,10 @@ import {
   DEAL_ENTITY,
   LAST_SCORE_CODE,
   LAST_SURVEY_AT_CODE,
+  planCrmFieldLabels,
   planMissingCrmFields,
   readCrmFieldNames,
+  readCrmFields,
   SCORE_FIELDS,
   SCORED_ENTITIES,
 } from '../../server/domain/portals/crm-fields'
@@ -137,5 +139,51 @@ describe('запись балла в сущность', () => {
     // ⚠ Это ЧУЖАЯ сущность: каждое лишнее поле в `fields` затирает данные клиента.
     expect(Object.keys(fields).sort())
       .toEqual([crmFieldName(LAST_SCORE_CODE), crmFieldName(LAST_SURVEY_AT_CODE)].sort())
+  })
+})
+
+describe('подписи полей сделки и контакта: метка владельца', () => {
+  it('новое поле создаётся с меткой во всех трёх подписях', () => {
+    // Решение владельца 28.09 (issue #84, пункт 22): наше поле в карточке сделки клиента
+    // отличается от его собственных с первого взгляда.
+    const fields = buildCreateCrmFieldCall(DEAL_ENTITY, SCORE_FIELDS[0]!).params.fields as Record<string, unknown>
+
+    expect([fields.LABEL, fields.EDIT_FORM_LABEL, fields.LIST_COLUMN_LABEL, fields.LIST_FILTER_LABEL])
+      .toEqual(Array(4).fill('[sh] Оценка клиента'))
+  })
+
+  it('старое поле получает метку разом во всех трёх подписях', () => {
+    // Каждая подпись в `crm.<entity>.userfield.update` перезаписывается целиком: поменяв одну,
+    // мы оставили бы в фильтре и колонке старое имя.
+    const calls = planCrmFieldLabels(DEAL_ENTITY, SCORE_FIELDS, [{ id: 11, name: 'UF_CRM_SHEF_SURVEY_SCORE', label: 'Оценка клиента' }])
+
+    expect(calls).toEqual([{
+      method: 'crm.deal.userfield.update',
+      params: { id: 11, fields: { LIST_COLUMN_LABEL: '[sh] Оценка клиента', LIST_FILTER_LABEL: '[sh] Оценка клиента', EDIT_FORM_LABEL: '[sh] Оценка клиента' } },
+    }])
+  })
+
+  it('уже помеченное и чужое не трогает', () => {
+    const existing = [
+      { id: 11, name: 'UF_CRM_SHEF_SURVEY_SCORE', label: '[sh] Оценка клиента' },
+      { id: 12, name: 'UF_CRM_CLIENT_OWN', label: 'Своё поле клиента' },
+    ]
+
+    expect(planCrmFieldLabels(CONTACT_ENTITY, SCORE_FIELDS, existing)).toEqual([])
+  })
+
+  it('читает подпись и строкой, и по языкам; без идентификатора поле пропускает', () => {
+    const response = {
+      result: [
+        { ID: '11', FIELD_NAME: 'UF_CRM_SHEF_SURVEY_SCORE', EDIT_FORM_LABEL: 'Оценка' },
+        { ID: '12', FIELD_NAME: 'UF_CRM_SHEF_SURVEY_AT', EDIT_FORM_LABEL: { ru: 'Дата', en: 'Date' } },
+        { FIELD_NAME: 'UF_CRM_NO_ID', EDIT_FORM_LABEL: 'Без ID' },
+      ],
+    }
+
+    expect(readCrmFields(response)).toEqual([
+      { id: 11, name: 'UF_CRM_SHEF_SURVEY_SCORE', label: 'Оценка' },
+      { id: 12, name: 'UF_CRM_SHEF_SURVEY_AT', label: 'Дата' },
+    ])
   })
 })

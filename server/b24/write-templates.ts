@@ -8,7 +8,7 @@ import {
   type TemplateWritePlan,
 } from '../domain/import/template-write'
 import { readCreatedItemId } from '../domain/invitations/portal-calls'
-import { findTypeByTitle, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
+import { findTypeByTitle, LEGACY_SURVEY_SP_TITLES, LEGACY_TEMPLATE_SP_TITLES, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
@@ -162,7 +162,7 @@ export async function findProcesses(call: RestCall): Promise<Partial<SmartProces
 
   const types = await listAllTypes(call)
   return {
-    template: findTypeByTitle(types, TEMPLATE_SP_TITLE) ?? undefined,
-    survey: findTypeByTitle(types, SURVEY_SP_TITLE) ?? undefined,
+    template: findTypeByTitle(types, [TEMPLATE_SP_TITLE, ...LEGACY_TEMPLATE_SP_TITLES]) ?? undefined,
+    survey: findTypeByTitle(types, [SURVEY_SP_TITLE, ...LEGACY_SURVEY_SP_TITLES]) ?? undefined,
   }
 }

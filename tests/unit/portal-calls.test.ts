@@ -10,6 +10,7 @@ import {
   readPublishedTemplates,
   readSurveyHeader,
 } from '../../server/domain/invitations/portal-calls'
+import { buildFieldName } from '../../server/domain/portals/smart-processes'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
 /**
@@ -28,6 +29,7 @@ const INVITATION = {
   templateVersion: 1,
   expiresAt: new Date('2026-10-16T12:00:00Z'),
   title: 'Бренд-платформа',
+  link: 'https://polls.example/s/tok',
 }
 
 function item(over: Record<string, unknown> = {}) {
@@ -140,6 +142,15 @@ describe('создание приглашения', () => {
     templateVersion: 1,
     expiresAt: new Date('2026-10-16T12:00:00Z'),
     title: 'Бренд-платформа',
+    link: 'https://polls.example/s/tok',
+  })
+
+  it('кладёт адрес анкеты в поле «Ссылка на анкету»', () => {
+    // Решение владельца 28.09 (issue #84, пункт 20): «это не страшный секрет». Адрес
+    // известен до создания элемента, и лишнего вызова ради него не нужно.
+    const fields = call.params.fields as Record<string, unknown>
+
+    expect(fields[buildFieldName(SURVEY.id, 'LINK')]).toBe('https://polls.example/s/tok')
   })
 
   it('связывает приглашение со сделкой полем-родителем', () => {

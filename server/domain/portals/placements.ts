@@ -1,4 +1,5 @@
 import type { PortalCall } from './smart-processes'
+import { ownerLabel } from './naming'
 
 /**
  * Where the app embeds itself in the portal, and how that registration behaves.
@@ -23,8 +24,15 @@ import type { PortalCall } from './smart-processes'
 /** Вкладка в карточке сделки. Подтверждено туториалом «Как встроить виджет во вкладку карточки CRM». */
 export const DEAL_TAB_PLACEMENT = 'CRM_DEAL_DETAIL_TAB'
 
-/** Название вкладки, как его увидит сотрудник портала. */
-export const DEAL_TAB_TITLE = 'Опросы'
+/**
+ * Название вкладки, как его увидит сотрудник портала.
+ *
+ * ⚠ Решение владельца 28.09 (issue #84, пункт 22): «Ссылки на опросы» с меткой `[sh]`.
+ * Вкладка снимается и ставится заново при каждом обустройстве (`ensureTabPlacement`),
+ * так что новое название доезжает до установленных порталов вместе с ревизией.
+ */
+export const DEAL_TAB_TITLE = ownerLabel('Ссылки на опросы')
+export const DEAL_TAB_TITLE_EN = ownerLabel('Survey links')
 
 /**
  * Вкладка в карточке элемента смарт-процесса — там живёт конструктор анкеты.
@@ -45,7 +53,8 @@ export function templateTabPlacement(entityTypeId: number): string {
 }
 
 /** Название вкладки конструктора. */
-export const TEMPLATE_TAB_TITLE = 'Конструктор'
+export const TEMPLATE_TAB_TITLE = ownerLabel('Конструктор')
+export const TEMPLATE_TAB_TITLE_EN = ownerLabel('Builder')
 
 /** Путь обработчика вкладки конструктора. */
 export const TEMPLATE_TAB_PATH = '/portal/template-tab'
@@ -65,7 +74,7 @@ export const DEAL_TAB_PATH = '/portal/deal-tab'
  * открывающая чужой сайт.
  */
 export function buildBindDealTabCall(handlerUrl: string): PortalCall | null {
-  return buildBindTabCall(DEAL_TAB_PLACEMENT, handlerUrl, DEAL_TAB_TITLE, 'Surveys')
+  return buildBindTabCall(DEAL_TAB_PLACEMENT, handlerUrl, DEAL_TAB_TITLE, DEAL_TAB_TITLE_EN)
 }
 
 /**

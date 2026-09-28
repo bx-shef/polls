@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
-import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, readTypeRelations, SURVEY_FIELDS, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 
 /**
@@ -62,7 +62,7 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     }
     if (method === 'crm.type.add') {
       const title = (params.fields as { title?: string }).title
-      const ref = title === 'Опрос' ? SURVEY : TEMPLATE
+      const ref = title === SURVEY_SP_TITLE ? SURVEY : TEMPLATE
       return { result: { type: { id: ref.id, entityTypeId: ref.entityTypeId } } }
     }
     return { result: true }
@@ -124,7 +124,8 @@ describe('повторный запуск', () => {
     // вызова» означало бы «мы не дошли до того, чтобы что-то менять».
     const p = portal({ 'userfieldconfig.list': existing, 'crm.type.get': { result: { type: { relations: WITH_DEAL } } } })
 
-    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY })
+    // «Готовый» — это и текущая ревизия: разовая миграция ревизии 4 здесь уже позади.
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY }, { previousRevision: PROVISION_REVISION })
 
     expect(result.addedFields).toBe(0)
     expect(result.dealLinked).toBe(true)
@@ -801,5 +802,133 @@ describe('общий бюджет времени', () => {
 
     await expect(provisionSmartProcesses(call)).rejects.toThrow(/обустройство прервано/)
     expect(p.calls.length).toBeLessThan(TEMPLATE_FIELDS.length + SURVEY_FIELDS.length)
+  })
+})
+
+/**
+ * Разовая миграция ревизии 4: метка владельца и закрытые поля (issue #84, пункты 12, 16, 19, 22).
+ *
+ * ⚠ Гварды под находку живой проверки 28.09: владелец вписал мусор в ответы клиента и опубликовал
+ * шаблон в обход проверок правкой открытых полей. Порталы, обустроенные раньше, сами этого
+ * не получат — только миграцией.
+ */
+describe('ревизия 4: метка владельца и закрытые поля', () => {
+  /** Портал, обустроенный до ревизии 4: старые названия, поля открыты, подписи без метки. */
+  function legacyPortal(overrides: Record<string, unknown | ((params: Record<string, unknown>) => unknown)> = {}) {
+    const fieldsOf = (params: Record<string, unknown>) => {
+      const entityId = (params.filter as { entityId: string }).entityId
+      const spId = entityId === `CRM_${TEMPLATE.id}` ? TEMPLATE.id : SURVEY.id
+      const fields = spId === TEMPLATE.id ? TEMPLATE_FIELDS : SURVEY_FIELDS
+      return {
+        result: {
+          fields: fields.map((f, i) => ({
+            id: spId * 100 + i,
+            fieldName: `UF_CRM_${spId}_${f.postfix}`,
+            editInList: 'Y',
+            editFormLabel: { ru: f.label },
+          })),
+        },
+      }
+    }
+    return portal({
+      'crm.type.list': {
+        result: {
+          types: [
+            { id: TEMPLATE.id, entityTypeId: TEMPLATE.entityTypeId, title: 'Шаблон опроса', isClientEnabled: 'Y', isAutomationEnabled: 'Y' },
+            { id: SURVEY.id, entityTypeId: SURVEY.entityTypeId, title: 'Опрос', isClientEnabled: 'Y', isAutomationEnabled: 'Y' },
+          ],
+        },
+      },
+      'userfieldconfig.list': fieldsOf,
+      'crm.deal.userfield.list': { result: [{ ID: 11, FIELD_NAME: 'UF_CRM_SHEF_SURVEY_SCORE', EDIT_FORM_LABEL: 'Оценка клиента' }] },
+      'crm.contact.userfield.list': { result: [{ ID: 12, FIELD_NAME: 'UF_CRM_SHEF_SURVEY_SCORE', EDIT_FORM_LABEL: { ru: '[sh] Оценка клиента' } }] },
+      ...overrides,
+    })
+  }
+
+  it('найденные по прежнему названию переименовываются, «Шаблон» теряет клиента и роботов', async () => {
+    const p = legacyPortal()
+
+    const result = await provisionSmartProcesses(p.call, {}, { previousRevision: 3 })
+
+    const updates = p.of('crm.type.update').map(c => c.params.fields as Record<string, unknown>)
+    expect(result.adoptedSurvey).toBe(true)
+    expect(updates).toContainEqual({ title: '[sh] Шаблон опроса' })
+    expect(updates).toContainEqual({ title: '[sh] Результат опросов' })
+    expect(updates).toContainEqual({ isClientEnabled: 'N', isAutomationEnabled: 'N' })
+    // Одного «Опроса» в списке хватает: второй раз список типов не просим.
+    expect(p.of('crm.type.list')).toHaveLength(1)
+  })
+
+  it('ГЛАВНОЕ: наши поля закрываются от правки и получают метку', async () => {
+    const p = legacyPortal()
+
+    const result = await provisionSmartProcesses(p.call, {}, { previousRevision: 3 })
+
+    const locked = p.of('userfieldconfig.update').map(c => c.params.field as Record<string, unknown>)
+    expect(locked).toHaveLength(TEMPLATE_FIELDS.length + SURVEY_FIELDS.length)
+    expect(locked.every(field => field.editInList === 'N')).toBe(true)
+    expect(locked.map(field => (field.editFormLabel as { ru: string }).ru)).toContain('[sh] Ответы (JSON)')
+    expect(result.ownership).toEqual({ changes: expect.any(Number), fieldsLocked: true })
+  })
+
+  it('подпись поля сделки получает метку, уже помеченное у контакта не трогается', async () => {
+    const p = legacyPortal()
+
+    await provisionSmartProcesses(p.call, {}, { previousRevision: 3 })
+
+    expect(p.of('crm.deal.userfield.update')).toEqual([{
+      method: 'crm.deal.userfield.update',
+      params: { id: 11, fields: { LIST_COLUMN_LABEL: '[sh] Оценка клиента', LIST_FILTER_LABEL: '[sh] Оценка клиента', EDIT_FORM_LABEL: '[sh] Оценка клиента' } },
+    }])
+    expect(p.of('crm.contact.userfield.update')).toHaveLength(0)
+  })
+
+  it('не повторяется на портале, уже перешедшем на ревизию 4', async () => {
+    // Иначе мы спорили бы с администратором, переименовавшим смарт-процесс по-своему.
+    const p = legacyPortal()
+
+    const result = await provisionSmartProcesses(p.call, {}, { previousRevision: 4 })
+
+    expect(result.ownership).toBeNull()
+    expect(p.of('userfieldconfig.update')).toHaveLength(0)
+    expect(p.of('crm.type.update').map(c => c.params.fields)).not.toContainEqual({ title: '[sh] Результат опросов' })
+  })
+
+  it('незакрывшиеся поля видны исходом, и установка не падает', async () => {
+    const p = legacyPortal({
+      'userfieldconfig.update': () => {
+        throw new Error('ACCESS_DENIED')
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { previousRevision: 3 })
+
+    expect(result.ownership?.fieldsLocked).toBe(false)
+  })
+
+  it('отказ переименования закрытию полей не мешает', async () => {
+    // Тариф может запрещать правку смарт-процессов — поля при этом закрыть всё равно нужно.
+    const p = legacyPortal({
+      'crm.type.update': (params: Record<string, unknown>) => {
+        if ('title' in (params.fields as object)) throw new Error('UPDATE_DYNAMIC_TYPE_RESTRICTED')
+        return { result: { type: { relations: WITH_DEAL } } }
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { previousRevision: 3 })
+
+    expect(result.ownership?.fieldsLocked).toBe(true)
+    expect(p.of('userfieldconfig.update').length).toBeGreaterThan(0)
+  })
+
+  it('созданные этим запуском не переименовываются: они уже с нынешним названием', async () => {
+    const p = portal()
+
+    await provisionSmartProcesses(p.call)
+
+    expect(p.of('crm.type.update').map(c => c.params.fields)).not.toContainEqual({ title: '[sh] Результат опросов' })
+    expect(p.of('crm.type.add').map(c => (c.params.fields as { title: string }).title))
+      .toEqual(['[sh] Шаблон опроса', '[sh] Результат опросов'])
   })
 })

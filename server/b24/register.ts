@@ -261,7 +261,15 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // ⚠ И НЕ ставится вовсе, если поле виджета отложено: установка ещё не завершена, и портал
     // его не принял бы. Без отметки фоновая донастройка вернётся к порталу после `installFinish`
     // и доделает шаг; с отметкой не вернулась бы никогда. Нашли `/review` и `/code-review`.
-    if (result.resultField !== 'deferred') {
+    //
+    // ⚠ И не ставится, если наши поля не закрылись от правки (ревизия 4): открытые поля позволяют
+    // подделать ответ клиента и опубликовать шаблон в обход проверок. Без отметки донастройка
+    // вернётся через час и закроет их.
+    const fieldsOpen = result.ownership?.fieldsLocked === false
+    if (fieldsOpen) {
+      logger.warn({ domain: portal.domain }, 'поля не закрыты от правки — ревизию не отмечаем, донастройка вернётся')
+    }
+    if (result.resultField !== 'deferred' && !fieldsOpen) {
       await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
     }
 
@@ -276,6 +284,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         resultField: result.resultField,
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
+        ownership: result.ownership,
       },
       'смарт-процессы обустроены',
     )

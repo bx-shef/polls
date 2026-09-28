@@ -195,4 +195,37 @@ describe('отметка ревизии', () => {
 
     expect(revisionStored(p)).toBe(true)
   })
+
+  /** Поле «Шаблона», оставшееся открытым с прошлой ревизии. */
+  const OPEN_FIELD = { result: { fields: [{ id: 5, fieldName: 'UF_CRM_8_CODE', editInList: 'Y', editFormLabel: { ru: 'Код шаблона' } }] } }
+
+  it('ГЛАВНОЕ: НЕ ставится, пока наши поля не закрылись от правки', async () => {
+    // Открытые поля позволяют подделать ответ клиента и опубликовать шаблон в обход проверок
+    // (issue #84, пункты 12 и 16). Отметь мы ревизию — донастройка не вернулась бы никогда.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+      'userfieldconfig.list': OPEN_FIELD,
+      'userfieldconfig.update': () => { throw new Error('ACCESS_DENIED') },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+    expect(revisionStored(p)).toBe(false)
+  })
+
+  it('ставится, когда не вышло только переименование', async () => {
+    // Отказ переименования чаще всего тарифный и повтором не лечится: придержи мы ревизию из-за
+    // него, донастройка переобустраивала бы портал каждый час вечно.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+      'userfieldconfig.list': OPEN_FIELD,
+      'crm.type.list': { result: { types: [{ id: 10, entityTypeId: 1040, title: 'Опрос' }] } },
+      'crm.type.update': () => { throw new Error('UPDATE_DYNAMIC_TYPE_RESTRICTED') },
+    })
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    expect(revisionStored(p)).toBe(true)
+  })
 })

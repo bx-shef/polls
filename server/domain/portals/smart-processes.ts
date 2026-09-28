@@ -1,3 +1,5 @@
+import { ownerLabel } from './naming'
+
 /**
  * The two smart processes this app keeps in the portal, and the pure planning around them.
  *
@@ -15,9 +17,27 @@
  * хуже, чем отсутствие заметки: следующий поверит и не пойдёт проверять.
  */
 
-/** Заголовки. По ним же смарт-процесс находится повторно, если наш идентификатор потерян. */
-export const TEMPLATE_SP_TITLE = 'Шаблон опроса'
-export const SURVEY_SP_TITLE = 'Опрос'
+/**
+ * Заголовки. По ним же смарт-процесс находится повторно, если наш идентификатор потерян.
+ *
+ * ⚠ Названия и префикс — решение владельца 28.09 (issue #84, пункт 22, `naming.ts`):
+ * «Опрос» стал «Результатом опросов» — в элементе лежит итог прохождения, а не анкета.
+ */
+export const TEMPLATE_SP_TITLE = ownerLabel('Шаблон опроса')
+export const SURVEY_SP_TITLE = ownerLabel('Результат опросов')
+
+/**
+ * Прежние заголовки — до ревизии 4.
+ *
+ * ⚠ Поиск узнаёт и их. Портал, обустроенный раньше, мог потерять наш идентификатор
+ * (переустановка почистила `app.option`), а смарт-процесс на нём остался со старым названием.
+ * Не узнав его, мы создали бы второй — и съели лимит тарифа, который не наш.
+ */
+export const LEGACY_TEMPLATE_SP_TITLES: readonly string[] = ['Шаблон опроса']
+export const LEGACY_SURVEY_SP_TITLES: readonly string[] = ['Опрос']
+
+/** Какой из двух смарт-процессов: у них разные возможности (`buildCreateSmartProcessCall`). */
+export type SmartProcessKind = 'template' | 'survey'
 
 /**
  * Ссылка на смарт-процесс: нужны ОБА идентификатора, и это легко перепутать.
@@ -51,8 +71,9 @@ export interface SmartProcessRef {
  * | 1 | всё до вкладки конструктора |
  * | 2 | вкладка конструктора в карточке «Шаблона опроса» (PR #74) |
  * | 3 | поле своего типа «Результат опроса» на «Опросе» и виджет в раскладке его карточки |
+ * | 4 | префикс `[sh]` в названиях и подписях, поля закрыты от правки, у «Шаблона» выключены «Клиент» и роботы, поле «Ссылка на анкету» |
  */
-export const PROVISION_REVISION = 3
+export const PROVISION_REVISION = 4
 
 /**
  * Ревизия, с которой в карточке «Опроса» стоит виджет результата.
@@ -63,6 +84,15 @@ export const PROVISION_REVISION = 3
  */
 export const RESULT_FIELD_REVISION = 3
 
+/**
+ * Ревизия, с которой наше на портале помечено префиксом `[sh]` и закрыто от правки.
+ *
+ * ⚠ Разовая миграция порталов, обустроенных раньше, — по той же причине, что у виджета:
+ * повторяя переименование при каждом подъёме, мы спорили бы с администратором, который
+ * назвал смарт-процесс по-своему. Новые порталы получают всё это сразу при создании.
+ */
+export const OWNERSHIP_REVISION = 4
+
 /** Пользовательское поле смарт-процесса. */
 export interface SmartProcessField {
   /**
@@ -70,7 +100,8 @@ export interface SmartProcessField {
    * а `id` у каждого портала свой.
    */
   postfix: string
-  userTypeId: 'string' | 'integer' | 'double' | 'date' | 'boolean'
+  userTypeId: 'string' | 'integer' | 'double' | 'date' | 'boolean' | 'url'
+  /** Подпись БЕЗ метки владельца: её ставит `ownerLabel` при создании и при миграции. */
   label: string
   settings?: Record<string, unknown>
 }
@@ -103,6 +134,11 @@ export const SURVEY_FIELDS: readonly SmartProcessField[] = [
   { postfix: 'STATE', userTypeId: 'string', label: 'Состояние' },
   { postfix: 'EXPIRES_AT', userTypeId: 'date', label: 'Ссылка действительна до' },
   { postfix: 'COMPLETED_AT', userTypeId: 'date', label: 'Дата прохождения' },
+  // ⚠ Адрес анкеты — в CRM клиента, решение владельца 28.09 (issue #84, пункт 20): «это не
+  // страшный секрет». У нас по-прежнему лежит только хеш токена — инвариант про НАШЕ хранилище
+  // держится. Цена названа в `docs/PROCESS.md`: ответить вместо клиента может любой, кто видит
+  // элемент. Тип `url` — ссылка кликается прямо из карточки; замерено на живом портале 28.09.
+  { postfix: 'LINK', userTypeId: 'url', label: 'Ссылка на анкету' },
   // ⚠ PRECISION обязателен: без него `double` округляется до целого — подтверждено
   // соседом на живом портале. Балл 7,5 превратился бы в 8 и молча испортил отчёт.
   { postfix: 'SCORE', userTypeId: 'double', label: 'Итоговый балл', settings: { PRECISION: 2 } },
@@ -177,7 +213,7 @@ export interface PortalCall {
  * выглядел бы удобнее, но стадии — часть настроек клиента, их переименовывают и удаляют,
  * и тогда наше состояние перестанет читаться.
  */
-export function buildCreateSmartProcessCall(title: string): PortalCall {
+export function buildCreateSmartProcessCall(title: string, kind: SmartProcessKind): PortalCall {
   return {
     method: 'crm.type.add',
     params: {
@@ -192,13 +228,39 @@ export function buildCreateSmartProcessCall(title: string): PortalCall {
         // Документация метода говорит прямо: «При включенной опции у смарт-процесса
         // появляется предустановленная привязка к Контактам и Компаниям». Сделка заводится
         // отдельно, через `relations.parent` — см. `planDealRelation`.
-        isClientEnabled: true,
-        isAutomationEnabled: true,
+        // ⚠ Только «Опросу». «Шаблону» клиент и роботы не нужны: анкета ни с кем не связана,
+        // а на карточке шаблона лишние вкладки и поля путают — владелец просил оставить там
+        // один конструктор (issue #84, пункт 19). Прежде оба создавались одним вызовом, и
+        // «Шаблон» получил «Клиента» и роботов просто за компанию.
+        isClientEnabled: kind === 'survey',
+        isAutomationEnabled: kind === 'survey',
         isBizProcEnabled: false,
         isRecyclebinEnabled: true,
       },
     },
   }
+}
+
+/**
+ * Переименовать смарт-процесс.
+ *
+ * ⚠ Только `title`. `relations`, переданные в `crm.type.update`, перезаписываются ЦЕЛИКОМ
+ * (документация метода), а без них связи не трогаются — замерено на живом портале 28.09:
+ * после правки одного названия связь со сделкой на месте.
+ */
+export function buildRenameTypeCall(ref: SmartProcessRef, title: string): PortalCall {
+  return { method: 'crm.type.update', params: { id: ref.id, fields: { title } } }
+}
+
+/**
+ * Выключить у «Шаблона» то, что ему не нужно: «Клиента» и роботов.
+ *
+ * ⚠ Замерено 28.09: выключенный `isClientEnabled` снимает у типа связи с контактом
+ * и компанией, остальные связи остаются. У шаблона других связей нет, и ни одно наше поле
+ * на клиента не опирается.
+ */
+export function buildTemplateFeaturesCall(ref: SmartProcessRef): PortalCall {
+  return { method: 'crm.type.update', params: { id: ref.id, fields: { isClientEnabled: 'N', isAutomationEnabled: 'N' } } }
 }
 
 /**
@@ -220,7 +282,12 @@ export function buildCreateFieldCall(
         entityId: buildFieldEntityId(spTypeId),
         fieldName: buildFieldName(spTypeId, field.postfix),
         userTypeId: field.userTypeId,
-        editFormLabel: { ru: field.label },
+        editFormLabel: { ru: ownerLabel(field.label) },
+        // ⚠ Все наши поля пишет только приложение. Открытые на правку, они позволяли вписать
+        // мусор в ответы клиента и опубликовать шаблон в обход проверок правкой «Состояния» —
+        // владелец сделал это на живой проверке (issue #84, пункты 12 и 16). Запись через REST
+        // флаг не закрывает: замерено 28.09 — `crm.item.add` и `.update` пишут в такое поле.
+        editInList: 'N',
         ...(field.settings === undefined ? {} : { settings: field.settings }),
       },
     },
@@ -280,16 +347,36 @@ export function readTypes(response: unknown): Record<string, unknown>[] {
  * пробел в названии превратил бы существующий смарт-процесс в «ненайденный» и породил
  * дубликат при лимите тарифа.
  */
-export function findTypeByTitle(types: readonly Record<string, unknown>[], title: string): SmartProcessRef | null {
-  for (const type of types) {
-    if (typeof type.title !== 'string' || type.title.trim() !== title) continue
-    const entityTypeId = Number(type.entityTypeId)
-    const id = Number(type.id)
-    if (Number.isInteger(entityTypeId) && entityTypeId > 0 && Number.isInteger(id) && id > 0) {
-      return { entityTypeId, id }
+export function findTypeByTitle(
+  types: readonly Record<string, unknown>[],
+  titles: readonly string[],
+): SmartProcessRef | null {
+  // ⚠ Названия перебираются ПО ПОРЯДКУ, а не смарт-процессы: нынешнее название важнее
+  // прежнего. Если на портале есть и «[sh] Опрос…», и старый «Опрос», наш — первый.
+  for (const title of titles) {
+    for (const type of types) {
+      if (typeof type.title !== 'string' || type.title.trim() !== title) continue
+      const entityTypeId = Number(type.entityTypeId)
+      const id = Number(type.id)
+      if (Number.isInteger(entityTypeId) && entityTypeId > 0 && Number.isInteger(id) && id > 0) {
+        return { entityTypeId, id }
+      }
     }
   }
   return null
+}
+
+/** Заголовок смарт-процесса по его `id`. `null` — такого в списке нет. */
+export function readTypeTitle(types: readonly Record<string, unknown>[], id: number): string | null {
+  const type = types.find(type => Number(type.id) === id)
+  return typeof type?.title === 'string' ? type.title : null
+}
+
+/** Включены ли у смарт-процесса «Клиент» или роботы. `null` — такого в списке нет. */
+export function hasTemplateExtras(types: readonly Record<string, unknown>[], id: number): boolean | null {
+  const type = types.find(type => Number(type.id) === id)
+  if (type === undefined) return null
+  return type.isClientEnabled === 'Y' || type.isAutomationEnabled === 'Y'
 }
 
 /** Имена существующих полей из ответа `userfieldconfig.list`. */
@@ -297,14 +384,71 @@ export function readFieldNames(response: unknown): string[] {
   return readFields(response).map(field => field.name)
 }
 
-/** Поля из ответа `userfieldconfig.list` — с именем и типом. Безымянные пропускаются. */
-export function readFields(response: unknown): { name: string, userTypeId: string }[] {
+/** Поле смарт-процесса, как его отдаёт `userfieldconfig.list`. */
+export interface ExistingField {
+  /** Идентификатор настроек поля — его ждёт `userfieldconfig.update`. `0` — портал не назвал. */
+  id: number
+  name: string
+  userTypeId: string
+  /** `Y` / `N`; пусто — портал не сказал. */
+  editInList: string
+  /** Подпись в карточке, русская. Пусто — не задана. */
+  label: string
+}
+
+/** Поля из ответа `userfieldconfig.list`. Безымянные пропускаются. */
+export function readFields(response: unknown): ExistingField[] {
   const fields = (response as { result?: { fields?: unknown } } | null)?.result?.fields
   if (!Array.isArray(fields)) return []
   return fields
-    .map(field => field as { fieldName?: unknown, userTypeId?: unknown } | null)
+    .map(field => field as Record<string, unknown> | null)
     .filter(field => typeof field?.fieldName === 'string' && field.fieldName !== '')
-    .map(field => ({ name: field!.fieldName as string, userTypeId: typeof field!.userTypeId === 'string' ? field!.userTypeId : '' }))
+    .map((field) => {
+      const id = Number(field!.id)
+      const label = (field!.editFormLabel as { ru?: unknown } | null | undefined)?.ru
+      return {
+        id: Number.isInteger(id) && id > 0 ? id : 0,
+        name: field!.fieldName as string,
+        userTypeId: typeof field!.userTypeId === 'string' ? field!.userTypeId : '',
+        editInList: typeof field!.editInList === 'string' ? field!.editInList : '',
+        label: typeof label === 'string' ? label : '',
+      }
+    })
+}
+
+/**
+ * Разовая миграция наших полей на портале, обустроенном до ревизии 4: закрыть от правки
+ * и поставить подпись с меткой владельца.
+ *
+ * ⚠ Трогаем ТОЛЬКО свои поля — по имени из нашего же списка. Чужие поля клиента в том же
+ * смарт-процессе не наши, и их настройки — его решение.
+ *
+ * ⚠ `editInList` в `userfieldconfig.update` документация не называет, но портал его принимает
+ * и сохраняет — замерено 28.09 перечиткой `userfieldconfig.get`. Расхождение записано
+ * в `docs/PROCESS.md`, как велит правило проекта.
+ *
+ * Поле, у которого всё уже как надо, не трогаем: повторный запуск — ноль изменяющих вызовов.
+ */
+export function planFieldOwnership(
+  spTypeId: number,
+  ours: readonly { postfix: string, label: string }[],
+  existing: readonly ExistingField[],
+): PortalCall[] {
+  const byName = new Map(existing.map(field => [normalizeFieldName(field.name), field]))
+  const calls: PortalCall[] = []
+
+  for (const field of ours) {
+    const found = byName.get(normalizeFieldName(buildFieldName(spTypeId, field.postfix)))
+    if (found === undefined || found.id === 0) continue
+    const label = ownerLabel(field.label)
+    if (found.editInList === 'N' && found.label === label) continue
+    calls.push({
+      method: 'userfieldconfig.update',
+      params: { moduleId: 'crm', id: found.id, field: { editInList: 'N', editFormLabel: { ru: label } } },
+    })
+  }
+
+  return calls
 }
 
 /**
@@ -552,7 +696,7 @@ export function buildCardSections(spTypeId: number, resultField: boolean): Recor
       name: 'survey_form',
       title: 'Анкета',
       type: 'section',
-      elements: [own('TEMPLATE_CODE'), own('TEMPLATE_VERSION'), own('STATE'), own('EXPIRES_AT')],
+      elements: [own('TEMPLATE_CODE'), own('TEMPLATE_VERSION'), own('STATE'), own('EXPIRES_AT'), own('LINK')],
     },
     {
       name: CARD_RESULT_SECTION,

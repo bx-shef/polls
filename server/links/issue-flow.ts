@@ -70,9 +70,14 @@ export type IssueResult
 /**
  * Выпустить одну ссылку.
  *
- * ⚠ Токен наружу отдаётся ЕДИНСТВЕННЫЙ раз и только внутри `url`. Отдельного поля с ним
- * здесь нет намеренно: чем меньше мест, где он существует, тем меньше мест, откуда он утечёт.
- * Вызывающему, которому нужен сам токен (проверке), достаточно последнего сегмента адреса.
+ * ⚠ Токен наружу отдаётся только внутри `url`. Отдельного поля с ним здесь нет намеренно:
+ * чем меньше мест, где он существует, тем меньше мест, откуда он утечёт. Вызывающему, которому
+ * нужен сам токен (проверке), достаточно последнего сегмента адреса.
+ *
+ * ⚠ С 28.09 адрес живёт и в CRM клиента — в поле «Ссылка на анкету» элемента (решение
+ * владельца, issue #84, пункт 20: «это не страшный секрет»). У нас по-прежнему только хеш,
+ * инвариант про НАШЕ хранилище держится. Цена: ответить вместо клиента может любой, кто видит
+ * элемент, — записано в `docs/PROCESS.md`.
  */
 export async function issueLink(input: IssueInput): Promise<IssueResult> {
   const invitation = createInvitation({}, new Date())
@@ -108,6 +113,7 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
     title: buildInvitationTitle(input.template.title, deal?.title ?? ''),
     client: deal,
     assignedById: input.assignedById,
+    link: url,
   })
   const itemId = readCreatedItemId(await input.call(createCall.method, createCall.params))
   if (itemId === null) {
