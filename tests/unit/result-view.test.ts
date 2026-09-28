@@ -160,11 +160,30 @@ describe('разделы результата', () => {
     expect(date!.value).toBe('01.10.2026')
   })
 
+  it('дату, набранную до календаря, показывает как есть, а пропуск — прочерком', () => {
+    // До календаря на публичной странице вопрос «Дата» был текстовым полем, и такие ответы
+    // могли уехать в портал. Это ответ клиента: выбросить его нельзя, выдать за дату — тоже.
+    const legacy = buildResultSections(TEMPLATE, { q4: 'в пятницу' }, new Map())
+    const skipped = buildResultSections(TEMPLATE, { q4: '  ' }, new Map())
+
+    expect(legacy[1]!.answers[1]!.value).toBe('в пятницу')
+    expect(skipped[1]!.answers[1]!.value).toBe(NO_ANSWER)
+  })
+
   it('без схемы показывает ключи, а не пустоту', () => {
     // Схема пропала и с портала не прочиталась — «ответ был» всё равно должно быть видно.
     const bare = buildResultSections(null, { q1: 7, q3: null }, new Map())
 
     expect(bare).toHaveLength(1)
     expect(bare[0]!.answers.map(a => [a.title, a.value])).toEqual([['q1', '7'], ['q3', NO_ANSWER]])
+  })
+
+  it('без схемы дату провода пишет по-русски, как дело в ленте, а прочее — как пришло', () => {
+    // Дело в ленте собирается при доставке, и схема у него есть всегда: там `28.09.2026`.
+    // Карточка без схемы писала бы `2026-09-28` — одно прохождение двумя датами. Нашли
+    // `/review` и `/code-review` в PR #91.
+    const bare = buildResultSections(null, { q1: 7, q4: '2026-09-28', q5: 'в пятницу' }, new Map())
+
+    expect(bare[0]!.answers.map(a => a.value)).toEqual(['7', '28.09.2026', 'в пятницу'])
   })
 })

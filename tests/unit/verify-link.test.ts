@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hookBatch, report, Stop } from '../../scripts/-hook'
 import { PortalError } from '../../server/domain/portals/portal-error'
-import { buildAnswers } from '../../scripts/verify-link'
+import { buildAnswers, VERIFY_DATE } from '../../scripts/verify-link'
 import type { PublishedTemplate } from '../../server/domain/invitations/portal-calls'
 
 /**
@@ -71,6 +71,24 @@ describe('ответы, которыми проверка заполняет а�
     // проверка подтверждала бы только «поле непустое» — и прошла бы на дефекте
     // «Результат: 9 без ответов на вопросы», который владелец поймал глазами.
     expect(buildAnswers(TEMPLATE, 'метка').t1).toBe('метка')
+  })
+
+  it('вопрос «Дата» получает постоянный день в записи провода — его и ищут в записанном', () => {
+    // Живой путь даты до портала прежде не проверялся вовсе: проверка отвечала на дату `null`
+    // (`/code-review`, PR #91). День постоянный, чтобы сверять его в поле ответов и в деле.
+    const dated: PublishedTemplate = {
+      ...TEMPLATE,
+      schema: {
+        ...TEMPLATE.schema,
+        sections: [{
+          ...TEMPLATE.schema.sections[1]!,
+          questions: [{ key: 'd1', sourceKey: 'd1', title: 'когда', type: 'date', weight: 0, scored: false }],
+        }],
+      },
+    }
+
+    expect(buildAnswers(dated, 'метка')).toEqual({ d1: VERIFY_DATE })
+    expect(VERIFY_DATE).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
   it('на анкете без балльных вопросов не падает', () => {

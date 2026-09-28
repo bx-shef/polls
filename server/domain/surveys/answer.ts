@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { ANSWER_YEARS, isCalendarDate } from '../../../shared/answer-date'
 import { scaleOf, type SurveyTemplate } from './model'
 
 /**
@@ -42,13 +43,24 @@ export type AnswerValue = number | string | null
 export interface AnswerProblem {
   /** Ключ вопроса; пусто — претензия ко всей анкете, а не к одному ответу. */
   key: string
-  code: 'unknown-question' | 'not-a-number' | 'out-of-range' | 'not-a-string' | 'too-long' | 'too-large'
+  code: 'unknown-question' | 'not-a-number' | 'out-of-range' | 'not-a-string' | 'not-a-date' | 'too-long' | 'too-large'
   detail: string
 }
 
 export type AnswerCheck
   = | { ok: true, answers: Record<string, AnswerValue> }
     | { ok: false, problems: AnswerProblem[] }
+
+/**
+ * What a respondent is told when a date answer is not a date.
+ *
+ * ⚠ Текст понятен и БЕЗ календаря. Ссылка живёт тридцать дней, и страница, открытая до выката,
+ * ещё рисует на месте даты текстовое поле: прежнее «ответ должен быть датой из календаря» такому
+ * человеку не говорило, что делать, — календаря на его экране нет, а перезагрузка страницы теряет
+ * все набранные ответы. Запись и пример он может набрать и в текстовом поле. Нашли `/review`
+ * и `/code-review` в PR #91.
+ */
+const NOT_A_DATE_DETAIL = `дату укажите в виде ГГГГ-ММ-ДД, например 2026-09-28, с годом от ${ANSWER_YEARS.min} до ${ANSWER_YEARS.max} — или оставьте поле пустым`
 
 /**
  * Проверить и нормализовать присланные ответы.
@@ -109,6 +121,21 @@ export function checkAnswers(template: SurveyTemplate, submitted: unknown): Answ
         continue
       }
       answers[key] = numeric
+      continue
+    }
+
+    if (question.type === 'date') {
+      // ⚠ Только настоящая дата календаря в записи `ГГГГ-ММ-ДД` — ровно то, что шлёт календарь
+      // публичной страницы. До него вопрос «Дата» рисовался текстовым полем и принимал что угодно:
+      // «в пятницу», «28.09», «не знаю». Теперь такое приходит только в обход календаря —
+      // подделкой или со страницы, открытой до выката, — и принять его молча значило бы записать
+      // в портал «дату», которую нельзя ни показать датой, ни сравнить с другой (issue #84, п. 13).
+      if (typeof value !== 'string' || !isCalendarDate(value)) {
+        problems.push({ key, code: 'not-a-date', detail: NOT_A_DATE_DETAIL })
+        continue
+      }
+      // В предел анкеты в байтах не идёт, как и оценка: после проверки это ровно десять байт.
+      answers[key] = value
       continue
     }
 

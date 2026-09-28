@@ -1,4 +1,5 @@
 import { formatScore } from '../../../shared/score-format'
+import { formatAnswerDate } from '../../../shared/answer-date'
 import type { SurveyTemplate } from './model'
 
 /**
@@ -116,12 +117,17 @@ export function buildResultSections(
   scores: Map<string, SectionScoreRow>,
 ): ResultSection[] {
   if (template === null) {
+    // ⚠ Типов вопросов без схемы не знаем, поэтому по-русски пишется всё, что ЯВЛЯЕТСЯ датой
+    // провода, — и только оно: «в пятницу» или число `formatAnswerDate` вернёт как пришло. Без
+    // этого одно прохождение снова читалось бы двумя датами: в карточке `2026-09-28`, в деле
+    // ленты — `28.09.2026` (дело собирается при доставке, и схема у него есть всегда). Нашли
+    // `/review` и `/code-review` в PR #91.
     return [{
       key: '',
       title: 'Ответы',
       score: '',
       note: '',
-      answers: Object.entries(answers).map(([key, value]) => ({ key, title: key, value: showAnswer(value), scale: '' })),
+      answers: Object.entries(answers).map(([key, value]) => ({ key, title: key, value: showDate(value), scale: '' })),
     }]
   }
 
@@ -177,11 +183,15 @@ export function showAnswer(value: unknown): string {
   return text === '' ? NO_ANSWER : text
 }
 
-/** Дата ответа по-русски: `2026-09-20` → `20.09.2026`. Всё остальное — как пришло. */
+/**
+ * Дата ответа по-русски: `2026-09-20` → `20.09.2026`. Не дата — как пришла, пропуск — прочерк.
+ *
+ * ⚠ Запись даты — ОБЩАЯ с делом в ленте сделки (`formatAnswerDate`). Своя копия здесь уже
+ * была, и лента при ней печатала `2026-09-20` как есть: одно прохождение в двух местах
+ * выглядело двумя разными датами (issue #84, п. 13).
+ */
 function showDate(value: unknown): string {
-  const text = showAnswer(value)
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
-  return match === null ? text : `${match[3]}.${match[2]}.${match[1]}`
+  return formatAnswerDate(showAnswer(value))
 }
 
 /**

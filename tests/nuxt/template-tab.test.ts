@@ -183,6 +183,23 @@ describe('вкладка конструктора', () => {
     expect(text).toContain('Плохо')
   })
 
+  it('у вопроса «Дата» говорит, как его увидит клиент — и при показе, и при правке', async () => {
+    // Одного слова «Дата» оказалось мало: владелец спросил, как такой вопрос вообще будет
+    // показан (issue #84, п. 13). Дату можно спрашивать и текстом — поэтому рядом с типом
+    // сказано, что клиент выберет её в календаре.
+    const dated = structuredClone(PUBLISHED)
+    dated.template.schema.sections[0]!.questions.push({ key: 'D1', title: 'Когда созвониться?', type: 'date', weight: 0, scored: false })
+    reply = dated
+
+    expect(await open()).toContain('Дата, клиент выберет её в календаре')
+
+    reply = { ...dated, template: { ...dated.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    await button(mounted, 'Править')!.trigger('click')
+
+    expect(mounted.text()).toContain('клиент выберет её в календаре')
+  })
+
   it('показывает, что мешает опубликовать, и отдельно — что стоит знать', async () => {
     // ⚠ Претензии считает СЕРВЕР: `app/` не имеет права импортировать серверные модули,
     // а проверка живёт в домене, рядом с расчётом баллов. Вкладка их только показывает —
