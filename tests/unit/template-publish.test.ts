@@ -279,8 +279,13 @@ describe('дата публикации', () => {
 describe('сводка использования версий', () => {
   const SURVEY: SmartProcessRef = { id: 10, entityTypeId: 1040 }
 
+  /** Элемент «Опроса», как его отдаёт узкий перечень: пройденный — с датой прохождения. */
   function survey(code: string, version: number, state: string) {
-    return { UF_CRM_10_TEMPLATE_CODE: code, UF_CRM_10_TEMPLATE_VERSION: version, UF_CRM_10_STATE: state }
+    return {
+      UF_CRM_10_TEMPLATE_CODE: code,
+      UF_CRM_10_TEMPLATE_VERSION: version,
+      UF_CRM_10_COMPLETED_AT: state === 'completed' ? '2026-09-20T03:00:00+03:00' : '',
+    }
   }
 
   it('считает выпущенные и пройденные по паре «код + версия»', () => {
@@ -301,13 +306,26 @@ describe('сводка использования версий', () => {
     expect(usage.get(usageKey('brand', 1))).toEqual({ issued: 2, completed: 1 })
   })
 
-  it('просит только код, версию и состояние — ответы респондента не нужны', () => {
+  it('просит только код, версию и дату прохождения — ответы респондента не нужны', () => {
     // ⚠ `select: ['*']` притащил бы тексты, которые писал респондент, в память скрипта
     // на ноутбуке оператора. Узкий перечень тут не про вес, а про то, чего мы у себя не держим.
     const select = (buildListSurveysCall(SURVEY).params as { select: string[] }).select
 
-    expect(select).toEqual(['UF_CRM_10_TEMPLATE_CODE', 'UF_CRM_10_TEMPLATE_VERSION', 'UF_CRM_10_STATE'])
+    expect(select).toEqual(['UF_CRM_10_TEMPLATE_CODE', 'UF_CRM_10_TEMPLATE_VERSION', 'UF_CRM_10_COMPLETED_AT'])
     expect(select).not.toContain('UF_CRM_10_ANSWERS')
+  })
+
+  it('ГЛАВНОЕ: пройденный — по дате прохождения, в какой бы стадии он ни стоял', () => {
+    // ⚠ Стадию с ревизии 5 двигают люди и роботы клиента: пройденный опрос, уведённый в свою
+    // стадию, выпал бы из подсчёта, и охрана «по версии уже есть ответы» открыла бы переименование
+    // задним числом. Нашли `/code-review` и тестировщик в панели PR #93.
+    const staged: SmartProcessRef = { ...SURVEY, categoryId: 16 }
+    const usage = tallySurveyUsage({ result: { items: [
+      { ...survey('brand', 1, 'completed'), stageId: 'DT1040_16:PROCESSED' },
+      { ...survey('brand', 1, 'sent'), stageId: 'DT1040_16:SUCCESS' },
+    ] } }, staged)
+
+    expect(usage.get(usageKey('brand', 1))).toEqual({ issued: 2, completed: 1 })
   })
 
   it('строки без кода или версии не попадают в сводку', () => {

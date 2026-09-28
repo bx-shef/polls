@@ -1,10 +1,9 @@
-import { SURVEY_STATE_COMPLETED } from '../answers/portal-calls'
 import { parseTemplateSchema } from '../invitations/portal-calls'
 import { buildFieldName } from '../portals/smart-processes'
 import { versionKey } from './template-write'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
-import { isStaged, stageId, SURVEY_STAGES, templateStateFields, templateStateOf } from '../portals/stages'
+import { templateStateFields, templateStateOf } from '../portals/stages'
 import { isFrozen } from '../templates/portal-calls'
 
 /**
@@ -297,7 +296,11 @@ export function buildPublishCall(
       useOriginalUfNames: 'Y',
       fields: {
         title: planned.name,
-        ...templateStateFields(template, 'published'),
+        // ⚠ Стадию и старое поле пишет только публикация черновика. Переименование опубликованной
+        // версии состояния не трогает: снятую с публикации оно иначе вернуло бы в выпуск —
+        // в обход решения администратора. Нашли `/review`, `/code-review` и программист
+        // в панели PR #93.
+        ...(planned.action === 'publish' ? templateStateFields(template, 'published') : {}),
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify({ ...planned.schema, title: planned.name }),
         ...(planned.setPublishedAt
           ? { [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10) }
@@ -310,17 +313,18 @@ export function buildPublishCall(
 /**
  * Прочитать, сколько приглашений выпущено по каждой версии и сколько пройдено.
  *
- * ⚠ Просим только три поля: код, версию и состояние. Ответы и баллы здесь не нужны,
+ * ⚠ Просим только три поля: код, версию и дату прохождения. Ответы и баллы здесь не нужны,
  * а `select: ['*']` притащил бы их — то есть тексты, которые писал респондент, в память
  * скрипта, запускаемого с ноутбука оператора. Узкий перечень тут не про вес, а про то,
  * чего мы у себя не держим.
  *
- * ⚠ Со штатными стадиями — ДВА прохода. Стадия — системное поле, а с оригинальными именами
- * портал отдаёт системные поля только при `select: ['*']` (замерено 28.09). Поэтому первый
- * проход считает выпущенные узким перечнем, а второй (`completedOnly`) — пройденные, отбором
- * по стадии «Пройдена»: отбор по стадии портал выполняет и с узким перечнем.
+ * ⚠ «ПРОЙДЕН» — ПО ДАТЕ ПРОХОЖДЕНИЯ, А НЕ ПО СТАДИИ И НЕ ПО СТАРОМУ ПОЛЮ. Дату пишет только
+ * доставка, вместе с ответами, с первого дня (#22). Стадию с ревизии 5 двигают люди и роботы
+ * клиента: пройденный опрос, уведённый в свою стадию, выпал бы из подсчёта, и охрана «по версии
+ * уже есть ответы» открыла бы переименование задним числом. Прежняя редакция считала вторым
+ * проходом по стадии — нашли `/code-review` и тестировщик в панели PR #93.
  */
-export function buildListSurveysCall(survey: SmartProcessRef, start = 0, completedOnly = false): PortalCall {
+export function buildListSurveysCall(survey: SmartProcessRef, start = 0): PortalCall {
   return {
     method: 'crm.item.list',
     params: {
@@ -329,32 +333,25 @@ export function buildListSurveysCall(survey: SmartProcessRef, start = 0, complet
       select: [
         buildFieldName(survey.id, 'TEMPLATE_CODE'),
         buildFieldName(survey.id, 'TEMPLATE_VERSION'),
-        ...(isStaged(survey) ? [] : [buildFieldName(survey.id, 'STATE')]),
+        buildFieldName(survey.id, 'COMPLETED_AT'),
       ],
-      ...(completedOnly && isStaged(survey) ? { filter: { stageId: stageId(survey, SURVEY_STAGES.completed.code) } } : {}),
       ...(start === 0 ? {} : { start }),
     },
   }
 }
 
-/**
- * Досчитать сводку использования по странице «Опросов». Копится по страницам.
- *
- * `pass` — какой проход листается: `issued` — все элементы (без стадий — ещё и пройденные, по полю);
- * `completed` — второй проход со стадиями, уже отобранный стадией «Пройдена» (`buildListSurveysCall`).
- */
+/** Досчитать сводку использования по странице «Опросов». Копится по страницам. */
 export function tallySurveyUsage(
   response: unknown,
   survey: SmartProcessRef,
   into: Map<string, VersionUsage> = new Map(),
-  pass: 'issued' | 'completed' = 'issued',
 ): Map<string, VersionUsage> {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
   if (!Array.isArray(items)) return into
 
   const codeField = buildFieldName(survey.id, 'TEMPLATE_CODE')
   const versionField = buildFieldName(survey.id, 'TEMPLATE_VERSION')
-  const stateField = buildFieldName(survey.id, 'STATE')
+  const completedField = buildFieldName(survey.id, 'COMPLETED_AT')
 
   for (const raw of items) {
     const item = raw as Record<string, unknown>
@@ -364,11 +361,8 @@ export function tallySurveyUsage(
 
     const key = usageKey(code, version)
     const seen = into.get(key) ?? { issued: 0, completed: 0 }
-    if (pass === 'completed') seen.completed += 1
-    else {
-      seen.issued += 1
-      if (!isStaged(survey) && text(item[stateField]) === SURVEY_STATE_COMPLETED) seen.completed += 1
-    }
+    seen.issued += 1
+    if (text(item[completedField]) !== '') seen.completed += 1
     into.set(key, seen)
   }
 

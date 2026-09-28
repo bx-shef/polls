@@ -80,8 +80,11 @@ async function loadHandler() {
     },
   }))
   vi.doMock('../../server/b24/read-templates', () => ({
-    readAllPublishedTemplates: async () => {
+    readAllPublishedTemplates: async (_call: unknown, _ref: unknown, which: unknown) => {
       probe.portalReads += 1
+      // Виджету нужна любая когда-либо опубликованная версия, а не только та, по которой
+      // выпускают сейчас: ответы могли собрать по версии, которую потом сняли.
+      expect(which).toBe('ever')
       return published
     },
   }))

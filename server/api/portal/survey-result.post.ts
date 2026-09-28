@@ -145,7 +145,8 @@ async function findSchema(
   const cached = await findTemplate(session.portal.id, code, version)
   if (cached !== null) return cached
 
-  const published = await readAllPublishedTemplates(session.call, templateRef)
+  // Любая когда-либо опубликованная: ответы могли собрать по версии, которую потом сняли.
+  const published = await readAllPublishedTemplates(session.call, templateRef, 'ever')
   const schema = published.find(template => template.code === code && template.version === version)?.schema ?? null
   if (schema === null) return null
 

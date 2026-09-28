@@ -5,7 +5,7 @@ import {
   DEAL_ENTITY_TYPE_ID,
 } from '../portals/smart-processes'
 import type { SurveyChoice } from '../../../shared/survey-choice'
-import { isIssuable, surveyStateFields } from '../portals/stages'
+import { isIssuable, surveyStateFields, templateStateOf } from '../portals/stages'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -71,8 +71,19 @@ export interface PublishedTemplate {
  * «Опубликован», а не одна стадия, которую сотрудник двигает в канбане (разбор в `stages.ts`).
  * Схема, не разобравшаяся как JSON, — тот же случай: выпустить по ней ссылку значит выдать
  * человеку страницу, которая не откроется.
+ *
+ * `which` — для чего список:
+ * - `issuable` — выпустить ссылку: только то, по чему выпускать можно сейчас;
+ * - `ever` — показать уже собранные ответы: любая версия, опубликованная когда-либо, в том числе
+ *   снятая с публикации или уведённая администратором из «Опубликован». ⚠ Фильтр выпуска здесь
+ *   не годится: виджет пройденного опроса по снятой версии показал бы ключи вопросов вместо
+ *   формулировок. Нашли `/review` и `/code-review` в панели PR #93.
  */
-export function readPublishedTemplates(response: unknown, template: SmartProcessRef): PublishedTemplate[] {
+export function readPublishedTemplates(
+  response: unknown,
+  template: SmartProcessRef,
+  which: 'issuable' | 'ever' = 'issuable',
+): PublishedTemplate[] {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
   if (!Array.isArray(items)) return []
 
@@ -83,7 +94,8 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
 
   for (const raw of items) {
     const item = raw as Record<string, unknown>
-    if (!isIssuable(template, item)) continue
+    const state = templateStateOf(template, item)
+    if (which === 'issuable' ? !isIssuable(template, item) : state !== 'published' && state !== 'retired') continue
 
     const code = typeof item[codeField] === 'string' ? item[codeField] : ''
     const version = Number(item[versionField])

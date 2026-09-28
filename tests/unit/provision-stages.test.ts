@@ -130,6 +130,19 @@ describe('настройка стадий', () => {
     expect(error.mock.calls.some(([, message]) => String(message).includes('повтор не поможет'))).toBe(true)
   })
 
+  it('воронки нет в ответе — смарт-процесс остаётся на старом поле, повторять незачем', async () => {
+    // Воронка по умолчанию есть всегда (замерено 28.09); ответ без неё — не той формы, и повтор
+    // его не исправит. Режим стадий без воронки не включить: писали бы в стадии, которых нет.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({ 'crm.category.list': { result: { categories: [] } } })
+
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY }, { previousRevision: 4 })
+
+    expect(result.survey.categoryId).toBeUndefined()
+    expect(result.stages.settled).toBe(true)
+    expect(warn.mock.calls.some(([, message]) => String(message).includes('воронка по умолчанию не найдена'))).toBe(true)
+  })
+
   it('предел запросов — повторимый отказ: ревизию не отмечаем, донастройка вернётся', async () => {
     const p = portal({
       'crm.category.list': () => {
@@ -501,5 +514,31 @@ describe('операторские команды по вебхуку', () => {
     // Тип без стадий остаётся на старом поле: воронку у него не спрашиваем.
     expect(found.survey).toEqual(SURVEY)
     expect(p.of('crm.category.list').map(one => one.params.entityTypeId)).toEqual([1038])
+  })
+
+  it('флаг стадий, присланный как `true`, — тоже «стадии включены»', async () => {
+    // Сравнивая только с `'Y'`, команда на `true` молча вернулась бы к удалённому полю.
+    const p = portal({
+      'app.option.get': () => {
+        throw new Error('Application context required')
+      },
+      'crm.type.list': { result: { types: [{ id: 10, entityTypeId: 1040, title: '[sh] Результат опросов', isStagesEnabled: true }] } },
+    })
+
+    expect((await findProcesses(p.call)).survey).toEqual({ ...SURVEY, categoryId: 16 })
+  })
+
+  it('стадии включены, а воронки портал не назвал — пишет старым полем и говорит об этом', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({
+      'app.option.get': () => {
+        throw new Error('Application context required')
+      },
+      'crm.type.list': { result: { types: [{ id: 8, entityTypeId: 1038, title: '[sh] Шаблон опроса', isStagesEnabled: 'Y' }] } },
+      'crm.category.list': { result: { categories: [] } },
+    })
+
+    expect((await findProcesses(p.call)).template).toEqual(TEMPLATE)
+    expect(warn.mock.calls.some(([, message]) => String(message).includes('воронка по умолчанию не найдена'))).toBe(true)
   })
 })

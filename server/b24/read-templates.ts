@@ -25,10 +25,11 @@ import type { RestCall } from './provision'
  */
 const MAX_PAGES = 20
 
-/** Все опубликованные шаблоны портала. */
+/** Все опубликованные шаблоны портала: для выпуска или когда-либо опубликованные (`readPublishedTemplates`). */
 export async function readAllPublishedTemplates(
   call: RestCall,
   template: SmartProcessRef,
+  which: 'issuable' | 'ever' = 'issuable',
 ): Promise<PublishedTemplate[]> {
   const found: PublishedTemplate[] = []
   let start: number | null = 0
@@ -36,7 +37,7 @@ export async function readAllPublishedTemplates(
   for (let page = 0; page < MAX_PAGES && start !== null; page++) {
     const list = buildListTemplatesCall(template, start)
     const response = await call(list.method, list.params)
-    found.push(...readPublishedTemplates(response, template))
+    found.push(...readPublishedTemplates(response, template, which))
     start = readNextOffset(response)
   }
 

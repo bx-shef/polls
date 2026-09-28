@@ -15,7 +15,6 @@ import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
 import type { RestCall } from './provision'
 import { logger } from '../utils/logger'
-import { isStaged } from '../domain/portals/stages'
 
 /**
  * Publishes named drafts, idempotently, with a dry run that costs nothing.
@@ -109,17 +108,6 @@ async function tallyUsage(call: RestCall, survey: SmartProcessRef): Promise<Map<
     const response = await call(list.method, list.params)
     tallySurveyUsage(response, survey, usage)
     start = readNextOffset(response)
-  }
-
-  // Со штатными стадиями пройденные — вторым проходом, отбором по стадии: почему — у `buildListSurveysCall`.
-  if (start === null && isStaged(survey)) {
-    start = 0
-    for (let page = 0; page < MAX_PAGES && start !== null; page++) {
-      const list = buildListSurveysCall(survey, start, true)
-      const response = await call(list.method, list.params)
-      tallySurveyUsage(response, survey, usage, 'completed')
-      start = readNextOffset(response)
-    }
   }
 
   // ⚠ ДОЧИТАЛИ ИЛИ НЕ ЗАПУСКАЕМСЯ. Упёршись в предел, мы получили бы сводку без последних

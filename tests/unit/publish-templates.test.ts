@@ -32,9 +32,17 @@ function card(code: string, over: Record<string, unknown> = {}) {
   }
 }
 
-/** Приглашение, какое отдаёт портал. */
+/**
+ * Приглашение, какое отдаёт портал узким перечнем: пройденное — с датой прохождения.
+ *
+ * «Пройдено» считается по ней, а не по состоянию и не по стадии (разбор у `buildListSurveysCall`).
+ */
 function invitation(code: string, state: string) {
-  return { UF_CRM_10_TEMPLATE_CODE: code, UF_CRM_10_TEMPLATE_VERSION: 1, UF_CRM_10_STATE: state }
+  return {
+    UF_CRM_10_TEMPLATE_CODE: code,
+    UF_CRM_10_TEMPLATE_VERSION: 1,
+    UF_CRM_10_COMPLETED_AT: state === 'completed' ? '2026-09-20T03:00:00+03:00' : '',
+  }
 }
 
 /**
@@ -196,6 +204,23 @@ describe('публикация против портала', () => {
     })
 
     const result = await publishTemplates(p.call, TEMPLATE, SURVEY, { apply: true })
+
+    expect(result.published).toBe(0)
+    expect(result.skip[0]!.kind).toBe('has-answers')
+    expect(p.of('crm.item.update')).toHaveLength(0)
+  })
+
+  it('ГЛАВНОЕ: со штатными стадиями пройденный, уведённый клиентом в свою стадию, тоже запрещает переименование', async () => {
+    // ⚠ Тестировщик панели PR #93: подсчёт пройденных со стадиями не исполнял ни один тест, и его
+    // можно было выключить молча — охрана «по версии уже есть ответы» открылась бы. Теперь подсчёт
+    // один на оба режима — по дате прохождения, — и этот тест держит его на портале со стадиями.
+    const staged = { survey: { ...SURVEY, categoryId: 16 }, template: { ...TEMPLATE, categoryId: 14 } }
+    const p = portal({
+      'crm.item.list:1038': { result: { items: [card('brand', { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-20' })] } },
+      'crm.item.list:1040': { result: { items: [{ ...invitation('brand', 'completed'), stageId: 'DT1040_16:PROCESSED' }] } },
+    })
+
+    const result = await publishTemplates(p.call, staged.template, staged.survey, { apply: true })
 
     expect(result.published).toBe(0)
     expect(result.skip[0]!.kind).toBe('has-answers')

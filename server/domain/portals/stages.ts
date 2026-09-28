@@ -1,3 +1,4 @@
+import { SURVEY_STAGE_NAMES, TEMPLATE_STAGE_NAMES } from '../../../shared/portal-names'
 import { buildFieldName, camelFieldName } from './smart-processes'
 import type { PortalCall, SmartProcessRef } from './smart-processes'
 
@@ -11,19 +12,26 @@ import type { PortalCall, SmartProcessRef } from './smart-processes'
  *
  * ⚠ ДВА РЕЖИМА, И ЭТО НЕ НЕРЕШИТЕЛЬНОСТЬ. Смарт-процесс со стадиями узнаётся по `categoryId`
  * в сохранённой ссылке: его ставит миграция ревизии 5, когда стадии включены и воронка
- * настроена. Без него элемент живёт по-старому, полем `STATE`. Прежний путь нужен дважды:
- * в окно выката, пока миграция ещё не дошла до портала (стадии выключены — `stageId` портал
- * молча отбрасывает, замерено 28.09), и на портале, чей тариф не даёт включить стадии.
- * Писать `stageId` туда, где стадий нет, значило бы терять состояние молча.
+ * настроена. Без него элемент живёт по-старому, полем `STATE`. Прежний путь нужен в трёх случаях,
+ * и только первый проходит сам:
+ * - в окно выката, пока миграция ещё не дошла до портала (стадии выключены — `stageId` портал
+ *   молча отбрасывает, замерено 28.09);
+ * - у смарт-процесса, найденного по названию («усыновлённого»), чьи стадии выключены: стадии
+ *   чужого процесса мы не включаем;
+ * - на портале, чей тариф не даёт включить стадии.
+ * Два последних — навсегда, поэтому второй режим не временный. Писать `stageId` туда, где стадий
+ * нет, значило бы терять состояние молча.
  *
- * ⚠ У «ШАБЛОНА» СТАДИЯ — НЕ ИСТОЧНИК ПРАВДЫ О ПУБЛИКАЦИИ. Стадию сотрудник перетаскивает
- * в канбане, а публикация проверяет схему (диапазоны без дыр) и делает версию неизменяемой.
- * Опирайся код на стадию — перетаскивание в «Опубликован» выпускало бы анкету в обход проверок,
- * а обратно в «Черновик» — открывало бы опубликованную версию для правки. Ровно этот обход
- * владелец и показал на живой проверке, правкой поля `STATE` руками. Правда о публикации —
- * закрытое поле «Дата публикации»: его пишет только наша публикация (разбор у `templateStateOf`).
- * У «Результата опросов» такой нужды нет: доступ к анкете решает наша база, а стадия —
- * то, что видит и на что вешает роботов клиент.
+ * ⚠ СТАДИЯ — ОТРАЖЕНИЕ, А НЕ ПРАВДА. Её двигают в канбане сотрудники и роботы клиента, поэтому
+ * приложение стадией только ПИШЕТ, а решает по тому, что человеку не сдвинуть:
+ * - у «Шаблона» публикацию решает закрытое поле «Дата публикации» — его пишет только наша
+ *   публикация, после проверки схемы (разбор у `templateStateOf`). Опирайся код на стадию —
+ *   перетаскивание в «Опубликован» выпускало бы анкету в обход проверок, а обратно в «Черновик» —
+ *   открывало бы опубликованную версию для правки. Ровно этот обход владелец и показал на живой
+ *   проверке, правкой поля `STATE` руками;
+ * - у «Результата опросов» «пройдена» — закрытое поле «Дата прохождения», «отозвана» — наша строка
+ *   `link_index`, которая и закрывает страницу (разбор у `issuedState`). Нашли `/review`,
+ *   `/code-review` и безопасность в панели PR #93.
  */
 
 /** A smart process whose funnel is set up: its stage ids are `DT<entityTypeId>_<categoryId>:<code>`. */
@@ -58,9 +66,9 @@ export type SurveyState = 'sent' | 'completed' | 'revoked'
  * как и до ревизии 5. Своей стадией оно станет вместе с тем, кто будет переводить.
  */
 export const SURVEY_STAGES: Readonly<Record<SurveyState, StageSpec>> = {
-  sent: { code: 'NEW', name: 'Отправлена', portalName: 'Начало', color: '#2FC6F6' },
-  completed: { code: 'SUCCESS', name: 'Пройдена', portalName: 'Успех', color: '#9DCF00' },
-  revoked: { code: 'FAIL', name: 'Отозвана', portalName: 'Провал', color: '#A8ADB4' },
+  sent: { code: 'NEW', name: SURVEY_STAGE_NAMES.sent, portalName: 'Начало', color: '#2FC6F6' },
+  completed: { code: 'SUCCESS', name: SURVEY_STAGE_NAMES.completed, portalName: 'Успех', color: '#9DCF00' },
+  revoked: { code: 'FAIL', name: SURVEY_STAGE_NAMES.revoked, portalName: 'Провал', color: '#A8ADB4' },
 }
 
 /** Where a template stands in its funnel. */
@@ -74,9 +82,9 @@ export type TemplateStage = 'draft' | 'published' | 'retired'
  * безопасное направление — выпускать становится меньше, а не больше.
  */
 export const TEMPLATE_STAGES: Readonly<Record<TemplateStage, StageSpec>> = {
-  draft: { code: 'NEW', name: 'Черновик', portalName: 'Начало', color: '#2FC6F6' },
-  published: { code: 'SUCCESS', name: 'Опубликован', portalName: 'Успех', color: '#9DCF00' },
-  retired: { code: 'FAIL', name: 'Снят с публикации', portalName: 'Провал', color: '#A8ADB4' },
+  draft: { code: 'NEW', name: TEMPLATE_STAGE_NAMES.draft, portalName: 'Начало', color: '#2FC6F6' },
+  published: { code: 'SUCCESS', name: TEMPLATE_STAGE_NAMES.published, portalName: 'Успех', color: '#9DCF00' },
+  retired: { code: 'FAIL', name: TEMPLATE_STAGE_NAMES.retired, portalName: 'Провал', color: '#A8ADB4' },
 }
 
 /**

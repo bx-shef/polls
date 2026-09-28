@@ -49,7 +49,7 @@ describe('состояние опроса', () => {
     expect(stageCodeOf(SURVEY, 'DT1038_16:SUCCESS')).toBeNull()
   })
 
-  it('пишется стадией, когда стадии есть, и полем — когда нет', () => {
+  it('опрос пишется стадией, когда стадии есть, и полем — когда нет', () => {
     // ⚠ ГВАРД. Портал без стадий `stageId` молча отбрасывает (замерено 28.09): записав его туда,
     // мы потеряли бы состояние без единой ошибки. Поэтому режим решает `categoryId` в ссылке.
     expect(surveyStateFields(SURVEY, 'completed')).toEqual({ stageId: 'DT1040_16:SUCCESS' })
@@ -97,7 +97,7 @@ describe('состояние шаблона: публикация решаетс
     expect(templateStateOf(TEMPLATE_OLD, { UF_CRM_8_STATE: 'что-то руками' })).toBe('')
   })
 
-  it('пишется стадией, когда стадии есть, и полем — когда нет', () => {
+  it('шаблон пишется стадией, когда стадии есть, и полем — когда нет', () => {
     expect(templateStateFields(TEMPLATE, 'published')).toEqual({ stageId: 'DT1038_14:SUCCESS' })
     expect(templateStateFields(TEMPLATE_OLD, 'draft')).toEqual({ UF_CRM_8_STATE: 'draft' })
   })

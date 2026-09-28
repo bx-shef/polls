@@ -88,16 +88,16 @@ describe('«Результат опросов» со стадиями', () => {
     expect(links.map(link => issuedState(link, now, 'sent'))).toEqual(['active', 'completed'])
   })
 
-  it('сводка переноса со стадиями считает пройденные вторым проходом, по стадии', () => {
-    // Стадия — системное поле, и с узким перечнем полей портал её не отдаёт (замерено 28.09).
-    expect(buildListSurveysCall(SURVEY).params.select).not.toContain('UF_CRM_10_STATE')
-    expect(buildListSurveysCall(SURVEY, 0, true).params.filter).toEqual({ stageId: 'DT1040_16:SUCCESS' })
+  it('сводка переноса со стадиями считает пройденные по дате прохождения, одним проходом', () => {
+    // Стадия — системное поле, и с узким перечнем полей портал её не отдаёт (замерено 28.09);
+    // дата прохождения — наше поле, его пишет только доставка.
+    expect(buildListSurveysCall(SURVEY).params.select).toContain('UF_CRM_10_COMPLETED_AT')
+    expect(buildListSurveysCall(SURVEY).params).not.toHaveProperty('filter')
 
     const usage = tallySurveyUsage({ result: { items: [
-      { UF_CRM_10_TEMPLATE_CODE: 'brand', UF_CRM_10_TEMPLATE_VERSION: 1 },
-      { UF_CRM_10_TEMPLATE_CODE: 'brand', UF_CRM_10_TEMPLATE_VERSION: 1 },
+      { UF_CRM_10_TEMPLATE_CODE: 'brand', UF_CRM_10_TEMPLATE_VERSION: 1, UF_CRM_10_COMPLETED_AT: '2026-09-20T03:00:00+03:00' },
+      { UF_CRM_10_TEMPLATE_CODE: 'brand', UF_CRM_10_TEMPLATE_VERSION: 1, UF_CRM_10_COMPLETED_AT: '' },
     ] } }, SURVEY)
-    tallySurveyUsage({ result: { items: [{ UF_CRM_10_TEMPLATE_CODE: 'brand', UF_CRM_10_TEMPLATE_VERSION: 1 }] } }, SURVEY, usage, 'completed')
 
     expect([...usage.values()]).toEqual([{ issued: 2, completed: 1 }])
   })
@@ -111,6 +111,16 @@ describe('«Шаблон опроса» со стадиями', () => {
     const dragged = { ...published, id: 6, UF_CRM_8_CODE: 'concept', UF_CRM_8_PUBLISHED_AT: '' }
 
     expect(readPublishedTemplates({ result: { items: [published, dragged] } }, TEMPLATE).map(one => one.code)).toEqual(['brand'])
+  })
+
+  it('ГЛАВНОЕ: виджет результата находит и снятые, и уведённые из «Опубликован» — по ним уже есть ответы', () => {
+    const retired = { ...published, id: 5, UF_CRM_8_CODE: 'old', stageId: 'DT1038_14:FAIL' }
+    const dragged = { ...published, id: 6, UF_CRM_8_CODE: 'moved', stageId: 'DT1038_14:NEW' }
+    const draft = { ...published, id: 7, UF_CRM_8_CODE: 'draft', UF_CRM_8_PUBLISHED_AT: '' }
+    const answer = { result: { items: [published, retired, dragged, draft] } }
+
+    expect(readPublishedTemplates(answer, TEMPLATE, 'ever').map(one => one.code)).toEqual(['brand', 'old', 'moved'])
+    expect(readPublishedTemplates(answer, TEMPLATE).map(one => one.code)).toEqual(['brand'])
   })
 
   it('конструктор видит опубликованную, перетащенную в «Черновик», неизменяемой', () => {
@@ -150,5 +160,18 @@ describe('«Шаблон опроса» со стадиями', () => {
     expect(created).not.toHaveProperty('UF_CRM_8_STATE')
     expect(renamed.stageId).toBe('DT1038_14:SUCCESS')
     expect(renamed).not.toHaveProperty('UF_CRM_8_STATE')
+  })
+
+  it('ГЛАВНОЕ: переименование опубликованной версии стадию не трогает — снятая остаётся снятой', () => {
+    // ⚠ Переименование досталось и снятым с публикации (`isFrozen`). Пиши оно стадию
+    // «Опубликован», повторный запуск команды вернул бы в выпуск версию, которую администратор
+    // снял, — в обход его решения. Нашли `/review`, `/code-review` и программист в панели PR #93.
+    const fields = fieldsOf(buildPublishCall(TEMPLATE, {
+      id: 4, code: 'brand', version: 1, name: 'Бренд 2024', schema: SCHEMA, action: 'rename', issued: 0, setPublishedAt: false,
+    } as Parameters<typeof buildPublishCall>[1], new Date('2026-09-28T10:00:00Z')))
+
+    expect(fields).not.toHaveProperty('stageId')
+    expect(fields).not.toHaveProperty('UF_CRM_8_STATE')
+    expect(fields.title).toBe('Бренд 2024')
   })
 })
