@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { isCalendarDate } from './answer-date'
-import type { SurveyTemplate } from './model'
+import { scaleOf, type SurveyTemplate } from './model'
 
 /**
  * Validates what a respondent submitted against the template they were shown.
@@ -104,8 +104,7 @@ export function checkAnswers(template: SurveyTemplate, submitted: unknown): Answ
         problems.push({ key, code: 'not-a-number', detail: 'оценка должна быть числом' })
         continue
       }
-      const min = question.scale?.min ?? 0
-      const max = question.scale?.max ?? 10
+      const { min, max } = scaleOf(question)
       if (numeric < min || numeric > max) {
         problems.push({ key, code: 'out-of-range', detail: `оценка вне шкалы ${min}–${max}` })
         continue

@@ -57,7 +57,7 @@ const COMPLETED = {
       key: 'product',
       title: 'Продукт',
       score: '0',
-      note: 'по 1 из 2 вопросов',
+      note: 'ответ на 1 из 2, пропуск — низшая оценка',
       answers: [
         { key: 'q1', title: 'Качество', value: '0', scale: 'из 10' },
         { key: 'q2', title: 'Сроки', value: '—', scale: '' },
@@ -115,7 +115,7 @@ describe('виджет результата опроса', () => {
     expect(text).toContain('балл 0')
     expect(text).toContain('—')
     // Неполнота балла — словами, как в деле ленты сделки.
-    expect(text).toContain('по 1 из 2 вопросов')
+    expect(text).toContain('ответ на 1 из 2, пропуск — низшая оценка')
   })
 
   it('отдаёт серверу номер элемента И оба признака карточки', async () => {

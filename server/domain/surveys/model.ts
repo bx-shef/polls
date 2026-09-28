@@ -45,6 +45,19 @@ export interface SurveyQuestion {
   scale?: { min: number, max: number }
 }
 
+/**
+ * Шкала вопроса с умолчанием 0–10.
+ *
+ * ⚠ Одно место на весь сервер. Умолчание решает три вещи сразу: что принимает проверка ответа
+ * (`answer.ts`), какой оценкой в балл входит пропуск (`scoring.ts`) и где стоит нетронутая
+ * ручка на публичной странице. Разойдись они, пропуск стал бы оценкой, которую ответом
+ * поставить нельзя. У публичной страницы своя копия (`app/pages/s/[token].vue`, `scaleOf`):
+ * `app/` не импортирует серверные модули — правило проекта, проверяемое скриптом в CI.
+ */
+export function scaleOf(question: Pick<SurveyQuestion, 'scale'>): { min: number, max: number } {
+  return { min: question.scale?.min ?? 0, max: question.scale?.max ?? 10 }
+}
+
 export interface SurveySection {
   /** Ключ секции: `product`, `process`, `personal`, `open`. */
   key: string
