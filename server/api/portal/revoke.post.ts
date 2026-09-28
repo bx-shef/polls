@@ -1,7 +1,7 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildListIssuedCall, buildRevokeCall, isRevocable, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { buildListIssuedCall, buildRevokeCall, isRevocable, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
 import { readLinkStatuses, revokeLink } from '../../links/issue'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
@@ -67,7 +67,7 @@ export default defineEventHandler(async (event) => {
   // повтор отвечал бы «нечего гасить», и элемент навсегда стоял бы «Отправленным», а роботы
   // клиента на «Отозвана» не сработали бы. Нашли `/review` и `/code-review` во втором круге
   // панели PR #93.
-  if (status === 'revoked' && target.completedAt === '' && target.shownAs !== 'revoked') {
+  if (needsRevokeRepair(target, status)) {
     const repair = buildRevokeCall(refs.survey, itemId)
     await session.call(repair.method, repair.params)
     logger.info({ domain: session.portal.domain, itemId, userId: session.userId }, 'отзыв ссылки дописан на портал')

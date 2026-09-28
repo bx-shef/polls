@@ -187,8 +187,8 @@ describe('перенос старого поля «Состояние» в ст�
     const calls = planStageMoves(TEMPLATE, items, templateMoveOf(TEMPLATE, '2026-09-28'))
 
     expect(calls.map(call => [call.params.id, call.params.fields])).toEqual([
-      [4, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
-      [6, { stageId: 'DT1038_14:SUCCESS' }],
+      [4, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21', UF_CRM_8_STATE: '' }],
+      [6, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: '' }],
     ])
     // Записанное читается как опубликованное — иначе перенос вышел бы снятием с публикации.
     const moved = { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21' }
@@ -204,9 +204,22 @@ describe('перенос старого поля «Состояние» в ст�
     ]
 
     expect(planStageMoves(TEMPLATE, items, templateMoveOf(TEMPLATE, '2026-09-28')).map(call => [call.params.id, call.params.fields])).toEqual([
-      [4, { UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
-      [5, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-28' }],
+      [4, { UF_CRM_8_PUBLISHED_AT: '2026-09-21', UF_CRM_8_STATE: '' }],
+      [5, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-28', UF_CRM_8_STATE: '' }],
+      [6, { UF_CRM_8_STATE: '' }],
     ])
+  })
+
+  it('ГЛАВНОЕ: перенос снимает старое поле с каждой переведённой анкеты', () => {
+    // ⚠ Иначе повтор переноса нашёл бы её снова и вернул в «Опубликован» после того, как администратор
+    // увёл её в «Черновик», а чтение считало бы её неперенесённой. Нашёл `/review` в третьем круге.
+    const [move] = planStageMoves(TEMPLATE, [
+      { id: 4, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '2026-09-20', updatedTime: '2026-09-21T14:05:00+03:00' },
+    ], templateMoveOf(TEMPLATE, '2026-09-28'))
+
+    expect(move!.params.fields).toHaveProperty('UF_CRM_8_STATE', '')
+    // Переведённая, а потом уведённая администратором в «Черновик», — уже не выпускается.
+    expect(isIssuable(TEMPLATE, { stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: '', UF_CRM_8_PUBLISHED_AT: '2026-09-20' })).toBe(false)
   })
 })
 
@@ -224,17 +237,53 @@ describe('отбор переноса', () => {
 
     expect(read).toEqual([expect.objectContaining({ id: 4, UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00' })])
     // Датированная так и уходит без даты в записи: настоящую дату не трогаем.
-    expect(planStageMoves(TEMPLATE, read!, templateMoveOf(TEMPLATE, '2026-09-28'))[0]!.params.fields).toEqual({ stageId: 'DT1038_14:SUCCESS' })
+    expect(planStageMoves(TEMPLATE, read!, templateMoveOf(TEMPLATE, '2026-09-28'))[0]!.params.fields).toEqual({ stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: '' })
   })
 
   it('строка, которую не прочитать, делает весь ответ непрочитанным — не пропускается молча', () => {
     // Пропусти мы её, перенос вышел бы «чистым» без её перевода, и поле удалилось бы с её состоянием.
-    const bad = [null, 'строка', { stageId: 'DT1040_16:NEW', ufCrm10State: 'completed' }, { id: 5, ufCrm10State: 'что-то' }]
+    // Нет номера — и нет самого поля: другое написание его у портала выглядело бы именно так.
+    const bad = [null, 'строка', { stageId: 'DT1040_16:NEW', ufCrm10State: 'completed' }, { id: 5, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' }]
     for (const row of bad) {
       expect(readCarryItems({ result: { items: [row] } }, SURVEY, 'survey')).toBeNull()
     }
     expect(readCarryItems({ result: {} }, SURVEY, 'survey')).toBeNull()
     expect(readCarryItems({ result: { items: [] } }, SURVEY, 'survey')).toEqual([])
+  })
+
+  it('значение поля не наше — строка читается, но не переводится и перенос не держит', () => {
+    // «Published», правленное руками до ревизии 4: прежний код его опубликованным не считал, а отбор
+    // портала, похоже, находит его без учёта регистра. Застрять на нём навсегда перенос не должен.
+    // Нашёл `/review` в третьем круге панели PR #93.
+    const read = readCarryItems({ result: { items: [{ id: 5, stageId: 'DT1038_14:NEW', ufCrm8State: 'Published' }] } }, TEMPLATE, 'template')
+
+    expect(read).toHaveLength(1)
+    expect(planStageMoves(TEMPLATE, read!, templateMoveOf(TEMPLATE, '2026-09-28'))).toEqual([])
+  })
+})
+
+describe('неперенесённая анкета — пока перенос не снял старое поле', () => {
+  it('ГЛАВНОЕ: опубликованная полем читается опубликованной и выпускается — не правимым черновиком', () => {
+    // ⚠ Смарт-процесс переключается на стадии сразу, а даты у опубликованных полем анкет нет (у всех
+    // двенадцати на тестовом портале). Без этого правила от переключения до переноса они читались бы
+    // правимыми черновиками. Замена окна «шаблоны на старом поле», в котором каждый круг ревью
+    // находил новый край. Третий круг панели PR #93.
+    const legacy = { stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '' }
+
+    expect(templateStateOf(TEMPLATE, legacy)).toBe('published')
+    expect(isIssuable(TEMPLATE, legacy)).toBe(true)
+  })
+
+  it('снятая администратором до переноса — снятая, а не опубликованная', () => {
+    const retired = { stageId: 'DT1038_14:FAIL', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '' }
+
+    expect(templateStateOf(TEMPLATE, retired)).toBe('retired')
+    expect(isIssuable(TEMPLATE, retired)).toBe(false)
+  })
+
+  it('старое поле с другим значением публикации не даёт', () => {
+    expect(templateStateOf(TEMPLATE, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: 'draft', UF_CRM_8_PUBLISHED_AT: '' })).toBe('draft')
+    expect(templateStateOf(TEMPLATE, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: 'Published', UF_CRM_8_PUBLISHED_AT: '' })).toBe('draft')
   })
 })
 

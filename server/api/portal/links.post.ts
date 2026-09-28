@@ -1,8 +1,9 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildListIssuedCall, issuedState, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { buildListIssuedCall, buildRevokeCall, issuedState, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
 import { readLinkStatuses } from '../../links/issue'
+import { safeRefusal } from '../../domain/answers/portal-errors'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -52,6 +53,22 @@ export default defineEventHandler(async (event) => {
   const links = readIssuedLinks(await session.call(listing.method, listing.params), refs.survey)
   const statuses = await readLinkStatuses(session.portal.id, links.map(link => link.itemId))
   const now = new Date()
+
+  // ⚠ Отзыв, чья вторая запись не дошла до портала, дописывается здесь — там, где расхождение видно
+  // всегда. Повторным нажатием его не починить после обновления вкладки: по нашей строке ссылка уже
+  // «отозвана», и кнопки у неё нет. Без этого элемент навсегда стоял бы «Отправленным», а роботы
+  // клиента на «Отозвана» не сработали бы. Неудача список не роняет — починит следующее открытие.
+  // Нашёл `/review` в третьем круге панели PR #93.
+  for (const link of links.filter(one => needsRevokeRepair(one, statuses.get(one.itemId) ?? null))) {
+    try {
+      const repair = buildRevokeCall(refs.survey, link.itemId)
+      await session.call(repair.method, repair.params)
+      logger.info({ domain: session.portal.domain, itemId: link.itemId }, 'отзыв ссылки дописан на портал')
+    }
+    catch (error) {
+      logger.warn({ domain: session.portal.domain, itemId: link.itemId, reason: safeRefusal(error) }, 'отзыв ссылки не дописан на портал')
+    }
+  }
 
   return {
     ok: true as const,

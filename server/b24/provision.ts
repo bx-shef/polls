@@ -898,16 +898,6 @@ export async function provisionSmartProcesses(
   }
 }
 
-/**
- * Whether our old `STATE` field is still on the smart process — the carry of revision 5 has not ended.
- *
- * Для операторских команд: им сохранённые ссылки недоступны, и понять, закончилась ли миграция,
- * они могут только по самому полю (разбор у `withFunnel`).
- */
-export async function hasStateField(call: RestCall, ref: SmartProcessRef): Promise<boolean> {
-  return stateFieldIn(await listAllFields(call, ref.id), ref) !== null
-}
-
 /** Our `STATE` field among the fields a smart process had before this run, if any. */
 function stateFieldIn(fields: readonly ExistingField[], ref: SmartProcessRef): ExistingField | null {
   const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
@@ -1250,12 +1240,11 @@ async function nameStages(
  * `field` — our `STATE` field as this run's field listing found it (`ProvisionResult.stateFields`);
  * `null` — переносить нечего: поле удалил прошлый прогон или его не было вовсе.
  *
- * Revision 5, once; the caller decides the order around saving the refs (`register.ts`):
- * - шаблоны переносятся ДО того, как приложение начнёт читать их стадией, — иначе опубликованные,
- *   ещё стоящие в первой стадии без даты, прочитались бы правимыми черновиками;
- * - опросы — ПОСЛЕ: доставка пишет их одновременно с переносом, и опрос, пройденный между
- *   переносом и сохранением, остался бы «Отправленным» навсегда. Шаблоны проходятся второй раз
- *   тогда же — подобрать опубликованное в этом промежутке.
+ * Revision 5, once, AFTER the refs with funnels are saved (`register.ts`): доставка пишет опросы
+ * одновременно с переносом, и опрос, пройденный между переносом и сохранением, остался бы
+ * «Отправленным» навсегда. До переноса неперенесённые элементы читаются правильно и так: опросы —
+ * по дате прохождения и нашей базе, шаблоны — по старому полю, пока перенос его не снял
+ * (`templateStateOf`). С переведённого шаблона перенос снимает старое поле той же записью.
  *
  * ⚠ НЕЗАКОНЧЕННЫЙ ИСХОД — `false`, и поле тогда не удаляется: удаление необратимо. Держит ли он
  * ревизию, решает `unfinished`: свой предел времени (`CARRY_BUDGET_MS`), предел страниц, ответ,

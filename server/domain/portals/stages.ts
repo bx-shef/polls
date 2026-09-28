@@ -12,18 +12,16 @@ import type { PortalCall, SmartProcessRef } from './smart-processes'
  *
  * ⚠ ДВА РЕЖИМА, И ЭТО НЕ НЕРЕШИТЕЛЬНОСТЬ. Смарт-процесс со стадиями узнаётся по `categoryId`
  * в сохранённой ссылке: его ставит миграция ревизии 5, когда стадии включены и воронка
- * настроена. Без него элемент живёт по-старому, полем `STATE`. Прежний путь нужен в четырёх
- * случаях, и два первых проходят сами:
+ * настроена. Без него элемент живёт по-старому, полем `STATE`. Прежний путь нужен в трёх
+ * случаях, и только первый проходит сам:
  * - в окно выката, пока миграция ещё не дошла до портала (стадии выключены — `stageId` портал
  *   молча отбрасывает, замерено 28.09);
- * - у шаблонов — в прогоне, где их перенос до переключения не прошёл: прочитанные стадией,
- *   опубликованные без даты стали бы черновиками (разбор у `carryStates`); следующая донастройка
- *   переключит;
  * - у смарт-процесса, найденного по названию («усыновлённого»), чьи стадии выключены: стадии
  *   чужого процесса мы не включаем;
  * - на портале, чей тариф не даёт включить стадии.
  * Два последних — навсегда, поэтому второй режим не временный. Писать `stageId` туда, где стадий
- * нет, значило бы терять состояние молча.
+ * нет, значило бы терять состояние молча. Переходное окно между переключением и переносом режимом
+ * не считается: в нём элементы читаются правильно и так (`carriesLegacyPublished`).
  *
  * ⚠ СТАДИЯ — ОТРАЖЕНИЕ, А НЕ ПРАВДА. Её двигают в канбане сотрудники и роботы клиента, поэтому
  * приложение стадией только ПИШЕТ, а решает по тому, что человеку не сдвинуть:
@@ -106,11 +104,6 @@ export function isStaged(ref: SmartProcessRef): ref is StagedRef {
   return ref.categoryId !== undefined
 }
 
-/** The same smart process, still on the old `STATE` field: its funnel is not ours to use yet. */
-export function unstaged(ref: SmartProcessRef): SmartProcessRef {
-  return { entityTypeId: ref.entityTypeId, id: ref.id }
-}
-
 /** The full stage id: `DT1040_16:SUCCESS`. */
 export function stageId(ref: StagedRef, code: string): string {
   return `DT${ref.entityTypeId}_${ref.categoryId}:${code}`
@@ -190,19 +183,28 @@ export function templateStateOf(ref: SmartProcessRef, item: Record<string, unkno
     const state = asText(item[buildFieldName(ref.id, 'STATE')])
     return state === 'draft' || state === 'published' ? state : ''
   }
-  if (asText(item[buildFieldName(ref.id, 'PUBLISHED_AT')]) === '') return 'draft'
+  const published = asText(item[buildFieldName(ref.id, 'PUBLISHED_AT')]) !== '' || carriesLegacyPublished(ref, item)
+  if (!published) return 'draft'
   return stageCodeOf(ref, item.stageId) === TEMPLATE_STAGES.retired.code ? 'retired' : 'published'
 }
 
 /**
- * Whether a template version must not change: published, or published once and retired since.
+ * Whether the element still carries the old field's «published» — the carry has not reached it yet.
  *
- * ⚠ Снятая с публикации — тоже неизменяема: по ней уже выпускали ссылки и собирали ответы.
- * «Снял с публикации, поправил, вернул» склеило бы две разные анкеты под одним номером.
+ * ⚠ ПОКА ПЕРЕНОС НЕ СНЯЛ СТАРОЕ ПОЛЕ, ОНО — ТОЖЕ ПРАВДА О ПУБЛИКАЦИИ. Смарт-процесс переключается
+ * на стадии сразу (ссылки сохраняются до переноса), а опубликованные полем анкеты даты не имеют:
+ * у всех двенадцати анкет тестового портала она пуста (замерено 28.09). Без этого правила они
+ * от переключения до переноса — миг, а при сбое переноса и дольше — читались бы правимыми
+ * черновиками. Поле закрыто от правки (ревизия 4), пишет его только приложение; перенос снимает
+ * его с каждого переведённого элемента, а потом удаляет целиком. Первая редакция держала шаблоны
+ * на старом поле до переноса, и каждый круг ревью находил в этом окне новый край — эта заменила
+ * окно правилом чтения. Третий круг панели PR #93.
  */
-export function isFrozen(state: string): boolean {
-  return state === 'published' || state === 'retired'
+function carriesLegacyPublished(ref: SmartProcessRef, item: Record<string, unknown>): boolean {
+  return asText(item[buildFieldName(ref.id, 'STATE')]) === 'published'
 }
+
+export { isFrozen } from '../../../shared/template-state'
 
 /**
  * Whether a link may be issued by this template version.
@@ -218,7 +220,11 @@ export function isIssuable(ref: SmartProcessRef, item: Record<string, unknown>):
   // прячет `stageId`, замерено 28.09). Сужать нечем, решает одна дата: иначе выпуск молча встал бы
   // целиком, без следа в журнале. Нашёл `/code-review` во втором круге панели PR #93.
   if (!isStaged(ref) || item.stageId === undefined) return true
-  return stageCodeOf(ref, item.stageId) === TEMPLATE_STAGES.published.code
+  const code = stageCodeOf(ref, item.stageId)
+  if (code === TEMPLATE_STAGES.published.code) return true
+  // Опубликованная полем и ещё не перенесённая стоит в первой стадии: перенос переведёт её
+  // в «Опубликован» и снимет старое поле. До тех пор выпуск по ней — как и до ревизии 5.
+  return code === TEMPLATE_STAGES.draft.code && carriesLegacyPublished(ref, item)
 }
 
 /** The fields that put a template element into a stage — a stage, or the old field. */
@@ -304,6 +310,12 @@ export function planStages(specs: readonly StageSpec[], existing: readonly Exist
 /** Which of our smart processes a carry works on: they differ in what the old field held. */
 export type CarryKind = 'template' | 'survey'
 
+/** The old values each carry selects by; the filter and the reader take them from here. */
+const CARRIED_VALUES: Readonly<Record<CarryKind, readonly string[]>> = {
+  template: ['published'],
+  survey: ['completed', 'revoked'],
+}
+
 /**
  * One page of the elements the carry still has to move, after the element `afterId`.
  *
@@ -331,40 +343,39 @@ export function buildCarryListCall(ref: StagedRef, kind: CarryKind, afterId: num
       // которую администратор успел перетащить из «Черновика» до переноса, иначе не получила бы даты,
       // и после удаления поля навсегда читалась бы правимым черновиком. Стадию при этом переводим
       // только из первой: куда её увёл администратор, там она и останется. Нашёл `/review`
-      // во втором круге панели PR #93.
+      // во втором круге панели PR #93. Значения — из `CARRIED_VALUES`: одна копия на отбор и разбор.
       filter: kind === 'template'
-        ? { '>id': afterId, [state]: 'published' }
-        : { 'stageId': stageId(ref, 'NEW'), '>id': afterId, [`@${state}`]: ['completed', 'revoked'] },
+        ? { '>id': afterId, [state]: CARRIED_VALUES.template[0] }
+        : { 'stageId': stageId(ref, 'NEW'), '>id': afterId, [`@${state}`]: [...CARRIED_VALUES.survey] },
       order: { id: 'ASC' },
     },
   }
 }
 
-/** The old values each carry selects by: an element that shows none of them was read wrongly. */
-const CARRIED_VALUES: Readonly<Record<CarryKind, readonly string[]>> = {
-  template: ['published'],
-  survey: ['completed', 'revoked'],
-}
-
 /**
  * Reads a carry page into elements under our original field names — what `planStageMoves` reads.
  *
- * `null` — ответ не прочитать: не той формы, ИЛИ в строке нет того, по чему её отбирали, — номера
- * элемента или старого значения. ⚠ Не пустой список и не пропуск строки: пустое значит «переносить
- * нечего», и поле удалилось бы вместе с состоянием элементов, которых мы просто не прочитали. Другое
- * написание поля у портала выглядело бы ровно так. Нашли `/review` и `/code-review`.
+ * `null` — ответ не прочитать: не той формы, ИЛИ в строке нет номера элемента или самого старого
+ * поля. ⚠ Не пустой список и не пропуск строки: пустое значит «переносить нечего», и поле удалилось
+ * бы вместе с состоянием элементов, которых мы просто не прочитали. Другое написание поля у портала
+ * выглядело бы ровно так. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+ *
+ * Поле есть, а значение не наше (например, «Published», правленное руками до ревизии 4, которое
+ * отбор портала, похоже, находит без учёта регистра), — строку пропускаем: прежний код её
+ * опубликованной не считал, и перенос не должен ни переводить её, ни застревать на ней навсегда.
+ * Нашёл `/review` в третьем круге панели PR #93.
  */
 export function readCarryItems(response: unknown, ref: StagedRef, kind: CarryKind): Record<string, unknown>[] | null {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
   if (!Array.isArray(items)) return null
   const postfixes = kind === 'template' ? ['STATE', 'PUBLISHED_AT', 'CODE', 'VERSION', 'SCHEMA'] : ['STATE']
+  const stateKey = camelFieldName(ref.id, 'STATE')
   const read: Record<string, unknown>[] = []
   for (const raw of items) {
     if (raw === null || typeof raw !== 'object') return null
     const item = raw as Record<string, unknown>
     const id = Number(item.id)
-    const state = asText(item[camelFieldName(ref.id, 'STATE')])
-    if (!Number.isInteger(id) || id <= 0 || !CARRIED_VALUES[kind].includes(state)) return null
+    if (!Number.isInteger(id) || id <= 0 || !(stateKey in item)) return null
     const own = Object.fromEntries(postfixes.map(postfix => [buildFieldName(ref.id, postfix), item[camelFieldName(ref.id, postfix)]]))
     read.push({ id, stageId: item.stageId, updatedTime: item.updatedTime, ...own })
   }
@@ -434,11 +445,15 @@ export function templateMoveOf(ref: StagedRef, today: string): (item: Record<str
     const missing = asText(item[dateField]) === ''
     // Стадию — только из первой: куда её увёл администратор, там она и останется. Дату — всегда,
     // когда её нет: без неё после удаления поля анкета стала бы черновиком (разбор у `buildCarryListCall`).
-    const fields = {
+    // ⚠ Старое поле СНИМАЕМ той же записью. Переведённая анкета больше не «опубликована полем»:
+    // повтор переноса её не найдёт и не вернёт в «Опубликован» после того, как администратор увёл её
+    // в «Черновик», а чтение перестанет считать её неперенесённой (`carriesLegacyPublished`).
+    // Нашёл `/review` в третьем круге панели PR #93.
+    return {
       ...(item.stageId === first ? { stageId: stageId(ref, TEMPLATE_STAGES.published.code) } : {}),
       ...(missing ? { [dateField]: day } : {}),
+      [stateField]: '',
     }
-    return Object.keys(fields).length === 0 ? null : fields
   }
 }
 

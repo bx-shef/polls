@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { TEMPLATE_SP_TITLE } from '#shared/portal-names'
+import { isFrozen } from '#shared/template-state'
 import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { placementItemId } from '~/utils/placement'
@@ -153,7 +154,7 @@ const gate = computed(() => portalGate({
  * Инвариант проекта, и он виден человеку сразу. Снятая — тоже неизменяема: по ней уже выпускали
  * ссылки и собирали ответы, а «снял, поправил, вернул» склеило бы две анкеты под одним номером.
  */
-const frozen = computed(() => template.value?.state === 'published' || template.value?.state === 'retired')
+const frozen = computed(() => isFrozen(template.value?.state))
 
 /** Снята с публикации — стадией «Снят с публикации» в канбане: ссылки по ней больше не выпускают. */
 const retired = computed(() => template.value?.state === 'retired')

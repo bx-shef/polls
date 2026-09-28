@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
 import { CARRY_BUDGET_MS, CARRY_TAIL_RESERVE_MS, carryStates, dropStateField, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline, type RestCall, type StagesOutcome } from './provision'
-import { isStaged, unstaged } from '../domain/portals/stages'
+import { isStaged } from '../domain/portals/stages'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
@@ -218,29 +218,12 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       ...(result.adoptedSurvey ? { survey: true as const } : {}),
     }
 
-    // ⚠ Перенос старого поля «Состояние» в стадии, ревизия 5, — разово. Порядок вокруг сохранения
-    // ссылок у шаблонов и опросов РАЗНЫЙ, и почему — у `carryStates`. Коротко: шаблоны переносятся
-    // ДО того, как приложение начнёт читать их стадией, опросы — ПОСЛЕ, потому что их одновременно
-    // пишет доставка. Предел времени у переноса свой и общий на все его шаги (`CARRY_BUDGET_MS`).
-    const carried: StagesOutcome | null = known.revision < STAGES_REVISION ? { changes: 0, settled: true } : null
-    const clock = { deadline: Math.min(Date.now() + CARRY_BUDGET_MS, allowedUntil - CARRY_TAIL_RESERVE_MS), now: Date.now }
-    let template = result.template
-    if (carried !== null && isStaged(template) && !result.createdTemplate
-      && !await carryStates(budgeted, template, 'template', result.stateFields.template, carried, clock)
-      && (known.template === undefined || !isStaged(known.template))) {
-      // Не перенесли — шаблоны этим прогоном остаются на старом поле: прочитанные стадией,
-      // опубликованные без даты стали бы правимыми черновиками. Донастройка вернётся.
-      // ⚠ Только при ПЕРВОМ переключении. Прошлый прогон, уже сохранивший шаблоны со стадиями, мог и
-      // удалить поле: вернув их на него после одного временного отказа, мы читали бы анкеты
-      // из пустоты — не выпускались бы и правились. Нашли `/review` и `/code-review` во втором круге
-      // панели PR #93. Поля нет — `carryStates` чистый и сюда не доходит.
-      template = unstaged(template)
-    }
-
     // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
     // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
     // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
-    const refs = { template, survey: result.survey }
+    // ⚠ С воронками — СРАЗУ, до переноса старого поля: с этой минуты приложение пишет стадией,
+    // а неперенесённые элементы читаются правильно и так (разбор у `carryStates`).
+    const refs = { template: result.template, survey: result.survey }
     await storeRefs(budgeted, refs, { revision: known.revision, adopted })
 
     const unstagedKinds = [
@@ -289,13 +272,15 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       logger.warn({ domain: portal.domain }, 'вкладка конструктора не зарегистрирована')
     }
 
-    // ⚠ Перенос опросов — ПОСЛЕ сохранения ссылок и после вкладок. После сохранения: с этой минуты
-    // доставка пишет стадией, и перенос подберёт всё, что записано полем до того. После вкладок:
-    // перенос — единственный шаг, чья цена растёт с числом элементов, и упёршись в свой предел,
-    // он не должен оставить портал без вкладок. Шаблоны проходятся второй раз — подобрать
-    // опубликованное между первым проходом и сохранением. Поле удаляется только после чистого
-    // прохода: удаление необратимо.
+    // ⚠ Перенос старого поля «Состояние» в стадии, ревизия 5, — разово, ПОСЛЕ сохранения ссылок
+    // и после вкладок. После сохранения: с этой минуты доставка пишет стадией, и перенос подберёт
+    // всё, что записано полем до того. После вкладок: перенос — единственный шаг, чья цена растёт
+    // с числом элементов, и, упёршись в свой предел, он не должен оставить портал без вкладок.
+    // Предел — внутри общего бюджета (`CARRY_TAIL_RESERVE_MS`). Поле удаляется только после
+    // чистого прохода: удаление необратимо.
+    const carried: StagesOutcome | null = known.revision < STAGES_REVISION ? { changes: 0, settled: true } : null
     if (carried !== null) {
+      const clock = { deadline: Math.min(Date.now() + CARRY_BUDGET_MS, allowedUntil - CARRY_TAIL_RESERVE_MS), now: Date.now }
       const staged = [
         { ref: refs.template, kind: 'template' as const, created: result.createdTemplate },
         { ref: refs.survey, kind: 'survey' as const, created: result.createdSurvey },

@@ -296,7 +296,7 @@ describe('перенос старого поля «Состояние»', () => 
     }
 
     expect(p.of('crm.item.update').map(one => [one.params.id, one.params.fields])).toEqual([
-      [4, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
+      [4, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21', UF_CRM_8_STATE: '' }],
       [1, { stageId: 'DT1040_16:SUCCESS' }],
       [3, { stageId: 'DT1040_16:FAIL' }],
     ])
@@ -338,9 +338,10 @@ describe('перенос старого поля «Состояние»', () => 
     expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, fresh(), clock())).toBe(true)
 
     expect((p.of('crm.item.list')[0]!.params.filter as Record<string, unknown>)).not.toHaveProperty('stageId')
-    // Снятая администратором осталась снятой, но получила дату; датированной делать нечего.
+    // Снятая администратором осталась снятой, но получила дату; с датированной только снято старое поле.
     expect(p.of('crm.item.update').map(one => [one.params.id, one.params.fields])).toEqual([
-      [4, { UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
+      [4, { UF_CRM_8_PUBLISHED_AT: '2026-09-21', UF_CRM_8_STATE: '' }],
+      [5, { UF_CRM_8_STATE: '' }],
     ])
   })
 
@@ -569,10 +570,10 @@ describe('порядок миграции целиком', () => {
     return { result: { items: carry ? (items[params.entityTypeId as number] ?? []).filter(item => stage === undefined || item.stageId === stage) : [] } }
   }
 
-  it('ГЛАВНОЕ: опросы переносятся ПОСЛЕ сохранения признака «на стадиях», шаблоны — ДО', async () => {
+  it('ГЛАВНОЕ: признак «на стадиях» сохраняется РАНЬШЕ переноса — и у опросов, и у шаблонов', async () => {
     // ⚠ Опросы одновременно пишет доставка: перенеси мы их раньше сохранения, опрос, пройденный
-    // между переносом и сохранением, остался бы «Отправленным» навсегда. Шаблоны — наоборот:
-    // прочитанные стадией до переноса, опубликованные без даты стали бы правимыми черновиками.
+    // между переносом и сохранением, остался бы «Отправленным» навсегда. Шаблоны переключаются
+    // тогда же: неперенесённые читаются по старому полю (`templateStateOf`).
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
     const p = portal({
       'userfieldconfig.list': FIELDS,
@@ -587,51 +588,22 @@ describe('порядок миграции целиком', () => {
     const firstStore = p.calls.findIndex(one => one.method === 'app.option.set')
     const moved = (entityTypeId: number) => p.calls.findIndex(one => one.method === 'crm.item.update' && one.params.entityTypeId === entityTypeId)
     expect(firstStore).toBeGreaterThan(-1)
-    expect(moved(1038)).toBeLessThan(firstStore)
+    expect(moved(1038)).toBeGreaterThan(firstStore)
     expect(moved(1040)).toBeGreaterThan(firstStore)
     const stored = JSON.parse(Object.values((p.calls[firstStore]!.params.options as Record<string, string>))[0]!)
     expect(stored.survey).toEqual({ ...SURVEY, categoryId: 16 })
     expect(stored.template).toEqual({ ...TEMPLATE, categoryId: 14 })
-    // ⚠ Поле удаляется у ОБОИХ: у шаблона — вторым проходом после сохранения, другого места для
-    // этого нет. Выпади этот проход, поле шаблона не удалялось бы никогда. Нашёл тестировщик
-    // во втором круге панели PR #93: без этой строки его можно было убрать, не покраснив ни теста.
+    // ⚠ Поле удаляется у ОБОИХ. Выпади проход шаблонов, их поле не удалялось бы никогда. Нашёл
+    // тестировщик во втором круге панели PR #93: без этой строки проход можно было убрать молча.
     expect(p.of('userfieldconfig.delete').map(one => one.params.id)).toEqual([72, 71])
   })
 
-  it('ГЛАВНОЕ: шаблоны не перенеслись — этим прогоном они остаются на старом поле, ревизия ждёт', async () => {
+  it('ГЛАВНОЕ: шаблоны не перенеслись — переключены всё равно, поле остаётся, ревизия ждёт', async () => {
+    // Неперенесённые читаются по старому полю, так что держать шаблоны на нём незачем: первая
+    // редакция держала — и каждый круг ревью находил в этом окне новый край. Третий круг панели.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
-    const p = portal({
-      'userfieldconfig.list': FIELDS,
-      'crm.item.list': (params: Record<string, unknown>) => {
-        if (params.entityTypeId === 1038 && (params.select as string[] | undefined)?.includes('ufCrm8State')) {
-          throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
-        }
-        return { result: { items: [] } }
-      },
-    })
-
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-
-    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
-
-    const stores = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!))
-    expect(stores[0].template).toEqual(TEMPLATE)
-    expect(stores.at(-1).revision).toBe(4)
-    expect(p.of('userfieldconfig.delete').map(one => one.params.id)).toEqual([71])
-    // Стадии-то включены — не доделан перенос. «Стадии не включены» здесь было бы неправдой.
-    // Нашёл тестировщик во втором круге панели PR #93.
-    const messages = warn.mock.calls.map(([, message]) => String(message))
-    expect(messages).not.toContain('штатные стадии не включены — состояние остаётся в поле «Состояние»')
-    expect(messages).toContain('стадии: перенос не доделан, донастройка вернётся')
-  })
-
-  it('ГЛАВНОЕ: шаблоны, уже сохранённые со стадиями, после временного отказа на старое поле не возвращаются', async () => {
-    // ⚠ Прошлый прогон мог и удалить поле: вернув шаблоны на него, мы читали бы анкеты из пустоты —
-    // не выпускались бы и правились. Нашли `/review` и `/code-review` во втором круге панели PR #93.
-    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
-    vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const p = portal({
-      'app.option.get': { result: JSON.stringify({ template: { ...TEMPLATE, categoryId: 14 }, survey: { ...SURVEY, categoryId: 16 }, revision: 4 }) },
       'userfieldconfig.list': FIELDS,
       'crm.item.list': (params: Record<string, unknown>) => {
         if (params.entityTypeId === 1038 && (params.select as string[] | undefined)?.includes('ufCrm8State')) {
@@ -646,6 +618,12 @@ describe('порядок миграции целиком', () => {
     const stores = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!))
     expect(stores.every(stored => stored.template.categoryId === 14)).toBe(true)
     expect(stores.at(-1).revision).toBe(4)
+    expect(p.of('userfieldconfig.delete').map(one => one.params.id)).toEqual([71])
+    // Стадии-то включены — не доделан перенос. «Стадии не включены» здесь было бы неправдой.
+    // Нашёл тестировщик во втором круге панели PR #93.
+    const messages = warn.mock.calls.map(([, message]) => String(message))
+    expect(messages).not.toContain('штатные стадии не включены — состояние остаётся в поле «Состояние»')
+    expect(messages).toContain('стадии: перенос не доделан, донастройка вернётся')
   })
 
   it('ГЛАВНОЕ: предел переноса — внутри общего бюджета: медленный портал не роняет обустройство', async () => {
@@ -725,21 +703,6 @@ describe('операторские команды по вебхуку', () => {
     })
 
     expect((await findProcesses(p.call)).survey).toEqual({ ...SURVEY, categoryId: 16 })
-  })
-
-  it('ГЛАВНОЕ: посреди миграции — стадии включены, а старое поле на месте — команда отказывается работать', async () => {
-    // ⚠ Приложение в этом окне может держать шаблоны на старом поле, а может уже читать их стадией;
-    // вебхуку не угадать. Угадав не так, `publish:templates` переписала бы название версии, по которой
-    // уже собраны ответы. Нашли `/review` и `/code-review` во втором круге панели PR #93.
-    const p = portal({
-      'app.option.get': () => {
-        throw new Error('Application context required')
-      },
-      'crm.type.list': { result: { types: [{ id: 8, entityTypeId: 1038, title: '[sh] Шаблон опроса', isStagesEnabled: 'Y' }] } },
-      'userfieldconfig.list': { result: { fields: [{ id: 72, fieldName: 'UF_CRM_8_STATE', userTypeId: 'string', editInList: 'N' }] } },
-    })
-
-    await expect(findProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_MIGRATION_PENDING' })
   })
 
   it('стадии включены, а воронки портал не назвал — пишет старым полем и говорит об этом', async () => {

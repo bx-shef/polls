@@ -154,6 +154,17 @@ export function issuedState(link: IssuedLink, now: Date, linkStatus: string | nu
   return 'active'
 }
 
+/**
+ * Whether our row is revoked while the portal still shows the link as sent — the second write of a revoke got lost.
+ *
+ * ⚠ Только из первой стадии («Отправлена»). Туда её ставим мы, и погашенная ссылка в ней — наш
+ * недописанный отзыв. Элемент, уведённый клиентом в свою стадию, не трогаем: там уже его решение,
+ * и тянуть его каждый раз обратно значило бы спорить с ним. Пройденную — тем более.
+ */
+export function needsRevokeRepair(link: IssuedLink, linkStatus: string | null): boolean {
+  return linkStatus === SURVEY_STATE_REVOKED && link.completedAt === '' && link.shownAs === SURVEY_STATE_SENT
+}
+
 /** Ссылку ещё можно остановить: она не пройдена, не отозвана и не истекла. */
 export function isRevocable(link: IssuedLink, now: Date, linkStatus: string | null): boolean {
   return issuedState(link, now, linkStatus) === 'active'
