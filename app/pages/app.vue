@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
+import { DEAL_TAB_TITLE, TEMPLATE_SP_TITLE } from '#shared/portal-names'
 import { readFramePass } from '~/utils/frame-auth'
 import { helpRouteFor } from '~/utils/help'
 import { isPreview, portalGate } from '~/utils/in-portal'
@@ -190,7 +191,7 @@ async function loadSurveys(connection: B24Frame) {
           v-if="surveys.length === 0"
           color="air-secondary-accent"
           title="Опубликованных анкет пока нет"
-          description="Анкеты живут в смарт-процессе «Шаблон опроса» на вашем портале. Пока в нём нет ни одной опубликованной версии, выпускать нечего."
+          :description="`Анкеты живут в смарт-процессе «${TEMPLATE_SP_TITLE}» на вашем портале. Пока в нём нет ни одной опубликованной версии, выпускать нечего.`"
           class="mb-4"
         />
         <template v-else>
@@ -210,7 +211,7 @@ async function loadSurveys(connection: B24Frame) {
         <B24Alert
           color="air-secondary"
           title="Где выпускать ссылку"
-          description="Откройте любую сделку и перейдите на вкладку «Опросы» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё."
+          :description="`Откройте любую сделку и перейдите на вкладку «${DEAL_TAB_TITLE}» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё.`"
         />
 
         <div class="mt-4">

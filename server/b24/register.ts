@@ -1,12 +1,11 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
+import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
-import { PROVISION_REVISION } from '../domain/portals/smart-processes'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
 import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
@@ -28,9 +27,11 @@ import { logger } from '../utils/logger'
 /**
  * Бюджет времени на всё обустройство.
  *
- * Холодная установка — 17–19 вызовов подряд под троттлингом SDK, это единицы секунд
- * на здоровом портале. Сорок пять секунд — четырёхкратный запас и при этом заведомо
- * меньше таймаута общего `nginx-proxy`.
+ * Донастройка готового портала — 16–18 вызовов подряд под троттлингом SDK, холодная установка —
+ * 41 (число держит тест «цена холодной установки» в `provision-outcome.test.ts`). Это секунды
+ * на здоровом портале; сорок пять секунд — запас и при этом заведомо меньше таймаута общего
+ * `nginx-proxy`. Прежде здесь стояло «холодная — 17–19»: это цена донастройки, а холодная
+ * установка давно втрое дороже, и запас был меньше, чем казалось (панель ревью PR #87).
  */
 const PROVISION_BUDGET_MS = 45_000
 
@@ -166,8 +167,9 @@ async function provisionPortal(portal: {
     // копия записи — без compare-and-swap по прежней паре и без условия `status <> 'deleted'`,
     // то есть в обход обеих защит, которые ради этих же гонок и заводились. Комментарий
     // при этом обещал «не воскресит удалённый портал»: до появления стирания это было верно,
-    // а с ним стало неправдой. Обустройство — это 17–19 вызовов под бюджетом в 45 секунд,
-    // и продление посреди них вполне реально. Нашла панель ревью PR #34.
+    // а с ним стало неправдой. Холодное обустройство — это 41 вызов под бюджетом в 45 секунд
+    // (тест «цена холодной установки»), и продление посреди них вполне реально. Нашла панель
+    // ревью PR #34.
     async next => saveRefreshedTokens(portal.id, {
       accessToken: encryptSecret(next.accessToken),
       refreshToken: encryptSecret(next.refreshToken),
@@ -206,9 +208,22 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH),
       previousRevision: known.revision,
     })
-    await storeRefs(budgeted, { template: result.template, survey: result.survey })
+    // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
+    // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
+    // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
+    const refs = { template: result.template, survey: result.survey }
+    const adopted = {
+      ...(result.adoptedTemplate ? { template: true as const } : {}),
+      ...(result.adoptedSurvey ? { survey: true as const } : {}),
+    }
+    await storeRefs(budgeted, refs, { revision: known.revision, adopted })
 
-    if (result.adoptedTemplate || result.adoptedSurvey) {
+    // ⚠ Только о НОВОМ усыновлении. Признак теперь переживает прогоны, и без этой проверки
+    // предупреждение «найден по заголовку» писалось бы на каждой донастройке — дежурный принял бы
+    // его за новую потерю идентификаторов. Нашёл `/review` во втором круге PR #87.
+    const newlyAdopted = (result.adoptedTemplate && known.adopted.template !== true)
+      || (result.adoptedSurvey && known.adopted.survey !== true)
+    if (newlyAdopted) {
       // Взяли на портале смарт-процесс, которого не создавали. Обычно это наш же,
       // переживший переустановку, — но отличить его от чужого одноимённого нечем,
       // а поля мы теперь пишем в него. Пусть след останется.
@@ -258,17 +273,25 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // портал настроенным до того, как настроили: следующая фоновая проверка сочла бы его
     // свежим и вкладку регистрировать не стала бы. Issue #75.
     //
-    // ⚠ И НЕ ставится вовсе, если поле виджета отложено: установка ещё не завершена, и портал
-    // его не принял бы. Без отметки фоновая донастройка вернётся к порталу после `installFinish`
-    // и доделает шаг; с отметкой не вернулась бы никогда. Нашли `/review` и `/code-review`.
-    if (result.resultField !== 'deferred') {
-      await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
+    // ⚠ Какую ревизию ставить, решает `reachedRevision`: поле виджета отложено — прежнюю (установка
+    // не завершена, донастройка обязана вернуться; нашли `/review` и `/code-review` в PR #80);
+    // миграция 4 не доделана — ревизию до неё. Прежде всего это касается наших полей: открытые,
+    // они позволяют подделать ответ клиента и опубликовать шаблон в обход проверок. Громко,
+    // ошибкой: это безопасность, и такой портал будет возвращаться каждый час, пока поля не закроются.
+    const ownership = result.ownership
+    if (ownership?.fieldsLocked === false) {
+      logger.error({ domain: portal.domain }, 'наши поля не закрыты от правки — ревизию не отмечаем, донастройка вернётся')
     }
+    else if (ownership?.settled === false) {
+      logger.warn({ domain: portal.domain }, 'метка владельца доставлена не везде — ревизию не отмечаем, донастройка вернётся')
+    }
+    const reached = reachedRevision(known.revision, result)
+    await storeProvisionRevision(budgeted, refs, reached, adopted)
 
     logger.info(
       {
         domain: portal.domain,
-        revision: PROVISION_REVISION,
+        revision: reached,
         created: [result.createdTemplate, result.createdSurvey],
         addedFields: result.addedFields,
         placed,
@@ -276,6 +299,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         resultField: result.resultField,
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
+        ownership: result.ownership,
       },
       'смарт-процессы обустроены',
     )

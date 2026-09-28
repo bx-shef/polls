@@ -1,4 +1,9 @@
 import type { PortalCall } from './smart-processes'
+import { DEAL_TAB_TITLE, DEAL_TAB_TITLE_EN, TEMPLATE_TAB_TITLE, TEMPLATE_TAB_TITLE_EN } from '../../../shared/portal-names'
+
+// Названия вкладок живут в `shared/`: по ним же пишутся тексты страниц приложения («откройте
+// вкладку … в карточке сделки»). Здесь повторный вывоз для серверных вызывающих.
+export { DEAL_TAB_TITLE, DEAL_TAB_TITLE_EN, TEMPLATE_TAB_TITLE, TEMPLATE_TAB_TITLE_EN }
 
 /**
  * Where the app embeds itself in the portal, and how that registration behaves.
@@ -23,9 +28,6 @@ import type { PortalCall } from './smart-processes'
 /** Вкладка в карточке сделки. Подтверждено туториалом «Как встроить виджет во вкладку карточки CRM». */
 export const DEAL_TAB_PLACEMENT = 'CRM_DEAL_DETAIL_TAB'
 
-/** Название вкладки, как его увидит сотрудник портала. */
-export const DEAL_TAB_TITLE = 'Опросы'
-
 /**
  * Вкладка в карточке элемента смарт-процесса — там живёт конструктор анкеты.
  *
@@ -44,9 +46,6 @@ export function templateTabPlacement(entityTypeId: number): string {
   return `CRM_DYNAMIC_${entityTypeId}_DETAIL_TAB`
 }
 
-/** Название вкладки конструктора. */
-export const TEMPLATE_TAB_TITLE = 'Конструктор'
-
 /** Путь обработчика вкладки конструктора. */
 export const TEMPLATE_TAB_PATH = '/portal/template-tab'
 
@@ -57,23 +56,22 @@ export const PLACEMENT_ALREADY_BOUND = 'ERROR_PLACEMENT_MAX_COUNT'
 export const DEAL_TAB_PATH = '/portal/deal-tab'
 
 /**
- * Построить регистрацию вкладки, либо `null` при негодном адресе.
+ * Регистрация вкладки — общая для всех точек `*_DETAIL_TAB`, либо `null` при негодном адресе.
+ *
+ * Вынесено, когда вкладок стало две: у сделки и у «Шаблона опроса». Три свойства из шапки
+ * (контекст приложения, запрет батча, одна регистрация на точку) у них одинаковы, и держать
+ * два одинаковых построителя значило бы однажды починить только один.
  *
  * ⚠ Адрес обязан быть АБСОЛЮТНЫМ и `https`. Относительный портал принял бы, но открывал бы его
  * от СВОЕГО домена — то есть обработчиком стала бы страница портала, а не наша. Отказ здесь
  * честнее, чем регистрация заведомо неверного: снаружи вторая выглядит как работающая вкладка,
  * открывающая чужой сайт.
- */
-export function buildBindDealTabCall(handlerUrl: string): PortalCall | null {
-  return buildBindTabCall(DEAL_TAB_PLACEMENT, handlerUrl, DEAL_TAB_TITLE, 'Surveys')
-}
-
-/**
- * Регистрация вкладки — общая для всех точек `*_DETAIL_TAB`.
  *
- * Вынесено, когда вкладок стало две: у сделки и у «Шаблона опроса». Три свойства из шапки
- * (контекст приложения, запрет батча, одна регистрация на точку) у них одинаковы, и держать
- * два одинаковых построителя значило бы однажды починить только один.
+ * ⚠ Названия берёт вызывающий из `shared/portal-names.ts`, и гвард на английское название
+ * стоит на нём (`ensureDealTabPlacement`), а не здесь. Прежний построитель вкладки сделки
+ * с английским названием проверялся тестом, но в бою не вызывался: портал получал
+ * непомеченное «Surveys», а тест был зелёным. Нашли тестировщик, техдиректор и `/code-review`
+ * в панели PR #87.
  */
 export function buildBindTabCall(
   placement: string,
@@ -96,7 +94,7 @@ export function buildBindTabCall(
 }
 
 /**
- * Снять регистрацию — единственный способ сменить адрес обработчика (см. шапку).
+ * Снять регистрацию — единственный способ сменить адрес обработчика (см. шапку). Общее для всех точек.
  *
  * ⚠ БЕЗ `HANDLER`, и это принципиально. С адресом `placement.unbind` снимает только
  * регистрацию НА ЭТОТ адрес; без него — все регистрации точки, сделанные приложением
@@ -106,13 +104,8 @@ export function buildBindTabCall(
  * установка отчиталась успехом. Именно так и было написано сначала.
  *
  * Чужие регистрации этим не тронуть: метод работает в контексте приложения и видит только
- * свои. Параметра тут нет намеренно — передать в него нечего, кроме как ошибку.
+ * свои. Адреса тут нет намеренно — передать в него нечего, кроме как ошибку.
  */
-export function buildUnbindDealTabCall(): PortalCall {
-  return buildUnbindTabCall(DEAL_TAB_PLACEMENT)
-}
-
-/** Снятие регистрации — общее для всех точек. Без `HANDLER`, разбор выше. */
 export function buildUnbindTabCall(placement: string): PortalCall {
   return { method: 'placement.unbind', params: { PLACEMENT: placement } }
 }

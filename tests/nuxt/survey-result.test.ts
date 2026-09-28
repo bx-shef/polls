@@ -219,6 +219,6 @@ describe('виджет результата опроса', () => {
     const page = await mountSuspended(await SurveyResult())
     await settle()
 
-    expect(page.text()).toContain('работает только в карточке «Опроса»')
+    expect(page.text()).toContain('работает только в карточке «[sh] Результат опросов»')
   })
 })
