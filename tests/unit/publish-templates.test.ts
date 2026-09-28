@@ -98,6 +98,9 @@ describe('публикация против портала', () => {
     expect(result.published).toBe(2)
     expect(result.failed).toHaveLength(0)
     expect(p.of('crm.item.update')).toHaveLength(2)
+    // Без стадий старое поле пишется и так: спросить про него значило бы дать команде на старом
+    // портале новый способ упасть — ради ответа, который ничего не меняет.
+    expect(p.of('crm.item.fields')).toEqual([])
   })
 
   it('повторный прогон не трогает ничего', async () => {
