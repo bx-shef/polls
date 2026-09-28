@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { TEMPLATE_SP_TITLE } from '#shared/portal-names'
-import { readFramePass } from '~/utils/frame-auth'
+import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { placementItemId } from '~/utils/placement'
 
@@ -185,7 +185,7 @@ onMounted(async () => {
 async function loadTemplate() {
   if (itemId.value === null) return
 
-  const pass = readFramePass(frame!.auth.getAuthData())
+  const pass = await framePass(frame!.auth)
   if (pass === null) {
     failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
@@ -299,7 +299,7 @@ function scaleOf(question: Question): { min: number, max: number } {
 async function release(action: 'publish' | 'new-version'): Promise<void> {
   if (itemId.value === null || frame === undefined) return
 
-  const pass = readFramePass(frame.auth.getAuthData())
+  const pass = await framePass(frame.auth)
   if (pass === null) {
     saveFailure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
@@ -396,7 +396,7 @@ async function openCard(newItemId: number, typeId: number): Promise<void> {
 async function save(): Promise<void> {
   if (draft.value === null || itemId.value === null || frame === undefined) return
 
-  const pass = readFramePass(frame.auth.getAuthData())
+  const pass = await framePass(frame.auth)
   if (pass === null) {
     failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return

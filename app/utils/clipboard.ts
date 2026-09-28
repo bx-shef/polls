@@ -35,10 +35,14 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 function copyThroughSelection(text: string): boolean {
   const area = document.createElement('textarea')
   area.value = text
+  // ⚠ `readonly`: фокус на редактируемом поле в мобильном клиенте Битрикс24 (WebKit на iOS)
+  // поднимал бы клавиатуру на мгновение копирования. Шрифт 16 px — меньший iOS встречает
+  // увеличением страницы. Нашли `/review` и `/code-review` в PR #89 (живьём не проверено).
+  area.readOnly = true
   // ⚠ `fixed` в левом верхнем углу, а не просто в конце документа: выделение переводит фокус
   // на поле, и поле за краем экрана браузер прокрутил бы в видимость — вкладка дёрнулась бы
   // на ровном месте.
-  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;'
+  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;font-size:16px;'
 
   // ⚠ Фокус возвращается туда, где был. Выделение уводит его на временное поле, а поле тут же
   // удаляется — и человек, копировавший с клавиатуры, оставался бы с фокусом «нигде».
@@ -46,6 +50,8 @@ function copyThroughSelection(text: string): boolean {
   document.body.appendChild(area)
   try {
     area.select()
+    // `select()` в WebKit на iOS выделения не создаёт — только диапазоном; без него копировать нечего.
+    area.setSelectionRange(0, text.length)
     return document.execCommand('copy')
   }
   catch {

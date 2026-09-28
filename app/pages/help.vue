@@ -53,6 +53,9 @@ const llmsUrl = `${useRequestURL().origin}/llms.txt`
 const copied = ref(false)
 /** Скопировать не вышло ни одним путём — сказано, что скопировать руками. */
 const copyFailed = ref(false)
+/** Что делать, если браузер не дал скопировать: на телефоне клавиши Ctrl нет — там долгое нажатие. */
+const COPY_FAILED_HINT = 'Браузер не дал скопировать сам. Выделите инструкцию и адрес справки выше '
+  + 'и скопируйте: Ctrl+C (на Mac — Cmd+C) или долгим нажатием на телефоне.'
 
 /**
  * Скопировать инструкцию вместе с адресом справки.
@@ -120,14 +123,14 @@ async function copyPrompt(): Promise<void> {
             @click="copyPrompt"
           />
         </div>
+        <!-- Живая область стоит всегда, меняется только текст: появившуюся уже с текстом
+             экранные дикторы часто не зачитывают (`/review`, `/code-review`, PR #89). -->
         <p
-          v-if="copyFailed"
           class="text-sm"
           role="status"
           data-testid="faq-agent-copy-hint"
         >
-          Браузер не дал скопировать сам. Выделите инструкцию и адрес справки выше и нажмите Ctrl+C
-          (на Mac — Cmd+C).
+          {{ copyFailed ? COPY_FAILED_HINT : '' }}
         </p>
       </div>
     </B24Card>

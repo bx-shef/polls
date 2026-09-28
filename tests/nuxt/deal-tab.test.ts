@@ -36,15 +36,34 @@ const AUTH = {
   member_id: 'a223c6b3710f85df22e9377d6c4f7553',
 }
 
+/** Что выдаёт окно портала на продление: тот же пропуск с новым токеном. */
+const RENEWED = { ...AUTH, access_token: 'продлённый-токен' }
+
 /** Что портал положил во фрейм. `ID` строкой и заглавными — ровно так, как приходит вживую. */
 let placementOptions: unknown = { ID: '42' }
 /** Есть ли вообще связь с порталом: `false` — SDK не смог договориться с родительским окном. */
 let frameWorks = true
+/**
+ * Что сейчас отдаёт `getAuthData()`. `false` — токен прожил свой час: ровно так отвечает SDK
+ * (`dist/esm/frame/auth.mjs`), пока его не продлят вызовом `refreshAuth()`.
+ */
+let authData: unknown = AUTH
 
 vi.mock('@bitrix24/b24jssdk', () => ({
   initializeB24Frame: async () => {
     if (!frameWorks) throw new Error('нет связи с порталом')
-    return { placement: { options: placementOptions }, auth: { getAuthData: () => AUTH } }
+    return {
+      placement: { options: placementOptions },
+      auth: {
+        getAuthData: () => authData,
+        // Как у SDK: ответ окна портала приходит не сразу, и новый токен запоминается у себя.
+        refreshAuth: async () => {
+          await new Promise(resolve => setTimeout(resolve, 0))
+          authData = RENEWED
+          return RENEWED
+        },
+      },
+    }
   },
 }))
 
@@ -65,31 +84,39 @@ let surveysThrows = false
 /** Что отдаёт список выпущенных ссылок и чем отвечает отзыв. */
 let linksReply: unknown = { ok: true, links: [] }
 let revokeReply: unknown = { ok: true }
+/** Роут списка ссылок упал целиком — 503 «портал недоступен», 429 ограничителя частоты. */
+let linksThrows = false
+/** Пока не разрешён, список ссылок не отвечает: так проверяется, что перечитка ждёт ОБА ответа. */
+let linksGate: Promise<void> | null = null
 /** Порядок обращений: на нём держится главный гвард перевыпуска. */
 let order: string[] = []
+/** Последнее тело каждого роута: что именно вкладка отправила на сервер. */
+let bodies: Record<string, Record<string, unknown>> = {}
 
 registerEndpoint('/api/portal/surveys', defineEventHandler(async (event) => {
-  await readBody(event)
+  bodies.surveys = await readBody(event)
   order.push('surveys')
   if (surveysThrows) throw new Error('портал недоступен')
   return surveysReply
 }))
 
 registerEndpoint('/api/portal/issue', defineEventHandler(async (event) => {
-  await readBody(event)
+  bodies.issue = await readBody(event)
   issueCalls += 1
   order.push('issue')
   return issueReply
 }))
 
 registerEndpoint('/api/portal/links', defineEventHandler(async (event) => {
-  await readBody(event)
+  bodies.links = await readBody(event)
   order.push('links')
+  if (linksGate !== null) await linksGate
+  if (linksThrows) throw new Error('портал недоступен')
   return linksReply
 }))
 
 registerEndpoint('/api/portal/revoke', defineEventHandler(async (event) => {
-  await readBody(event)
+  bodies.revoke = await readBody(event)
   order.push('revoke')
   return revokeReply
 }))
@@ -138,10 +165,14 @@ const ACTIVE_LINK = {
 beforeEach(() => {
   placementOptions = { ID: '42' }
   frameWorks = true
+  authData = AUTH
   issueCalls = 0
   linksReply = { ok: true, links: [] }
+  linksThrows = false
+  linksGate = null
   revokeReply = { ok: true }
   order = []
+  bodies = {}
   surveysReply = { ok: true, surveys: SURVEYS }
   surveysThrows = false
   issueReply = { ok: true, url: URL, expiresAt: '2026-10-16T00:00:00.000Z' }
@@ -297,6 +328,22 @@ describe('выбор анкеты — карточками, выпуск — к�
     expect(page.text()).toContain(`версия${NBSP}3 · 2${NBSP}раздела · 5${NBSP}вопросов`)
   })
 
+  it('выпускает по той карточке, которую выбрали, — её код и её версию', async () => {
+    // Выбор хранит ключ `код:версия`, анкету по нему находит общая таблица `surveyByKey`.
+    // С одной карточкой на экране ошибку «взяли не ту» не поймать: выпустилась бы единственная.
+    // Перепутай вкладка карточки — клиент заполнял бы чужую анкету. Попросил тестировщик PR #89.
+    surveysReply = { ok: true, surveys: [...SURVEYS, { code: 'brand', version: 1, title: 'Оценка бренда', sections: 1, questions: 3 }] }
+    const page = await openTab()
+    await settle()
+
+    await pick(page, 'brand:1')
+    await page.find('[data-testid="issue"]').trigger('click')
+    await settle()
+
+    expect(bodies.issue).toMatchObject({ dealId: 42, surveyCode: 'brand', surveyVersion: 1 })
+    expect(page.find('[data-testid="issued"]').text()).toContain('«Оценка бренда»')
+  })
+
   it('следующую ссылку выбирают заново, прежний выбор не остаётся', async () => {
     // Оставшийся выбор превратил бы привычное нажатие «Выпустить ссылку» в лишний выпуск.
     const page = await openTab()
@@ -371,8 +418,9 @@ describe('«Обновить» (issue #84, п. 1)', () => {
   })
 
   it('не убирает только что выпущенную ссылку', async () => {
-    // ⚠ Токен показывается ОДИН раз, у нас лежит только его хеш. Перечитка, смахнувшая адрес
-    // с экрана, отняла бы его навсегда.
+    // ⚠ У нас лежит только хеш токена, а в CRM адрес попадает не всегда: запись последним шагом
+    // выпуска может не пройти, а на порталах до #87 поля «Ссылка на анкету» в карточке нет.
+    // Перечитка, смахнувшая адрес с экрана, отняла бы самое удобное место его скопировать.
     const page = await openTab()
     await settle()
     await issueLink(page)
@@ -397,6 +445,72 @@ describe('«Обновить» (issue #84, п. 1)', () => {
     expect((page.find('[data-testid="issued"] input').element as HTMLInputElement).value).toBe(URL)
     expect(page.find('[data-testid="failure"]').exists()).toBe(false)
     expect(page.find('[data-testid="refusal"]').findAll('button').map(candidate => candidate.text())).toContain('Обновить')
+  })
+
+  it('не убирает её и когда перечитка вернула «ещё настраивается»', async () => {
+    // Администратор переустанавливает приложение, пока вкладка открыта. Карточка выпуска стояла
+    // веткой той же цепочки, что и «ещё настраивается», и пряталась вместе с выбором.
+    // Нашли `/review` и `/code-review` в PR #89.
+    const page = await openTab()
+    await settle()
+    await issueLink(page)
+    surveysReply = { ok: false, reason: 'not-provisioned' }
+
+    await page.find('[data-testid="refresh"]').trigger('click')
+    await settle()
+
+    expect(page.text()).toContain('ещё настраивается')
+    expect((page.find('[data-testid="issued"] input').element as HTMLInputElement).value).toBe(URL)
+  })
+
+  it('ГЛАВНОЕ: перечитка кончается, только когда пришли ОБА ответа', async () => {
+    // ⚠ `Promise.all` отдавал управление на первом отказе: кнопки снова активны, а второй запрос
+    // ещё идёт — и его поздний ответ затирал список, прочитанный уже после выпуска: ссылки,
+    // выпущенной секунду назад, в нём нет. Нашли `/review` и `/code-review` в PR #89.
+    const page = await openTab()
+    await settle()
+    let release!: () => void
+    linksGate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    surveysThrows = true
+
+    await page.find('[data-testid="refresh"]').trigger('click')
+    await settle()
+
+    expect(page.find('[data-testid="refresh"]').attributes('disabled')).toBeDefined()
+
+    release()
+    await settle()
+
+    expect(page.find('[data-testid="refresh"]').attributes('disabled')).toBeUndefined()
+    expect(page.find('[data-testid="refusal"]').text()).toContain('могут быть устаревшими')
+  })
+
+  it('повторный отказ первой загрузки говорит о себе иначе — временем попытки', async () => {
+    // ⚠ Плашка, слово в слово прежняя после нажатия «Обновить», неотличима от кнопки, которая
+    // не сработала, — та самая немая кнопка. Нашли `/review` и `/code-review` в PR #89.
+    surveysThrows = true
+    const page = await openTab()
+    await settle()
+    const before = page.find('[data-testid="failure"]').text()
+
+    await page.find('[data-testid="failure"]').findAll('button').find(candidate => candidate.text() === 'Обновить')!.trigger('click')
+    await settle()
+
+    expect(before).not.toContain('Последняя попытка')
+    expect(page.find('[data-testid="failure"]').text()).toContain('Последняя попытка')
+  })
+
+  it('«опросов пока нет» — с кнопкой «Обновить» в самой плашке', async () => {
+    // Совет «опубликуйте и нажмите «Обновить»»: на узком экране в шапке «Обновить» — только
+    // значок, и без кнопки рядом совет было бы нечем выполнить. Нашёл `/review` в PR #89.
+    surveysReply = { ok: true, surveys: [] }
+    const page = await openTab()
+    await settle()
+
+    const empty = page.find('[data-testid="no-surveys"]')
+    expect(empty.findAll('button').map(candidate => candidate.text())).toContain('Обновить')
   })
 
   it('не убирает её и когда выпускать больше не по чему', async () => {
@@ -471,8 +585,7 @@ describe('«Обновить» (issue #84, п. 1)', () => {
 describe('выпущенные ссылки', () => {
   it('показывает уже выпущенные ссылки, а не только что выпущенную', async () => {
     // ⚠ Ради этого задача и заводилась (issue #20). Закрыл вкладку — и узнать, выпускал ли
-    // ты что-нибудь по этой сделке, было нельзя: сам токен не покажется больше никогда,
-    // у нас лежит только его хеш.
+    // ты что-нибудь по этой сделке, было нельзя.
     linksReply = { ok: true, links: [ACTIVE_LINK] }
     const page = await openTab()
     await settle()
@@ -491,6 +604,78 @@ describe('выпущенные ссылки', () => {
     const row = page.find('[data-testid="issued-link"]')
     expect(row.text()).toContain('Оценка работы по проекту')
     expect(row.text()).not.toContain('Ромашка')
+  })
+
+  it('отозванная и истёкшая — своими словами и без кнопок; дата — только у истёкшей', async () => {
+    // «Отозвана» — действие человека, «Истекла» — течение времени, и при разборе «почему клиент
+    // не ответил» разница между ними и есть весь ответ. Когда ссылку отозвали, портал не хранит:
+    // дата у отозванной была бы сроком, который уже ничего не значит. Середина дня, а не полночь, —
+    // чтобы дата не зависела от часового пояса машины. Попросил тестировщик PR #89.
+    const noon = '2026-10-16T12:00:00.000Z'
+    linksReply = { ok: true, links: [
+      { ...ACTIVE_LINK, itemId: 55, state: 'revoked', expiresAt: noon },
+      { ...ACTIVE_LINK, itemId: 56, state: 'expired', expiresAt: noon },
+      { ...ACTIVE_LINK, itemId: 57, state: 'completed', completedAt: '2026-09-28T12:00:00.000Z', score: null },
+    ] }
+    const page = await openTab()
+    await settle()
+
+    const [revoked, expired, completed] = page.findAll('[data-testid="issued-link"]')
+    expect(revoked!.text()).toContain('Отозвана')
+    expect(revoked!.text()).not.toContain('октября')
+    expect(expired!.text()).toContain('Истекла')
+    expect(expired!.text()).toContain('истекла 16 октября 2026 г.')
+    // Пройдена без балла — дата есть, «балл» не выдуман.
+    expect(completed!.text()).toContain('пройдена 28 сентября 2026 г.')
+    expect(completed!.text()).not.toContain('балл')
+    for (const row of [revoked!, expired!, completed!]) expect(row.findAll('button')).toHaveLength(0)
+  })
+
+  it('ГЛАВНОЕ: сорвавшаяся перечитка не стирает список — «ничего не выпускали» было бы неправдой', async () => {
+    // ⚠ Прежде любой отказ — 503 «портал недоступен», 429 ограничителя частоты — молча ставил
+    // пустой список, и раздел «Выпущенные ссылки» исчезал: менеджер решал, что по сделке ничего
+    // не выпускали, и выпускал вторую живую ссылку. Нашли `/review` и `/code-review` в PR #89.
+    linksReply = { ok: true, links: [ACTIVE_LINK] }
+    const page = await openTab()
+    await settle()
+    linksThrows = true
+
+    await page.find('[data-testid="refresh"]').trigger('click')
+    await settle()
+
+    expect(page.findAll('[data-testid="issued-link"]')).toHaveLength(1)
+    expect(page.find('[data-testid="refusal"]').text()).toContain('могут быть устаревшими')
+  })
+
+  it('список не пришёл при открытии — сказано, что ссылки могли выпускать', async () => {
+    // Списка на экране нет вовсе, и пустое место читается как «по сделке ничего не выпускали».
+    // «На экране они могут быть устаревшими» здесь было бы не о чем: экран пуст.
+    linksThrows = true
+    const page = await openTab()
+    await settle()
+
+    const refusal = page.find('[data-testid="refusal"]')
+    expect(refusal.text()).toContain('могли выпускать')
+    expect(refusal.findAll('button').map(candidate => candidate.text())).toContain('Обновить')
+    // Выбор анкеты на месте: выпуск — работа, за которой человек пришёл.
+    expect(page.find('[data-testid="issue"]').exists()).toBe(true)
+  })
+
+  it('на двойное нажатие «Отозвать» — один отзыв', async () => {
+    // ⚠ Кнопки гасятся перерисовкой, а второе нажатие в том же такте её не ждёт: защищаться
+    // обязана сама функция, как у выпуска. Второй отзыв — лишний запрос в лимиты REST клиента
+    // и второй ответ поверх первого. Нашли `/review` и `/code-review` в PR #89.
+    linksReply = { ok: true, links: [ACTIVE_LINK] }
+    const page = await openTab()
+    await settle()
+    order = []
+
+    const revoke = button(page, 'Отозвать')!
+    void revoke.trigger('click')
+    void revoke.trigger('click')
+    await settle()
+
+    expect(order.filter(step => step === 'revoke')).toHaveLength(1)
   })
 
   it('анкеты нет среди опубликованных — строка называет её кодом', async () => {
@@ -561,6 +746,36 @@ describe('выпущенные ссылки', () => {
   })
 })
 
+describe('фреймовый токен прожил час (PR #89)', () => {
+  it('ГЛАВНОЕ: вкладка продлевает токен у портала, а не отказывает навсегда', async () => {
+    // ⚠ `getAuthData()` отдаёт `false`, как только токен прожил час, а вкладка читала пропуск
+    // только им: «Обновить», выпуск, отзыв на вкладке, открытой дольше часа, отказывали до
+    // переоткрытия сделки. Нашли `/review` и `/code-review` в PR #89.
+    linksReply = { ok: true, links: [ACTIVE_LINK] }
+    const page = await openTab()
+    await settle()
+    authData = false
+
+    await page.find('[data-testid="refresh"]').trigger('click')
+    await settle()
+
+    expect(bodies.surveys!.authId).toBe('продлённый-токен')
+    expect(bodies.links!.authId).toBe('продлённый-токен')
+    expect(page.find('[data-testid="refusal"]').exists()).toBe(false)
+  })
+
+  it('и выпускает ссылку с продлённым токеном', async () => {
+    const page = await openTab()
+    await settle()
+    authData = false
+
+    await issueLink(page)
+
+    expect(bodies.issue!.authId).toBe('продлённый-токен')
+    expect(page.text()).toContain('Ссылка выпущена')
+  })
+})
+
 describe('копирование адреса во фрейме портала (issue #84, п. 4)', () => {
   /** Отвечает ли `execCommand('copy')` успехом — запасной путь помощника. */
   let execCopies: boolean
@@ -597,6 +812,33 @@ describe('копирование адреса во фрейме портала (
 
     expect(page.find('[data-testid="copy-status"]').text()).toContain('Скопировано')
     expect(page.find('[data-testid="copy"]').attributes('aria-label')).toBe('Скопировано')
+  })
+
+  it('строка о копировании стоит в разметке ещё до нажатия', async () => {
+    // ⚠ Живую область (`role="status"`), появившуюся уже с текстом, экранные дикторы часто
+    // не зачитывают, а кнопка — только значок: человек с диктором не узнал бы, скопировалось ли.
+    // Нашли `/review` и `/code-review` в PR #89.
+    const page = await openTab()
+    await settle()
+    await issueLink(page)
+
+    const status = page.find('[data-testid="copy-status"]')
+    expect(status.exists()).toBe(true)
+    expect(status.attributes('role')).toBe('status')
+    expect(status.text()).toBe('')
+  })
+
+  it('«Скопировано» от прошлой ссылки не переезжает на следующую', async () => {
+    // В буфере лежит прежний адрес. «Скопировано» у новой ссылки было бы неправдой, и клиенту
+    // ушла бы прежняя — уже, может быть, отозванная. Попросил тестировщик PR #89.
+    const page = await issueAndCopy()
+    expect(page.find('[data-testid="copy-status"]').text()).toContain('Скопировано')
+
+    await button(page, 'Выпустить ещё одну')!.trigger('click')
+    await issueLink(page)
+
+    expect(page.find('[data-testid="copy-status"]').text()).toBe('')
+    expect(page.find('[data-testid="copy"]').attributes('aria-label')).toBe('Скопировать ссылку')
   })
 
   it('не копируется никак — адрес выделен, и сказано нажать Ctrl+C', async () => {

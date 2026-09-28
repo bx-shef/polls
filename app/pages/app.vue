@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { DEAL_TAB_TITLE, TEMPLATE_SP_TITLE } from '#shared/portal-names'
-import { readFramePass } from '~/utils/frame-auth'
+import type { SurveyChoice } from '#shared/survey-choice'
+import { framePass } from '~/utils/frame-auth'
 import { helpRouteFor } from '~/utils/help'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
@@ -21,11 +22,8 @@ import { isPreview, portalGate } from '~/utils/in-portal'
 
 definePageMeta({ layout: 'portal' })
 
-interface Survey {
-  code: string
-  version: number
-  title: string
-}
+/** A published survey the start screen lists: the shared reply shape (`shared/survey-choice.ts`). */
+type Survey = Pick<SurveyChoice, 'code' | 'version' | 'title'>
 
 /**
  * The shape `/api/portal/surveys` actually answers with.
@@ -119,7 +117,7 @@ onMounted(async () => {
 
 /** `frame` параметром, а не из замыкания: `!` при рефакторинге ломается молча. */
 async function loadSurveys(connection: B24Frame) {
-  const pass = readFramePass(connection.auth.getAuthData())
+  const pass = await framePass(connection.auth)
   if (pass === null) throw new Error('нет данных авторизации фрейма')
 
   const result = await $fetch<SurveysReply>(

@@ -4,6 +4,7 @@ import {
   CONTACT_ENTITY_TYPE_ID,
   DEAL_ENTITY_TYPE_ID,
 } from '../portals/smart-processes'
+import type { SurveyChoice } from '../../../shared/survey-choice'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -106,16 +107,9 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
   return published
 }
 
-/** Карточка анкеты в выборе вкладки сделки: что выбрать и что о ней сказать одной строкой. */
-export interface SurveyChoice {
-  code: string
-  version: number
-  title: string
-  /** Сколько разделов в версии. */
-  sections: number
-  /** Сколько вопросов во всех разделах вместе. */
-  questions: number
-}
+// Форма карточки выбора — общая со страницами (`shared/survey-choice.ts`): описанная здесь,
+// она расходилась бы с их копиями молча.
+export type { SurveyChoice }
 
 /**
  * Reduces a published template to its card in the deal tab's picker.

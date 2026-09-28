@@ -4,8 +4,10 @@ import CopyIcon from '@bitrix24/b24icons-vue/outline/CopyIcon'
 import RefreshIcon from '@bitrix24/b24icons-vue/outline/RefreshIcon'
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { DEAL_TAB_TITLE, TEMPLATE_SP_TITLE, TEMPLATE_TAB_TITLE } from '#shared/portal-names'
+import { formatScore } from '#shared/score-format'
+import type { SurveyChoice } from '#shared/survey-choice'
 import { copyToClipboard } from '~/utils/clipboard'
-import { readFramePass } from '~/utils/frame-auth'
+import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { dealIdFrom } from '~/utils/placement'
 
@@ -22,15 +24,8 @@ import { dealIdFrom } from '~/utils/placement'
  * Поэтому наружу уходит только пропуск — `member_id` и фреймовый токен, — а работает сервер.
  */
 
-/** Опубликованная анкета, как её отдаёт сервер: чем выбирать, без самой схемы. */
-interface Survey {
-  code: string
-  version: number
-  title: string
-  /** Сколько разделов и вопросов в версии — строчка под названием карточки. */
-  sections: number
-  questions: number
-}
+/** A published survey as the server sends it: what to choose by, without the schema itself. */
+type Survey = SurveyChoice
 
 /** Выпущенная ссылка, как её отдаёт сервер: состояние уже посчитано там. */
 interface IssuedLink {
@@ -84,11 +79,30 @@ const REFUSALS: Record<string, string> = {
  */
 const STALE_REFUSALS = new Set(['survey-gone', 'lists-stale'])
 
-/** Списки не пришли при открытии. Совет — кнопка «Обновить» в той же плашке, а не «обновите страницу». */
-const LOAD_FAILURE = 'Не удалось получить список опросов с портала. Нажмите «Обновить», чтобы попробовать ещё раз.'
+/**
+ * The lists did not arrive when the tab opened. The advice is the «Обновить» button in the same box.
+ *
+ * ⚠ Повторный отказ говорит о себе иначе — временем попытки. Иначе нажатие «Обновить», снова
+ * не удавшееся, оставляло плашку слово в слово прежней, и «повторил, и не вышло» было неотличимо
+ * от «кнопка не сработала» — та самая немая кнопка, от которой вкладка лечится. Нашли `/review`
+ * и `/code-review` в PR #89.
+ */
+function loadFailure(again: boolean): string {
+  const when = again ? ` Последняя попытка — в ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}.` : ''
+  return `Не удалось получить список опросов с портала.${when} Нажмите «Обновить», чтобы попробовать ещё раз.`
+}
 
 /** Перечитка сорвалась, а прежние списки на экране есть: они остаются, и сказано, что могли устареть. */
-const REFRESH_FAILURE = 'Не удалось перечитать анкеты с портала — на экране может быть устаревший список. Попробуйте обновить ещё раз.'
+const REFRESH_FAILURE = 'Не удалось перечитать списки с портала — на экране они могут быть устаревшими. Попробуйте обновить ещё раз.'
+
+/**
+ * Список выпущенных ссылок не пришёл при открытии вкладки, а анкеты пришли.
+ *
+ * ⚠ Отдельным текстом, а не «могут быть устаревшими»: списка на экране нет вовсе, и пустое место
+ * читается как «по сделке ничего не выпускали». Ровно так и появляется вторая живая ссылка — дубль,
+ * ради которого список заводился. Поэтому совет — обновить ПРЕЖДЕ, чем выпускать.
+ */
+const LINKS_FAILURE = 'Не удалось получить с портала список уже выпущенных ссылок — по этой сделке их могли выпускать. Нажмите «Обновить», прежде чем выпускать новую.'
 
 const PLURAL = new Intl.PluralRules('ru-RU')
 
@@ -99,7 +113,7 @@ const PLURAL = new Intl.PluralRules('ru-RU')
 const NBSP = String.fromCharCode(0xA0)
 
 /**
- * Число со словом в нужной форме: «1 раздел», «3 раздела», «5 разделов».
+ * A number with its word in the right form: «1 раздел», «3 раздела», «5 разделов».
  *
  * Между числом и словом — неразрывный пробел: строка переносится по « · », а не между «3» и «раздела».
  */
@@ -108,7 +122,7 @@ function counted(value: number, one: string, few: string, many: string): string 
   return `${value}${NBSP}${form === 'one' ? one : form === 'few' ? few : many}`
 }
 
-/** Ключ анкеты в выборе. Код и версия вместе: две версии одной анкеты бывают опубликованы разом. */
+/** The survey's key in the picker. Code and version together: two versions can be published at once. */
 function surveyKey(survey: { code: string, version: number }): string {
   return `${survey.code}:${survey.version}`
 }
@@ -167,15 +181,39 @@ const refusalNear = ref<'top' | 'picker'>('top')
  * неактивна, пока ничего не выбрано.
  */
 const selected = ref('')
-const selectedSurvey = computed(() => surveys.value.find(survey => surveyKey(survey) === selected.value))
 
-/** Только что выпущенная ссылка. Токен в ней показывается ОДИН раз — у нас лежит только его хеш. */
+/** Published surveys by `code:version` — the one lookup the picker, the list and «Перевыпустить» share. */
+const surveyByKey = computed(() => new Map(surveys.value.map(survey => [surveyKey(survey), survey])))
+const selectedSurvey = computed(() => surveyByKey.value.get(selected.value))
+
+/**
+ * Только что выпущенная ссылка.
+ *
+ * ⚠ Смахнуть её с экрана дорого. У нас лежит только хеш токена, а в CRM адрес пишется последним
+ * шагом выпуска и не всегда: запись может не пройти, а на порталах, обустроенных до #87, поле
+ * «Ссылка на анкету» пока не стоит в карточке. Здесь — самое удобное место его скопировать.
+ * Прежний текст «токен показывается ОДИН раз» стал неправдой с #87; нашёл `/review` в PR #89.
+ */
 const issued = ref<{ url: string, expiresAt: string, title: string } | null>(null)
 const copied = ref(false)
-/** Скопировать не вышло ни одним путём: адрес выделен, и человеку сказано, какие клавиши нажать. */
+/** Скопировать не вышло ни одним путём: адрес выделен, и человеку сказано, что делать дальше. */
 const copyFailed = ref(false)
 /** Имя кнопки копирования — для подсказки и экранного диктора: сама кнопка — значок. */
 const copyLabel = computed(() => copied.value ? 'Скопировано' : 'Скопировать ссылку')
+/**
+ * Что вышло с копированием — строкой под полем.
+ *
+ * ⚠ Строка стоит в разметке ВСЕГДА, меняется только текст. Живую область (`role="status"`),
+ * появившуюся уже с текстом, экранные дикторы часто не зачитывают, а кнопка — только значок:
+ * человек с диктором не узнал бы, скопировалось ли. Нашли `/review` и `/code-review` в PR #89.
+ *
+ * ⚠ «Ctrl+C» не единственный совет: в мобильном клиенте Битрикс24 клавиатуры с Ctrl нет.
+ */
+const copyStatus = computed(() => {
+  if (copied.value) return 'Скопировано — вставьте ссылку в письмо или сообщение клиенту.'
+  if (copyFailed.value) return 'Браузер не дал скопировать сам. Адрес выделен — скопируйте его: Ctrl+C (на Mac — Cmd+C) или долгим нажатием на телефоне.'
+  return ''
+})
 const urlInput = useTemplateRef('urlInput')
 
 const issuing = ref(false)
@@ -240,7 +278,9 @@ onMounted(async () => {
 
   try {
     dealId.value = dealIdFrom(frame.placement.options, route.query)
-    if (!await readLists()) failure.value = LOAD_FAILURE
+    const read = await readLists()
+    if (!read.surveys) failure.value = loadFailure(false)
+    else if (!read.links) refuse('lists-stale', LINKS_FAILURE, 'top')
   }
   finally {
     loading.value = false
@@ -255,25 +295,25 @@ onMounted(async () => {
  * это компилировалось молча. На сервер уезжало `memberId: undefined`, то есть вкладка
  * не работала бы ни разу при полностью зелёном `pnpm check`.
  */
-function pass() {
-  const parsed = readFramePass(frame!.auth.getAuthData())
+async function pass() {
+  // Токен фрейма живёт час: `framePass` продлевает его у портала сам (разбор — у него).
+  const parsed = await framePass(frame!.auth)
   if (parsed === null) throw new Error('нет данных авторизации фрейма')
   return { memberId: parsed.memberId, authId: parsed.authId }
 }
 
 /**
- * Прочитать оба списка. `false` — не пришёл список анкет; список ссылок своих отказов не поднимает.
+ * Reads both lists, waiting for both answers, and says which of them arrived.
+ *
+ * ⚠ `allSettled`, а не `all`. `Promise.all` отдавал управление на первом отказе, и перечитка
+ * «заканчивалась» — кнопки снова активны, — пока второй запрос ещё шёл. Поздний ответ затирал
+ * список, прочитанный уже после выпуска: ссылки, выпущенной секунду назад, в нём не было. Ровно
+ * от этой гонки и гасятся кнопки на время обращений (`busy`). Нашли `/review` и `/code-review`
+ * в PR #89. Оба обращения по-прежнему идут одновременно — ждать их по очереди незачем.
  */
-async function readLists(): Promise<boolean> {
-  try {
-    // Список и выбор грузятся вместе: это два независимых обращения, и ждать их по очереди
-    // значит показывать ожидание вдвое дольше без единой причины.
-    await Promise.all([loadSurveys(), loadLinks()])
-    return true
-  }
-  catch {
-    return false
-  }
+async function readLists(): Promise<{ surveys: boolean, links: boolean }> {
+  const [surveysRead, linksRead] = await Promise.allSettled([loadSurveys(), loadLinks()])
+  return { surveys: surveysRead.status === 'fulfilled', links: linksRead.status === 'fulfilled' }
 }
 
 /**
@@ -283,21 +323,22 @@ async function readLists(): Promise<boolean> {
  * к порталу КЛИЕНТА, в его лимиты REST, а вкладка может висеть открытой часами: перечитка раз
  * в минуту тратила бы чужие лимиты на экран, на который никто не смотрит.
  *
- * ⚠ Только что выпущенную ссылку перечитка НЕ убирает — ни удачная, ни сорвавшаяся. Токен
- * показывается один раз, у нас лежит только его хеш: смахнув адрес с экрана, мы отняли бы его
- * навсегда. Поэтому сорвавшаяся перечитка поверх прежних списков — это отказ действия над ними,
- * а не `failure`, встающий вместо всего; `failure` остаётся только у вкладки, которой показать
- * нечего с самого открытия. Снимается он ПОСЛЕ ответа, а не до запроса: сними его заранее —
- * и на время перечитки из-под плашки выглядывала бы ветка «опросов пока нет».
+ * ⚠ Только что выпущенную ссылку перечитка НЕ убирает — ни удачная, ни сорвавшаяся: почему её
+ * дорого смахнуть с экрана — у `issued`. Поэтому сорвавшаяся перечитка поверх прежних списков —
+ * это отказ действия над ними, а не `failure`, встающий вместо всего; `failure` остаётся только
+ * у вкладки, которой показать нечего с самого открытия. Снимается он ПОСЛЕ ответа, а не до
+ * запроса: сними его заранее — и на время перечитки из-под плашки выглядывала бы ветка «опросов
+ * пока нет».
  */
 async function refresh(): Promise<void> {
   if (frame === undefined || busy.value) return
   refreshing.value = true
   refusal.value = ''
-  refusalNear.value = 'top'
   try {
-    if (await readLists()) failure.value = ''
-    else if (failure.value === '') refuse('lists-stale', REFRESH_FAILURE)
+    const read = await readLists()
+    if (!read.surveys && failure.value !== '') failure.value = loadFailure(true)
+    else if (read.surveys) failure.value = ''
+    if (failure.value === '' && !(read.surveys && read.links)) refuse('lists-stale', REFRESH_FAILURE, 'top')
   }
   finally {
     refreshing.value = false
@@ -307,7 +348,7 @@ async function refresh(): Promise<void> {
 async function loadSurveys() {
   const result = await $fetch<{ ok: boolean, reason?: string, surveys?: Survey[] }>(
     '/api/portal/surveys',
-    { method: 'POST', body: pass() },
+    { method: 'POST', body: await pass() },
   )
   // ⚠ Признак ставится заново на КАЖДОЙ перечитке, а не только поднимается: администратор мог
   // доустановить приложение, пока вкладка открыта, и «ещё настраивается» обязано уйти по «Обновить».
@@ -317,30 +358,49 @@ async function loadSurveys() {
 }
 
 /**
- * Список уже выпущенных ссылок.
+ * Reads the list of issued links; a failure throws and leaves the list on screen as it was.
  *
  * ⚠ Отказ загрузки списка НЕ мешает выпустить новую. Список — это память о прошлом,
  * а выпуск — работа, которую человек пришёл сделать: уронив вкладку целиком из-за первого,
  * мы отняли бы второе.
+ *
+ * ⚠ Сорвавшееся чтение список НЕ стирает. Прежде любой отказ — 503 «портал недоступен», 429
+ * ограничителя частоты — молча ставил пустой список, и раздел «Выпущенные ссылки» исчезал:
+ * менеджер решал, что по сделке ничего не выпускали, и выпускал вторую живую ссылку — ровно тот
+ * дубль, ради которого список заводился. Нашли `/review` и `/code-review` в PR #89. А ответ сервера
+ * «нет доступа» или «не настроено» — это правда о сделке, и тогда список честно пуст.
  */
-async function loadLinks() {
+async function loadLinks(): Promise<void> {
   if (dealId.value === null) return
+  const result = await $fetch<{ ok: boolean, links?: IssuedLink[] }>(
+    '/api/portal/links',
+    { method: 'POST', body: { ...(await pass()), dealId: dealId.value } },
+  )
+  links.value = result.ok ? result.links ?? [] : []
+}
+
+/** Re-reads the issued links after an action; a failure keeps the list and says it may be stale. */
+async function reloadLinks(near: 'top' | 'picker'): Promise<void> {
   try {
-    const result = await $fetch<{ ok: boolean, links?: IssuedLink[] }>(
-      '/api/portal/links',
-      { method: 'POST', body: { ...pass(), dealId: dealId.value } },
-    )
-    links.value = result.ok ? result.links ?? [] : []
+    await loadLinks()
   }
   catch {
-    links.value = []
+    refuse('lists-stale', REFRESH_FAILURE, near)
   }
 }
 
-/** Показать отказ действия: свой текст по причине, иначе общий. */
-function refuse(reason: string | undefined, fallback: string): void {
+/**
+ * Shows an action refusal where the action started: its own text by reason, otherwise the fallback.
+ *
+ * ⚠ Место — параметром, а не договорённостью «вызывающий выставит заранее». Прежде каждое действие
+ * обязано было само выставить `refusalNear` до вызова общих `issue` и `revoke`, и новый вызов,
+ * забывший это сделать, унаследовал бы место прошлого действия — вплоть до плашки у скрытого
+ * выбора, то есть немого отказа. Нашёл `/review` в PR #89.
+ */
+function refuse(reason: string | undefined, fallback: string, near: 'top' | 'picker'): void {
   refusal.value = REFUSALS[reason ?? ''] ?? fallback
   refusalStale.value = STALE_REFUSALS.has(reason ?? '')
+  refusalNear.value = near
 }
 
 /**
@@ -351,21 +411,23 @@ function refuse(reason: string | undefined, fallback: string): void {
  * не пройти наполовину, а за время, пока вкладка открыта, ссылку могли пройти.
  */
 async function revoke(link: IssuedLink) {
-  if (busyItem.value !== 0 || dealId.value === null) return
+  // ⚠ Сама себя защищает от гонки, а не надеется на погашенные кнопки: второй вызов в том же
+  // такте, до перерисовки, кнопку ещё видит активной. Перевыпуск зовёт её изнутри — он и держит
+  // свой флаг, поэтому здесь проверяются флаги прочих действий, а не общий `busy`.
+  if (busyItem.value !== 0 || issuing.value || refreshing.value || dealId.value === null) return
   busyItem.value = link.itemId
   refusal.value = ''
-  refusalNear.value = 'top'
 
   try {
     const result = await $fetch<{ ok: boolean, reason?: string }>(
       '/api/portal/revoke',
-      { method: 'POST', body: { ...pass(), dealId: dealId.value, itemId: link.itemId } },
+      { method: 'POST', body: { ...(await pass()), dealId: dealId.value, itemId: link.itemId } },
     )
-    if (!result.ok) refuse(result.reason, 'Не удалось отозвать ссылку. Попробуйте ещё раз.')
-    await loadLinks()
+    if (!result.ok) refuse(result.reason, 'Не удалось отозвать ссылку. Попробуйте ещё раз.', 'top')
+    await reloadLinks('top')
   }
   catch {
-    refuse(undefined, 'Не удалось отозвать ссылку. Попробуйте ещё раз.')
+    refuse(undefined, 'Не удалось отозвать ссылку. Попробуйте ещё раз.', 'top')
   }
   finally {
     busyItem.value = 0
@@ -382,10 +444,9 @@ async function revoke(link: IssuedLink) {
  */
 async function reissue(link: IssuedLink) {
   if (busy.value) return
-  refusalNear.value = 'top'
-  const survey = surveys.value.find(item => item.code === link.code && item.version === link.version)
+  const survey = surveyByKey.value.get(surveyKey(link))
   if (survey === undefined) {
-    refuse(undefined, 'Эту анкету сняли с публикации — перевыпустить по ней нельзя. Выберите другую.')
+    refuse(undefined, 'Эту анкету сняли с публикации — перевыпустить по ней нельзя. Выберите другую.', 'top')
     return
   }
 
@@ -393,15 +454,18 @@ async function reissue(link: IssuedLink) {
   try {
     await revoke(link)
     if (refusal.value !== '') return
-    await issue(survey)
+    // Перевыпуск нажимают в строке списка — и отказ его выпуска тоже над списком.
+    await issue(survey, 'top')
   }
   finally {
     reissuing.value = 0
   }
 }
 
-async function issue(survey: Survey) {
-  if (issuing.value || dealId.value === null) return
+/** Issues a link for the survey; a refusal is shown `near` the control the action started from. */
+async function issue(survey: Survey, near: 'top' | 'picker') {
+  // Защита от гонки — своя, как у `revoke`: почему — там.
+  if (issuing.value || busyItem.value !== 0 || refreshing.value || dealId.value === null) return
   issuing.value = true
   refusal.value = ''
 
@@ -410,7 +474,7 @@ async function issue(survey: Survey) {
       '/api/portal/issue',
       {
         method: 'POST',
-        body: { ...pass(), dealId: dealId.value, surveyCode: survey.code, surveyVersion: survey.version },
+        body: { ...(await pass()), dealId: dealId.value, surveyCode: survey.code, surveyVersion: survey.version },
       },
     )
     if (result.ok && result.url !== undefined) {
@@ -420,13 +484,13 @@ async function issue(survey: Survey) {
       // Следующую ссылку выбирают заново: «ещё одна» — обычно по другой анкете, а выбор,
       // оставшийся от прошлой, превратил бы привычное нажатие в лишний выпуск.
       selected.value = ''
-      await loadLinks()
+      await reloadLinks(near)
       return
     }
-    refuse(result.reason, 'Не удалось выпустить ссылку. Попробуйте ещё раз.')
+    refuse(result.reason, 'Не удалось выпустить ссылку. Попробуйте ещё раз.', near)
   }
   catch {
-    refuse(undefined, 'Не удалось выпустить ссылку. Попробуйте ещё раз.')
+    refuse(undefined, 'Не удалось выпустить ссылку. Попробуйте ещё раз.', near)
   }
   finally {
     issuing.value = false
@@ -434,7 +498,8 @@ async function issue(survey: Survey) {
 }
 
 /**
- * «Обновить» внутри плашки отказа — та же перечитка, что в шапке, кнопкой рядом с текстом.
+ * «Обновить» inside a refusal box — the same re-read as in the header, as a button next to the text.
+ *
  * Заменила совет «Обновите страницу», которому внутри карточки портала нечем следовать.
  */
 const refreshAction = computed(() => ({
@@ -448,11 +513,10 @@ const refreshAction = computed(() => ({
 /** Кнопки плашки отказа действия: «Обновить», только если отказ говорит, что списки устарели. */
 const refusalActions = computed(() => refusalStale.value ? [refreshAction.value] : undefined)
 
-/** Выпустить ссылку по выбранной карточке — второй шаг выбора. Отказ — у этой же кнопки. */
+/** Issues a link for the chosen card — the second step of the choice. A refusal shows at this button. */
 async function issueSelected(): Promise<void> {
   if (selectedSurvey.value === undefined || busy.value) return
-  refusalNear.value = 'picker'
-  await issue(selectedSurvey.value)
+  await issue(selectedSurvey.value, 'picker')
 }
 
 /**
@@ -464,29 +528,37 @@ async function issueSelected(): Promise<void> {
  */
 async function copyLink(): Promise<void> {
   if (issued.value === null) return
-  copied.value = await copyToClipboard(issued.value.url)
-  copyFailed.value = !copied.value
-  if (!copied.value) urlInput.value?.inputRef?.select()
+  const url = issued.value.url
+  const done = await copyToClipboard(url)
+  // Пока копирование шло, могли выпустить следующую ссылку: итог старой к новой не относится.
+  if (issued.value?.url !== url) return
+  copied.value = done
+  copyFailed.value = !done
+  if (!done) selectAddress(url)
 }
 
-/** Дата словами. Пусто — портал её не прислал, и выдумывать нечего. */
+/**
+ * Selects the address in its field, so the person has one step left.
+ *
+ * ⚠ `setSelectionRange`, а не только `select()`: в WebKit на iOS — это и мобильный клиент
+ * Битрикс24 — `select()` выделения не создаёт, и обещание «адрес выделен» было бы неправдой.
+ * Нашли `/review` и `/code-review` в PR #89.
+ */
+function selectAddress(url: string): void {
+  const input = urlInput.value?.inputRef as HTMLInputElement | undefined
+  if (input === undefined) return
+  input.focus()
+  input.select()
+  input.setSelectionRange(0, url.length)
+}
+
+/** A date in words. Empty — the portal did not send it, and there is nothing to invent. */
 function dateLabel(raw: string): string {
   if (raw === '') return ''
   const parsed = new Date(raw)
   return Number.isNaN(parsed.getTime())
     ? ''
     : parsed.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-}
-
-/**
- * Балл в русской записи — с запятой.
- *
- * ⚠ Та же запись, что у дела в ленте и у поля «Результат опроса» (`formatScore` на сервере):
- * одно прохождение не должно называться «7.5» во вкладке и «7,5» в карточке. Своя строка, а не
- * импорт: `app/` серверных модулей не импортирует — это граница слоёв.
- */
-function scoreLabel(score: number): string {
-  return String(score).replace('.', ',')
 }
 
 /**
@@ -499,7 +571,11 @@ function scoreLabel(score: number): string {
  * короткий и тоже её называет.
  */
 function surveyTitle(link: IssuedLink): string {
-  return surveys.value.find(survey => survey.code === link.code && survey.version === link.version)?.title ?? link.code
+  // Версию сняли, а та же анкета опубликована другой версией — её название, а не латинский код:
+  // иначе после выпуска версии 3 все строки по версии 2 превращались бы в «brand». `/code-review`.
+  return surveyByKey.value.get(surveyKey(link))?.title
+    ?? surveys.value.find(survey => survey.code === link.code)?.title
+    ?? link.code
 }
 
 /**
@@ -510,7 +586,7 @@ function surveyTitle(link: IssuedLink): string {
 function linkNote(link: IssuedLink): string {
   if (link.state === 'completed') {
     const when = dateLabel(link.completedAt)
-    return [when === '' ? '' : `пройдена ${when}`, link.score === null ? '' : `балл ${scoreLabel(link.score)}`]
+    return [when === '' ? '' : `пройдена ${when}`, link.score === null ? '' : `балл ${formatScore(link.score)}`]
       .filter(part => part !== '')
       .join(' · ')
   }
@@ -521,7 +597,15 @@ function linkNote(link: IssuedLink): string {
   return ''
 }
 
-/** Карточки выбора: название и строчка о содержании — «версия 2 · 3 раздела · 8 вопросов». */
+/**
+ * Rows of the issued-links list: title and note computed once per row.
+ *
+ * Считаются один раз на перечитку, а не на каждую перерисовку: пометка форматирует даты, а щелчок
+ * по карточке выбора перерисовывает всю вкладку.
+ */
+const linkRows = computed(() => links.value.map(link => ({ link, title: surveyTitle(link), note: linkNote(link) })))
+
+/** Picker cards: the title and one line on what is inside — «версия 2 · 3 раздела · 8 вопросов». */
 const surveyCards = computed(() => surveys.value.map(survey => ({
   value: surveyKey(survey),
   label: survey.title,
@@ -639,8 +723,7 @@ const issuedNote = computed(() => {
             <!--
               ⚠ Список стоит ПЕРВЫМ и показывается всегда, даже когда только что выпустили новую
               и даже когда выпускать сейчас не по чему. Ради него задача и заводилась: закрыл
-              вкладку — и узнать, выпускал ли ты что-нибудь по этой сделке, было нельзя, а сам
-              токен не покажется больше никогда.
+              вкладку — и узнать, выпускал ли ты что-нибудь по этой сделке, было нельзя.
 
               ⚠ ОДНА карточка со строками, а не карточка на каждую ссылку (issue #84, п. 3).
               Отдельные карточки во всю ширину, да ещё с лишним отступом поверх собственного
@@ -661,9 +744,14 @@ const issuedNote = computed(() => {
                 />
               </div>
               <B24Card :b24ui="{ body: 'p-0 sm:p-0' }">
-                <ul class="divide-y divide-(--ui-color-design-outline-content-divider)">
+                <!-- Список — `B24PageList`, а не свой `ul` с разделителями: в наборе он есть,
+                     и разделитель у него тот же, что у остальных списков портала (`/review`, PR #89). -->
+                <B24PageList
+                  as="ul"
+                  divide
+                >
                   <li
-                    v-for="link in links"
+                    v-for="{ link, title, note } in linkRows"
                     :key="link.itemId"
                     class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5"
                     data-testid="issued-link"
@@ -672,12 +760,12 @@ const issuedNote = computed(() => {
                       :color="STATES[link.state].color"
                       :label="STATES[link.state].label"
                     />
-                    <span class="font-medium">{{ surveyTitle(link) }}</span>
+                    <span class="font-medium">{{ title }}</span>
                     <span
-                      v-if="linkNote(link)"
+                      v-if="note"
                       class="text-sm text-(--ui-color-text-secondary)"
                     >
-                      {{ linkNote(link) }}
+                      {{ note }}
                     </span>
                     <div
                       v-if="link.state === 'active'"
@@ -701,16 +789,20 @@ const issuedNote = computed(() => {
                       />
                     </div>
                   </li>
-                </ul>
+                </B24PageList>
               </B24Card>
             </section>
 
             <!-- ⚠ «Появляются после переноса из старого решения» здесь было правдой до конструктора.
                  Теперь анкету собирают сами, и совет обязан вести туда, где это делается. -->
+            <!-- «Обновить» — кнопкой в самой плашке: на узком экране в шапке он только значок,
+                 и совет «нажмите «Обновить»» без кнопки рядом было бы нечем выполнить (`/review`). -->
             <B24Alert
               v-if="surveys.length === 0"
               color="air-secondary-accent"
+              data-testid="no-surveys"
               :description="`Выпускать нечего: на портале нет ни одной опубликованной анкеты. Соберите и опубликуйте её на вкладке «${TEMPLATE_TAB_TITLE}» в карточке «${TEMPLATE_SP_TITLE}», а потом нажмите «Обновить».`"
+              :actions="canRefresh ? [refreshAction] : undefined"
             >
               <template #title>
                 <span class="inline-flex items-center gap-1">
@@ -728,7 +820,10 @@ const issuedNote = computed(() => {
               data-testid="picker"
             >
               <div class="mb-1 flex items-center gap-1">
-                <h2 class="font-semibold">
+                <h2
+                  id="new-link-heading"
+                  class="font-semibold"
+                >
                   Новая ссылка
                 </h2>
                 <HelpLink
@@ -741,10 +836,12 @@ const issuedNote = computed(() => {
                 и будет действовать 30 дней.
               </p>
               <!-- Категорий у шаблонов нет, а без `category-key=""` набор сгруппировал бы карточки
-                   под пустым заголовком. -->
+                   под пустым заголовком. Имя группы — заголовок над ней: без него диктор объявлял
+                   «группа переключателей» без названия (`/code-review`, PR #89). -->
               <B24PageCardGroup
                 v-model="selected"
                 :items="surveyCards"
+                aria-labelledby="new-link-heading"
                 category-key=""
                 columns="3"
                 size="sm"
@@ -770,84 +867,84 @@ const issuedNote = computed(() => {
                 data-testid="refusal"
               />
             </section>
-
-            <!--
-              ⚠ Одним блоком: что выпущено, адрес с копированием внутри поля и «ещё одну»
-              (issue #84, п. 3). Раньше это были три отдельные полосы во всю ширину вкладки.
-
-              ⚠ Отдельно от выбора анкеты, а не его веткой: перечитка, после которой выпускать
-              стало не по чему (анкету сняли с публикации), не должна смахнуть с экрана адрес,
-              который больше не покажется никогда.
-            -->
-            <!--
-              ⚠ Карточка нейтральная, успех — значком у первой строки. Вариант `outline-success`
-              красил зелёным ВЕСЬ текст, и подсказка «браузер не дал скопировать» читалась как
-              успех, а длинный текст зелёным на белом — хуже, чем тёмным (видно на скриншоте).
-            -->
-            <B24Card
-              v-if="issued !== null"
-              data-testid="issued"
-            >
-              <div class="flex flex-col gap-3">
-                <p class="flex items-start gap-2">
-                  <CircleCheckIcon class="size-5 shrink-0 text-(--ui-color-accent-main-success)" />
-                  <span>
-                    <span class="font-semibold">Ссылка выпущена:</span>
-                    {{ issuedNote }}
-                  </span>
-                </p>
-                <!--
-                  ⚠ Кнопка копирования — значком, ровно как в примере «With copy button» у `B24Input`.
-                  С подписью она не помещалась в место, которое поле держит под значок: хвост адреса
-                  уходил ПОД кнопку и просвечивал сквозь неё. Подпись живёт в подсказке и `aria-label`,
-                  а что вышло — словами в строке ниже.
-                -->
-                <B24Input
-                  ref="urlInput"
-                  :model-value="issued.url"
-                  readonly
-                  class="w-full"
-                  aria-label="Адрес анкеты"
-                  :b24ui="{ trailing: 'pe-0.5' }"
-                >
-                  <template #trailing>
-                    <B24Tooltip
-                      :text="copyLabel"
-                      :content="{ side: 'right' }"
-                    >
-                      <B24Button
-                        :icon="copied ? CircleCheckIcon : CopyIcon"
-                        :aria-label="copyLabel"
-                        :b24ui="{ leadingIcon: copied ? 'text-(--ui-color-accent-main-success)' : 'text-(--ui-btn-color)' }"
-                        color="air-tertiary-no-accent"
-                        size="sm"
-                        data-testid="copy"
-                        @click="copyLink"
-                      />
-                    </B24Tooltip>
-                  </template>
-                </B24Input>
-                <p
-                  v-if="copied || copyFailed"
-                  class="text-sm"
-                  role="status"
-                  data-testid="copy-status"
-                >
-                  {{ copied
-                    ? 'Скопировано — вставьте ссылку в письмо или сообщение клиенту.'
-                    : 'Браузер не дал скопировать сам. Адрес выделен — нажмите Ctrl+C (на Mac — Cmd+C).' }}
-                </p>
-                <div v-if="surveys.length > 0">
-                  <B24Button
-                    size="sm"
-                    color="air-secondary-no-accent"
-                    label="Выпустить ещё одну"
-                    @click="issued = null"
-                  />
-                </div>
-              </div>
-            </B24Card>
           </template>
+
+          <!--
+            ⚠ Одним блоком: что выпущено, адрес с копированием внутри поля и «ещё одну»
+            (issue #84, п. 3). Раньше это были три отдельные полосы во всю ширину вкладки.
+
+            ⚠ Вне цепочки «ещё настраивается» / «сделка не определена» / выбор, а не её веткой:
+            перечитка, после которой выпускать стало не по чему (анкету сняли с публикации) или
+            которая вернула «ещё настраивается» (администратор переустанавливает приложение), не
+            должна смахнуть с экрана только что выпущенный адрес — почему, у `issued`. Внутри
+            цепочки карточка пряталась вместе со всем содержимым (`/review`, `/code-review`, PR #89).
+          -->
+          <!--
+            ⚠ Карточка нейтральная, успех — значком у первой строки. Вариант `outline-success`
+            красил зелёным ВЕСЬ текст, и подсказка «браузер не дал скопировать» читалась как
+            успех, а длинный текст зелёным на белом — хуже, чем тёмным (видно на скриншоте).
+          -->
+          <B24Card
+            v-if="issued !== null"
+            data-testid="issued"
+          >
+            <div class="flex flex-col gap-3">
+              <p class="flex items-start gap-2">
+                <CircleCheckIcon class="size-5 shrink-0 text-(--ui-color-accent-main-success)" />
+                <span>
+                  <span class="font-semibold">Ссылка выпущена:</span>
+                  {{ issuedNote }}
+                </span>
+              </p>
+              <!--
+                ⚠ Кнопка копирования — значком, ровно как в примере «With copy button» у `B24Input`.
+                С подписью она не помещалась в место, которое поле держит под значок: хвост адреса
+                уходил ПОД кнопку и просвечивал сквозь неё. Подпись живёт в подсказке и `aria-label`,
+                а что вышло — словами в строке ниже.
+              -->
+              <B24Input
+                ref="urlInput"
+                :model-value="issued.url"
+                readonly
+                class="w-full"
+                aria-label="Адрес анкеты"
+                :b24ui="{ trailing: 'pe-0.5' }"
+              >
+                <template #trailing>
+                  <B24Tooltip
+                    :text="copyLabel"
+                    :content="{ side: 'right' }"
+                  >
+                    <B24Button
+                      :icon="copied ? CircleCheckIcon : CopyIcon"
+                      :aria-label="copyLabel"
+                      :b24ui="{ leadingIcon: copied ? 'text-(--ui-color-accent-main-success)' : 'text-(--ui-btn-color)' }"
+                      color="air-tertiary-no-accent"
+                      size="sm"
+                      data-testid="copy"
+                      @click="copyLink"
+                    />
+                  </B24Tooltip>
+                </template>
+              </B24Input>
+              <!-- Живая область стоит всегда, меняется только текст: почему — у `copyStatus`. -->
+              <p
+                class="-mt-2 text-sm"
+                role="status"
+                data-testid="copy-status"
+              >
+                {{ copyStatus }}
+              </p>
+              <div v-if="surveys.length > 0">
+                <B24Button
+                  size="sm"
+                  color="air-secondary-no-accent"
+                  label="Выпустить ещё одну"
+                  @click="issued = null"
+                />
+              </div>
+            </div>
+          </B24Card>
         </template>
       </div>
     </template>

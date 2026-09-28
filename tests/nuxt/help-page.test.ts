@@ -108,7 +108,20 @@ describe('копирование инструкции для ИИ-помощни
     const page = await copyPrompt()
 
     expect(page.find('[data-testid="faq-agent-copy"]').text()).toBe('Скопировано')
-    expect(page.find('[data-testid="faq-agent-copy-hint"]').exists()).toBe(false)
+    expect(page.find('[data-testid="faq-agent-copy-hint"]').text()).toBe('')
+  })
+
+  it('живая область для диктора стоит в разметке ещё до нажатия', async () => {
+    // ⚠ Область `role="status"`, появившаяся в документе уже с текстом, экранные дикторы часто
+    // не зачитывают: подсказка «не вышло» прозвучала бы в пустоту. Поэтому область стоит всегда,
+    // а меняется только её текст. Нашли `/review` и `/code-review` в PR #89.
+    const Help = (await import('../../app/pages/help.vue')).default
+    const page = await mountSuspended(Help, { route: '/help' })
+
+    const hint = page.find('[data-testid="faq-agent-copy-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.attributes('role')).toBe('status')
+    expect(hint.text()).toBe('')
   })
 
   it('не вышло ни одним путём — говорит, как скопировать руками', async () => {

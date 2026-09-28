@@ -83,6 +83,41 @@ describe('копирование в буфер обмена', () => {
     expect(await copyToClipboard('текст')).toBe(false)
   })
 
+  it('iOS: `select()` выделения не создаёт — оно ставится диапазоном', async () => {
+    // Ровно так ведёт себя WebKit на iOS, то есть мобильный клиент Битрикс24. Без
+    // `setSelectionRange` браузер скопировал бы пустое выделение, а функция ответила бы
+    // «скопировано» — немая кнопка, только с надписью. Нашли `/review` и `/code-review` в PR #89.
+    const select = vi.spyOn(HTMLTextAreaElement.prototype, 'select').mockImplementation(() => {})
+    writeText.mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+
+    try {
+      expect(await copyToClipboard('https://опрос.рф/s/abc')).toBe(true)
+      expect(copied).toEqual([{ command: 'copy', selected: 'https://опрос.рф/s/abc' }])
+    }
+    finally {
+      select.mockRestore()
+    }
+  })
+
+  it('временное поле — только для чтения и шрифтом 16 px', async () => {
+    // Редактируемое поле в фокусе подняло бы на iOS клавиатуру на мгновение копирования,
+    // а шрифт мельче 16 px iOS встречает увеличением страницы. Та же находка PR #89.
+    let seen: { readOnly: boolean, fontSize: string } | null = null
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: () => {
+        const area = document.querySelector('textarea')!
+        seen = { readOnly: area.readOnly, fontSize: area.style.fontSize }
+        return true
+      },
+    })
+    writeText.mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+
+    await copyToClipboard('текст')
+
+    expect(seen).toEqual({ readOnly: true, fontSize: '16px' })
+  })
+
   it('убирает временное поле и возвращает фокус туда, где он был', async () => {
     // Иначе в документе копились бы невидимые поля с адресами анкет, а человек, копировавший
     // с клавиатуры, оставался бы с фокусом «нигде».
