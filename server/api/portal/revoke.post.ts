@@ -2,7 +2,7 @@ import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import { buildListIssuedCall, buildRevokeCall, isRevocable, readIssuedLinks } from '../../domain/invitations/issued-links'
-import { revokeLink } from '../../links/issue'
+import { readLinkStatuses, revokeLink } from '../../links/issue'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -59,13 +59,20 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'link-gone' as const }
   }
 
-  if (!isRevocable(target, new Date())) {
+  const status = (await readLinkStatuses(session.portal.id, [itemId])).get(itemId) ?? null
+  if (!isRevocable(target, new Date(), status)) {
     // Пройденную, отозванную и истёкшую гасить нечего. Это не ошибка: кнопку могли нажать
     // на списке, который успел устареть, пока вкладка была открыта.
     return { ok: false as const, reason: 'not-revocable' as const }
   }
 
-  await revokeLink(session.portal.id, itemId)
+  // ⚠ Ноль погашенных строк — стадию на портале НЕ пишем. Значит, наша база сказала «нет»:
+  // ответ уже принят (гонка с прохождением) или строки нет вовсе. Написав «Отозвана» после
+  // отказа базы, мы пометили бы пройденный опрос отозванным, и доставка, которая уже прошла,
+  // назад его не переведёт. Нашла безопасность в панели PR #93.
+  if (await revokeLink(session.portal.id, itemId) === 0) {
+    return { ok: false as const, reason: 'not-revocable' as const }
+  }
 
   const revoke = buildRevokeCall(refs.survey, itemId)
   await session.call(revoke.method, revoke.params)

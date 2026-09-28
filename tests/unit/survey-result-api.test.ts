@@ -47,6 +47,8 @@ let refs: Record<string, unknown>
 let access: unknown
 let cached: unknown
 let published: unknown[]
+/** Что говорит наша строка `link_index` об элементе: `null` — строки нет. */
+let linkStatus: string | null
 
 /** Элемент «Опрос», как его отдал бы портал, с нашими полями. */
 function item(fields: Record<string, unknown>) {
@@ -91,6 +93,8 @@ async function loadHandler() {
   }))
   vi.doMock('../../server/links/issue', () => ({
     cacheTemplate: async (...args: unknown[]) => void probe.cached.push(args),
+    readLinkStatuses: async (_portalId: string, ids: readonly number[]) =>
+      new Map(linkStatus === null ? [] : ids.map(id => [id, linkStatus] as const)),
   }))
   vi.doMock('../../server/utils/logger', () => ({
     logger: {
@@ -115,6 +119,7 @@ beforeEach(() => {
   access = { ok: true, item: item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, ANSWERS: JSON.stringify({ q1: SECRET }), STATE: 'completed' }) }
   cached = SCHEMA
   published = []
+  linkStatus = 'sent'
 })
 
 afterEach(() => {
@@ -202,20 +207,30 @@ describe('результат', () => {
   })
 
   it('пока ответа нет — отдаёт состояние приглашения, чтобы не обещать невозможного', async () => {
-    access = { ok: true, item: item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, STATE: 'expired' }) }
+    // Истечение — по сроку, как во вкладке сделки: статусом оно не отмечается нигде.
+    access = { ok: true, item: item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, EXPIRES_AT: '2026-09-01T00:00:00+03:00' }) }
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: true, completed: false, state: 'expired' })
   })
 
-  it('со штатными стадиями состояние приглашения читается из стадии, а не из старого поля', async () => {
-    // ⚠ После миграции ревизии 5 поле «Состояние» удалено, и прочитанное из него было бы пустым
-    // у всех приглашений: виджет обещал бы ответ по отозванной ссылке.
-    refs = { survey: { ...SURVEY, categoryId: 20 }, template: TEMPLATE_SP, revision: 5 }
-    access = { ok: true, item: { ...item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, STATE: 'sent' }), stageId: 'DT1046_20:FAIL' } }
+  it('отозванная — по нашей строке: страницу закрывает она', async () => {
+    linkStatus = 'revoked'
+    access = { ok: true, item: item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2 }) }
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: true, completed: false, state: 'revoked' })
+  })
+
+  it('ГЛАВНОЕ: стадия «Отозвана» при живой ссылке — виджет ждёт ответа, а не хоронит его', async () => {
+    // ⚠ Стадию с ревизии 5 двигает в канбане любой сотрудник, а страницу закрывает наша строка.
+    // Прочитав отзыв со стадии, виджет сказал бы «ответа не будет» — а клиент ответит, ссылка
+    // работает. Нашли `/code-review` и безопасность в панели PR #93.
+    refs = { survey: { ...SURVEY, categoryId: 20 }, template: TEMPLATE_SP, revision: 5 }
+    access = { ok: true, item: { ...item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, EXPIRES_AT: '2099-01-01T00:00:00+03:00' }), stageId: 'DT1046_20:FAIL' } }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true, completed: false, state: '' })
   })
 
   it('промах кэша: схема — с портала и обратно в кэш', async () => {

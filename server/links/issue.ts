@@ -1,4 +1,4 @@
-import { and, eq, ne } from 'drizzle-orm'
+import { and, desc, eq, inArray, ne } from 'drizzle-orm'
 import { getDb, schema } from '../db/client'
 import type { SurveyHeader } from '../domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../domain/surveys/model'
@@ -166,6 +166,34 @@ export async function revokeLink(portalId: string, itemId: number): Promise<numb
     .returning({ id: schema.linkIndex.id })
 
   return revoked.length
+}
+
+/**
+ * What our database says about the links of these portal elements: `item id → status`.
+ *
+ * ⚠ ОТЗЫВ РЕШАЕТ НАША СТРОКА, А НЕ СТАДИЯ НА ПОРТАЛЕ (ревизия 5, issue #84, п. 21). Страницу
+ * закрывает она (`decideLinkAccess`), а стадию «Отозвана» с ревизии 5 двигает любой сотрудник
+ * в канбане. Прочитав отзыв со стадии, вкладка сказала бы «отозвана» про работающую ссылку —
+ * ровно то ложное спокойствие, от которого `revoke.post.ts` держит порядок своих двух записей.
+ * Нашли `/code-review` и безопасность в панели PR #93.
+ *
+ * ⚠ Последняя строка элемента, а не любая. Номер элемента уникален в смарт-процессе, но
+ * пересозданный смарт-процесс считает номера с начала, и строки старых ссылок совпали бы
+ * с новыми. Новая всегда позже.
+ */
+export async function readLinkStatuses(portalId: string, itemIds: readonly number[]): Promise<Map<number, string>> {
+  if (itemIds.length === 0) return new Map()
+  const rows = await getDb()
+    .select({ itemId: schema.linkIndex.itemId, status: schema.linkIndex.status })
+    .from(schema.linkIndex)
+    .where(and(eq(schema.linkIndex.portalId, portalId), inArray(schema.linkIndex.itemId, [...itemIds])))
+    .orderBy(desc(schema.linkIndex.createdAt))
+
+  const statuses = new Map<number, string>()
+  for (const row of rows) {
+    if (!statuses.has(row.itemId)) statuses.set(row.itemId, row.status)
+  }
+  return statuses
 }
 
 /**

@@ -118,13 +118,18 @@ export function stageEntityId(ref: StagedRef): string {
 }
 
 /**
- * What a survey link's element says about it: `sent`, `completed`, `revoked`, or empty.
+ * Which state the element's stage (or old field) shows: `sent`, `completed`, `revoked`, or empty.
  *
- * Пусто — не знаем: стадия чужая или поле `STATE` пустое. Решает вызывающий; до ревизии 5
- * так и было.
+ * ⚠ ЭТО ОТРАЖЕНИЕ, А НЕ ПРАВДА О ССЫЛКЕ. Стадию двигают люди и роботы клиента; правду о ссылке
+ * решают закрытое поле «Дата прохождения» и наша строка `link_index` (`issuedState`). Отсюда
+ * читает только живая проверка `verify:link` — ей и нужно узнать, доехала ли наша запись.
+ * Пусто — не знаем: стадия чужая или поле `STATE` пустое.
  */
-export function surveyStateOf(ref: SmartProcessRef, item: Record<string, unknown>): string {
-  if (!isStaged(ref)) return asText(item[buildFieldName(ref.id, 'STATE')])
+export function surveyStateOf(ref: SmartProcessRef, item: Record<string, unknown>): SurveyState | '' {
+  if (!isStaged(ref)) {
+    const state = asText(item[buildFieldName(ref.id, 'STATE')])
+    return state === 'sent' || state === 'completed' || state === 'revoked' ? state : ''
+  }
   const code = stageCodeOf(ref, item.stageId)
   const found = (Object.keys(SURVEY_STAGES) as SurveyState[]).find(state => SURVEY_STAGES[state].code === code)
   return found ?? ''
@@ -135,6 +140,22 @@ export function surveyStateFields(ref: SmartProcessRef, state: SurveyState): Rec
   return isStaged(ref)
     ? { stageId: stageId(ref, SURVEY_STAGES[state].code) }
     : { [buildFieldName(ref.id, 'STATE')]: state }
+}
+
+/**
+ * Puts a survey link's element into a state, and changes nothing else.
+ *
+ * ⚠ ОТДЕЛЬНЫМ ВЫЗОВОМ, а не вместе с ответами. На штатной стадии клиент вправе сделать поля
+ * обязательными («заполнить до перехода в «Пройдена»»), и тогда портал отвергает всю запись
+ * целиком. Едь стадия в одном вызове с ответами, ответ крутился бы в буфере до предельного срока
+ * хранения и пропал — нарушение инварианта «ответ клиента не теряется никогда». Нашёл `/review`
+ * в панели PR #93.
+ */
+export function buildSurveyStateCall(ref: SmartProcessRef, itemId: number, state: SurveyState): PortalCall {
+  return {
+    method: 'crm.item.update',
+    params: { entityTypeId: ref.entityTypeId, id: itemId, useOriginalUfNames: 'Y', fields: surveyStateFields(ref, state) },
+  }
 }
 
 /**

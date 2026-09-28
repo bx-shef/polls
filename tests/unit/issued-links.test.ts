@@ -42,7 +42,6 @@ const link = (over: Partial<IssuedLink> = {}): IssuedLink => ({
   title: 'Бренд-платформа',
   code: 'brand',
   version: 1,
-  state: 'sent',
   expiresAt: '2026-10-24T00:00:00+03:00',
   completedAt: '',
   score: null,
@@ -84,7 +83,7 @@ describe('разбор ответа портала', () => {
     // из пустых строк. Молча и правдоподобно: элементы-то есть.
     const [read] = readIssuedLinks({ result: { items: [portalItem()] } }, SURVEY)
 
-    expect(read).toMatchObject({ itemId: 54, code: 'brand', version: 1, state: 'sent' })
+    expect(read).toMatchObject({ itemId: 54, code: 'brand', version: 1, expiresAt: '2026-10-24T00:00:00+03:00' })
   })
 
   it('кто выпустил — ответственный за элемент', () => {
@@ -150,12 +149,41 @@ describe('состояние ссылки', () => {
     // ⚠ Порядок проверок смысловой. «Её остановили» и «её не открыли вовремя» — разные
     // ответы на вопрос «почему клиент не ответил», и при разборе инцидента вся разница
     // именно в них. Показав «истекла» на отозванной, мы стёрли бы след собственного действия.
-    expect(issuedState(link({ state: SURVEY_STATE_REVOKED, expiresAt: PAST }), NOW)).toBe('revoked')
+    expect(issuedState(link({ expiresAt: PAST }), NOW, SURVEY_STATE_REVOKED)).toBe('revoked')
   })
 
   it('пройденная остаётся пройденной и после срока', () => {
     // У неё уже есть ответ клиента, и срок к ней отношения не имеет.
-    expect(issuedState(link({ state: 'completed', expiresAt: PAST }), NOW)).toBe('completed')
+    expect(issuedState(link({ completedAt: '2026-09-20T03:00:00+03:00', expiresAt: PAST }), NOW)).toBe('completed')
+  })
+
+  it('ГЛАВНОЕ: «пройдена» — по дате прохождения, «отозвана» — по нашей строке, стадия не решает ничего', () => {
+    // ⚠ Стадию с ревизии 5 двигает в канбане любой сотрудник и робот клиента. Прочитав «пройдена»
+    // и «отозвана» с неё, вкладка показывала бы погашенной работающую ссылку, а пройденную,
+    // уведённую клиентом в свою стадию, — живой, и её можно было бы «отозвать». Дату прохождения
+    // пишет только доставка, вместе с ответами; страницу закрывает наша строка `link_index`.
+    // Нашли `/review`, `/code-review` и безопасность в панели PR #93.
+    const staged = { ...SURVEY, categoryId: 16 }
+    const [dragged] = readIssuedLinks({ result: { items: [portalItem({ stageId: 'DT1040_16:FAIL' })] } }, staged)
+    const [answered] = readIssuedLinks({ result: { items: [portalItem({
+      stageId: 'DT1040_16:NEW',
+      [buildFieldName(SURVEY.id, 'COMPLETED_AT')]: '2026-09-20T03:00:00+03:00',
+    })] } }, staged)
+
+    expect(issuedState(dragged!, NOW, 'sent')).toBe('active')
+    expect(isRevocable(dragged!, NOW, 'sent')).toBe(true)
+    expect(issuedState(answered!, NOW, 'completed')).toBe('completed')
+    expect(isRevocable(answered!, NOW, 'completed')).toBe(false)
+  })
+
+  it('ответ принят, но ещё не доставлен — уже пройдена: гасить его нечего', () => {
+    expect(issuedState(link(), NOW, 'completed')).toBe('completed')
+  })
+
+  it('пройденная не становится отозванной, даже если база и портал разошлись', () => {
+    // Ответ клиента в портале — сильнейший факт: «отозвано» задним числом значило бы,
+    // что его как будто не было.
+    expect(issuedState(link({ completedAt: '2026-09-20T03:00:00+03:00' }), NOW, SURVEY_STATE_REVOKED)).toBe('completed')
   })
 
   it('без срока не выдумывает просрочку', () => {
@@ -165,10 +193,10 @@ describe('состояние ссылки', () => {
   })
 
   it('гасить можно только живую', () => {
-    expect(isRevocable(link(), NOW)).toBe(true)
-    expect(isRevocable(link({ state: 'completed' }), NOW)).toBe(false)
-    expect(isRevocable(link({ state: SURVEY_STATE_REVOKED }), NOW)).toBe(false)
-    expect(isRevocable(link({ expiresAt: PAST }), NOW)).toBe(false)
+    expect(isRevocable(link(), NOW, 'sent')).toBe(true)
+    expect(isRevocable(link({ completedAt: '2026-09-20T03:00:00+03:00' }), NOW, 'sent')).toBe(false)
+    expect(isRevocable(link(), NOW, SURVEY_STATE_REVOKED)).toBe(false)
+    expect(isRevocable(link({ expiresAt: PAST }), NOW, 'sent')).toBe(false)
   })
 })
 

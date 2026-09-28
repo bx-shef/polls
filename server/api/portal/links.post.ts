@@ -2,6 +2,7 @@ import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import { buildListIssuedCall, issuedState, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { readLinkStatuses } from '../../links/issue'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -16,7 +17,8 @@ import { openPortalSession } from './-session'
  *
  * ⚠ Список читается С ПОРТАЛА, а не из нашей базы. Каждая выпущенная ссылка и есть элемент
  * смарт-процесса «Опрос»; у нас лежит только то, чего в портале быть не может. Разбор —
- * в `server/domain/invitations/issued-links.ts`.
+ * в `server/domain/invitations/issued-links.ts`. Одно исключение — «отозвана»: её решает наша
+ * строка, которая и закрывает страницу, а не стадия, которую двигают в канбане (там же).
  *
  * ⚠ Доступ к сделке проверяется ФРЕЙМОВЫМ ТОКЕНОМ сотрудника, как и при выпуске. Читаем мы
  * своим токеном — у него прав больше любого отдельного сотрудника, — а номер сделки приходит
@@ -48,6 +50,7 @@ export default defineEventHandler(async (event) => {
 
   const listing = buildListIssuedCall(refs.survey, dealId)
   const links = readIssuedLinks(await session.call(listing.method, listing.params), refs.survey)
+  const statuses = await readLinkStatuses(session.portal.id, links.map(link => link.itemId))
   const now = new Date()
 
   return {
@@ -59,7 +62,7 @@ export default defineEventHandler(async (event) => {
       title: link.title,
       code: link.code,
       version: link.version,
-      state: issuedState(link, now),
+      state: issuedState(link, now, statuses.get(link.itemId) ?? null),
       expiresAt: link.expiresAt,
       completedAt: link.completedAt,
       score: link.score,

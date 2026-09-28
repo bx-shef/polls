@@ -6,11 +6,10 @@ import { buildFieldName } from '../../domain/portals/smart-processes'
 import { isSurveyCard } from '../../domain/portals/userfield-type'
 import type { SurveyTemplate } from '../../domain/surveys/model'
 import { buildResultSections, readAnswersField, readScoresField } from '../../domain/surveys/result-view'
-import { cacheTemplate } from '../../links/issue'
+import { cacheTemplate, readLinkStatuses } from '../../links/issue'
 import { findTemplate } from '../../links/store'
 import { logger } from '../../utils/logger'
 import { openPortalSession, type PortalSession } from './-session'
-import { surveyStateOf } from '../../domain/portals/stages'
 
 /**
  * Reads one survey element and hands the card widget a readable result.
@@ -72,7 +71,10 @@ export default defineEventHandler(async (event) => {
   const answers = readAnswersField(field('ANSWERS'))
   // Ответов нет — приглашение ещё не прошли. Это не ошибка; состояние уходит наружу, чтобы
   // виджет не обещал ответа по истёкшей или отозванной ссылке, по которой его уже не будет.
-  if (answers === null) return { ok: true as const, completed: false as const, state: readState(surveyStateOf(survey, access.item)) }
+  if (answers === null) {
+    const status = (await readLinkStatuses(session.portal.id, [itemId])).get(itemId) ?? null
+    return { ok: true as const, completed: false as const, state: waitingState(status, field('EXPIRES_AT'), new Date()) }
+  }
 
   const code = typeof field('TEMPLATE_CODE') === 'string' ? (field('TEMPLATE_CODE') as string).trim() : ''
   // ⚠ Строго положительное целое. `Number(null) === 0` и `Number('') === 0` проходят
@@ -97,12 +99,18 @@ export default defineEventHandler(async (event) => {
   }
 })
 
-/** Состояния приглашения, которые виджет различает словами. Остальные — «ещё не ответил». */
-const KNOWN_STATES = new Set(['created', 'sent', 'opened', 'completed', 'revoked', 'expired'])
-
-function readState(raw: unknown): string {
-  const state = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
-  return KNOWN_STATES.has(state) ? state : ''
+/**
+ * Why no answer is coming: `revoked`, `expired`, or empty — still waiting.
+ *
+ * ⚠ «Отозвана» — по нашей строке `link_index`, а не по стадии: страницу закрывает она, а стадию
+ * с ревизии 5 двигают в канбане. Виджет, прочитав стадию, обещал бы «ответа не будет» по живой
+ * ссылке. Разбор — у `issuedState`. «Истекла» — по сроку, как во вкладке сделки: статусом
+ * истечение не отмечается нигде.
+ */
+function waitingState(status: string | null, expiresAt: unknown, now: Date): '' | 'revoked' | 'expired' {
+  if (status === 'revoked') return 'revoked'
+  const expires = typeof expiresAt === 'string' ? Date.parse(expiresAt) : Number.NaN
+  return !Number.isNaN(expires) && expires < now.getTime() ? 'expired' : ''
 }
 
 /** Строго положительное целое либо `null`. Пустота — не ноль. */

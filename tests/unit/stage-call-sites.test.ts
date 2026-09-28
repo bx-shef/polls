@@ -3,7 +3,8 @@ import { buildCompleteSurveyCall } from '../../server/domain/answers/portal-call
 import { buildCreateTemplateCall } from '../../server/domain/import/template-write'
 import { buildListSurveysCall, buildPublishCall, tallySurveyUsage } from '../../server/domain/import/template-publish'
 import { buildCreateSurveyItemCall, readPublishedTemplates } from '../../server/domain/invitations/portal-calls'
-import { buildRevokeCall, readIssuedLinks } from '../../server/domain/invitations/issued-links'
+import { buildRevokeCall, issuedState, readIssuedLinks } from '../../server/domain/invitations/issued-links'
+import { buildSurveyStateCall } from '../../server/domain/portals/stages'
 import {
   buildNewVersionCall,
   buildPublishTemplateCall,
@@ -53,28 +54,38 @@ describe('«Результат опросов» со стадиями', () => {
     expect(fieldsOf(call)).not.toHaveProperty('UF_CRM_10_STATE')
   })
 
-  it('доставка ставит «Пройдена»', () => {
+  it('запись ответов со стадиями не несёт ни стадии, ни старого поля', () => {
     const call = buildCompleteSurveyCall(SURVEY, 5, {
       answers: {},
       score: { sections: [], total: null },
       completedAt: new Date('2026-09-28T10:00:00Z'),
     } as unknown as Parameters<typeof buildCompleteSurveyCall>[2])
 
-    expect(fieldsOf(call).stageId).toBe('DT1040_16:SUCCESS')
+    expect(fieldsOf(call)).not.toHaveProperty('stageId')
     expect(fieldsOf(call)).not.toHaveProperty('UF_CRM_10_STATE')
+    expect(fieldsOf(call)).toHaveProperty('UF_CRM_10_COMPLETED_AT')
   })
 
   it('отзыв ставит «Отозвана»', () => {
     expect(fieldsOf(buildRevokeCall(SURVEY, 5))).toEqual({ stageId: 'DT1040_16:FAIL' })
   })
 
-  it('список ссылок читает состояние стадией, а не старым полем', () => {
-    const links = readIssuedLinks({ result: { items: [
-      { id: 1, stageId: 'DT1040_16:SUCCESS', UF_CRM_10_STATE: 'sent' },
-      { id: 2, stageId: 'DT1040_16:FAIL' },
-    ] } }, SURVEY)
+  it('доставка пишет ответы без стадии, а «Пройдена» — отдельным вызовом', () => {
+    // ⚠ Стадия в одной записи с ответами — и обязательное по стадии поле клиента отвергло бы
+    // запись целиком: ответ крутился бы в буфере до предельного срока и пропал.
+    const move = buildSurveyStateCall(SURVEY, 5, 'completed')
 
-    expect(links.map(link => link.state)).toEqual(['completed', 'revoked'])
+    expect(move.params).toEqual({ entityTypeId: 1040, id: 5, useOriginalUfNames: 'Y', fields: { stageId: 'DT1040_16:SUCCESS' } })
+  })
+
+  it('список ссылок стадию не читает вовсе: «пройдена» — по дате прохождения', () => {
+    const links = readIssuedLinks({ result: { items: [
+      { id: 1, stageId: 'DT1040_16:SUCCESS', UF_CRM_10_COMPLETED_AT: '' },
+      { id: 2, stageId: 'DT1040_16:NEW', UF_CRM_10_COMPLETED_AT: '2026-09-20T03:00:00+03:00' },
+    ] } }, SURVEY)
+    const now = new Date('2026-09-28T10:00:00Z')
+
+    expect(links.map(link => issuedState(link, now, 'sent'))).toEqual(['active', 'completed'])
   })
 
   it('сводка переноса со стадиями считает пройденные вторым проходом, по стадии', () => {
