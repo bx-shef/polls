@@ -51,7 +51,7 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-provisioned' as const }
   }
 
-  const published = await readAllPublishedTemplates(session.call, refs.template)
+  const published = await readAllPublishedTemplates(session.call, refs.template, 'issuable', session.portal.domain)
   const chosen = published.find(t => t.code === surveyCode && t.version === surveyVersion)
   if (chosen === undefined) {
     // Шаблон мог быть снят с публикации между открытием вкладки и нажатием кнопки.

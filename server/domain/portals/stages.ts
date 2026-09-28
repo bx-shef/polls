@@ -171,10 +171,13 @@ export function buildSurveyStateCall(ref: SmartProcessRef, itemId: number, state
  * Where a template stands: `draft`, `published`, `retired`, or empty when unknown.
  *
  * ⚠ СО СТАДИЯМИ «ОПУБЛИКОВАНО» РЕШАЕТ ДАТА ПУБЛИКАЦИИ, А НЕ СТАДИЯ (почему — в шапке модуля).
- * Дату пишет только наша публикация, после проверки схемы, и поле закрыто от правки руками.
- * - Даты нет — черновик, куда бы его ни перетащили: выпускать по нему нельзя, править можно.
- * - Дата есть, стадия «Снят с публикации» — снят: выпускать нельзя, править нельзя.
- * - Дата есть, стадия любая другая — опубликован: править нельзя. Выпускать при этом можно
+ * Дату пишет только наша публикация, после проверки схемы, и поле закрыто от правки руками. Старое
+ * закрытое поле со значением «published», пока перенос его не снял, значит то же, что дата
+ * (`carriesLegacyPublished`).
+ * - Ни даты, ни старого «published» — черновик, куда бы его ни перетащили: выпускать по нему
+ *   нельзя, править можно.
+ * - Опубликован, стадия «Снят с публикации» — снят: выпускать нельзя, править нельзя.
+ * - Опубликован, стадия любая другая — опубликован: править нельзя. Выпускать при этом можно
  *   только из стадии «Опубликован» — это решает `isIssuable`, а не здесь.
  * Без стадий — по-старому, полем `STATE`: там оно закрыто от правки и и есть правда.
  */
@@ -209,10 +212,11 @@ export { isFrozen } from '../../../shared/template-state'
 /**
  * Whether a link may be issued by this template version.
  *
- * ⚠ Со стадиями — И дата публикации, И стадия «Опубликован». Версию, которую администратор
- * перетащил в «Черновик», выпускать перестаём: он увидел в канбане «не опубликована» и вправе
- * ждать именно этого. Обратное — черновик, перетащенный в «Опубликован», — выпускать нельзя:
- * его схему никто не проверял.
+ * ⚠ Со стадиями — И публикация (дата или старое поле до переноса, `templateStateOf`), И стадия
+ * «Опубликован». Версию, которую администратор перетащил в «Черновик», выпускать перестаём: он
+ * увидел в канбане «не опубликована» и вправе ждать именно этого. Обратное — черновик, перетащенный
+ * в «Опубликован», — выпускать нельзя: его схему никто не проверял. Исключение одно — анкета,
+ * которую перенос ещё не перевёл (ниже).
  */
 export function isIssuable(ref: SmartProcessRef, item: Record<string, unknown>): boolean {
   if (templateStateOf(ref, item) !== 'published') return false
@@ -232,6 +236,17 @@ export function templateStateFields(ref: SmartProcessRef, stage: 'draft' | 'publ
   return isStaged(ref)
     ? { stageId: stageId(ref, TEMPLATE_STAGES[stage].code) }
     : { [buildFieldName(ref.id, 'STATE')]: stage }
+}
+
+/**
+ * The fields an operator command puts a template into a state with: the stage, and the old field while it lives.
+ *
+ * `legacyField` — старое поле «Состояние» ещё на портале. Почему команда пишет его рядом со стадией,
+ * разобрано у `writesLegacyState` (`server/b24/write-templates.ts`): вебхук не видит, чем читает
+ * приложение. Приложение само этим не пользуется — свой режим оно знает точно.
+ */
+export function commandStateFields(ref: SmartProcessRef, stage: 'draft' | 'published', legacyField: boolean): Record<string, unknown> {
+  return { ...templateStateFields(ref, stage), ...(legacyField ? { [buildFieldName(ref.id, 'STATE')]: stage } : {}) }
 }
 
 /** Turns stages on for a smart process. */
@@ -310,10 +325,21 @@ export function planStages(specs: readonly StageSpec[], existing: readonly Exist
 /** Which of our smart processes a carry works on: they differ in what the old field held. */
 export type CarryKind = 'template' | 'survey'
 
-/** The old values each carry selects by; the filter and the reader take them from here. */
-const CARRIED_VALUES: Readonly<Record<CarryKind, readonly string[]>> = {
+/**
+ * The old values each carry moves; the filter and the moves both take them from here.
+ *
+ * ⚠ ОДНА КОПИЯ НА ОТБОР И НА ПЕРЕВОД. Разойдись они, отбор приносил бы строки, которые перевод
+ * пропускает, проход выглядел бы чистым, и поле удалилось бы вместе с их состоянием. Первая
+ * редакция сравнивала в переводе свои строки. Нашёл `/code-review` в панели PR #93.
+ */
+const CARRIED_VALUES = {
   template: ['published'],
   survey: ['completed', 'revoked'],
+} as const satisfies Record<CarryKind, readonly string[]>
+
+/** Whether an old value is one the carry of this kind moves. */
+function isCarried<K extends CarryKind>(kind: K, value: string): value is (typeof CARRIED_VALUES)[K][number] {
+  return (CARRIED_VALUES[kind] as readonly string[]).includes(value)
 }
 
 /**
@@ -343,7 +369,7 @@ export function buildCarryListCall(ref: StagedRef, kind: CarryKind, afterId: num
       // которую администратор успел перетащить из «Черновика» до переноса, иначе не получила бы даты,
       // и после удаления поля навсегда читалась бы правимым черновиком. Стадию при этом переводим
       // только из первой: куда её увёл администратор, там она и останется. Нашёл `/review`
-      // во втором круге панели PR #93. Значения — из `CARRIED_VALUES`: одна копия на отбор и разбор.
+      // во втором круге панели PR #93. Значения — из `CARRIED_VALUES`: одна копия на отбор и перевод.
       filter: kind === 'template'
         ? { '>id': afterId, [state]: CARRIED_VALUES.template[0] }
         : { 'stageId': stageId(ref, 'NEW'), '>id': afterId, [`@${state}`]: [...CARRIED_VALUES.survey] },
@@ -361,9 +387,9 @@ export function buildCarryListCall(ref: StagedRef, kind: CarryKind, afterId: num
  * выглядело бы ровно так. Нашли `/review` и `/code-review` во втором круге панели PR #93.
  *
  * Поле есть, а значение не наше (например, «Published», правленное руками до ревизии 4, которое
- * отбор портала, похоже, находит без учёта регистра), — строку пропускаем: прежний код её
- * опубликованной не считал, и перенос не должен ни переводить её, ни застревать на ней навсегда.
- * Нашёл `/review` в третьем круге панели PR #93.
+ * отбор портала, похоже, находит без учёта регистра), — строку читаем, а перевод её пропускает
+ * (`isCarried`): прежний код её опубликованной не считал, и перенос не должен ни переводить её,
+ * ни застревать на ней навсегда. Нашёл `/review` в третьем круге панели PR #93.
  */
 export function readCarryItems(response: unknown, ref: StagedRef, kind: CarryKind): Record<string, unknown>[] | null {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
@@ -416,7 +442,7 @@ export function surveyMoveOf(ref: StagedRef): (item: Record<string, unknown>) =>
   const first = stageId(ref, 'NEW')
   return (item) => {
     const state = asText(item[field])
-    if (item.stageId !== first || (state !== 'completed' && state !== 'revoked')) return null
+    if (item.stageId !== first || !isCarried('survey', state)) return null
     return { stageId: stageId(ref, SURVEY_STAGES[state].code) }
   }
 }
@@ -438,7 +464,7 @@ export function templateMoveOf(ref: StagedRef, today: string): (item: Record<str
   const dateField = buildFieldName(ref.id, 'PUBLISHED_AT')
   const first = stageId(ref, 'NEW')
   return (item) => {
-    if (asText(item[stateField]) !== 'published') return null
+    if (!isCarried('template', asText(item[stateField]))) return null
     // Правка элемента не прочиталась — сегодняшний день: неточная дата лучше снятой публикации.
     const updated = asText(item.updatedTime).slice(0, 10)
     const day = /^\d{4}-\d{2}-\d{2}$/.test(updated) ? updated : today

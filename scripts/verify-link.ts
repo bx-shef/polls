@@ -204,7 +204,7 @@ async function main(): Promise<number> {
   ok(`«${TEMPLATE_SP_TITLE}» ${templateSp.entityTypeId}, «${SURVEY_SP_TITLE}» ${surveySp.entityTypeId}`)
 
   step('Опубликованные анкеты')
-  const published = await readAllPublishedTemplates(call, templateSp)
+  const published = await readAllPublishedTemplates(call, templateSp, 'issuable', new URL(args.hook).host)
   const chosen = args.survey === ''
     ? published[0]
     : published.find(candidate => candidate.code === args.survey)

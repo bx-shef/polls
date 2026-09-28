@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCarryListCall,
+  commandStateFields,
   isIssuable,
   planStageMoves,
   readCarryItems,
@@ -102,6 +103,21 @@ describe('состояние шаблона: публикация решаетс
   it('шаблон пишется стадией, когда стадии есть, и полем — когда нет', () => {
     expect(templateStateFields(TEMPLATE, 'published')).toEqual({ stageId: 'DT1038_14:SUCCESS' })
     expect(templateStateFields(TEMPLATE_OLD, 'draft')).toEqual({ UF_CRM_8_STATE: 'draft' })
+  })
+
+  it('ГЛАВНОЕ: операторская команда, пока старое поле живо, пишет и стадию, и его', () => {
+    // ⚠ Вебхук не видит, чем читает приложение (разбор у `writesLegacyState`): запиши команда одну
+    // стадию там, где приложение читает старое поле, опубликованная анкета читалась бы черновиком.
+    // Нашёл `/code-review` в панели PR #93.
+    const both = commandStateFields(TEMPLATE, 'published', true)
+
+    expect(both).toEqual({ stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: 'published' })
+    // Запись одинаково читают оба режима приложения.
+    expect(isIssuable(TEMPLATE, { ...both, UF_CRM_8_PUBLISHED_AT: '2026-09-28' })).toBe(true)
+    expect(isIssuable(TEMPLATE_OLD, { ...both, UF_CRM_8_PUBLISHED_AT: '2026-09-28' })).toBe(true)
+    // Поля нет — только стадия; без стадий — только поле.
+    expect(commandStateFields(TEMPLATE, 'draft', false)).toEqual({ stageId: 'DT1038_14:NEW' })
+    expect(commandStateFields(TEMPLATE_OLD, 'draft', false)).toEqual({ UF_CRM_8_STATE: 'draft' })
   })
 })
 
@@ -208,6 +224,17 @@ describe('перенос старого поля «Состояние» в ст�
       [5, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-28', UF_CRM_8_STATE: '' }],
       [6, { UF_CRM_8_STATE: '' }],
     ])
+  })
+
+  it('чужое значение старого поля перевод пропускает — у обоих смарт-процессов', () => {
+    // Отбор портала, похоже, находит «Published» без учёта регистра; прежний код такую анкету
+    // опубликованной не считал, и перевод обязан пропустить ровно то, чего нет в `CARRIED_VALUES`.
+    const survey = planStageMoves(SURVEY, [{ id: 1, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'Completed' }], surveyMoveOf(SURVEY))
+    const template = planStageMoves(TEMPLATE, [
+      { id: 4, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'Published', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-21T14:05:00+03:00' },
+    ], templateMoveOf(TEMPLATE, '2026-09-28'))
+
+    expect([...survey, ...template]).toEqual([])
   })
 
   it('ГЛАВНОЕ: перенос снимает старое поле с каждой переведённой анкеты', () => {

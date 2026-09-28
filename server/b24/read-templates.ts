@@ -33,11 +33,26 @@ function hasItemsWithoutStage(response: unknown): boolean {
  */
 const MAX_PAGES = 20
 
-/** Reads every published template of the portal: issuable now, or ever published (`readPublishedTemplates`). */
+/**
+ * Portals whose stages-off warning this process has already written, as `domain/typeId`.
+ *
+ * ⚠ Раз за жизнь процесса, а не на каждое чтение: список читает каждое открытие вкладки сделки,
+ * и одно и то же предупреждение на каждом открытии заглушило бы журнал. Новый выкат скажет снова.
+ * Нашёл `/code-review` в панели PR #93.
+ */
+const warnedStageless = new Set<string>()
+
+/**
+ * Reads every published template of the portal: issuable now, or ever published (`readPublishedTemplates`).
+ *
+ * `domain` — только для журнала: номер смарт-процесса у каждого портала свой и сам по себе
+ * портала не называет.
+ */
 export async function readAllPublishedTemplates(
   call: RestCall,
   template: SmartProcessRef,
-  which: 'issuable' | 'ever' = 'issuable',
+  which: 'issuable' | 'ever',
+  domain: string,
 ): Promise<PublishedTemplate[]> {
   const found: PublishedTemplate[] = []
   let start: number | null = 0
@@ -55,7 +70,11 @@ export async function readAllPublishedTemplates(
   // дата (`isIssuable`): версия, снятая с публикации стадией, снова предлагается к выпуску. Это
   // размен в пользу «выпуск работает» против «выпуск молча встал целиком», и он должен быть виден.
   // Нашёл `/review` в третьем круге панели PR #93.
-  if (stageless) logger.warn({ typeId: template.id }, 'у «Шаблона опроса» выключены стадии — выпуск решает одна дата публикации')
+  const key = `${domain}/${template.id}`
+  if (stageless && !warnedStageless.has(key)) {
+    warnedStageless.add(key)
+    logger.warn({ domain, typeId: template.id }, 'у «Шаблона опроса» выключены стадии — выпуск решает одна дата публикации')
+  }
 
   return found
 }

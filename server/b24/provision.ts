@@ -293,8 +293,8 @@ export interface ProvisionResult extends SmartProcessRefs {
    * Настройка штатных стадий (ревизия 5): включены ли, какая воронка, названия стадий.
    *
    * ⚠ `settled: false` — был отказ, который лечится повтором: ревизию не отмечаем, донастройка
-   * вернётся. Перенос элементов со старого поля — отдельный шаг (`carryStates`), и порядок
-   * вокруг сохранения идентификаторов у него свой для шаблонов и опросов: почему — там.
+   * вернётся. Перенос элементов со старого поля — отдельный шаг (`carryStates`), у обоих смарт-
+   * процессов ПОСЛЕ сохранения идентификаторов с воронками: почему — там.
    */
   stages: StagesOutcome
   /**
@@ -302,8 +302,8 @@ export interface ProvisionResult extends SmartProcessRefs {
    *
    * ⚠ Берётся из того же листания полей, что и заведение недостающих, — а не отдельным вызовом
    * перед переносом. Отдельный вызов делал перенос зависимым от ещё одного отказа, и по его
-   * временному отказу приложение не знало, есть ли поле вообще: возвращать ли шаблоны на старое
-   * поле или его уже нет. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+   * временному отказу приложение не знало, есть ли поле вообще: переносить ли с него или его
+   * уже нет. Нашли `/review` и `/code-review` во втором круге панели PR #93.
    */
   stateFields: { template: ExistingField | null, survey: ExistingField | null }
 }
@@ -898,6 +898,16 @@ export async function provisionSmartProcesses(
   }
 }
 
+/**
+ * Our old `STATE` field of a smart process as the portal lists it now; `null` — deleted, or never made.
+ *
+ * Для операторских команд (`writesLegacyState`): обустройство берёт поле из своего листания
+ * (`ProvisionResult.stateFields`) и отдельным вызовом его не ищет.
+ */
+export async function findStateField(call: RestCall, ref: SmartProcessRef): Promise<ExistingField | null> {
+  return stateFieldIn(await listAllFields(call, ref.id), ref)
+}
+
 /** Our `STATE` field among the fields a smart process had before this run, if any. */
 function stateFieldIn(fields: readonly ExistingField[], ref: SmartProcessRef): ExistingField | null {
   const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
@@ -1280,7 +1290,9 @@ export async function carryStates(
     }
     const items = readCarryItems(response, ref, kind)
     if (items === null) return unfinished(outcome, 'перенос состояния: ответ не прочитать', ref)
-    if (kind === 'template') reportUnchecked(ref, items)
+    // В отчёт — только то, что перенос переведёт: строку с чужим значением он пропускает, и выпуска
+    // по ней не было и не будет. Нашёл `/code-review` в панели PR #93.
+    if (kind === 'template') reportUnchecked(ref, items.filter(item => moveOf(item) !== null))
     for (const move of planStageMoves(ref, items, moveOf)) {
       if (clock.now() >= clock.deadline) return unfinished(outcome, 'перенос состояния: время вышло', ref)
       try {
@@ -1288,7 +1300,7 @@ export async function carryStates(
         outcome.changes++
       }
       catch (error) {
-        clean = unfinished(outcome, 'перенос состояния', ref, error)
+        clean = unfinished(outcome, 'перенос состояния', ref, error, Number(move.params.id))
       }
     }
     if (readNextOffset(response) === null) return clean
@@ -1397,15 +1409,27 @@ function reportUnchecked(ref: StagedRef, items: readonly Record<string, unknown>
  * один такой элемент гонял бы донастройку портала каждый час бесконечно. Тот же размен, что
  * у `refuse` ревизии 4. Поле в обоих случаях остаётся: перенос не чистый. Нашёл `/code-review`
  * во втором круге панели PR #93.
+ *
+ * ⚠ `itemId` — номер элемента, на котором отказал перевод. После отказа, который повтор не вылечит,
+ * элемент так и стоит в первой стадии со старым полем, а перенос к нему не вернётся: ревизия
+ * отмечена. Шаблон при этом выпускается, как до ревизии 5, хотя канбан показывает «Черновик»
+ * (`isIssuable`), — и найти его, кроме как по этой строке журнала, нечем. Что с ним делать —
+ * в `docs/PROCESS.md`. Номер элемента нашего смарт-процесса — не идентификатор клиента.
+ * Нашёл `/code-review` в панели PR #93.
  */
-function unfinished(outcome: StagesOutcome, step: string, ref: SmartProcessRef, error?: unknown): false {
-  const reason = error === undefined ? {} : { reason: safeRefusal(error) }
+function unfinished(outcome: StagesOutcome, step: string, ref: SmartProcessRef, error?: unknown, itemId?: number): false {
+  const context = {
+    step,
+    typeId: ref.id,
+    ...(itemId === undefined ? {} : { itemId }),
+    ...(error === undefined ? {} : { reason: safeRefusal(error) }),
+  }
   if (error !== undefined && !isRetryableRefusal(error)) {
-    logger.error({ step, typeId: ref.id, ...reason }, 'стадии: перенос не доделан, портал отказал — повтор не поможет')
+    logger.error(context, 'стадии: перенос не доделан, портал отказал — повтор не поможет')
     return false
   }
   outcome.settled = false
-  logger.warn({ step, typeId: ref.id, ...reason }, 'стадии: перенос не доделан, донастройка вернётся')
+  logger.warn(context, 'стадии: перенос не доделан, донастройка вернётся')
   return false
 }
 

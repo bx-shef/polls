@@ -3,7 +3,7 @@ import { buildFieldName } from '../portals/smart-processes'
 import { versionKey } from './template-write'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
-import { templateStateFields, templateStateOf } from '../portals/stages'
+import { commandStateFields, templateStateOf } from '../portals/stages'
 import { isFrozen } from '../templates/portal-calls'
 
 /**
@@ -282,11 +282,15 @@ function countByVersion(items: readonly PortalTemplateItem[]): Map<string, numbe
  * не сегодня, и сегодняшняя дата соврала бы в единственном поле, по которому потом
  * восстанавливают, когда анкета вышла. Но если поле пусто — заполняем, даже при
  * переименовании: у версии, которую опубликовали руками, другого случая не будет.
+ *
+ * `legacyField` — старое поле «Состояние» ещё на портале, и команда пишет его рядом со стадией
+ * (`writesLegacyState`).
  */
 export function buildPublishCall(
   template: SmartProcessRef,
   planned: PlannedPublish,
   publishedAt: Date,
+  legacyField = false,
 ): PortalCall {
   return {
     method: 'crm.item.update',
@@ -300,7 +304,7 @@ export function buildPublishCall(
         // версии состояния не трогает: снятую с публикации оно иначе вернуло бы в выпуск —
         // в обход решения администратора. Нашли `/review`, `/code-review` и программист
         // в панели PR #93.
-        ...(planned.action === 'publish' ? templateStateFields(template, 'published') : {}),
+        ...(planned.action === 'publish' ? commandStateFields(template, 'published', legacyField) : {}),
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify({ ...planned.schema, title: planned.name }),
         ...(planned.setPublishedAt
           ? { [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10) }

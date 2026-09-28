@@ -14,6 +14,7 @@ import { readNextOffset, type SmartProcessRef } from '../domain/portals/smart-pr
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
 import type { RestCall } from './provision'
+import { writesLegacyState } from './write-templates'
 import { logger } from '../utils/logger'
 
 /**
@@ -66,8 +67,9 @@ export async function publishTemplates(
 
   if (dryRun) return result
 
+  const legacyField = await writesLegacyState(call, template)
   for (const planned of plan.publish) {
-    const update = buildPublishCall(template, planned, options.now ?? new Date())
+    const update = buildPublishCall(template, planned, options.now ?? new Date(), legacyField)
     try {
       if (readUpdatedItemId(await call(update.method, update.params)) === null) {
         // Двухсотый ответ без элемента означает, что портал принял запрос и ничего не изменил.

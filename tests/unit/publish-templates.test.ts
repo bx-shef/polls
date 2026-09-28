@@ -227,6 +227,33 @@ describe('публикация против портала', () => {
     expect(p.of('crm.item.update')).toHaveLength(0)
   })
 
+  it('ГЛАВНОЕ: стадии включены, а старое поле живо — публикация пишет и стадию, и его', async () => {
+    // ⚠ Вебхук не видит, чем читает приложение: у усыновлённого смарт-процесса, чьи стадии
+    // администратор включил сам, приложение читает старое поле. Запиши команда одну стадию — оно
+    // прочитало бы опубликованную анкету черновиком (разбор у `writesLegacyState`). Нашёл
+    // `/code-review` в панели PR #93.
+    const p = ready({ 'userfieldconfig.list': { result: { fields: [{ id: 72, fieldName: 'UF_CRM_8_STATE', userTypeId: 'string' }] } } })
+
+    const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
+
+    expect(result.published).toBe(2)
+    const fields = p.of('crm.item.update').map(one => one.params.fields as Record<string, unknown>)
+    expect(fields.map(one => [one.stageId, one.UF_CRM_8_STATE])).toEqual([
+      ['DT1038_14:SUCCESS', 'published'],
+      ['DT1038_14:SUCCESS', 'published'],
+    ])
+  })
+
+  it('старого поля уже нет — публикация пишет только стадию', async () => {
+    const p = ready({ 'userfieldconfig.list': { result: { fields: [{ id: 73, fieldName: 'UF_CRM_8_SCHEMA', userTypeId: 'string' }] } } })
+
+    await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
+
+    const fields = p.of('crm.item.update').map(one => one.params.fields as Record<string, unknown>)
+    expect(fields.map(one => one.stageId)).toEqual(['DT1038_14:SUCCESS', 'DT1038_14:SUCCESS'])
+    expect(fields.some(one => 'UF_CRM_8_STATE' in one)).toBe(false)
+  })
+
   it('недочитанный список приглашений роняет публикацию, а не считается пустым', async () => {
     // ⚠ Упёршись в предел страниц, мы получили бы сводку без последних страниц — то есть
     // «никто не проходил» про всё сразу. Молчать об этом нельзя.

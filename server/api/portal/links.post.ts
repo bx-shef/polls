@@ -8,6 +8,15 @@ import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
 /**
+ * How many lost revokes one opening of the tab writes back to the portal, at most.
+ *
+ * ⚠ Дописывание стоит на пути ответа, и каждое — вызов портала. Копится расхождение, только когда
+ * портал отказывал на отзывах, то есть обычно их ноль или одно; предел держит вкладку быстрой
+ * и в худшем случае, а остальное допишут следующие открытия. Нашёл `/code-review` в панели PR #93.
+ */
+const MAX_REPAIRS_PER_VIEW = 3
+
+/**
  * Lists the links already issued for a deal.
  *
  * ⚠ ЗАЧЕМ ЭТО ВООБЩЕ. Вкладка умела ровно одно: выпустить ссылку и показать её один раз.
@@ -58,17 +67,19 @@ export default defineEventHandler(async (event) => {
   // всегда. Повторным нажатием его не починить после обновления вкладки: по нашей строке ссылка уже
   // «отозвана», и кнопки у неё нет. Без этого элемент навсегда стоял бы «Отправленным», а роботы
   // клиента на «Отозвана» не сработали бы. Неудача список не роняет — починит следующее открытие.
-  // Нашёл `/review` в третьем круге панели PR #93.
-  for (const link of links.filter(one => needsRevokeRepair(one, statuses.get(one.itemId) ?? null))) {
+  // Нашёл `/review` в третьем круге панели PR #93. Параллельно и не больше предела — там же, почему.
+  const survey = refs.survey
+  const lost = links.filter(one => needsRevokeRepair(one, statuses.get(one.itemId) ?? null)).slice(0, MAX_REPAIRS_PER_VIEW)
+  await Promise.allSettled(lost.map(async (link) => {
     try {
-      const repair = buildRevokeCall(refs.survey, link.itemId)
+      const repair = buildRevokeCall(survey, link.itemId)
       await session.call(repair.method, repair.params)
       logger.info({ domain: session.portal.domain, itemId: link.itemId }, 'отзыв ссылки дописан на портал')
     }
     catch (error) {
       logger.warn({ domain: session.portal.domain, itemId: link.itemId, reason: safeRefusal(error) }, 'отзыв ссылки не дописан на портал')
     }
-  }
+  }))
 
   return {
     ok: true as const,

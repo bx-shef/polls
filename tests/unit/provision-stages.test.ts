@@ -366,7 +366,10 @@ describe('перенос старого поля «Состояние»', () => 
     expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
     expect(outcome.settled).toBe(true)
     expect(items[1040][1]!.stageId).toBe('DT1040_16:FAIL')
-    expect(error.mock.calls.some(([, message]) => String(message).includes('повтор не поможет'))).toBe(true)
+    // ⚠ С номером элемента: перенос к нему больше не вернётся, и найти его иначе нечем. Нашёл
+    // `/code-review` в панели PR #93.
+    const line = error.mock.calls.find(([, message]) => String(message).includes('повтор не поможет'))
+    expect(line?.[0]).toMatchObject({ itemId: 1, reason: expect.any(String) })
   })
 
   it('ГЛАВНОЕ: повторимый отказ на элементе — поле остаётся, прочие переведены, ревизия ждёт', async () => {
@@ -553,6 +556,36 @@ describe('перенос старого поля «Состояние»', () => 
     expect(line?.[0]).toMatchObject({ unchecked: ['brand v2', '? v?'] })
     expect(JSON.stringify(line)).not.toContain('Секретная формулировка')
     expect(items[1038][0]!.stageId).toBe('DT1038_14:SUCCESS')
+  })
+})
+
+describe('отчёт о непроверенных анкетах', () => {
+  const STAGED_TEMPLATE = { ...TEMPLATE, categoryId: 14 }
+  const TEMPLATE_FIELD = { id: 72, name: 'UF_CRM_8_STATE', userTypeId: 'string', editInList: 'N' as const, label: '' }
+
+  it('ГЛАВНОЕ: называет только то, что перенос переведёт, — чужое значение поля в отчёт не попадает', async () => {
+    // Отбор портала, похоже, находит «Published» без учёта регистра. Перевод такую строку пропускает,
+    // выпуска по ней не было, и отчёт «выпуск по ним сохранён» о ней соврал бы. Нашёл `/code-review`
+    // в панели PR #93.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const bare = JSON.stringify({ code: 'bare', sections: [{ key: 's', questions: [{ key: 'q', type: 'scale' }] }] })
+    const row = (id: number, state: string, code: string) => ({
+      id,
+      stageId: 'DT1038_14:NEW',
+      updatedTime: '2026-09-21T10:00:00+03:00',
+      ufCrm8State: state,
+      ufCrm8PublishedAt: '',
+      ufCrm8Code: code,
+      ufCrm8Version: 2,
+      ufCrm8Schema: bare,
+    })
+    const p = portal({ 'crm.item.list': { result: { items: [row(4, 'published', 'brand'), row(5, 'Published', 'hand')] } } })
+
+    expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, { changes: 0, settled: true }, { deadline: Number.POSITIVE_INFINITY, now: Date.now })).toBe(true)
+
+    const line = warn.mock.calls.find(([, message]) => String(message).includes('до проверки схемы'))
+    expect(line?.[0]).toMatchObject({ unchecked: ['brand v2'] })
+    expect(p.of('crm.item.update').map(one => one.params.id)).toEqual([4])
   })
 })
 

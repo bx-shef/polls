@@ -12,8 +12,8 @@ import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readFlag, readNe
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
-import { listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
-import { buildListCategoriesCall, readDefaultCategoryId } from '../domain/portals/stages'
+import { findStateField, listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
+import { buildListCategoriesCall, isStaged, readDefaultCategoryId } from '../domain/portals/stages'
 import { logger } from '../utils/logger'
 
 /**
@@ -75,8 +75,9 @@ export async function writeTemplates(
 
   if (dryRun) return result
 
+  const legacyField = await writesLegacyState(call, template)
   for (const planned of plan.create) {
-    const create = buildCreateTemplateCall(template, planned, state, options.now ?? new Date())
+    const create = buildCreateTemplateCall(template, planned, state, options.now ?? new Date(), legacyField)
     try {
       if (readCreatedItemId(await call(create.method, create.params)) === null) {
         // ⚠ Двухсотый ответ без идентификатора означает, что портал принял запрос и ничего
@@ -102,6 +103,27 @@ export async function writeTemplates(
     'перенос шаблонов в портал завершён',
   )
   return result
+}
+
+/**
+ * Whether an operator command writes the old `STATE` field next to the stage: stages are on, and the field still lives.
+ *
+ * ⚠ ВЕБХУК НЕ ВИДИТ, ЧЕМ ЧИТАЕТ ПРИЛОЖЕНИЕ. Режим приложения — сохранённая ссылка с воронкой,
+ * а она лежит в `app.option`, закрытом для вебхука (разбор у `findTemplateProcess`); команда
+ * выводит режим из самого типа (`withFunnel`). Расходятся они там, где стадии включены, а
+ * приложение читает старое поле: у усыновлённого смарт-процесса, чьи стадии администратор включил
+ * сам уже после миграции, у тарифа, открывшего стадии позже, в час между включением стадий
+ * и сохранением воронки. Запиши команда там одну стадию, приложение прочитало бы опубликованную
+ * анкету черновиком. Поэтому, пока старое поле живо, команда пишет и его: оба режима читают такую
+ * запись одинаково, а перенос, если он ещё впереди, снимет поле сам. Нашёл `/code-review`
+ * в панели PR #93.
+ *
+ * ⚠ Поле ищется, а не пишется наугад, хотя запись в несуществующее поле портал принимает молча
+ * (замерено 28.09): молчаливое согласие портала — не контракт, а по коду должно быть видно,
+ * когда команда пишет в старое поле.
+ */
+export async function writesLegacyState(call: RestCall, template: SmartProcessRef): Promise<boolean> {
+  return isStaged(template) && await findStateField(call, template) !== null
 }
 
 /** Все пары «код + версия» с портала, со всех страниц. */
@@ -186,14 +208,13 @@ async function withFunnel(
   // ⚠ Флаг портал отдаёт и `'Y'`, и `true` (разбор у `readFlag`): сравнив только с `'Y'`, команда
   // на `true` молча вернулась бы к удалённому полю. Нашёл `/review` в панели PR #93.
   if (readFlag(type?.isStagesEnabled) !== true) return ref
-  // Посреди миграции (стадии включены, старое поле ещё на месте) команда работает так же: шаблон,
-  // который перенос ещё не тронул, читается опубликованным по старому полю (`templateStateOf`),
-  // как его читает и приложение. Разбор — у `carryStates`.
+  // Пока старое поле живо, команда пишет и его — рядом со стадией (`writesLegacyState`): так её
+  // запись одинаково читают приложение в любом режиме и перенос.
   const list = buildListCategoriesCall(ref)
   const categoryId = readDefaultCategoryId(await call(list.method, list.params))
   if (categoryId === null) {
     // Стадии включены, а воронки портал не назвал — писать стадией нечем, пишем полем. Громко:
-    // после миграции поля может не быть, и запись в него портал молча отбросит.
+    // после миграции поля может не быть, и запись в него портал молча отбросит (замерено 28.09).
     logger.warn({ typeId: ref.id }, 'стадии включены, но воронка по умолчанию не найдена — команда пишет старым полем')
     return ref
   }

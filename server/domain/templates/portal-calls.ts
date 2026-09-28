@@ -20,8 +20,9 @@ import { templateStateFields, templateStateOf } from '../portals/stages'
 export const TEMPLATE_STATE_DRAFT = 'draft'
 export const TEMPLATE_STATE_PUBLISHED = 'published'
 
-// Правило неизменяемости живёт рядом с состояниями шаблона — в `stages.ts`; отсюда его берут роуты
-// конструктора и вкладка. Одна копия: вторая разошлась бы с первой при новом неизменяемом состоянии.
+// Правило неизменяемости одно на сервер и вкладку, поэтому живёт в `shared/template-state.ts` (разбор
+// там); роуты конструктора берут его отсюда, вкладка — прямо из `shared/`. Одна копия: вторая
+// разошлась бы с первой при новом неизменяемом состоянии.
 export { isFrozen } from '../portals/stages'
 
 /** Шаблон, каким его открывает конструктор. */

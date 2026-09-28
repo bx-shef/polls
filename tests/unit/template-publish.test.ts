@@ -98,6 +98,31 @@ describe('что публикуем', () => {
     expect(plan.skip[0]!.reason).toContain('нужна новая версия')
   })
 
+  it('ГЛАВНОЕ: со стадиями опубликованная старым полем и уже пройденная — не переименовывается', () => {
+    // ⚠ Между переключением на стадии и переносом у анкеты, опубликованной старым полем, нет даты,
+    // и стоит она в первой стадии. Прочти команда её черновиком — она «опубликовала» бы её заново
+    // под новым названием, переписав схему версии, по которой уже собраны ответы. Прежний гвард
+    // этого пути ушёл вместе со вторым проходом публикации; этот его заменяет. Нашёл `/code-review`
+    // в панели PR #93.
+    const staged: SmartProcessRef = { ...TEMPLATE, categoryId: 14 }
+    const items = readTemplateItems({ result: { items: [{
+      id: 4,
+      title: 'Новое название',
+      stageId: 'DT1038_14:NEW',
+      UF_CRM_8_CODE: 'brand',
+      UF_CRM_8_VERSION: 1,
+      UF_CRM_8_STATE: 'published',
+      UF_CRM_8_PUBLISHED_AT: '',
+      UF_CRM_8_SCHEMA: JSON.stringify(SCHEMA),
+    }] } }, staged)
+    const used = new Map<string, VersionUsage>([[usageKey('brand', 1), { issued: 3, completed: 2 }]])
+
+    const plan = planTemplatePublish(items, used)
+
+    expect(plan.publish).toEqual([])
+    expect(plan.skip.map(one => one.kind)).toEqual(['has-answers'])
+  })
+
   it('выпущенные, но не пройденные ссылки переименованию не мешают — и всё же считаются', () => {
     // Их страницы показывают схему на момент выпуска, то есть прежнее название. Оператор
     // обязан узнать об этом числом, а не догадаться.

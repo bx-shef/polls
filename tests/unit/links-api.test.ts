@@ -95,6 +95,20 @@ describe('список ссылок сделки', () => {
     expect(writes).toEqual([])
   })
 
+  it('ГЛАВНОЕ: за одно открытие дописывает не больше трёх — вкладка не ждёт портал без предела', async () => {
+    // ⚠ Дописывание стоит на пути ответа, и каждое — вызов портала. Без предела вкладка сделки
+    // с пачкой недописанных отзывов открывалась бы столько, сколько портал отвечает на все подряд.
+    // Остальное допишут следующие открытия. Нашёл `/code-review` в панели PR #93.
+    items = [54, 55, 56, 57, 58].map(id => element(id, 'NEW'))
+    statuses = new Map(items.map(one => [one.id as number, 'revoked']))
+    const handler = await loadHandler()
+
+    const reply = await handler({})
+
+    expect(reply.links.map(link => link.state)).toEqual(['revoked', 'revoked', 'revoked', 'revoked', 'revoked'])
+    expect(writes.map(one => one.params.id)).toEqual([54, 55, 56])
+  })
+
   it('неудача дописывания список не роняет — починит следующее открытие', async () => {
     items = [element(54, 'NEW')]
     statuses = new Map([[54, 'revoked']])
