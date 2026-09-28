@@ -111,6 +111,8 @@ describe('воронка', () => {
 
     expect(readDefaultCategoryId(answer)).toBe(16)
     expect(readDefaultCategoryId({ result: { categories: [] } })).toBeNull()
+    // Флаг портал отдаёт и `'Y'`, и `true`: сравнив с одной формой, однажды не нашли бы воронку.
+    expect(readDefaultCategoryId({ result: { categories: [{ id: 3, isDefault: false }, { id: 16, isDefault: true }] } })).toBe(16)
   })
 
   it('стадии разбирает с кодом без префикса и чужие отбрасывает', () => {

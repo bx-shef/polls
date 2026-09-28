@@ -153,6 +153,20 @@ describe('настройка стадий', () => {
     expect(p.of('userfieldconfig.add')).toEqual([])
   })
 
+  it('усыновлённый со стадиями, а воронки в ответе нет — тоже падает, а не идёт старым полем', async () => {
+    const p = portal({
+      'app.option.get': { result: '' },
+      'crm.type.list': { result: { types: [
+        { id: 8, entityTypeId: 1038, title: '[sh] Шаблон опроса', isStagesEnabled: 'Y' },
+        { id: 10, entityTypeId: 1040, title: '[sh] Результат опросов', isStagesEnabled: 'Y' },
+      ] } },
+      'crm.category.list': { result: { categories: [] } },
+    })
+
+    await expect(provisionSmartProcesses(p.call, {}, { previousRevision: 0 })).rejects.toThrow()
+    expect(p.of('userfieldconfig.add')).toEqual([])
+  })
+
   it('тариф не дал включить стадии — смарт-процесс остаётся на старом поле, и это ошибка в журнале', async () => {
     const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
     const p = portal({
