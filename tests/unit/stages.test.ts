@@ -274,6 +274,15 @@ describe('неперенесённая анкета — пока перенос 
     expect(isIssuable(TEMPLATE, legacy)).toBe(true)
   })
 
+  it('неперенесённая, уведённая администратором в свою стадию, — опубликована, но не выпускается', () => {
+    // Стадия сужает выпуск и до переноса: из первой — как до ревизии 5, из «Опубликован» — да,
+    // из чужой стадии администратора — нет, он её туда увёл не просто так.
+    const moved = { stageId: 'DT1038_14:PREPARATION', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '' }
+
+    expect(templateStateOf(TEMPLATE, moved)).toBe('published')
+    expect(isIssuable(TEMPLATE, moved)).toBe(false)
+  })
+
   it('снятая администратором до переноса — снятая, а не опубликованная', () => {
     const retired = { stageId: 'DT1038_14:FAIL', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '' }
 
