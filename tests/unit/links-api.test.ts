@@ -151,5 +151,11 @@ describe('список ссылок сделки', () => {
     const handler = await loadHandler()
 
     expect((await handler({})).links.map(link => link.state)).toEqual(['revoked'])
+
+    // Отказ повторимый (портал не ответил) — элемент не запоминается и дописывается следующим открытием.
+    failWrites = false
+    await handler({})
+
+    expect(writes.map(one => one.params.id)).toEqual([54])
   })
 })
