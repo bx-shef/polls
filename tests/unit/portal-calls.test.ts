@@ -4,6 +4,7 @@ import {
   buildListTemplatesCall,
   buildDealFactsBatch,
   buildInvitationTitle,
+  buildItemLinkCall,
   DEAL_ENTITY_TYPE_ID,
   readCreatedItemId,
   readDealFacts,
@@ -11,6 +12,7 @@ import {
   readSurveyHeader,
   surveyChoice,
 } from '../../server/domain/invitations/portal-calls'
+import { buildFieldName } from '../../server/domain/portals/smart-processes'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
 /**
@@ -185,6 +187,26 @@ describe('создание приглашения', () => {
     templateVersion: 1,
     expiresAt: new Date('2026-10-16T12:00:00Z'),
     title: 'Бренд-платформа',
+  })
+
+  it('НЕ кладёт адрес анкеты при создании — он уходит в элемент после записи в индекс', () => {
+    // Гвард под находку `/code-review` во втором круге PR #87: адрес, положенный в элемент
+    // при создании, при упавшем индексе или таймауте создания оставался в карточке рабочей
+    // на вид ссылкой на «не найдено», и отозвать её было нечем.
+    expect(call.params.fields).not.toHaveProperty(buildFieldName(SURVEY.id, 'LINK'))
+  })
+
+  it('кладёт адрес анкеты в поле «Ссылка на анкету» отдельным вызовом', () => {
+    // Решение владельца 28.09 (issue #84, пункт 20): «это не страшный секрет».
+    expect(buildItemLinkCall(SURVEY, 501, 'https://polls.example/s/tok')).toEqual({
+      method: 'crm.item.update',
+      params: {
+        entityTypeId: SURVEY.entityTypeId,
+        id: 501,
+        useOriginalUfNames: 'Y',
+        fields: { [buildFieldName(SURVEY.id, 'LINK')]: 'https://polls.example/s/tok' },
+      },
+    })
   })
 
   it('связывает приглашение со сделкой полем-родителем', () => {

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
+import { TEMPLATE_SP_TITLE } from '#shared/portal-names'
 import { readFramePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { placementItemId } from '~/utils/placement'
 
 /**
- * The survey builder, living inside the «Шаблон опроса» smart-process card.
+ * The survey builder, living inside the template smart-process card (`TEMPLATE_SP_TITLE`).
  *
  * ⚠ ЗАЧЕМ ВКЛАДКА, А НЕ ОТДЕЛЬНЫЙ ЭКРАН ПРИЛОЖЕНИЯ. Анкета — это элемент смарт-процесса
  * на портале клиента: у него есть список, права, история и карточка. Свой экран со своим
@@ -456,7 +457,7 @@ async function save(): Promise<void> {
         v-if="gate === 'outside'"
         color="air-secondary-accent"
         title="Откройте вкладку из Битрикс24"
-        description="Эта страница живёт внутри портала: она показывает анкету из карточки «Шаблона опроса» и без портала не знает ни анкеты, ни ваших прав на неё."
+        :description="`Эта страница живёт внутри портала: она показывает анкету из карточки «${TEMPLATE_SP_TITLE}» и без портала не знает ни анкеты, ни ваших прав на неё.`"
       />
 
       <B24Skeleton

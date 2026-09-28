@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
+import { DEAL_TAB_TITLE, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '#shared/portal-names'
 import { readFramePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
@@ -253,7 +254,7 @@ async function finishProvisioning() {
         v-else-if="stage === 'done'"
         color="air-primary-success"
         title="Приложение установлено"
-        description="Смарт-процессы «Опрос» и «Шаблон опроса» созданы, вкладка «Опросы» появилась в карточке сделки. Можно закрывать это окно."
+        :description="`Смарт-процессы «${SURVEY_SP_TITLE}» и «${TEMPLATE_SP_TITLE}» созданы, вкладка «${DEAL_TAB_TITLE}» появилась в карточке сделки. Можно закрывать это окно.`"
       />
 
       <template v-else-if="stage === 'partial'">

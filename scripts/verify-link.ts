@@ -46,6 +46,7 @@ import {
 } from '../server/domain/answers/timeline-activity'
 import { hashToken } from '../server/domain/links/token'
 import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../server/domain/portals/smart-processes'
+import { SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../shared/portal-names'
 import type { PublishedTemplate } from '../server/domain/invitations/portal-calls'
 import { issueLink } from '../server/links/issue-flow'
 import { publicBaseUrl } from '../server/utils/env'
@@ -164,7 +165,7 @@ async function main(): Promise<number> {
       '  … --base http://localhost:3000   куда стучаться (по умолчанию PUBLIC_BASE_URL)',
       '  … --survey <код>                 какую анкету брать (по умолчанию первую)',
       '',
-      '⚠ Проверка ПИШЕТ на портал: создаёт элемент «Опроса» и дело в сделке.',
+      `⚠ Проверка ПИШЕТ на портал: создаёт элемент «${SURVEY_SP_TITLE}» и дело в сделке.`,
       '  Запускать только против тестового портала.',
     ].join('\n'))
   }
@@ -182,9 +183,9 @@ async function main(): Promise<number> {
   step('Смарт-процессы на портале')
   const { template: templateSp, survey: surveySp } = await findProcesses(call)
   if (templateSp === undefined || surveySp === undefined) {
-    die('  ✗ Смарт-процессы «Опрос» и «Шаблон опроса» на портале не найдены. Сначала установка.', 1)
+    die(`  ✗ Смарт-процессы «${SURVEY_SP_TITLE}» и «${TEMPLATE_SP_TITLE}» на портале не найдены. Сначала установка.`, 1)
   }
-  ok(`«Шаблон опроса» ${templateSp.entityTypeId}, «Опрос» ${surveySp.entityTypeId}`)
+  ok(`«${TEMPLATE_SP_TITLE}» ${templateSp.entityTypeId}, «${SURVEY_SP_TITLE}» ${surveySp.entityTypeId}`)
 
   step('Опубликованные анкеты')
   const published = await readAllPublishedTemplates(call, templateSp)
@@ -218,7 +219,7 @@ async function main(): Promise<number> {
     die(`  ✗ Выпуск не прошёл: ${issued.reason === 'no-public-host' ? 'PUBLIC_BASE_URL не задан или не https' : 'портал не подтвердил создание элемента'}.`, 1)
   }
   const token = issued.url.slice(issued.url.lastIndexOf('/') + 1)
-  ok(`элемент «Опроса» ${issued.itemId}, ссылка выпущена`)
+  ok(`элемент «${SURVEY_SP_TITLE}» ${issued.itemId}, ссылка выпущена`)
   if (base !== linkBase) {
     console.log(`  · ссылка ведёт на ${linkBase}, стучусь в ${base}: доказан путь, но не адрес`)
   }
@@ -285,6 +286,12 @@ async function main(): Promise<number> {
   // «Результат: 9 без ответов на вопросы» — том самом, который владелец поймал глазами.
   expect(written.includes(marker), 'в записанном есть текст, который мы отправляли')
 
+  // ⚠ Адрес анкеты лежит в элементе (решение владельца 28.09, issue #84, пункт 20), и сверяем
+  // ИМЕННО выпущенный адрес: поле, которого на портале ещё нет, портал молча отбрасывает (замерено),
+  // и «ссылка в карточке» тихо не появилась бы. Сам адрес в сообщение не печатаем — в нём токен.
+  const linkField = buildFieldName(surveySp.id, 'LINK')
+  expect(item[linkField] === issued.url, 'в элементе лежит выпущенный адрес анкеты')
+
   // ⚠ Сверяем ИМЕННО пропуск, а не только «что-то записалось». «Нет ответа — это `null`,
   // а не ноль» — инвариант проекта, и здесь он проверяется на всём пути: страница отдала
   // `null`, буфер его сохранил, доставка записала, портал сохранил. Старое решение
@@ -297,7 +304,7 @@ async function main(): Promise<number> {
   const { count: activities, id: activityId } = await findActivity(call, issued.itemId)
   expect(activities === 1, `дел с нашей меткой: ${activities}`)
 
-  step('Дело видно и в карточке «Опроса»')
+  step(`Дело видно и в карточке «${SURVEY_SP_TITLE}»`)
   // ⚠ Дело создаётся владельцем-сделкой, а к элементу «Опроса» привязывается вторым шагом
   // (issue #44). Проверяется живьём, потому что подделкой этого не доказать: привязка
   // к НЕСУЩЕСТВУЮЩЕЙ сущности отвечает `{result: true}` — портал молча принимает
@@ -306,7 +313,7 @@ async function main(): Promise<number> {
   const bound = await readBindings(call, activityId!)
   expect(
     bound.has(bindingKey(surveySp.entityTypeId, issued.itemId)),
-    `дело привязано к элементу «Опроса» (привязок всего: ${bound.size})`,
+    `дело привязано к элементу «${SURVEY_SP_TITLE}» (привязок всего: ${bound.size})`,
   )
   // ⚠ И СВЯЗЬ СО СДЕЛКОЙ НА МЕСТЕ — отдельным утверждением, а не «ну она же была».
   // Замерено на живом портале 24.09: `binding.add` делает ВЛАДЕЛЬЦЕМ дела ту сущность,
@@ -338,7 +345,7 @@ async function main(): Promise<number> {
     '  в сделке появляется ровно одно дело с нашей меткой, повторная отправка отбивается,',
     '  а записанное в портал совпадает с отправленным.',
     '',
-    `След на портале оставлен намеренно: элемент «Опроса» ${issued.itemId} и дело в сделке ${args.deal}.`,
+    `След на портале оставлен намеренно: элемент «${SURVEY_SP_TITLE}» ${issued.itemId} и дело в сделке ${args.deal}.`,
     'Его и смотрят глазами, когда проверка вдруг разойдётся с тем, что видно в карточке.',
   ].join('\n'))
 
