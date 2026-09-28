@@ -402,4 +402,10 @@ describe('метка владельца и закрытые поля: разов
 
     expect(JSON.stringify(form.elements)).toContain('UF_CRM_10_LINK')
   })
+
+  it('со штатными стадиями поля «Состояние» в карточке нет — стадию портал показывает сам', () => {
+    // Поле после переноса удалено, и в раскладке осталось бы имя без поля.
+    expect(JSON.stringify(buildCardSections(10, true, true))).not.toContain('UF_CRM_10_STATE')
+    expect(JSON.stringify(buildCardSections(10, true))).toContain('UF_CRM_10_STATE')
+  })
 })

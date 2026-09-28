@@ -208,6 +208,16 @@ describe('результат', () => {
     expect(await handler({})).toEqual({ ok: true, completed: false, state: 'expired' })
   })
 
+  it('со штатными стадиями состояние приглашения читается из стадии, а не из старого поля', async () => {
+    // ⚠ После миграции ревизии 5 поле «Состояние» удалено, и прочитанное из него было бы пустым
+    // у всех приглашений: виджет обещал бы ответ по отозванной ссылке.
+    refs = { survey: { ...SURVEY, categoryId: 20 }, template: TEMPLATE_SP, revision: 5 }
+    access = { ok: true, item: { ...item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, STATE: 'sent' }), stageId: 'DT1046_20:FAIL' } }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true, completed: false, state: 'revoked' })
+  })
+
   it('промах кэша: схема — с портала и обратно в кэш', async () => {
     // ⚠ Без записи обратно промах повторялся бы на каждом открытии карточки — до двадцати
     // вызовов в чужой портал за раз. Нашли безопасность, `/review` и `/code-review`.

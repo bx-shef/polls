@@ -148,6 +148,10 @@ describe('настройка стадий', () => {
     const added = p.of('userfieldconfig.add').map(one => (one.params.field as { fieldName: string }).fieldName)
     expect(added.some(name => name.endsWith('_STATE'))).toBe(false)
     expect(added.length).toBeGreaterThan(0)
+    // И в раскладку карточки его имя не попадает: там осталось бы имя без поля.
+    const card = p.of('crm.item.details.configuration.set')
+    expect(card).toHaveLength(1)
+    expect(JSON.stringify(card)).not.toContain('_STATE')
   })
 })
 
