@@ -298,6 +298,18 @@ describe('ревизия 6: свои поля в раскладке, котор�
     expect(layoutOf(plan)).toEqual([['TITLE', f('RESULT'), f('LINK')], []])
   })
 
+  it('клиент держал ответы в своём разделе — виджет встаёт туда, на их место', () => {
+    // Где клиент смотрел ответы, там их теперь и покажет виджет — а не рядом с баллом в другом разделе.
+    const layout = ours()
+    layout[2]!.elements = [{ name: f('SCORE'), optionFlags: 1 }, { name: f('COMPLETED_AT') }]
+    layout[3]!.elements = [{ name: 'OPPORTUNITY' }, { name: f('ANSWERS') }]
+
+    const sections = layoutOf(planSurveyCard({ result: layout }, SURVEY.id, true))
+
+    expect(sections[2]).toEqual([f('SCORE'), f('COMPLETED_AT')])
+    expect(sections[3]).toEqual(['OPPORTUNITY', f('RESULT')])
+  })
+
   it('без JSON-полей виджет встаёт после даты прохождения', () => {
     const layout = ours()
     layout[2]!.elements = [{ name: f('SCORE'), optionFlags: 1 }, { name: f('COMPLETED_AT') }]
