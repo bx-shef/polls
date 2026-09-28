@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, reachedRevision, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
-import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, OWNERSHIP_REVISION, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 
@@ -800,16 +800,28 @@ describe('идентификаторы на портале', () => {
     expect((await readStoredRefs(back.call)).adopted).toEqual({ template: true })
   })
 
-  it.each<[string, number, Parameters<typeof reachedRevision>[1], number]>([
-    ['поле виджета отложено — ревизия прежняя', 2, { resultField: 'deferred', ownership: null }, 2],
-    ['миграция 4 не доделана — ревизия до неё', 2, { resultField: 'ok', ownership: { changes: 1, fieldsLocked: false, settled: true } }, 3],
-    ['не доделана, а портал уже выше — не опускаем', 3, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: true, settled: false } }, 3],
-    ['всё доделано', 2, { resultField: 'ok', ownership: { changes: 5, fieldsLocked: true, settled: true } }, 4],
-    ['миграция не требовалась', 4, { resultField: 'failed', ownership: null }, 4],
-  ])('достигнутая ревизия: %s', (_, previous, result, expected) => {
+  const SETTLED = { changes: 0, settled: true }
+  const UNSETTLED = { changes: 0, settled: false }
+
+  it.each<[string, number, Parameters<typeof reachedRevision>[1], Parameters<typeof reachedRevision>[2], number]>([
+    ['поле виджета отложено — ревизия прежняя', 2, { resultField: 'deferred', ownership: null, stages: SETTLED }, null, 2],
+    ['миграция 4 не доделана — ревизия до неё', 2, { resultField: 'ok', ownership: { changes: 1, fieldsLocked: false, settled: true }, stages: SETTLED }, null, 3],
+    ['не доделана, а портал уже выше — не опускаем', 3, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: true, settled: false }, stages: SETTLED }, null, 3],
+    ['всё доделано', 2, { resultField: 'ok', ownership: { changes: 5, fieldsLocked: true, settled: true }, stages: SETTLED }, SETTLED, 5],
+    ['миграция не требовалась', 5, { resultField: 'failed', ownership: null, stages: SETTLED }, null, 5],
+    // Ревизия 5: стадии и перенос старого поля. Повтор нужен — портал на ревизии до них, а не ниже.
+    ['стадии не доделаны — ревизия до них', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED }, SETTLED, 4],
+    ['перенос «Состояния» не доделан — ревизия до него', 4, { resultField: 'ok', ownership: null, stages: SETTLED }, UNSETTLED, 4],
+    ['миграция 4 и стадии разом — держит та, что раньше', 2, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: false, settled: true }, stages: UNSETTLED }, null, 3],
+    // ⚠ Портал уже на пятой, а смарт-процесс на нём пересоздан, и его воронка не прочиталась:
+    // ревизия ОПУСКАЕТСЯ до четвёртой. С `max(previous, 4)` портал не вернулся бы к донастройке
+    // никогда. Нашёл `/code-review` в панели PR #93; строку с шестой просил тестировщик.
+    ['стадии не доделаны на портале пятой ревизии — опускаем до четвёртой', 5, { resultField: 'ok', ownership: null, stages: UNSETTLED }, null, 4],
+    ['и выше пятой — тоже', 6, { resultField: 'ok', ownership: null, stages: UNSETTLED }, null, 4],
+  ])('достигнутая ревизия: %s', (_, previous, result, carried, expected) => {
     // Гвард под находки `/code-review` и `/review` во втором круге PR #87: ревизия откатывалась
     // к нулю, не поднималась до уже сделанного и считалась у вызывающего особым случаем.
-    expect(reachedRevision(previous, result)).toBe(expected)
+    expect(reachedRevision(previous, result, carried)).toBe(expected)
   })
 
   it('признак усыновления читается только явным true', async () => {
@@ -830,7 +842,7 @@ describe('общий бюджет времени', () => {
   })
 
   it('останавливает цепочку, а не просто перестаёт ждать ответа', async () => {
-    // Холодная установка — 41 вызов подряд под троттлингом SDK. Предел на один
+    // Холодная установка — 53 вызова подряд под троттлингом SDK. Предел на один
     // вызов такую цепочку не ограничивает: важно, что бюджет проверяется ПЕРЕД вызовом
     // и портал перестаёт получать запросы, а не что мы отвернулись от ответа.
     const p = portal()
@@ -916,10 +928,13 @@ describe('ревизия 4: метка владельца и закрытые п
     return provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY }, { previousRevision: 3, resultHandlerUrl: 'https://polls.bx-shef.by/uf/survey-result' })
   }
 
-  /** Правки типов, кроме связи со сделкой: она ходит тем же методом, но это другой шаг. */
+  /**
+   * Правки типов, кроме связи со сделкой и включения стадий: они ходят тем же методом,
+   * но это другие шаги (стадии — ревизия 5, их тесты ниже).
+   */
   const typeUpdates = (p: ReturnType<typeof portal>) => p.of('crm.type.update')
     .map(c => c.params.fields as Record<string, unknown>)
-    .filter(fields => !('relations' in fields))
+    .filter(fields => !('relations' in fields) && !('isStagesEnabled' in fields))
   const lockedIds = (p: ReturnType<typeof portal>) => p.of('userfieldconfig.update').map(c => c.params.id)
 
   it('известные по идентификатору переименовываются, «Шаблон» теряет клиента и роботов', async () => {
@@ -1231,10 +1246,14 @@ describe('ревизия 4: метка владельца и закрытые п
     // Гвард под находку программиста и `/code-review` в PR #87: миграция листала поля обоих
     // смарт-процессов, сделки и контакта заново — на критическом пути установки, под общим
     // пределом времени. Всё нужное уже прочитано шагами до неё.
+    //
+    // Сравниваем с ревизией 4, а не с текущей: воронку свежей установке настраивает ревизия 5,
+    // и это законная цена (её держит «холодная установка» в `provision-outcome.test.ts`), а здесь
+    // держится другое — что миграция 4 не добавляет ни одного вызова.
     const fresh = portal()
     const migrated = portal()
 
-    await provisionSmartProcesses(fresh.call, {}, { previousRevision: PROVISION_REVISION })
+    await provisionSmartProcesses(fresh.call, {}, { previousRevision: OWNERSHIP_REVISION })
     await provisionSmartProcesses(migrated.call, {}, { previousRevision: 0 })
 
     expect(migrated.calls.map(c => c.method)).toEqual(fresh.calls.map(c => c.method))

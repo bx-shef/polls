@@ -3,6 +3,7 @@ import { callForPortal } from '../b24/from-record'
 import { readStoredRefs } from '../b24/provision'
 import type { RestCall } from '../b24/provision'
 import type { SmartProcessRef } from '../domain/portals/smart-processes'
+import { buildSurveyStateCall, isStaged } from '../domain/portals/stages'
 import {
   buildWriteScoreCall,
   CONTACT_ENTITY,
@@ -275,6 +276,7 @@ export async function writeToPortal(
   if (updated === null) return { ok: false, retry: true, reason: 'портал не подтвердил обновление элемента' }
 
   // Дальше — только удобство. Всё, что было обязательным, уже в портале.
+  await tryCompletedStage(call, survey, itemId)
   //
   // ⚠ Элемент читается ОДИН раз и раздаётся обоим шагам. Раньше его читал только таймлайн;
   // с появлением полей на сделке второй читатель означал бы второй `crm.item.get`
@@ -296,6 +298,25 @@ export async function writeToPortal(
 
   const reported = await tryTimelineActivity(call, survey, itemId, template, answers, score, item)
   return { ok: true, itemId: updated, reported }
+}
+
+/**
+ * Move the answered element to «Пройдена», on a portal with native stages.
+ *
+ * ⚠ Неудача НЕ проваливает доставку: ответ уже в портале, а «пройдена» решает закрытое поле
+ * «Дата прохождения», записанное вместе с ним (`issuedState`). Стадия — отражение для канбана
+ * и роботов клиента; не встала — робот на «Пройдена» не сработает, и это должно быть видно
+ * в журнале, а не в ответе клиенту. Отдельным вызовом — почему, у `buildSurveyStateCall`.
+ */
+async function tryCompletedStage(call: RestCall, survey: SmartProcessRef, itemId: number): Promise<void> {
+  if (!isStaged(survey)) return
+  try {
+    const move = buildSurveyStateCall(survey, itemId, 'completed')
+    await call(move.method, move.params)
+  }
+  catch (error) {
+    logger.warn({ reason: safeRefusal(error) }, 'стадия «Пройдена» не поставлена; ответ в портале')
+  }
 }
 
 /**

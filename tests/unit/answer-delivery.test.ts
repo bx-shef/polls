@@ -126,6 +126,43 @@ describe('запись ответа в портал', () => {
     expect(p.methods()).not.toContain('crm.activity.todo.add')
   })
 
+  it('ГЛАВНОЕ: со штатными стадиями «Пройдена» — отдельным вызовом ПОСЛЕ ответов, и её отказ доставку не роняет', async () => {
+    // ⚠ Клиент вправе сделать поле обязательным для стадии «Пройдена». Едь стадия одной записью
+    // с ответами, портал отверг бы запись целиком: ответ крутился бы в буфере до предельного
+    // срока и пропал — нарушение инварианта «ответ клиента не теряется никогда». Нашёл `/review`
+    // в панели PR #93.
+    const staged = { ...SURVEY, categoryId: 12 }
+    const p = portal({
+      'crm.item.update': (params: Record<string, unknown>) => {
+        if ('stageId' in (params.fields as object)) throw new PortalError('ERROR_CORE', 'Не заполнено обязательное поле')
+        return { result: { item: { id: 777 } } }
+      },
+    })
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    const outcome = await writeToPortal(p.call, staged, 777, TEMPLATE, ANSWERS)
+
+    // Только элемент «Результата опросов»: сделку и контакт той же командой пишет `tryEntityScore`.
+    const updates = p.of('crm.item.update')
+      .filter(one => one.params.entityTypeId === staged.entityTypeId)
+      .map(one => one.params.fields as Record<string, unknown>)
+    expect(updates).toHaveLength(2)
+    expect(updates[0]).not.toHaveProperty('stageId')
+    expect(updates[0]).toHaveProperty('UF_CRM_8_ANSWERS')
+    expect(updates[1]).toEqual({ stageId: 'DT1046_12:SUCCESS' })
+    expect(outcome).toMatchObject({ ok: true, itemId: 777 })
+    expect(warn.mock.calls.some(([, message]) => String(message).includes('«Пройдена» не поставлена'))).toBe(true)
+  })
+
+  it('без стадий — одна запись, старое поле в ней же', async () => {
+    const p = portal()
+    await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
+
+    const updates = p.of('crm.item.update').filter(one => one.params.entityTypeId === SURVEY.entityTypeId)
+    expect(updates).toHaveLength(1)
+    expect((updates[0]!.params.fields as Record<string, unknown>).UF_CRM_8_STATE).toBe('completed')
+  })
+
   it('не отправляет пустой комментарий: портал его отвергает', async () => {
     const empty: SurveyTemplate = { ...TEMPLATE, sections: [{ ...TEMPLATE.sections[0]!, scored: false, questions: [] }] }
     const p = portal()

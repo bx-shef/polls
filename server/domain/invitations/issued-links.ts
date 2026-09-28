@@ -1,6 +1,7 @@
 import { buildFieldName, type PortalCall, type SmartProcessRef } from '../portals/smart-processes'
 import { SURVEY_STATE_COMPLETED } from '../answers/portal-calls'
 import { SURVEY_STATE_SENT } from './portal-calls'
+import { buildSurveyStateCall, surveyStateOf, type SurveyState } from '../portals/stages'
 
 /**
  * The links already issued for a deal — read from the portal, not from our database.
@@ -15,10 +16,20 @@ import { SURVEY_STATE_SENT } from './portal-calls'
  * для публичной страницы и состояние доставки. Показывать список оттуда значило бы завести
  * второй источник истины ради удобства чтения.
  *
- * ⚠ Состояние ссылки СЧИТАЕТСЯ, а не хранится готовым. На портале лежит `STATE` (`sent`,
- * `completed`, `revoked`), а «просрочена» — это не состояние, а сравнение срока с сегодняшним
- * днём. Записывать просрочку полем значило бы завести задание, которое ходит по чужим порталам
- * и переписывает элементы ради того, что вычисляется одной строкой.
+ * ⚠ Состояние ссылки СЧИТАЕТСЯ, а не хранится готовым, и каждое — по своему источнику правды:
+ * - «пройдена» — закрытое поле «Дата прохождения»: его пишет только доставка, вместе с ответами;
+ * - «отозвана» — наша строка `link_index`: именно она закрывает страницу (`readLinkStatuses`);
+ * - «просрочена» — не состояние, а сравнение срока с сегодняшним днём. Записывать просрочку полем
+ *   значило бы завести задание, которое ходит по чужим порталам и переписывает элементы ради
+ *   того, что вычисляется одной строкой.
+ *
+ * ⚠ СТАДИЯ ЭЛЕМЕНТА ЗДЕСЬ НИЧЕГО НЕ РЕШАЕТ, и это следствие ревизии 5 (issue #84, п. 21).
+ * До неё состояние лежало в закрытом поле `STATE`, и писало его только приложение. Штатную
+ * стадию двигает в канбане любой сотрудник и любой робот клиента: читай мы «пройдена» и «отозвана»
+ * со стадии, перетащенный в «Отозвана» опрос выглядел бы погашенным при работающей ссылке,
+ * а уведённый клиентом в свою стадию пройденный — снова живым, и его можно было бы «отозвать».
+ * Стадию приложение только ПИШЕТ — для канбана и роботов клиента. Нашли `/review`, `/code-review`
+ * и безопасность в панели PR #93.
  */
 
 /** Ссылка отозвана вручную: показывать её больше нельзя, отвечать по ней — тоже. */
@@ -30,18 +41,24 @@ export interface IssuedLink {
   title: string
   code: string
   version: number
-  /** `STATE` элемента как есть: `sent`, `completed`, `revoked` или пусто у старых элементов. */
-  state: string
   /** Дата в форме, в какой её отдал портал; пусто — поле не заполнено. */
   expiresAt: string
+  /** Дата прохождения: пишет её только доставка, вместе с ответами. Пусто — ответа в портале нет. */
   completedAt: string
+  /**
+   * What the element's stage (or old field) shows — our reflection, not the truth.
+   *
+   * Решений по нему не принимаем (разбор в шапке); нужен ровно затем, чтобы отзыв мог дописать
+   * отражение, когда наша строка уже погашена, а запись стадии тогда не дошла.
+   */
+  shownAs: SurveyState | ''
   score: number | null
   /** Кто выпустил: ответственный за элемент. Ноль — портал не прислал. */
   assignedById: number
   createdAt: string
 }
 
-/** Что показывать человеку. Считается по состоянию и сроку, полем нигде не лежит. */
+/** What to show a person: counted from the completion date, our row and the deadline, never stored. */
 export type IssuedState = 'active' | 'completed' | 'revoked' | 'expired'
 
 /**
@@ -99,9 +116,9 @@ export function readIssuedLinks(response: unknown, survey: SmartProcessRef): Iss
       title: text(item.title),
       code: text(item[field('TEMPLATE_CODE')]),
       version: asPositiveInt(item[field('TEMPLATE_VERSION')]) ?? 0,
-      state: text(item[field('STATE')]),
       expiresAt: text(item[field('EXPIRES_AT')]),
       completedAt: text(item[field('COMPLETED_AT')]),
+      shownAs: surveyStateOf(survey, item),
       score: asScore(item[field('SCORE')]),
       assignedById: asPositiveInt(item.assignedById) ?? 0,
       createdAt: text(item.createdTime),
@@ -112,14 +129,24 @@ export function readIssuedLinks(response: unknown, survey: SmartProcessRef): Iss
 /**
  * Что показать в списке напротив ссылки.
  *
- * ⚠ Порядок проверок — смысловой, а не произвольный. Отозванная ссылка остаётся отозванной,
- * даже когда её срок вышел: менеджер должен видеть, что её погасили, а не что она «просто
- * истекла». Пройденная — тем более: у неё уже есть ответ клиента, и срок к ней отношения
- * не имеет. Поменяв порядок, мы стёрли бы разницу между «её остановили» и «её не открыли».
+ * `linkStatus` — состояние нашей строки `link_index` (`readLinkStatuses`), и передаётся всегда:
+ * без него отзыв не виден вовсе. Параметр обязательный нарочно — забытый, он молча показывал бы
+ * погашенную ссылку живой (`/review` и `/code-review` во втором круге панели PR #93).
+ *
+ * ⚠ Порядок проверок — смысловой, а не произвольный. Пройденная — первой: у неё уже есть ответ
+ * клиента, и ни отзыв, ни срок к ней отношения не имеют. База «пройдена» раньше портала: ответ
+ * принят и ждёт доставки — гасить его уже нечего. Отозванная остаётся отозванной, даже когда
+ * её срок вышел: менеджер должен видеть, что её погасили, а не что она «просто истекла».
+ * Поменяв порядок, мы стёрли бы разницу между «её остановили» и «её не открыли».
+ *
+ * ⚠ Строки нет (`null`) — страницы у элемента нет вовсе: выпуск упал между элементом и нашей
+ * строкой, или элемент завели руками в канбане. Ответа по нему не будет, как по отозванной, и
+ * отозвать его нечем — показанный живым, он висел бы с кнопкой, которая ничего не может. Нашёл
+ * `/code-review` во втором круге панели PR #93.
  */
-export function issuedState(link: IssuedLink, now: Date): IssuedState {
-  if (link.state === SURVEY_STATE_REVOKED) return 'revoked'
-  if (link.state === SURVEY_STATE_COMPLETED) return 'completed'
+export function issuedState(link: IssuedLink, now: Date, linkStatus: string | null): IssuedState {
+  if (link.completedAt !== '' || linkStatus === SURVEY_STATE_COMPLETED) return 'completed'
+  if (linkStatus === SURVEY_STATE_REVOKED || linkStatus === null) return 'revoked'
 
   const expires = Date.parse(link.expiresAt)
   if (!Number.isNaN(expires) && expires < now.getTime()) return 'expired'
@@ -127,9 +154,20 @@ export function issuedState(link: IssuedLink, now: Date): IssuedState {
   return 'active'
 }
 
+/**
+ * Whether our row is revoked while the portal still shows the link as sent — the second write of a revoke got lost.
+ *
+ * ⚠ Только из первой стадии («Отправлена»). Туда её ставим мы, и погашенная ссылка в ней — наш
+ * недописанный отзыв. Элемент, уведённый клиентом в свою стадию, не трогаем: там уже его решение,
+ * и тянуть его каждый раз обратно значило бы спорить с ним. Пройденную — тем более.
+ */
+export function needsRevokeRepair(link: IssuedLink, linkStatus: string | null): boolean {
+  return linkStatus === SURVEY_STATE_REVOKED && link.completedAt === '' && link.shownAs === SURVEY_STATE_SENT
+}
+
 /** Ссылку ещё можно остановить: она не пройдена, не отозвана и не истекла. */
-export function isRevocable(link: IssuedLink, now: Date): boolean {
-  return issuedState(link, now) === 'active'
+export function isRevocable(link: IssuedLink, now: Date, linkStatus: string | null): boolean {
+  return issuedState(link, now, linkStatus) === 'active'
 }
 
 /**
@@ -144,15 +182,8 @@ export function isRevocable(link: IssuedLink, now: Date): boolean {
  * Здесь — то, что видит менеджер в карточке.
  */
 export function buildRevokeCall(survey: SmartProcessRef, itemId: number): PortalCall {
-  return {
-    method: 'crm.item.update',
-    params: {
-      entityTypeId: survey.entityTypeId,
-      id: itemId,
-      useOriginalUfNames: 'Y',
-      fields: { [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_REVOKED },
-    },
-  }
+  // Стадией «Отозвана» — или прежним полем, пока портал не переведён на стадии.
+  return buildSurveyStateCall(survey, itemId, 'revoked')
 }
 
 /** Состояние, с которым ссылка выпускается: нужно, чтобы отличать её от отозванной. */

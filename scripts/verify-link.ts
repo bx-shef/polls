@@ -47,6 +47,7 @@ import {
 import { hashToken } from '../server/domain/links/token'
 import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../server/domain/portals/smart-processes'
 import { formatAnswerDate } from '../shared/answer-date'
+import { surveyStateOf } from '../server/domain/portals/stages'
 import { SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../shared/portal-names'
 import type { PublishedTemplate } from '../server/domain/invitations/portal-calls'
 import { issueLink } from '../server/links/issue-flow'
@@ -203,7 +204,7 @@ async function main(): Promise<number> {
   ok(`«${TEMPLATE_SP_TITLE}» ${templateSp.entityTypeId}, «${SURVEY_SP_TITLE}» ${surveySp.entityTypeId}`)
 
   step('Опубликованные анкеты')
-  const published = await readAllPublishedTemplates(call, templateSp)
+  const published = await readAllPublishedTemplates(call, templateSp, 'issuable', new URL(args.hook).host)
   const chosen = args.survey === ''
     ? published[0]
     : published.find(candidate => candidate.code === args.survey)
@@ -289,11 +290,12 @@ async function main(): Promise<number> {
 
   step('Перечитываем записанное')
   const item = await readSurveyItem(call, surveySp, issued.itemId)
-  const stateField = buildFieldName(surveySp.id, 'STATE')
   const scoreField = buildFieldName(surveySp.id, 'SCORE')
   const answersField = buildFieldName(surveySp.id, 'ANSWERS')
 
-  expect(item[stateField] === 'completed', `состояние «${String(item[stateField])}»`)
+  // Со штатными стадиями — стадия «Пройдена», без них — прежнее поле (`surveyStateOf`).
+  const state = surveyStateOf(surveySp, item)
+  expect(state === 'completed', `состояние «${state}»${surveySp.categoryId === undefined ? ' (полем)' : ' (стадией)'}`)
   expect(Number.isFinite(Number(item[scoreField])), `балл записан: ${String(item[scoreField])}`)
   const written = typeof item[answersField] === 'string' ? item[answersField] : ''
   expect(written !== '', `ответы записаны, ${written.length} символов`)

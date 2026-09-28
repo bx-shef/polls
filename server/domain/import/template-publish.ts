@@ -1,9 +1,10 @@
-import { SURVEY_STATE_COMPLETED } from '../answers/portal-calls'
 import { parseTemplateSchema } from '../invitations/portal-calls'
 import { buildFieldName } from '../portals/smart-processes'
 import { versionKey } from './template-write'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
+import { commandStateFields, templateStateOf } from '../portals/stages'
+import { isFrozen } from '../templates/portal-calls'
 
 /**
  * Publishing imported drafts: the name the employee typed on the portal goes INTO the schema,
@@ -128,7 +129,7 @@ export function readTemplateItems(response: unknown, template: SmartProcessRef):
       name: text(item.title).trim(),
       code: text(item[field('CODE')]),
       version: Number(item[field('VERSION')]),
-      state: text(item[field('STATE')]),
+      state: templateStateOf(template, item),
       publishedAt: text(item[field('PUBLISHED_AT')]),
       schema: parseTemplateSchema(item[field('SCHEMA')]),
     })
@@ -193,7 +194,15 @@ export function planTemplatePublish(
 
   for (const item of items) {
     const at = { code: item.code === '' ? `элемент ${item.id}` : item.code, version: item.version }
-    const published = item.state === 'published'
+    // Снятая с публикации — тоже опубликованная когда-то и неизменяемая (`isFrozen`).
+    // ⚠ И любая с датой публикации — в каком бы режиме команда ни читала. Режим она выводит из самого
+    // типа (`withFunnel`), а он с приложением расходится: стадии у «Шаблона» выключены, а старого поля
+    // уже нет. Тогда состояние читается старым полем, пустым у всех, и опубликованная версия
+    // выглядела бы черновиком — команда переписала бы ей название в схеме и дату, в том числе
+    // пройденной: охрана «по версии уже есть ответы» стоит только на опубликованных. Дату пишет только
+    // публикация, так что признак надёжный, а промах в сторону «опубликована» стоит одного пропуска.
+    // Нашёл `/review` в закрывающем проходе панели PR #93.
+    const published = isFrozen(item.state) || item.publishedAt !== ''
 
     if (item.code === '' || !Number.isInteger(item.version) || item.version <= 0) {
       plan.skip.push({ ...at, kind: 'broken', reason: 'нет кода или номера версии' })
@@ -280,11 +289,15 @@ function countByVersion(items: readonly PortalTemplateItem[]): Map<string, numbe
  * не сегодня, и сегодняшняя дата соврала бы в единственном поле, по которому потом
  * восстанавливают, когда анкета вышла. Но если поле пусто — заполняем, даже при
  * переименовании: у версии, которую опубликовали руками, другого случая не будет.
+ *
+ * `legacyField` — старое поле «Состояние» ещё на портале, и команда пишет его рядом со стадией
+ * (`writesLegacyState`).
  */
 export function buildPublishCall(
   template: SmartProcessRef,
   planned: PlannedPublish,
   publishedAt: Date,
+  legacyField = false,
 ): PortalCall {
   return {
     method: 'crm.item.update',
@@ -294,7 +307,11 @@ export function buildPublishCall(
       useOriginalUfNames: 'Y',
       fields: {
         title: planned.name,
-        [buildFieldName(template.id, 'STATE')]: 'published',
+        // ⚠ Стадию и старое поле пишет только публикация черновика. Переименование опубликованной
+        // версии состояния не трогает: снятую с публикации оно иначе вернуло бы в выпуск —
+        // в обход решения администратора. Нашли `/review`, `/code-review` и программист
+        // в панели PR #93.
+        ...(planned.action === 'publish' ? commandStateFields(template, 'published', legacyField) : {}),
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify({ ...planned.schema, title: planned.name }),
         ...(planned.setPublishedAt
           ? { [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10) }
@@ -307,10 +324,16 @@ export function buildPublishCall(
 /**
  * Прочитать, сколько приглашений выпущено по каждой версии и сколько пройдено.
  *
- * ⚠ Просим только три поля: код, версию и состояние. Ответы и баллы здесь не нужны,
+ * ⚠ Просим только три поля: код, версию и дату прохождения. Ответы и баллы здесь не нужны,
  * а `select: ['*']` притащил бы их — то есть тексты, которые писал респондент, в память
  * скрипта, запускаемого с ноутбука оператора. Узкий перечень тут не про вес, а про то,
  * чего мы у себя не держим.
+ *
+ * ⚠ «ПРОЙДЕН» — ПО ДАТЕ ПРОХОЖДЕНИЯ, А НЕ ПО СТАДИИ И НЕ ПО СТАРОМУ ПОЛЮ. Дату пишет только
+ * доставка, вместе с ответами, с первого дня (#22). Стадию с ревизии 5 двигают люди и роботы
+ * клиента: пройденный опрос, уведённый в свою стадию, выпал бы из подсчёта, и охрана «по версии
+ * уже есть ответы» открыла бы переименование задним числом. Прежняя редакция считала вторым
+ * проходом по стадии — нашли `/code-review` и тестировщик в панели PR #93.
  */
 export function buildListSurveysCall(survey: SmartProcessRef, start = 0): PortalCall {
   return {
@@ -321,14 +344,14 @@ export function buildListSurveysCall(survey: SmartProcessRef, start = 0): Portal
       select: [
         buildFieldName(survey.id, 'TEMPLATE_CODE'),
         buildFieldName(survey.id, 'TEMPLATE_VERSION'),
-        buildFieldName(survey.id, 'STATE'),
+        buildFieldName(survey.id, 'COMPLETED_AT'),
       ],
       ...(start === 0 ? {} : { start }),
     },
   }
 }
 
-/** Досчитать сводку использования по странице «Опросов». Копится по страницам. */
+/** Adds one page of survey elements to the usage summary; accumulates across pages. */
 export function tallySurveyUsage(
   response: unknown,
   survey: SmartProcessRef,
@@ -339,7 +362,7 @@ export function tallySurveyUsage(
 
   const codeField = buildFieldName(survey.id, 'TEMPLATE_CODE')
   const versionField = buildFieldName(survey.id, 'TEMPLATE_VERSION')
-  const stateField = buildFieldName(survey.id, 'STATE')
+  const completedField = buildFieldName(survey.id, 'COMPLETED_AT')
 
   for (const raw of items) {
     const item = raw as Record<string, unknown>
@@ -350,7 +373,7 @@ export function tallySurveyUsage(
     const key = usageKey(code, version)
     const seen = into.get(key) ?? { issued: 0, completed: 0 }
     seen.issued += 1
-    if (text(item[stateField]) === SURVEY_STATE_COMPLETED) seen.completed += 1
+    if (text(item[completedField]) !== '') seen.completed += 1
     into.set(key, seen)
   }
 

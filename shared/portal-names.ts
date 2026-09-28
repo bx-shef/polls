@@ -65,3 +65,13 @@ export const RESULT_FIELD_LABEL = 'Результат опроса'
 export const LINK_FIELD_LABEL = 'Ссылка на анкету'
 export const SCORE_FIELD_LABEL = 'Оценка клиента'
 export const LAST_SURVEY_AT_FIELD_LABEL = 'Дата последнего опроса'
+
+/**
+ * Названия штатных стадий наших смарт-процессов (ревизия 5, issue #84, п. 21) — без метки:
+ * стадия живёт внутри нашего смарт-процесса, и метка на ней была бы шумом.
+ *
+ * ⚠ Здесь по той же причине, что подписи полей: обустройство называет ими стадии на портале,
+ * а справка — человеку, и стадию под другим именем он в канбане не найдёт.
+ */
+export const SURVEY_STAGE_NAMES = { sent: 'Отправлена', completed: 'Пройдена', revoked: 'Отозвана' } as const
+export const TEMPLATE_STAGE_NAMES = { draft: 'Черновик', published: 'Опубликован', retired: 'Снят с публикации' } as const

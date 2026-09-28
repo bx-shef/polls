@@ -1,6 +1,7 @@
 import { buildFieldName } from '../portals/smart-processes'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
+import { commandStateFields } from '../portals/stages'
 
 /**
  * Writing imported survey templates into the portal's «Шаблон опроса» smart process.
@@ -159,12 +160,16 @@ export function planTemplateWrites(
  * ⚠ `PUBLISHED_AT` заполняется ТОЛЬКО у опубликованной версии. У черновика его нет, и это
  * не пропуск: дата публикации черновика — противоречие, а пустое поле честно говорит
  * «ещё не публиковали».
+ *
+ * `legacyField` — старое поле «Состояние» ещё на портале, и команда пишет его рядом со стадией
+ * (`writesLegacyState`).
  */
 export function buildCreateTemplateCall(
   template: SmartProcessRef,
   planned: PlannedTemplate,
   state: TemplateState,
   publishedAt: Date,
+  legacyField = false,
 ): PortalCall {
   return {
     method: 'crm.item.add',
@@ -175,7 +180,8 @@ export function buildCreateTemplateCall(
         title: planned.title,
         [buildFieldName(template.id, 'CODE')]: planned.code,
         [buildFieldName(template.id, 'VERSION')]: planned.version,
-        [buildFieldName(template.id, 'STATE')]: state,
+        // Стадией — или прежним полем, пока портал не переведён на стадии; пока оно живо — обоими.
+        ...commandStateFields(template, state, legacyField),
         // Схема уезжает строкой: поле текстовое, и `readPublishedTemplates` разбирает её
         // обратно из строки. Отдав объект, мы полагались бы на то, что портал сериализует
         // его так же, как мы ожидаем прочитать.

@@ -1,13 +1,14 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
-import type { RestCall } from './provision'
+import { CARRY_BUDGET_MS, CARRY_TAIL_RESERVE_MS, carryStates, dropStateField, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline, type RestCall, type StagesOutcome } from './provision'
+import { isStaged } from '../domain/portals/stages'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
 import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
+import { STAGES_REVISION } from '../domain/portals/smart-processes'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
@@ -28,7 +29,9 @@ import { logger } from '../utils/logger'
  * Бюджет времени на всё обустройство.
  *
  * Донастройка готового портала — 16–18 вызовов подряд под троттлингом SDK, холодная установка —
- * 41 (число держит тест «цена холодной установки» в `provision-outcome.test.ts`). Это секунды
+ * 53 (число держит тест «холодная установка: ровно 53 вызова портала» в `provision-outcome.test.ts`).
+ * Разовая миграция на ревизию 5 добавляет к донастройке около шестнадцати вызовов на воронки
+ * и перенос старого поля — под своим пределом `CARRY_BUDGET_MS`, внутри этого. Это секунды
  * на здоровом портале; сорок пять секунд — запас и при этом заведомо меньше таймаута общего
  * `nginx-proxy`. Прежде здесь стояло «холодная — 17–19»: это цена донастройки, а холодная
  * установка давно втрое дороже, и запас был меньше, чем казалось (панель ревью PR #87).
@@ -167,8 +170,8 @@ async function provisionPortal(portal: {
     // копия записи — без compare-and-swap по прежней паре и без условия `status <> 'deleted'`,
     // то есть в обход обеих защит, которые ради этих же гонок и заводились. Комментарий
     // при этом обещал «не воскресит удалённый портал»: до появления стирания это было верно,
-    // а с ним стало неправдой. Холодное обустройство — это 41 вызов под бюджетом в 45 секунд
-    // (тест «цена холодной установки»), и продление посреди них вполне реально. Нашла панель
+    // а с ним стало неправдой. Холодное обустройство — это 53 вызова под бюджетом в 45 секунд
+    // (тест «холодная установка»), и продление посреди них вполне реально. Нашла панель
     // ревью PR #34.
     async next => saveRefreshedTokens(portal.id, {
       accessToken: encryptSecret(next.accessToken),
@@ -196,6 +199,8 @@ async function provisionPortal(portal: {
 export async function provisionWithCall(call: RestCall, domain: string): Promise<'ok' | 'not-admin' | 'no-scope' | 'failed'> {
   const portal = { domain }
   const budgeted = withDeadline(call, PROVISION_BUDGET_MS)
+  // Тот же срок, что у `withDeadline`: предел переноса обязан уложиться в него (`CARRY_TAIL_RESERVE_MS`).
+  const allowedUntil = Date.now() + PROVISION_BUDGET_MS
 
   try {
     if (!await isPortalAdmin(budgeted)) return 'not-admin'
@@ -208,15 +213,29 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH),
       previousRevision: known.revision,
     })
-    // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
-    // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
-    // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
-    const refs = { template: result.template, survey: result.survey }
     const adopted = {
       ...(result.adoptedTemplate ? { template: true as const } : {}),
       ...(result.adoptedSurvey ? { survey: true as const } : {}),
     }
+
+    // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
+    // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
+    // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
+    // ⚠ С воронками — СРАЗУ, до переноса старого поля: с этой минуты приложение пишет стадией,
+    // а неперенесённые элементы читаются правильно и так (разбор у `carryStates`).
+    const refs = { template: result.template, survey: result.survey }
     await storeRefs(budgeted, refs, { revision: known.revision, adopted })
+
+    const unstagedKinds = [
+      ...(result.template.categoryId === undefined ? ['template'] : []),
+      ...(result.survey.categoryId === undefined ? ['survey'] : []),
+    ]
+    if (unstagedKinds.length > 0 && known.revision < STAGES_REVISION) {
+      // Смарт-процесс остался на старом поле: усыновлённый без стадий, тариф или отказ портала.
+      // Приложение работает, но канбана и роботов на стадиях у клиента нет — узнать это надо
+      // из журнала.
+      logger.warn({ domain: portal.domain, unstaged: unstagedKinds }, 'штатные стадии не включены — состояние остаётся в поле «Состояние»')
+    }
 
     // ⚠ Только о НОВОМ усыновлении. Признак теперь переживает прогоны, и без этой проверки
     // предупреждение «найден по заголовку» писалось бы на каждой донастройке — дежурный принял бы
@@ -253,6 +272,26 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       logger.warn({ domain: portal.domain }, 'вкладка конструктора не зарегистрирована')
     }
 
+    // ⚠ Перенос старого поля «Состояние» в стадии, ревизия 5, — разово, ПОСЛЕ сохранения ссылок
+    // и после вкладок. После сохранения: с этой минуты доставка пишет стадией, и перенос подберёт
+    // всё, что записано полем до того. После вкладок: перенос — единственный шаг, чья цена растёт
+    // с числом элементов, и, упёршись в свой предел, он не должен оставить портал без вкладок.
+    // Предел — внутри общего бюджета (`CARRY_TAIL_RESERVE_MS`). Поле удаляется только после
+    // чистого прохода: удаление необратимо.
+    const carried: StagesOutcome | null = known.revision < STAGES_REVISION ? { changes: 0, settled: true } : null
+    if (carried !== null) {
+      const run = { deadline: Math.min(Date.now() + CARRY_BUDGET_MS, allowedUntil - CARRY_TAIL_RESERVE_MS), now: Date.now, domain: portal.domain }
+      const staged = [
+        { ref: refs.template, kind: 'template' as const, created: result.createdTemplate },
+        { ref: refs.survey, kind: 'survey' as const, created: result.createdSurvey },
+      ]
+      for (const { ref, kind, created } of staged) {
+        if (!isStaged(ref) || created) continue
+        const field = result.stateFields[kind]
+        if (await carryStates(budgeted, ref, kind, field, carried, run)) await dropStateField(budgeted, ref, field, carried, run)
+      }
+    }
+
     // Отказ поля своего типа установку не роняет: без виджета результат виден прежними
     // JSON-полями, просто хуже. Но «виджета нет» должно узнаваться из журнала, а не от клиента.
     if (result.resultField === 'failed') {
@@ -285,7 +324,10 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     else if (ownership?.settled === false) {
       logger.warn({ domain: portal.domain }, 'метка владельца доставлена не везде — ревизию не отмечаем, донастройка вернётся')
     }
-    const reached = reachedRevision(known.revision, result)
+    if (!result.stages.settled || carried?.settled === false) {
+      logger.warn({ domain: portal.domain }, 'стадии настроены не до конца — ревизию не отмечаем, донастройка вернётся')
+    }
+    const reached = reachedRevision(known.revision, result, carried)
     await storeProvisionRevision(budgeted, refs, reached, adopted)
 
     logger.info(
@@ -300,6 +342,8 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
         ownership: result.ownership,
+        stages: result.stages,
+        carried,
       },
       'смарт-процессы обустроены',
     )

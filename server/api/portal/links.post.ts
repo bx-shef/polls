@@ -1,9 +1,32 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildListIssuedCall, issuedState, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { buildListIssuedCall, buildRevokeCall, issuedState, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { readLinkStatuses } from '../../links/issue'
+import { safeRefusal } from '../../domain/answers/portal-errors'
+import { isRetryableRefusal } from '../../domain/portals/portal-error'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
+
+/**
+ * How many lost revokes one opening of the tab writes back to the portal, at most.
+ *
+ * ⚠ Дописывание стоит на пути ответа, и каждое — вызов портала. Копится расхождение, только когда
+ * портал отказывал на отзывах, то есть обычно их ноль или одно; предел держит вкладку быстрой
+ * и в худшем случае, а остальное допишут следующие открытия. Нашёл `/code-review` в панели PR #93.
+ */
+const MAX_REPAIRS_PER_VIEW = 3
+
+/**
+ * Lost revokes the portal refused for good in this process, as `domain/itemId`.
+ *
+ * ⚠ Отказ, который повтор не вылечит (поле, обязательное по стадии «Отозвана», у одних элементов
+ * заполнено, у других нет), иначе повторялся бы на каждом открытии: три заведомо проваленные записи
+ * в портал клиента и три строки в журнал. И предел, взятый с самых новых, навсегда заняли бы они —
+ * старшие за ними не дописались бы никогда. Такой элемент пробуем раз за жизнь процесса; новый
+ * выкат попробует снова. Нашёл `/review` в закрывающем проходе панели PR #93.
+ */
+const refusedRepairs = new Set<string>()
 
 /**
  * Lists the links already issued for a deal.
@@ -16,7 +39,8 @@ import { openPortalSession } from './-session'
  *
  * ⚠ Список читается С ПОРТАЛА, а не из нашей базы. Каждая выпущенная ссылка и есть элемент
  * смарт-процесса «Опрос»; у нас лежит только то, чего в портале быть не может. Разбор —
- * в `server/domain/invitations/issued-links.ts`.
+ * в `server/domain/invitations/issued-links.ts`. Одно исключение — «отозвана»: её решает наша
+ * строка, которая и закрывает страницу, а не стадия, которую двигают в канбане (там же).
  *
  * ⚠ Доступ к сделке проверяется ФРЕЙМОВЫМ ТОКЕНОМ сотрудника, как и при выпуске. Читаем мы
  * своим токеном — у него прав больше любого отдельного сотрудника, — а номер сделки приходит
@@ -48,7 +72,30 @@ export default defineEventHandler(async (event) => {
 
   const listing = buildListIssuedCall(refs.survey, dealId)
   const links = readIssuedLinks(await session.call(listing.method, listing.params), refs.survey)
+  const statuses = await readLinkStatuses(session.portal.id, links.map(link => link.itemId))
   const now = new Date()
+
+  // ⚠ Отзыв, чья вторая запись не дошла до портала, дописывается здесь — там, где расхождение видно
+  // всегда. Повторным нажатием его не починить после обновления вкладки: по нашей строке ссылка уже
+  // «отозвана», и кнопки у неё нет. Без этого элемент навсегда стоял бы «Отправленным», а роботы
+  // клиента на «Отозвана» не сработали бы. Неудача список не роняет — починит следующее открытие.
+  // Нашёл `/review` в третьем круге панели PR #93. Параллельно и не больше предела — там же, почему.
+  const survey = refs.survey
+  const keyOf = (itemId: number) => `${session.portal.domain}/${itemId}`
+  const lost = links
+    .filter(one => needsRevokeRepair(one, statuses.get(one.itemId) ?? null) && !refusedRepairs.has(keyOf(one.itemId)))
+    .slice(0, MAX_REPAIRS_PER_VIEW)
+  await Promise.allSettled(lost.map(async (link) => {
+    try {
+      const repair = buildRevokeCall(survey, link.itemId)
+      await session.call(repair.method, repair.params)
+      logger.info({ domain: session.portal.domain, itemId: link.itemId }, 'отзыв ссылки дописан на портал')
+    }
+    catch (error) {
+      if (!isRetryableRefusal(error)) refusedRepairs.add(keyOf(link.itemId))
+      logger.warn({ domain: session.portal.domain, itemId: link.itemId, reason: safeRefusal(error) }, 'отзыв ссылки не дописан на портал')
+    }
+  }))
 
   return {
     ok: true as const,
@@ -59,7 +106,7 @@ export default defineEventHandler(async (event) => {
       title: link.title,
       code: link.code,
       version: link.version,
-      state: issuedState(link, now),
+      state: issuedState(link, now, statuses.get(link.itemId) ?? null),
       expiresAt: link.expiresAt,
       completedAt: link.completedAt,
       score: link.score,

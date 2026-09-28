@@ -5,6 +5,7 @@ import {
   DEAL_ENTITY_TYPE_ID,
 } from '../portals/smart-processes'
 import type { SurveyChoice } from '../../../shared/survey-choice'
+import { isFrozen, isIssuable, surveyStateFields, templateStateOf } from '../portals/stages'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -66,22 +67,34 @@ export interface PublishedTemplate {
  *
  * ⚠ Неопубликованные и нечитаемые пропускаются молча — это не потеря данных, а фильтр выбора:
  * показывать в списке черновик значило бы дать выпустить ссылку на анкету, которой ещё нет.
+ * «Опубликована» решает `isIssuable`, а не одна стадия, которую сотрудник двигает в канбане:
+ * правило и его исключения — там, в `stages.ts`.
  * Схема, не разобравшаяся как JSON, — тот же случай: выпустить по ней ссылку значит выдать
  * человеку страницу, которая не откроется.
+ *
+ * `which` — для чего список:
+ * - `issuable` — выпустить ссылку: только то, по чему выпускать можно сейчас;
+ * - `ever` — показать уже собранные ответы: любая версия, опубликованная когда-либо, в том числе
+ *   снятая с публикации или уведённая администратором из «Опубликован». ⚠ Фильтр выпуска здесь
+ *   не годится: виджет пройденного опроса по снятой версии показал бы ключи вопросов вместо
+ *   формулировок. Нашли `/review` и `/code-review` в панели PR #93.
  */
-export function readPublishedTemplates(response: unknown, template: SmartProcessRef): PublishedTemplate[] {
+export function readPublishedTemplates(
+  response: unknown,
+  template: SmartProcessRef,
+  which: 'issuable' | 'ever' = 'issuable',
+): PublishedTemplate[] {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
   if (!Array.isArray(items)) return []
 
   const codeField = buildFieldName(template.id, 'CODE')
   const versionField = buildFieldName(template.id, 'VERSION')
-  const stateField = buildFieldName(template.id, 'STATE')
   const schemaField = buildFieldName(template.id, 'SCHEMA')
   const published: PublishedTemplate[] = []
 
   for (const raw of items) {
     const item = raw as Record<string, unknown>
-    if (item[stateField] !== 'published') continue
+    if (which === 'issuable' ? !isIssuable(template, item) : !isFrozen(templateStateOf(template, item))) continue
 
     const code = typeof item[codeField] === 'string' ? item[codeField] : ''
     const version = Number(item[versionField])
@@ -177,7 +190,8 @@ export function buildCreateSurveyItemCall(
         ...(invitation.assignedById ? { assignedById: invitation.assignedById } : {}),
         [buildFieldName(survey.id, 'TEMPLATE_CODE')]: invitation.templateCode,
         [buildFieldName(survey.id, 'TEMPLATE_VERSION')]: invitation.templateVersion,
-        [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_SENT,
+        // Стадией «Отправлена» — или прежним полем, пока портал не переведён на стадии.
+        ...surveyStateFields(survey, 'sent'),
         // Дата без времени: поле создавалось типом `date`, и портал отрежет время сам —
         // но лучше отдать то, что он ждёт, чем полагаться на его снисходительность.
         [buildFieldName(survey.id, 'EXPIRES_AT')]: invitation.expiresAt.toISOString().slice(0, 10),

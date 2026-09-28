@@ -26,7 +26,7 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-provisioned' as const }
   }
 
-  const surveys = await readAllPublishedTemplates(session.call, refs.template)
+  const surveys = await readAllPublishedTemplates(session.call, refs.template, 'issuable', session.portal.domain)
 
   return {
     ok: true as const,

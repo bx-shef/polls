@@ -32,9 +32,17 @@ function card(code: string, over: Record<string, unknown> = {}) {
   }
 }
 
-/** Приглашение, какое отдаёт портал. */
+/**
+ * Приглашение, какое отдаёт портал узким перечнем: пройденное — с датой прохождения.
+ *
+ * «Пройдено» считается по ней, а не по состоянию и не по стадии (разбор у `buildListSurveysCall`).
+ */
 function invitation(code: string, state: string) {
-  return { UF_CRM_10_TEMPLATE_CODE: code, UF_CRM_10_TEMPLATE_VERSION: 1, UF_CRM_10_STATE: state }
+  return {
+    UF_CRM_10_TEMPLATE_CODE: code,
+    UF_CRM_10_TEMPLATE_VERSION: 1,
+    UF_CRM_10_COMPLETED_AT: state === 'completed' ? '2026-09-20T03:00:00+03:00' : '',
+  }
 }
 
 /**
@@ -90,6 +98,9 @@ describe('публикация против портала', () => {
     expect(result.published).toBe(2)
     expect(result.failed).toHaveLength(0)
     expect(p.of('crm.item.update')).toHaveLength(2)
+    // Без стадий старое поле пишется и так: спросить про него значило бы дать команде на старом
+    // портале новый способ упасть — ради ответа, который ничего не меняет.
+    expect(p.of('crm.item.fields')).toEqual([])
   })
 
   it('повторный прогон не трогает ничего', async () => {
@@ -200,6 +211,73 @@ describe('публикация против портала', () => {
     expect(result.published).toBe(0)
     expect(result.skip[0]!.kind).toBe('has-answers')
     expect(p.of('crm.item.update')).toHaveLength(0)
+  })
+
+  it('ГЛАВНОЕ: со штатными стадиями пройденный, уведённый клиентом в свою стадию, тоже запрещает переименование', async () => {
+    // ⚠ Тестировщик панели PR #93: подсчёт пройденных со стадиями не исполнял ни один тест, и его
+    // можно было выключить молча — охрана «по версии уже есть ответы» открылась бы. Теперь подсчёт
+    // один на оба режима — по дате прохождения, — и этот тест держит его на портале со стадиями.
+    const staged = { survey: { ...SURVEY, categoryId: 16 }, template: { ...TEMPLATE, categoryId: 14 } }
+    const p = portal({
+      'crm.item.list:1038': { result: { items: [card('brand', { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-20' })] } },
+      'crm.item.list:1040': { result: { items: [{ ...invitation('brand', 'completed'), stageId: 'DT1040_16:PROCESSED' }] } },
+    })
+
+    const result = await publishTemplates(p.call, staged.template, staged.survey, { apply: true })
+
+    expect(result.published).toBe(0)
+    expect(result.skip[0]!.kind).toBe('has-answers')
+    expect(p.of('crm.item.update')).toHaveLength(0)
+  })
+
+  it('ГЛАВНОЕ: стадии включены, а старое поле живо — публикация пишет и стадию, и его', async () => {
+    // ⚠ Вебхук не видит, чем читает приложение: у усыновлённого смарт-процесса, чьи стадии
+    // администратор включил сам, приложение читает старое поле. Запиши команда одну стадию — оно
+    // прочитало бы опубликованную анкету черновиком (разбор у `writesLegacyState`). Нашёл
+    // `/code-review` в панели PR #93.
+    const p = ready({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_8_SCHEMA: {}, UF_CRM_8_STATE: {} } } } })
+
+    const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
+
+    expect(result.published).toBe(2)
+    expect(result.legacyField).toBe(true)
+    const fields = p.of('crm.item.update').map(one => one.params.fields as Record<string, unknown>)
+    expect(fields.map(one => [one.stageId, one.UF_CRM_8_STATE])).toEqual([
+      ['DT1038_14:SUCCESS', 'published'],
+      ['DT1038_14:SUCCESS', 'published'],
+    ])
+  })
+
+  it('решение писать старое поле видно и в сухом прогоне', async () => {
+    // Запись в поле, которое приложение, возможно, читает, — решение, и оператор необратимой
+    // операции должен видеть его до `--apply`. Нашёл `/code-review` в закрывающем проходе PR #93.
+    const p = ready({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_8_STATE: {} } } } })
+
+    const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY)
+
+    expect(result.dryRun).toBe(true)
+    expect(result.legacyField).toBe(true)
+    expect(p.of('crm.item.update')).toEqual([])
+  })
+
+  it('публиковать нечего — про старое поле не спрашивает', async () => {
+    // Вызов, ответ которого ничего не меняет, — только лишний способ упасть под троттлингом.
+    const p = ready({ 'crm.item.list:1038': { result: { items: [card('brand', { title: 'brand' })] } } })
+
+    const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
+
+    expect(result.publish).toEqual([])
+    expect(p.of('crm.item.fields')).toEqual([])
+  })
+
+  it('старого поля уже нет — публикация пишет только стадию', async () => {
+    const p = ready({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_8_SCHEMA: {} } } } })
+
+    await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
+
+    const fields = p.of('crm.item.update').map(one => one.params.fields as Record<string, unknown>)
+    expect(fields.map(one => one.stageId)).toEqual(['DT1038_14:SUCCESS', 'DT1038_14:SUCCESS'])
+    expect(fields.some(one => 'UF_CRM_8_STATE' in one)).toBe(false)
   })
 
   it('недочитанный список приглашений роняет публикацию, а не считается пустым', async () => {

@@ -2,6 +2,7 @@ import { buildFieldName } from '../portals/smart-processes'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import { parseTemplateSchema } from '../invitations/portal-calls'
 import type { SurveyTemplate } from '../surveys/model'
+import { templateStateFields, templateStateOf } from '../portals/stages'
 
 /**
  * Portal calls for the survey builder: reading one template element for editing.
@@ -15,16 +16,25 @@ import type { SurveyTemplate } from '../surveys/model'
  * это два поведения под одним именем.
  */
 
-/** Состояние шаблона: черновик правится, опубликованная версия неизменяема. */
+/** Состояние шаблона: черновик правится, опубликованная и снятая с публикации версии неизменяемы. */
 export const TEMPLATE_STATE_DRAFT = 'draft'
 export const TEMPLATE_STATE_PUBLISHED = 'published'
+
+// Правило неизменяемости одно на сервер и вкладку, поэтому живёт в `shared/template-state.ts` (разбор
+// там); роуты конструктора берут его отсюда, вкладка — прямо из `shared/`. Одна копия: вторая
+// разошлась бы с первой при новом неизменяемом состоянии.
+export { isFrozen } from '../portals/stages'
 
 /** Шаблон, каким его открывает конструктор. */
 export interface TemplateItem {
   id: number
   code: string
   version: number
-  /** `draft` | `published` | что угодно ещё, что успели записать руками. */
+  /**
+   * `draft` | `published` | `retired` | пусто — не разобрали.
+   *
+   * Со штатными стадиями «опубликован» решает дата публикации, а не стадия (`templateStateOf`).
+   */
   state: string
   /**
    * Когда портал последний раз менял элемент.
@@ -90,7 +100,7 @@ export function readTemplateItem(response: unknown, template: SmartProcessRef): 
     // Ноль, а не единица: «версии ещё нет» и «версия первая» — разные вещи, и подставив
     // единицу мы бы назвали черновик первой версией, которой никто не публиковал.
     version: Number.isInteger(version) && version > 0 ? version : 0,
-    state: asText(bag[buildFieldName(template.id, 'STATE')]),
+    state: templateStateOf(template, bag),
     updatedAt: asText(bag.updatedTime),
     schema: parseTemplateSchema(bag[buildFieldName(template.id, 'SCHEMA')]),
   }
@@ -160,11 +170,10 @@ export function findDraftOfCode(response: unknown, template: SmartProcessRef, co
   if (!Array.isArray(items)) return null
 
   const codeField = buildFieldName(template.id, 'CODE')
-  const stateField = buildFieldName(template.id, 'STATE')
 
   for (const raw of items) {
     const item = raw as Record<string, unknown>
-    if (item[codeField] !== code || item[stateField] !== TEMPLATE_STATE_DRAFT) continue
+    if (item[codeField] !== code || templateStateOf(template, item) !== TEMPLATE_STATE_DRAFT) continue
     const id = Number(item.id)
     if (Number.isInteger(id) && id > 0) return id
   }
@@ -212,8 +221,11 @@ export function buildPublishTemplateCall(
         title: schema.title,
         [buildFieldName(template.id, 'CODE')]: schema.code,
         [buildFieldName(template.id, 'VERSION')]: version,
-        [buildFieldName(template.id, 'STATE')]: TEMPLATE_STATE_PUBLISHED,
+        // Стадией «Опубликован» — или прежним полем, пока портал не переведён на стадии.
+        ...templateStateFields(template, TEMPLATE_STATE_PUBLISHED),
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify(schema),
+        // ⚠ Со стадиями дата публикации и ЕСТЬ признак «опубликована» (`templateStateOf`): её пишет
+        // только эта публикация, после проверки схемы, а поле закрыто от правки руками.
         [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10),
       },
     },
@@ -253,7 +265,7 @@ export function buildNewVersionCall(
         // Ноль — «версии ещё нет». Номер выдаётся публикацией, а не созданием: между ними
         // черновик могут бросить, и занятый впустую номер оставил бы дыру в нумерации.
         [buildFieldName(template.id, 'VERSION')]: 0,
-        [buildFieldName(template.id, 'STATE')]: TEMPLATE_STATE_DRAFT,
+        ...templateStateFields(template, TEMPLATE_STATE_DRAFT),
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify(schema),
       },
     },

@@ -1,0 +1,141 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+/**
+ * Серверный запрет правки: `template-save.post.ts` и `template-publish.post.ts` со штатными стадиями.
+ *
+ * ⚠ Заведён тестировщиком панели PR #93. С ревизии 5 стадию шаблона двигают в канбане, а неизменяемость
+ * решает дата публикации (`templateStateOf`, `isFrozen`). Проверял это только клиент — вкладка
+ * против подделки роута, — а настоящая граница на сервере, и её не держал ни один тест. Здесь —
+ * то, ради чего инвариант «опубликованная версия неизменяема» вообще заведён: снятая с публикации
+ * и уведённая в «Черновик» версии не правятся и не публикуются повторно под новым номером.
+ *
+ * Роуты импортируются напрямую, сессия и портал подделаны — приём в `survey-result-api.test.ts`.
+ */
+
+const TEMPLATE = { entityTypeId: 1038, id: 8, categoryId: 14 }
+
+const SCHEMA = {
+  code: 'brand',
+  title: 'Бренд',
+  sections: [{
+    key: 's1',
+    title: 'Раздел',
+    scored: true,
+    bands: [{ from: 0, to: 10, text: 'Всё' }],
+    questions: [{ key: 'q1', sourceKey: 'q1', title: 'Вопрос', type: 'scale', weight: 100, scored: true, scale: { min: 0, max: 10 } }],
+  }],
+}
+
+let item: Record<string, unknown>
+let body: Record<string, unknown>
+let writes: { method: string, params: Record<string, unknown> }[]
+
+async function load(route: 'template-save' | 'template-publish') {
+  writes = []
+  vi.doMock('../../server/api/portal/-session', () => ({
+    openPortalSession: async () => ({
+      portal: { id: 'портал', domain: 'shef.bitrix24.ru' },
+      userId: 3,
+      authId: 'фреймовый-токен',
+      call: async (method: string, params: Record<string, unknown> = {}) => {
+        if (method === 'crm.item.get') return { result: { item } }
+        if (method === 'crm.item.list') return { result: { items: [item] } }
+        writes.push({ method, params })
+        return { result: { item: { id: 4 } } }
+      },
+    }),
+  }))
+  vi.doMock('../../server/b24/provision', () => ({ readStoredRefs: async () => ({ template: TEMPLATE }) }))
+  vi.doMock('../../server/b24/frame-auth', () => ({ verifyItemAccess: async () => ({ ok: true, item }) }))
+  vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
+  vi.doMock('h3', async () => {
+    const actual = await vi.importActual<typeof import('h3')>('h3')
+    return { ...actual, readBody: async () => body }
+  })
+  vi.resetModules()
+
+  // Пути — буквально: динамический импорт по шаблонной строке сборщик тестов не разбирает.
+  const { default: handler } = route === 'template-save'
+    ? await import('../../server/api/portal/template-save.post')
+    : await import('../../server/api/portal/template-publish.post')
+  return (handler as unknown as (event: unknown) => Promise<Record<string, unknown>>)
+}
+
+beforeEach(() => {
+  item = {
+    id: 4,
+    stageId: 'DT1038_14:SUCCESS',
+    updatedTime: '2026-09-28T10:00:00+03:00',
+    UF_CRM_8_CODE: 'brand',
+    UF_CRM_8_VERSION: 1,
+    UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00',
+    UF_CRM_8_SCHEMA: JSON.stringify(SCHEMA),
+  }
+})
+
+afterEach(() => {
+  for (const path of [
+    '../../server/api/portal/-session',
+    '../../server/b24/provision',
+    '../../server/b24/frame-auth',
+    '../../server/utils/logger',
+    'h3',
+  ]) vi.doUnmock(path)
+  vi.resetModules()
+})
+
+describe('сохранение схемы со стадиями', () => {
+  beforeEach(() => {
+    body = { itemId: 4, schema: SCHEMA }
+  })
+
+  it('ГЛАВНОЕ: снятую с публикации не правит', async () => {
+    item = { ...item, stageId: 'DT1038_14:FAIL' }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'published' })
+    expect(writes).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: опубликованную, перетащенную в «Черновик», не правит — решает дата, а не стадия', async () => {
+    item = { ...item, stageId: 'DT1038_14:NEW' }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'published' })
+    expect(writes).toEqual([])
+  })
+
+  it('черновик, перетащенный в «Опубликован», остаётся правимым черновиком', async () => {
+    // Даты нет — схему никто не проверял, и публикацией это не стало.
+    item = { ...item, UF_CRM_8_PUBLISHED_AT: '' }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+    expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
+  })
+})
+
+describe('публикация со стадиями', () => {
+  beforeEach(() => {
+    body = { itemId: 4, action: 'publish' }
+  })
+
+  it('ГЛАВНОЕ: снятую с публикации повторно не публикует — ни под старым номером, ни под новым', async () => {
+    item = { ...item, stageId: 'DT1038_14:FAIL' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: false, reason: 'published' })
+    expect(writes).toEqual([])
+  })
+
+  it('от снятой с публикации можно открыть новую версию', async () => {
+    item = { ...item, stageId: 'DT1038_14:FAIL' }
+    body = { itemId: 4, action: 'new-version' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toMatchObject({ ok: true, action: 'new-version' })
+    const [created] = writes
+    expect(created!.method).toBe('crm.item.add')
+    expect((created!.params.fields as Record<string, unknown>).stageId).toBe('DT1038_14:NEW')
+  })
+})

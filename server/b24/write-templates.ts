@@ -8,11 +8,12 @@ import {
   type TemplateWritePlan,
 } from '../domain/import/template-write'
 import { readCreatedItemId } from '../domain/invitations/portal-calls'
-import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
+import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readFlag, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
 import { listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
+import { buildItemFieldsCall, buildListCategoriesCall, hasStateField, isStaged, readDefaultCategoryId } from '../domain/portals/stages'
 import { logger } from '../utils/logger'
 
 /**
@@ -47,6 +48,14 @@ export interface TemplateWriteResult extends TemplateWritePlan {
   failed: { code: string, version: number, reason: string }[]
   /** Был ли это сухой прогон. В отчёте это первое, что нужно знать. */
   dryRun: boolean
+  /**
+   * Пишет ли команда рядом со стадией и старое поле «Состояние» (`writesLegacyState`).
+   *
+   * ⚠ В отчёт: запись в поле, которое приложение, возможно, читает, — решение, и оператор
+   * необратимой операции должен видеть его и в сухом прогоне. Нашёл `/code-review`
+   * в закрывающем проходе панели PR #93.
+   */
+  legacyField: boolean
 }
 
 /**
@@ -70,12 +79,14 @@ export async function writeTemplates(
 
   const existing = await listExistingVersions(call, template)
   const plan = planTemplateWrites(templates, existing)
-  const result: TemplateWriteResult = { ...plan, written: 0, failed: [], dryRun }
+  // Проверка поля — чтение, и она идёт и в сухом прогоне: «посмотреть» и «записать» — один код.
+  const legacyField = plan.create.length > 0 && await writesLegacyState(call, template)
+  const result: TemplateWriteResult = { ...plan, written: 0, failed: [], dryRun, legacyField }
 
   if (dryRun) return result
 
   for (const planned of plan.create) {
-    const create = buildCreateTemplateCall(template, planned, state, options.now ?? new Date())
+    const create = buildCreateTemplateCall(template, planned, state, options.now ?? new Date(), legacyField)
     try {
       if (readCreatedItemId(await call(create.method, create.params)) === null) {
         // ⚠ Двухсотый ответ без идентификатора означает, что портал принял запрос и ничего
@@ -101,6 +112,30 @@ export async function writeTemplates(
     'перенос шаблонов в портал завершён',
   )
   return result
+}
+
+/**
+ * Whether an operator command writes the old `STATE` field next to the stage: stages are on, and the field still lives.
+ *
+ * ⚠ ВЕБХУК НЕ ВИДИТ, ЧЕМ ЧИТАЕТ ПРИЛОЖЕНИЕ. Режим приложения — сохранённая ссылка с воронкой,
+ * а она лежит в `app.option`, закрытом для вебхука (разбор у `findTemplateProcess`); команда
+ * выводит режим из самого типа (`withFunnel`). Расходятся они там, где стадии включены, а
+ * приложение читает старое поле: у усыновлённого смарт-процесса, чьи стадии администратор включил
+ * сам уже после миграции, у тарифа, открывшего стадии позже, в час между включением стадий
+ * и сохранением воронки. Запиши команда там одну стадию, приложение прочитало бы опубликованную
+ * анкету черновиком. Поэтому, пока старое поле живо, команда пишет и его: оба режима приложения читают такую
+ * запись одинаково, а перенос, если он ещё впереди, снимет поле сам. Нашёл `/code-review`
+ * в панели PR #93.
+ *
+ * ⚠ Поле ищется, а не пишется наугад, хотя запись в несуществующее поле портал принимает молча
+ * (замерено 28.09): молчаливое согласие портала — не контракт, а по коду должно быть видно,
+ * когда команда пишет в старое поле. Ищется правом `crm` (`buildItemFieldsCall`) — одним вызовом
+ * на прогон команды.
+ */
+export async function writesLegacyState(call: RestCall, template: SmartProcessRef): Promise<boolean> {
+  if (!isStaged(template)) return false
+  const probe = buildItemFieldsCall(template)
+  return hasStateField(await call(probe.method, probe.params), template)
 }
 
 /** Все пары «код + версия» с портала, со всех страниц. */
@@ -162,7 +197,40 @@ export async function findProcesses(call: RestCall): Promise<Partial<SmartProces
 
   const types = await listAllTypes(call)
   return {
-    template: findTypeByTitle(types, TEMPLATE_SP_TITLES) ?? undefined,
-    survey: findTypeByTitle(types, SURVEY_SP_TITLES) ?? undefined,
+    template: await withFunnel(call, types, findTypeByTitle(types, TEMPLATE_SP_TITLES)),
+    survey: await withFunnel(call, types, findTypeByTitle(types, SURVEY_SP_TITLES)),
   }
+}
+
+/**
+ * Adds the default funnel to a found smart process whose native stages are on.
+ *
+ * ⚠ Вебхуку сохранённые ссылки недоступны, а с ними и признак «на стадиях» (`categoryId`), который
+ * ставит миграция ревизии 5. Поэтому здесь он выводится из самого типа: стадии включены — пишем
+ * и читаем стадией. Иначе команда переноса записала бы состояние в поле, которого после миграции
+ * нет, — портал молча отбросил бы его, и анкета осталась бы «Черновиком».
+ */
+async function withFunnel(
+  call: RestCall,
+  types: readonly Record<string, unknown>[],
+  ref: SmartProcessRef | null,
+): Promise<SmartProcessRef | undefined> {
+  if (ref === null) return undefined
+  const type = types.find(one => Number(one.id) === ref.id)
+  // ⚠ Флаг портал отдаёт и `'Y'`, и `true` (разбор у `readFlag`): сравнив только с `'Y'`, команда
+  // на `true` молча вернулась бы к удалённому полю. Нашёл `/review` в панели PR #93.
+  if (readFlag(type?.isStagesEnabled) !== true) return ref
+  // Пока старое поле живо, команда пишет и его — рядом со стадией (`writesLegacyState`): так её
+  // запись одинаково читают оба режима приложения и перенос. Своё чтение команды от режима не зависит
+  // там, где оно решает необратимое: опубликованной она считает и версию с одной датой
+  // (`planTemplatePublish`).
+  const list = buildListCategoriesCall(ref)
+  const categoryId = readDefaultCategoryId(await call(list.method, list.params))
+  if (categoryId === null) {
+    // Стадии включены, а воронки портал не назвал — писать стадией нечем, пишем полем. Громко:
+    // после миграции поля может не быть, и запись в него портал молча отбросит (замерено 28.09).
+    logger.warn({ typeId: ref.id }, 'стадии включены, но воронка по умолчанию не найдена — команда пишет старым полем')
+    return ref
+  }
+  return { ...ref, categoryId }
 }

@@ -1,0 +1,1 @@
+CREATE INDEX "link_index_portal_item_idx" ON "link_index" USING btree ("portal_id","item_id");

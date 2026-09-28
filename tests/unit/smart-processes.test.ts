@@ -122,14 +122,15 @@ describe('состав смарт-процессов', () => {
   it('фиксирует состав флагов смарт-процесса целиком', () => {
     // Гвард из мутационного прогона на ревью PR #11: все шесть флагов можно было
     // перевернуть разом, и ни один тест не краснел. А каждый из них — решение:
-    // выключенные стадии (состояние держим своим полем, чужие стадии переименуют),
+    // включённые стадии (с ревизии 5 состояние живёт в штатной стадии, issue #84, п. 21;
+    // переименование стадий клиентом не страшно — код стадии при этом не меняется),
     // включённый клиент (без него «Опрос» не привяжется к сделке и контакту),
     // включённые роботы (ради них всё и затевается). Сверяем объект целиком,
     // а не отсутствие одного ключа.
     expect(buildCreateSmartProcessCall(SURVEY_SP_TITLE, 'survey').params).toEqual({
       fields: {
         title: SURVEY_SP_TITLE,
-        isStagesEnabled: false,
+        isStagesEnabled: true,
         isCategoriesEnabled: false,
         isClientEnabled: true,
         isAutomationEnabled: true,
@@ -145,7 +146,7 @@ describe('состав смарт-процессов', () => {
     expect(buildCreateSmartProcessCall(TEMPLATE_SP_TITLE, 'template').params).toEqual({
       fields: {
         title: TEMPLATE_SP_TITLE,
-        isStagesEnabled: false,
+        isStagesEnabled: true,
         isCategoriesEnabled: false,
         isClientEnabled: false,
         isAutomationEnabled: false,
@@ -400,5 +401,11 @@ describe('метка владельца и закрытые поля: разов
     const form = buildCardSections(10, true).find(section => section.name === 'survey_form')!
 
     expect(JSON.stringify(form.elements)).toContain('UF_CRM_10_LINK')
+  })
+
+  it('со штатными стадиями поля «Состояние» в карточке нет — стадию портал показывает сам', () => {
+    // Поле после переноса удалено, и в раскладке осталось бы имя без поля.
+    expect(JSON.stringify(buildCardSections(10, true, true))).not.toContain('UF_CRM_10_STATE')
+    expect(JSON.stringify(buildCardSections(10, true))).toContain('UF_CRM_10_STATE')
   })
 })

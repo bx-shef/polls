@@ -1,8 +1,8 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildListIssuedCall, buildRevokeCall, isRevocable, readIssuedLinks } from '../../domain/invitations/issued-links'
-import { revokeLink } from '../../links/issue'
+import { buildListIssuedCall, buildRevokeCall, isRevocable, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { readLinkStatuses, revokeLink } from '../../links/issue'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -18,8 +18,9 @@ import { openPortalSession } from './-session'
  * на портале. Страницу закрывает именно наша: публичная страница анкеты в портал не ходит
  * по инварианту, и `decideLinkAccess` смотрит на `link_index.status`. Запись на портале —
  * то, что видит менеджер. Упади мы между ними — ссылка уже не открывается, а карточка ещё
- * говорит «отправлена»: расхождение видно и лечится повторным нажатием. Обратный порядок
- * дал бы карточку «отозвана» при работающей ссылке — то есть ложное спокойствие.
+ * говорит «отправлена»: расхождение лечится повторным нажатием, которое дописывает отражение
+ * (ветка ниже). Обратный порядок дал бы карточку «отозвана» при работающей ссылке — то есть
+ * ложное спокойствие.
  *
  * ⚠ Проверок доступа ДВЕ, и вторая не лишняя. Первая — видит ли сотрудник эту сделку
  * (фреймовым токеном, как при выпуске). Вторая — принадлежит ли гасимый элемент именно ей:
@@ -59,13 +60,33 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'link-gone' as const }
   }
 
-  if (!isRevocable(target, new Date())) {
+  const status = (await readLinkStatuses(session.portal.id, [itemId])).get(itemId) ?? null
+
+  // ⚠ Наша строка уже погашена, а отражение на портале — нет: прошлый отзыв упал между двумя
+  // записями. Дописываем его — это и есть «лечится повторным нажатием» из шапки. Без этой ветки
+  // повтор отвечал бы «нечего гасить», и элемент навсегда стоял бы «Отправленным», а роботы
+  // клиента на «Отозвана» не сработали бы. Нашли `/review` и `/code-review` во втором круге
+  // панели PR #93.
+  if (needsRevokeRepair(target, status)) {
+    const repair = buildRevokeCall(refs.survey, itemId)
+    await session.call(repair.method, repair.params)
+    logger.info({ domain: session.portal.domain, itemId, userId: session.userId }, 'отзыв ссылки дописан на портал')
+    return { ok: true as const }
+  }
+
+  if (!isRevocable(target, new Date(), status)) {
     // Пройденную, отозванную и истёкшую гасить нечего. Это не ошибка: кнопку могли нажать
     // на списке, который успел устареть, пока вкладка была открыта.
     return { ok: false as const, reason: 'not-revocable' as const }
   }
 
-  await revokeLink(session.portal.id, itemId)
+  // ⚠ Ноль погашенных строк — стадию на портале НЕ пишем. Значит, наша база сказала «нет»:
+  // ответ уже принят (гонка с прохождением) или строки нет вовсе. Написав «Отозвана» после
+  // отказа базы, мы пометили бы пройденный опрос отозванным, и доставка, которая уже прошла,
+  // назад его не переведёт. Нашла безопасность в панели PR #93.
+  if (await revokeLink(session.portal.id, itemId) === 0) {
+    return { ok: false as const, reason: 'not-revocable' as const }
+  }
 
   const revoke = buildRevokeCall(refs.survey, itemId)
   await session.call(revoke.method, revoke.params)

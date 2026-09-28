@@ -6,7 +6,7 @@ import { buildListTemplatesCall } from '../../domain/invitations/portal-calls'
 import { readNextOffset } from '../../domain/portals/smart-processes'
 import { validateTemplate } from '../../domain/surveys/validate'
 import {
-  TEMPLATE_STATE_PUBLISHED,
+  isFrozen,
   buildGetTemplateItemCall,
   buildNewVersionCall,
   buildPublishTemplateCall,
@@ -70,7 +70,8 @@ export default defineEventHandler(async (event) => {
   if (current === null) return { ok: false as const, reason: 'no-item' as const }
   if (current.schema === null) return { ok: false as const, reason: 'no-schema' as const }
 
-  const published = current.state === TEMPLATE_STATE_PUBLISHED
+  // Опубликованная ИЛИ снятая с публикации: обе неизменяемы, и от обеих заводится новая версия.
+  const published = isFrozen(current.state)
 
   if (action === 'new-version') {
     if (!published) return { ok: false as const, reason: 'not-published' as const }

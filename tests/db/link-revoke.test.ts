@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { sql } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { getDb, isDatabaseConfigured, schema } from '../../server/db/client'
-import { revokeLink } from '../../server/links/issue'
+import { readLinkStatuses, revokeLink } from '../../server/links/issue'
 import { decideLinkAccess } from '../../server/domain/links/access'
 
 /**
@@ -150,5 +150,52 @@ describe.skipIf(!enabled)('отзыв ссылки', () => {
   it('на несуществующую отвечает нулём, а не ошибкой', async () => {
     // Кнопку могли нажать на списке, который успел устареть. Это не повод падать.
     expect(await revokeLink(portalId, 999999)).toBe(0)
+  })
+})
+
+/**
+ * Состояния ссылок для вкладки сделки и виджета (`readLinkStatuses`).
+ *
+ * ⚠ С ревизии 5 «отозвана» читается отсюда, а не со стадии: стадию двигают в канбане, а страницу
+ * закрывает эта строка. Ошибка здесь — вкладка, которая показывает погашенной живую ссылку или
+ * живой погашенную. Нашли `/code-review` и безопасность в панели PR #93.
+ */
+describe.skipIf(!enabled)('состояния ссылок по элементам', () => {
+  beforeEach(async () => {
+    await wipe()
+    portalId = await makePortal(TEST_DOMAIN)
+    otherPortalId = await makePortal(OTHER_DOMAIN)
+    await seedTemplate(portalId)
+    await seedTemplate(otherPortalId)
+  })
+
+  afterAll(async () => {
+    if (!enabled) return
+    await wipe()
+  })
+
+  it('отдаёт состояние каждого названного элемента своего портала', async () => {
+    await seed(portalId, 54)
+    await seed(portalId, 55, 'completed')
+    await seed(otherPortalId, 56, 'revoked')
+    await revokeLink(portalId, 54)
+
+    const statuses = await readLinkStatuses(portalId, [54, 55, 56, 57])
+
+    expect([...statuses.entries()].sort()).toEqual([[54, 'revoked'], [55, 'completed']])
+  })
+
+  it('ГЛАВНОЕ: у элемента с двумя строками решает последняя', async () => {
+    // ⚠ Пересозданный смарт-процесс считает номера элементов с начала, и строка давней ссылки
+    // совпала бы с новой. Возьми мы любую, новую живую ссылку вкладка показала бы отозванной.
+    await seed(portalId, 54, 'revoked')
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await seed(portalId, 54, 'sent')
+
+    expect((await readLinkStatuses(portalId, [54])).get(54)).toBe('sent')
+  })
+
+  it('пустой список — без запроса к базе', async () => {
+    expect((await readLinkStatuses(portalId, [])).size).toBe(0)
   })
 })
