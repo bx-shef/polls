@@ -119,6 +119,12 @@ export const MAX_TITLE_BYTES = 255
  * покрасили бы дело вопреки тому, что клиент написал в анкете.
  *
  * Раздел без диапазонов ничего не решает: сказать про него «плохо» не на чем.
+ *
+ * ⚠ Балл НИЖЕ нижнего диапазона — тоже «плохо», а не «ничего». У перенесённых анкет
+ * диапазоны бывают с дырой внизу (у `digital` они начинаются с 4), а пропуск с 28.09 входит
+ * в балл низшей оценкой — и раздел из одних пропусков падал в непокрытый низ, где дело
+ * оставалось зелёным. Хуже худшего диапазона — это всё ещё худшее. Нашёл `/code-review`
+ * в PR #85.
  */
 export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boolean {
   const lowestByKey = new Map(
@@ -134,7 +140,8 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
     // «тот ли это диапазон». Прежняя редакция сверяла `from`, и шаблон с двумя диапазонами
     // от одной границы (ручная правка, импорт из старого решения) красил дело красным вопреки
     // тому, что клиент написал в анкете. Нашла панель ревью PR #37–#39, issue #42.
-    return lowest !== undefined && section.band !== null && section.band === lowest
+    if (lowest === undefined || section.score === null) return false
+    return section.band === lowest || (section.band === null && section.score < lowest.from)
   })
 }
 
