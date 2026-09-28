@@ -1,3 +1,4 @@
+import { formatAnswerDate } from './answer-date'
 import type { SurveyTemplate } from './model'
 
 /**
@@ -166,11 +167,15 @@ export function showAnswer(value: unknown): string {
   return text === '' ? NO_ANSWER : text
 }
 
-/** Дата ответа по-русски: `2026-09-20` → `20.09.2026`. Всё остальное — как пришло. */
+/**
+ * Дата ответа по-русски: `2026-09-20` → `20.09.2026`. Не дата — как пришла, пропуск — прочерк.
+ *
+ * ⚠ Запись даты — ОБЩАЯ с делом в ленте сделки (`formatAnswerDate`). Своя копия здесь уже
+ * была, и лента при ней печатала `2026-09-20` как есть: одно прохождение в двух местах
+ * выглядело двумя разными датами (issue #84, п. 13).
+ */
 function showDate(value: unknown): string {
-  const text = showAnswer(value)
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
-  return match === null ? text : `${match[3]}.${match[2]}.${match[1]}`
+  return formatAnswerDate(showAnswer(value))
 }
 
 /**

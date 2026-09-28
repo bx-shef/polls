@@ -108,3 +108,73 @@ describe('проверка присланных ответов', () => {
     expect(checkAnswers(TEMPLATE, body).ok).toBe(false)
   })
 })
+
+/**
+ * Вопрос «Дата» — отдельной анкетой, чтобы проверки выше не зависели от лишнего вопроса.
+ * Текстовый вопрос рядом — для сравнения: ему та же строка по-прежнему годится.
+ */
+const DATED: SurveyTemplate = {
+  code: 'media',
+  title: 'Медиа',
+  sections: [{
+    key: 'open',
+    title: 'Вопросы',
+    scored: false,
+    bands: [],
+    questions: [
+      { key: 'D1', sourceKey: 'D1', title: 'Когда удобно связаться', type: 'date', weight: 0, scored: false },
+      { key: 'T1', sourceKey: 'T1', title: 'Комментарий', type: 'text', weight: 0, scored: false },
+    ],
+  }],
+}
+
+describe('ответ на вопрос «Дата»', () => {
+  it('принимает настоящую дату в записи ГГГГ-ММ-ДД — ровно то, что шлёт календарь страницы', () => {
+    const check = checkAnswers(DATED, { D1: '2026-09-28' })
+
+    expect(check).toEqual({ ok: true, answers: { D1: '2026-09-28', T1: null } })
+  })
+
+  it.each<[unknown, string]>([
+    ['28.09.2026', 'русская запись'],
+    ['в пятницу', 'свободный текст'],
+    ['28.09', 'неполная дата'],
+    ['2026-09-28T10:00', 'дата со временем'],
+    [20260928, 'число'],
+    [{ year: 2026, month: 9, day: 28 }, 'объект вместо строки'],
+  ])('НЕ принимает вместо даты что попало (%#: %s)', (value) => {
+    // ⚠ ГВАРД ПОД ДЕФЕКТ issue #84, п. 13. Вопрос «Дата» рисовался текстовым полем, а сервер
+    // проверял только, что пришла строка: клиент писал «в пятницу» и «28.09», и в портал
+    // уезжала «дата», которую нельзя ни показать датой, ни сравнить с другой.
+    const check = checkAnswers(DATED, { D1: value })
+
+    expect(check.ok).toBe(false)
+    expect(!check.ok && check.problems[0]).toMatchObject({ key: 'D1', code: 'not-a-date' })
+  })
+
+  it.each(['2026-02-30', '2026-02-29', '2026-04-31', '2026-13-01'])(
+    'НЕ принимает дату, которой нет в календаре (%s)',
+    (value) => {
+      expect(checkAnswers(DATED, { D1: value }).ok).toBe(false)
+    },
+  )
+
+  it.each<[unknown, string]>([
+    ['', 'пустая строка'],
+    ['   ', 'одни пробелы'],
+    [null, 'стёртая дата'],
+    [undefined, 'вопрос не трогали'],
+  ])('пустая дата — пропуск, а не ошибка (%#: %s)', (value) => {
+    // Незаполненный вопрос — обычное дело, отказ по нему выглядел бы поломкой сайта.
+    // И «нет ответа» — это `null`, а не сегодняшняя дата, подставленная за человека.
+    const check = checkAnswers(DATED, { D1: value })
+
+    expect(check).toEqual({ ok: true, answers: { D1: null, T1: null } })
+  })
+
+  it('текстовому вопросу та же строка годится — меняется только вопрос «Дата»', () => {
+    const check = checkAnswers(DATED, { T1: '28.09.2026' })
+
+    expect(check).toEqual({ ok: true, answers: { D1: null, T1: '28.09.2026' } })
+  })
+})

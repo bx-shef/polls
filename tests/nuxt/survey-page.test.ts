@@ -1,5 +1,5 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
-import { defineEventHandler, setResponseStatus } from 'h3'
+import { defineEventHandler, readBody, setResponseStatus } from 'h3'
 import { describe, expect, it, vi } from 'vitest'
 import SurveyPage from '../../app/pages/s/[token].vue'
 
@@ -38,6 +38,11 @@ const TOKENS = {
   partial: 'f'.repeat(43),
   verdict: 'g'.repeat(43),
   plain: 'h'.repeat(43),
+  dated: 'i'.repeat(43),
+  datedTyped: 'j'.repeat(43),
+  datedCleared: 'k'.repeat(43),
+  datedUntouched: 'l'.repeat(43),
+  datedPicked: 'm'.repeat(43),
 }
 
 /** Анкета с одним балльным и одним текстовым вопросом; заголовок — с попыткой инъекции. */
@@ -92,6 +97,44 @@ serveBoth(TOKENS.verdict, SURVEY, {
   verdicts: [{ section: 'Продукт', text: 'Продолжаем двигаться вперед!' }],
 })
 serveBoth(TOKENS.plain, SURVEY, { ok: true, verdicts: [] })
+
+/**
+ * Анкета из одного вопроса «Дата» — чтобы «текстового поля на странице нет» проверялось
+ * честно: любой textarea на ней был бы этим вопросом.
+ */
+const DATED = {
+  ok: true,
+  survey: {
+    title: 'Когда созвониться',
+    sections: [{
+      key: 'open',
+      title: 'Открытые вопросы',
+      questions: [{ key: 'D1', title: 'Когда вам удобно обсудить следующий этап?', type: 'date' }],
+    }],
+  },
+}
+
+/**
+ * Что страница отправила, по токену.
+ *
+ * Проверяем ПРОВОД, а не экран: сервер и портал видят только тело запроса, и дата, красиво
+ * стоящая в поле, но уехавшая не той строкой, была бы ровно тем дефектом, который ищем.
+ */
+const posted: Record<string, Record<string, unknown>> = {}
+
+function serveRecording(token: string, get: unknown) {
+  registerEndpoint(`/api/s/${token}`, defineEventHandler(async (event) => {
+    if (event.method !== 'POST') return get
+    posted[token] = await readBody(event)
+    return { ok: true, verdicts: [] }
+  }))
+}
+
+serve(TOKENS.dated, DATED)
+serveRecording(TOKENS.datedTyped, DATED)
+serveRecording(TOKENS.datedCleared, DATED)
+serveRecording(TOKENS.datedUntouched, DATED)
+serveRecording(TOKENS.datedPicked, DATED)
 
 async function openPage(token: string) {
   return mountSuspended(SurveyPage, { route: `/s/${token}` })
@@ -314,5 +357,124 @@ describe('вердикт после отправки', () => {
 
     expect(page.text()).toContain('Спасибо!')
     expect(page.find('.verdicts').exists()).toBe(false)
+  })
+})
+
+describe('вопрос с датой', () => {
+  type Page = Awaited<ReturnType<typeof openPage>>
+
+  /** Набрать цифры в часть поля даты так, как набирает человек, — по клавише. */
+  async function type(page: Page, part: 'day' | 'month' | 'year', keys: string[]) {
+    const segment = page.find(`.date [data-segment="${part}"]`)
+    for (const key of keys) await segment.trigger('keydown', { key })
+  }
+
+  async function typeDate(page: Page) {
+    await type(page, 'day', ['2', '8'])
+    await type(page, 'month', ['0', '9'])
+    await type(page, 'year', ['2', '0', '2', '6'])
+  }
+
+  /** Отправить и дождаться «спасибо» — условием, а не тактом (см. `submit` выше). */
+  async function send(page: Page) {
+    await page.find('button[type="submit"]').trigger('submit')
+    await vi.waitFor(() => {
+      expect(page.text()).toContain('Спасибо!')
+    })
+  }
+
+  /** Календарь всплывает в `body`, а не внутри страницы: искать его приходится в документе. */
+  function calendarCells(): HTMLElement[] {
+    return [...document.querySelectorAll<HTMLElement>('[data-slot="cellTrigger"]')]
+  }
+
+  /** Открыть календарь и дождаться дней. */
+  async function openCalendar(page: Page) {
+    await page.find('button.pick').trigger('click')
+    await vi.waitFor(() => {
+      expect(calendarCells().length).toBeGreaterThan(0)
+    })
+  }
+
+  it('рисует поле даты с календарём, а не текстовое поле (issue #84, п. 13)', async () => {
+    // ⚠ ГВАРД ПОД ДЕФЕКТ. Всё, что не шкала, падало в ветку `v-else` с текстовым полем,
+    // и на вопрос «Дата» клиент писал что угодно: «в пятницу», «28.09», «не знаю».
+    const page = await openPage(TOKENS.dated)
+
+    expect(page.findComponent({ name: 'B24InputDate' }).exists()).toBe(true)
+    expect(page.find('textarea').exists()).toBe(false)
+    expect(page.find('button.pick').text()).toContain('Выбрать дату в календаре')
+  })
+
+  it('поле даты — в русском порядке: день, месяц, год', async () => {
+    // ⚠ Без `locale="ru"` набор без `<B24App>` считает локаль английской и ставит поле
+    // в порядке «мм/дд/гггг»: человек, набравший «10.09» по-русски, получил бы 9 октября.
+    const page = await openPage(TOKENS.dated)
+    const parts = page.findAll('.date [data-segment]').filter(part => part.attributes('data-segment') !== 'literal')
+
+    expect(parts.map(part => part.attributes('data-segment'))).toEqual(['day', 'month', 'year'])
+    expect(parts.map(part => part.text())).toEqual(['дд', 'мм', 'гггг'])
+  })
+
+  it('набранная дата уезжает строкой ГГГГ-ММ-ДД — той, что ждёт сервер', async () => {
+    const page = await openPage(TOKENS.datedTyped)
+    await typeDate(page)
+    await send(page)
+
+    expect(posted[TOKENS.datedTyped]).toEqual({ D1: '2026-09-28' })
+  })
+
+  it('стёртая дата снова «не отвечал»: уезжает `null`, а не последняя набранная', async () => {
+    // Отдельной кнопки сброса, как у ползунка, у даты нет — и не нужна: поле стирается
+    // как любое поле. Но только если стёртое действительно становится `null`.
+    const page = await openPage(TOKENS.datedCleared)
+    await typeDate(page)
+    await type(page, 'day', ['Backspace', 'Backspace'])
+    await send(page)
+
+    expect(posted[TOKENS.datedCleared]).toEqual({ D1: null })
+  })
+
+  it('нетронутая дата не уезжает датой — ни сегодняшней, ни какой-либо ещё', async () => {
+    // Инвариант «нет ответа — это `null`» — тот же, что у ползунка: подставить «сегодня»
+    // значило бы ответить за человека.
+    const page = await openPage(TOKENS.datedUntouched)
+    await send(page)
+
+    expect(posted[TOKENS.datedUntouched]!.D1 ?? null).toBeNull()
+  })
+
+  it('день, выбранный в календаре, уезжает этим днём, и календарь закрывается', async () => {
+    const page = await openPage(TOKENS.datedPicked)
+    await openCalendar(page)
+
+    const day = calendarCells().find(cell => !cell.hasAttribute('data-outside-view'))!
+    const value = day.getAttribute('data-value')
+    day.click()
+    await vi.waitFor(() => {
+      expect(calendarCells()).toHaveLength(0)
+    })
+    await send(page)
+
+    expect(value).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(posted[TOKENS.datedPicked]).toEqual({ D1: value })
+  })
+
+  it('календарь говорит по-русски — и кнопками, и своим названием', async () => {
+    // ⚠ Подписи кнопок набор берёт из словаря, который раздаёт `<B24App>`, а его на этой
+    // странице нет: без словаря, отданного страницей, экранный диктор читал бы «Next month»
+    // посреди русской анкеты. Название календаря словарь не переводит вовсе — «Event Date»
+    // приходит из `reka-ui`, и его закрывает `calendar-label`.
+    const page = await openPage(TOKENS.dated)
+    await openCalendar(page)
+
+    const labels = [...document.querySelectorAll('[aria-label]')].map(element => element.getAttribute('aria-label') ?? '')
+
+    expect(labels).toContain('Следующий месяц')
+    expect(labels.some(label => label.startsWith('Календарь, '))).toBe(true)
+    expect(labels.join(' | ')).not.toMatch(/Next month|Previous month|Event Date/)
+
+    // Всплывшее живёт в `body` и пережило бы тест: убираем за собой.
+    page.unmount()
   })
 })

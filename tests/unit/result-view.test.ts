@@ -148,6 +148,16 @@ describe('разделы результата', () => {
     expect(date!.value).toBe('01.10.2026')
   })
 
+  it('дату, набранную до календаря, показывает как есть, а пропуск — прочерком', () => {
+    // До календаря на публичной странице вопрос «Дата» был текстовым полем, и такие ответы
+    // могли уехать в портал. Это ответ клиента: выбросить его нельзя, выдать за дату — тоже.
+    const legacy = buildResultSections(TEMPLATE, { q4: 'в пятницу' }, new Map())
+    const skipped = buildResultSections(TEMPLATE, { q4: '  ' }, new Map())
+
+    expect(legacy[1]!.answers[1]!.value).toBe('в пятницу')
+    expect(skipped[1]!.answers[1]!.value).toBe(NO_ANSWER)
+  })
+
   it('без схемы показывает ключи, а не пустоту', () => {
     // Схема пропала и с портала не прочиталась — «ответ был» всё равно должно быть видно.
     const bare = buildResultSections(null, { q1: 7, q3: null }, new Map())

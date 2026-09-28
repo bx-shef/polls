@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { isCalendarDate } from './answer-date'
 import type { SurveyTemplate } from './model'
 
 /**
@@ -42,7 +43,7 @@ export type AnswerValue = number | string | null
 export interface AnswerProblem {
   /** Ключ вопроса; пусто — претензия ко всей анкете, а не к одному ответу. */
   key: string
-  code: 'unknown-question' | 'not-a-number' | 'out-of-range' | 'not-a-string' | 'too-long' | 'too-large'
+  code: 'unknown-question' | 'not-a-number' | 'out-of-range' | 'not-a-string' | 'not-a-date' | 'too-long' | 'too-large'
   detail: string
 }
 
@@ -110,6 +111,21 @@ export function checkAnswers(template: SurveyTemplate, submitted: unknown): Answ
         continue
       }
       answers[key] = numeric
+      continue
+    }
+
+    if (question.type === 'date') {
+      // ⚠ Только настоящая дата календаря в записи `ГГГГ-ММ-ДД` — ровно то, что шлёт календарь
+      // публичной страницы. До него вопрос «Дата» рисовался текстовым полем и принимал что угодно:
+      // «в пятницу», «28.09», «не знаю». Теперь такое приходит только в обход календаря —
+      // подделкой или со страницы, открытой до выката, — и принять его молча значило бы записать
+      // в портал «дату», которую нельзя ни показать датой, ни сравнить с другой (issue #84, п. 13).
+      if (typeof value !== 'string' || !isCalendarDate(value)) {
+        problems.push({ key, code: 'not-a-date', detail: 'ответ должен быть датой из календаря' })
+        continue
+      }
+      // В предел анкеты в байтах не идёт, как и оценка: после проверки это ровно десять байт.
+      answers[key] = value
       continue
     }
 

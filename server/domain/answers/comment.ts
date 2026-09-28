@@ -1,4 +1,5 @@
 import type { AnswerValue } from '../surveys/answer'
+import { formatAnswerDate } from '../surveys/answer-date'
 import type { SurveyTemplate } from '../surveys/model'
 import { NO_SCORE_NOTE, formatScore, partialScoreNote } from '../surveys/result-view'
 import type { SectionScore, SurveyScore } from '../surveys/scoring'
@@ -100,9 +101,14 @@ function sectionLines(
     // пропущенный вопрос превращает запись в перечень пустоты.
     if (typeof value !== 'string' || value.trim() === '') continue
 
+    // Дата — той же записью, что в карточке «Опроса»: `28.09.2026`, а не `2026-09-28` с провода.
+    // Не дату (ответ, принятый до календаря на публичной странице) функция отдаёт как есть,
+    // и она обезвреживается наравне с любым текстом.
+    const shown = question.type === 'date' ? formatAnswerDate(value) : value
+
     // Формулировка вопроса не обезвреживается: её писал сотрудник портала, у неё тот же
     // уровень доверия, что у самой CRM. Обезвреживается ровно то, что набрал посторонний.
-    body.push('', label(question.title), neutralizeMarkup(value))
+    body.push('', label(question.title), neutralizeMarkup(shown))
   }
 
   const scored = score !== undefined && score.score !== null

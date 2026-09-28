@@ -71,6 +71,16 @@ const QUESTION_TYPES = {
   date: 'Дата',
 } as const satisfies Record<Question['type'], string>
 
+/**
+ * Что увидит клиент на вопросе «Дата».
+ *
+ * ⚠ Подсказка стоит рядом с типом, потому что одного слова «Дата» оказалось мало: владелец
+ * спросил, как такой вопрос вообще будет показан (issue #84, п. 13). Про балльный и текстовый
+ * этого вопроса не возникает — ползунок и поле для текста угадываются по названию типа,
+ * а дату можно было бы спрашивать и текстом.
+ */
+const DATE_HINT = 'клиент выберет её в календаре'
+
 /** Отказы сохранения: у каждого свой текст, потому что чинятся они по-разному. */
 const SAVE_REFUSALS: Record<string, string> = {
   'published': 'Эту версию уже опубликовали, пока вкладка была открыта. Править её нельзя — создайте новую версию.',
@@ -742,6 +752,12 @@ async function save(): Promise<void> {
                     {{ label }}
                   </option>
                 </select>
+                <span
+                  v-if="question.type === 'date'"
+                  class="text-(--ui-color-text-secondary)"
+                >
+                  {{ DATE_HINT }}
+                </span>
                 <template v-if="question.type === 'scale'">
                   <B24Input
                     v-model.number="scaleOf(question).min"
@@ -773,7 +789,7 @@ async function save(): Promise<void> {
               <template v-else>
                 <span>{{ question.title }}</span>
                 <span class="ml-2 text-(--ui-color-text-secondary)">
-                  {{ QUESTION_TYPES[question.type] }}<template v-if="question.scale">, шкала {{ question.scale.min }}–{{ question.scale.max }}</template><template v-if="!question.scored">, не идёт в оценку</template>
+                  {{ QUESTION_TYPES[question.type] }}<template v-if="question.type === 'date'">, {{ DATE_HINT }}</template><template v-if="question.scale">, шкала {{ question.scale.min }}–{{ question.scale.max }}</template><template v-if="!question.scored">, не идёт в оценку</template>
                 </span>
               </template>
             </li>

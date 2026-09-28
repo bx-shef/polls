@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildAnswerComment } from '../../server/domain/answers/comment'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
+import { buildResultSections } from '../../server/domain/surveys/result-view'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
 
 /**
@@ -218,5 +219,46 @@ describe('комментарий в таймлайн', () => {
     const body = comment({ P1: 9, P2: 8, T1: null, T2: null })
 
     expect(body).toContain('Итоговый балл: 8,6')
+  })
+})
+
+describe('дата в деле', () => {
+  /** Анкета с вопросом «Дата» — отдельно, чтобы не трогать ожидания тестов выше. */
+  const DATED: SurveyTemplate = {
+    ...TEMPLATE,
+    sections: [{
+      key: 'open',
+      title: 'Открытые вопросы',
+      scored: false,
+      bands: [],
+      questions: [{ key: 'D1', sourceKey: 'D1', title: 'Когда удобно связаться?', type: 'date', weight: 0, scored: false }],
+    }],
+  }
+
+  function dated(value: string) {
+    return buildAnswerComment(DATED, { D1: value }, scoreSurvey(DATED, { D1: value }))
+  }
+
+  it('пишет дату по-русски — той же записью, что виджет в карточке «Опроса»', () => {
+    // ⚠ ГВАРД ПОД ДЕФЕКТ issue #84, п. 13. Виджет в карточке переводил `2026-09-28`
+    // в `28.09.2026`, а дело в ленте печатало строку с провода как есть: одно прохождение
+    // в двух местах выглядело двумя разными датами. Сверяем не с литералом, а с самим
+    // виджетом — чтобы разойтись им было нельзя, даже поменяв запись в одном месте.
+    const body = dated('2026-09-28')
+    const card = buildResultSections(DATED, { D1: '2026-09-28' }, new Map())[0]!.answers[0]!.value
+
+    expect(card).toBe('28.09.2026')
+    expect(body).toContain(card)
+    expect(body).not.toContain('2026-09-28')
+  })
+
+  it('дату, принятую до календаря, пишет как есть — и обезвреживает, как любой ответ', () => {
+    // До календаря на публичной странице вопрос «Дата» был текстовым полем, и в буфере
+    // могут лежать такие ответы. Выбросить их нельзя, выдать за дату — тем более,
+    // а разметка из них не должна ожить в чужой CRM, как и из любого текста.
+    const body = dated('[URL=http://чужой]в пятницу[/URL]')
+
+    expect(body).toContain('в пятницу')
+    expect(body).not.toContain('[URL=')
   })
 })
