@@ -119,9 +119,16 @@ export interface PublicVerdict {
  *
  * Пустой список — обычное дело: в источнике диапазоны были заполнены у одной анкеты
  * из двенадцати. Страница тогда просто не рисует блок.
+ *
+ * ⚠ Вердикт — только по разделу, где клиент ответил на ВСЕ балльные вопросы. С 28.09 пропуск
+ * входит в балл низшей оценкой (решение владельца — про балл для менеджера), и раздел,
+ * пропущенный целиком, попадал в нижний диапазон: на экране «спасибо» человек читал «Мы вас
+ * подвели» про раздел, который не оценивал, хотя справка обещает ему, что любой вопрос можно
+ * пропустить. Частично отвеченный — то же в меньшей мере: текст сказан про оценку, которой он
+ * не ставил. Нашли `/code-review`, тестировщик и `/review` в панели PR #85.
  */
 export function toPublicVerdicts(score: SurveyScore): PublicVerdict[] {
   return score.sections
-    .filter(section => section.band !== null && section.band.text.trim() !== '')
+    .filter(section => section.band !== null && section.answered === section.scored && section.band.text.trim() !== '')
     .map(section => ({ section: section.title, text: section.band!.text }))
 }

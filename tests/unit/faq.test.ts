@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'vue/compiler-sfc'
 import { describe, expect, it } from 'vitest'
+import { partialScoreNote } from '../../server/domain/surveys/result-view'
 import { FAQ, FAQ_AGENT_PROMPT, FAQ_INTRO, UNINSTALL_PROMISE, buildLlmsTxt } from '../../shared/faq'
 
 /**
@@ -40,6 +41,14 @@ describe('справка', () => {
       expect(text, 'HTML в справке').not.toMatch(/<[a-z/]/i)
       expect(text, 'заголовок или список разметки в справке').not.toMatch(/(^|\n)\s*(#|[*-]\s)/)
     }
+  })
+
+  it('пример подписи неполного балла — дословно то, что пишет код', () => {
+    // Пример в справке правится руками вслед за кодом, и в PR #85 это случилось уже второй
+    // раз. Клиент сверяет справку с карточкой: расхождение в словах читается как ошибка.
+    const scores = FAQ.find(entry => entry.id === 'scores')!.answer.join(' ')
+
+    expect(scores).toContain(`«${partialScoreNote(2, 5)}»`)
   })
 
   it('обещание про удаление приложения — дословно то, что записано в PROCESS.md', () => {

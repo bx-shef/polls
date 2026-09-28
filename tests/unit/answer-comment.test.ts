@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildAnswerComment } from '../../server/domain/answers/comment'
+import { NO_SCORE_NOTE } from '../../server/domain/surveys/result-view'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
 
@@ -206,6 +207,20 @@ describe('комментарий в таймлайн', () => {
     const body = comment({ P1: null, P2: null, T1: 'Пара слов', T2: null })
 
     expect(body).toContain('Продукт: 0 (ответ на 0 из 2, пропуск — низшая оценка)')
+  })
+
+  it('балльный раздел без балльных вопросов говорит «без оценки»', () => {
+    // Публикация такой раздел не пропускает, но перенесённые анкеты опубликованы операторской
+    // командой мимо неё. Ветку до PR #85 держал тест про пустую секцию; когда пропуск стал
+    // низшей оценкой, она осталась без проверки. Нашёл тестировщик в панели ревью PR #85.
+    const odd: SurveyTemplate = {
+      ...TEMPLATE,
+      sections: [{ ...TEMPLATE.sections[1]!, key: 'odd', title: 'Странный раздел', scored: true }],
+    }
+    const answers = { T1: 'Пара слов', T2: null }
+    const body = buildAnswerComment(odd, answers, scoreSurvey(odd, answers))
+
+    expect(body).toContain(`Странный раздел: ${NO_SCORE_NOTE}`)
   })
 
   it('пишет комментарий и на пустую анкету: молчание тоже сигнал', () => {

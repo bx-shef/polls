@@ -100,6 +100,23 @@ describe('цвет дела', () => {
     expect(hasBadSection(bandless, scoreSurvey(bandless, { q: 0 }))).toBe(false)
   })
 
+  it('балл НИЖЕ нижнего диапазона красит дело', () => {
+    // У перенесённых анкет диапазоны бывают с дырой внизу (у `digital` — с 4). Балл,
+    // упавший в непокрытый низ, — хуже худшего диапазона, а не «ничего». Нашёл `/code-review`
+    // в PR #85: раздел из одних пропусков оставлял дело зелёным.
+    const holed: SurveyTemplate = {
+      ...TEMPLATE,
+      sections: [{
+        ...TEMPLATE.sections[0]!,
+        bands: [{ from: 4, to: 7, text: 'Средне.' }, { from: 7, to: 10, text: 'Хорошо.' }],
+      }],
+    }
+
+    expect(hasBadSection(holed, scoreSurvey(holed, { q: null }))).toBe(true)
+    expect(hasBadSection(holed, scoreSurvey(holed, { q: 2 }))).toBe(true)
+    expect(hasBadSection(holed, scoreSurvey(holed, { q: 8 }))).toBe(false)
+  })
+
   it('пропуск красит дело, как низшая оценка', () => {
     // Решение владельца 28.09 (issue #84, пункт 5): не ответил — значит низшая оценка, и раздел
     // без единого ответа попадает в свой нижний диапазон. До него здесь было наоборот —

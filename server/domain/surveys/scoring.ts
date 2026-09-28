@@ -1,4 +1,4 @@
-import type { SurveyBand, SurveyQuestion, SurveySection, SurveyTemplate } from './model'
+import { scaleOf, type SurveyBand, type SurveyQuestion, type SurveySection, type SurveyTemplate } from './model'
 import type { AnswerValue } from './answer'
 
 /**
@@ -80,7 +80,7 @@ export interface SurveyScore {
  * в шкале, пропуск выражен `null`. Здесь ещё раз это не проверяется — двойная проверка
  * расходится с оригиналом ровно тогда, когда правят одну из двух.
  */
-export function scoreSurvey(template: SurveyTemplate, answers: Record<string, AnswerValue>): SurveyScore {
+export function scoreSurvey(template: SurveyTemplate, answers: Readonly<Record<string, AnswerValue>>): SurveyScore {
   const sections = template.sections.map(section => scoreSection(section, answers))
 
   const scored = sections.map(s => s.score).filter((s): s is number => s !== null)
@@ -90,7 +90,7 @@ export function scoreSurvey(template: SurveyTemplate, answers: Record<string, An
   }
 }
 
-function scoreSection(section: SurveySection, answers: Record<string, AnswerValue>): SectionScore {
+function scoreSection(section: SurveySection, answers: Readonly<Record<string, AnswerValue>>): SectionScore {
   // Балл дают только балльные вопросы, и только те, что помечены идущими в оценку.
   // В источнике выключение выражалось весом 0 — неотличимо от опечатки; у нас это флаг.
   const scoring = section.questions.filter(q => q.scored && q.type === 'scale')
@@ -113,7 +113,13 @@ function scoreSection(section: SurveySection, answers: Record<string, AnswerValu
     answered += 1
   }
 
-  const score = !section.scored || weight === 0 ? null : round2(weighted / weight)
+  // ⚠ Нечисловой итог — это испорченная схема, а не оценка. Схема лежит строковым полем
+  // на портале, и между ним и подсчётом стоит только проверка формы (`isTemplateShaped`),
+  // а не значений: вес `1e400` даёт `Infinity`, и `NaN` уехал бы в поле «оценка клиента»
+  // сделки и в заголовок дела, мимо всех проверок `=== null`. «Балла нет» здесь честнее.
+  // Нашла панель ревью PR #85.
+  const raw = weighted / weight
+  const score = !section.scored || weight === 0 || !Number.isFinite(raw) ? null : round2(raw)
 
   return {
     key: section.key,
@@ -128,11 +134,13 @@ function scoreSection(section: SurveySection, answers: Record<string, AnswerValu
 /**
  * Низшая оценка вопроса — то, чем в балл входит пропуск.
  *
- * Шкала у балльного вопроса есть всегда, запасной ноль стоит на случай схемы, записанной
- * до того, как шкала стала обязательной: у всех таких анкет она была 0–10.
+ * Умолчание шкалы общее с проверкой ответа (`scaleOf`): пропуск не может стать оценкой,
+ * которую ответом поставить нельзя. Нечисловая граница — испорченная схема; тогда ноль,
+ * а не `NaN` в балле.
  */
 function lowestScore(question: SurveyQuestion): number {
-  return question.scale?.min ?? 0
+  const { min } = scaleOf(question)
+  return Number.isFinite(min) ? min : 0
 }
 
 /**
@@ -176,11 +184,15 @@ export function findBand(bands: readonly SurveyBand[], score: number): SurveyBan
  * литерал и даёт ровно 49.5, тогда как умножение `0.495 * 100` приносит двоичную погрешность
  * и даёт 49.49999999999999. Дальше обычное округление половины вверх.
  *
- * Годится потому, что баллы здесь всегда неотрицательны и лежат в шкале вида 0–10: на
- * отрицательных `Math.round` округляет половину ВВЕРХ, а PHP — ОТ НУЛЯ, и это разошлось бы.
+ * ⚠ PHP округляет половину ОТ НУЛЯ, а `Math.round` — вверх. На неотрицательных это одно и то же,
+ * и прежняя редакция на этом и стояла. С 28.09 пропуск входит в балл низшей оценкой шкалы,
+ * а конструктор отрицательную шкалу не запрещает — значит отрицательный балл достижим одним
+ * пропуском, и `-2.675` дал бы `-2.67` вместо PHP-шных `-2.68`. Поэтому округляется модуль,
+ * а знак ставится после. Нашли программист и безопасность в панели ревью PR #85.
  * Экспоненциальная запись на входе (`1e-7`) сломала бы склейку строк, но балл в такой форме
  * не приходит: он получается делением сумм в пределах шкалы.
  */
 function round2(value: number): number {
-  return Number(`${Math.round(Number(`${value}e2`))}e-2`)
+  const rounded = Number(`${Math.round(Number(`${Math.abs(value)}e2`))}e-2`)
+  return value < 0 && rounded !== 0 ? -rounded : rounded
 }

@@ -145,6 +145,15 @@ describe('балл секции', () => {
     expect(scoreSurvey(survey, { a: 7, b: 8, c: 8 }).sections[0]!.score).toBe(7.67)
   })
 
+  it('округляет отрицательные, как PHP, — половину от нуля', () => {
+    // Отрицательный балл с 28.09 достижим одним пропуском на шкале с отрицательным началом.
+    // Веса 1 и 99, значения 0 и −0.5 дают ровно −0.495: PHP даёт −0.5, `Math.round` — −0.49.
+    const signed = { scale: { min: -1, max: 1 } }
+    const survey = template([section('product', [scale('a', 1, signed), scale('b', 99, signed)])])
+
+    expect(scoreSurvey(survey, { a: 0, b: -0.5 }).sections[0]!.score).toBe(-0.5)
+  })
+
   it('округляет как PHP, а не как ближайший удобный способ', () => {
     // Гвард под находку панели ревью PR #22. Весь смысл округления — совпасть с историческим
     // баллом; значит эталон это PHP `round()`, а не «математически правильно». Здесь веса
@@ -166,6 +175,28 @@ describe('балл секции', () => {
   })
 })
 
+describe('испорченная схема', () => {
+  // Схема лежит строковым полем на портале, и между ним и подсчётом стоит проверка формы,
+  // а не значений. `NaN` здесь уехал бы в поле «оценка клиента» сделки мимо всех `=== null`.
+  // Нашла безопасность в панели ревью PR #85.
+
+  it('нечисловая граница шкалы у пропуска — ноль, а не NaN', () => {
+    const broken = scale('a', 50, { scale: { min: 'один' as unknown as number, max: 10 } })
+    const survey = template([section('product', [broken, scale('b', 50)])])
+
+    expect(scoreSurvey(survey, { a: null, b: 8 }).sections[0]!.score).toBe(4)
+  })
+
+  it('вес-бесконечность даёт «балла нет», а не NaN', () => {
+    // Так вес и приходит: схема — JSON со строкового поля портала, и `1e400` там разбирается в `Infinity`.
+    const survey = template([section('product', [scale('a', JSON.parse('1e400') as number), scale('b', 1)])])
+    const result = scoreSurvey(survey, { a: 9, b: null })
+
+    expect(result.sections[0]!.score).toBeNull()
+    expect(result.overall).toBeNull()
+  })
+})
+
 describe('общий балл', () => {
   it('усредняет СЕКЦИИ, а не все вопросы разом', () => {
     // В «Продукте» три вопроса, в «Персонале» один. Среднее по вопросам дало бы
@@ -177,6 +208,14 @@ describe('общий балл', () => {
     ])
 
     expect(scoreSurvey(survey, { a: 9, b: 9, c: 9, p: 3 }).overall).toBe(6)
+  })
+
+  it('итога нет только у анкеты без балльных разделов', () => {
+    // От этого зависит, пишется ли балл в сделку и контакт: `null` — поле не трогаем.
+    // С 28.09 пропуски итог не отменяют, отменяет только отсутствие балльных разделов.
+    const openOnly = template([section('open', [text('t')], { scored: false })])
+
+    expect(scoreSurvey(openOnly, { t: 'ответ' }).overall).toBeNull()
   })
 
   it('не учитывает секции без балла', () => {
@@ -220,8 +259,15 @@ describe('диапазон интерпретации', () => {
   })
 
   it('у секции без балла диапазона нет', () => {
-    const survey = template([section('product', [scale('a', 100)], { bands })])
+    // ⚠ Секция БЕЗ ОЦЕНКИ, а не пропуск: с 28.09 пропуск даёт низший балл, и прежний вход
+    // `{ a: null }` проходил тест по случайной причине — балл 0 просто не попадал в диапазоны
+    // фикстуры, начинающиеся с 4. Нашли `/code-review`, программист и `/review` в PR #85.
+    // Диапазон покрывает всю шкалу: иначе мутация «искать диапазон по нулю» прошла бы тест.
+    const whole = [{ from: 0, to: 10, text: 'Любой балл' }]
+    const survey = template([section('open', [scale('a', 100)], { scored: false, bands: whole })])
+    const result = scoreSurvey(survey, { a: 9 }).sections[0]!
 
-    expect(scoreSurvey(survey, { a: null }).sections[0]!.band).toBeNull()
+    expect(result.score).toBeNull()
+    expect(result.band).toBeNull()
   })
 })
