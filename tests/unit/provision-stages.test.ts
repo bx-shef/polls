@@ -119,6 +119,21 @@ describe('настройка стадий', () => {
     expect(result.survey.categoryId).toBeUndefined()
   })
 
+  it('смарт-процесс, пересозданный на портале ревизии 5, сразу получает воронку', async () => {
+    // Разовый шаг миграции позади, но новый смарт-процесс создан со стадиями: без воронки в ссылке
+    // он жил бы полем «Состояние», заведённым заново, а в канбане всё стояло бы в первой стадии.
+    const p = portal({
+      'crm.type.add': { result: { type: SURVEY } },
+    })
+
+    const result = await provisionSmartProcesses(p.call, { template: { ...TEMPLATE, categoryId: 14 } }, { previousRevision: 5 })
+
+    expect(result.survey).toEqual({ ...SURVEY, categoryId: 16 })
+    expect(p.of('crm.category.list').map(one => one.params.entityTypeId)).toEqual([1040])
+    const added = p.of('userfieldconfig.add').map(one => (one.params.field as { fieldName: string }).fieldName)
+    expect(added.some(name => name.endsWith('_STATE'))).toBe(false)
+  })
+
   it('со стадиями поле «Состояние» не заводится', async () => {
     // Иначе обустройство создавало бы его заново после того, как перенос его удалил.
     const p = portal({

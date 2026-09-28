@@ -742,13 +742,14 @@ export async function provisionSmartProcesses(
   const survey = await ensureSmartProcess(call, known.survey, types, SURVEY_SP_TITLES, 'survey', known.adopted?.survey === true)
 
   // ⚠ Стадии — СРАЗУ после поиска и ДО полей: от них зависит, нужно ли своё поле «Состояние»
-  // вообще (`ourFields`). Разово, при переходе на ревизию 5, и на свежей установке — там смарт-
-  // процессы только что созданы со стадиями, и остаётся настроить воронку.
+  // вообще (`ourFields`). Разово, при переходе на ревизию 5, — и всегда у смарт-процесса, созданного
+  // этим запуском: он уже со стадиями, и остаётся настроить воронку. Иначе пересозданный на портале
+  // ревизии 5 получил бы стадии без воронки в ссылке, то есть поле «Состояние» заново и канбан,
+  // где всё стоит в первой стадии.
   const stages: StagesOutcome = { changes: 0, settled: true }
-  if ((options.previousRevision ?? 0) < STAGES_REVISION) {
-    template.ref = await setUpStages(call, template, Object.values(TEMPLATE_STAGES), stages)
-    survey.ref = await setUpStages(call, survey, Object.values(SURVEY_STAGES), stages)
-  }
+  const stagesDue = (options.previousRevision ?? 0) < STAGES_REVISION
+  if (stagesDue || template.created) template.ref = await setUpStages(call, template, Object.values(TEMPLATE_STAGES), stages)
+  if (stagesDue || survey.created) survey.ref = await setUpStages(call, survey, Object.values(SURVEY_STAGES), stages)
 
   const templateFields = await ensureFields(call, template.ref, ourFields(TEMPLATE_FIELDS, template.ref))
   const surveyFields = await ensureFields(call, survey.ref, ourFields(SURVEY_FIELDS, survey.ref))
