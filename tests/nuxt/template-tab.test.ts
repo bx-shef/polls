@@ -1,6 +1,7 @@
-import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { registerEndpoint } from '@nuxt/test-utils/runtime'
 import { defineEventHandler, readBody } from 'h3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mountInShell } from './in-shell'
 
 /**
  * Вкладка конструктора в окружении Nuxt.
@@ -107,7 +108,7 @@ const PUBLISHED = {
 
 async function open() {
   const page = await import('../../app/pages/portal/template-tab.vue')
-  const mounted = await mountSuspended(page.default)
+  const mounted = await mountInShell(page.default)
   await new Promise(resolve => setTimeout(resolve, 0))
   return mounted.text()
 }
@@ -126,7 +127,7 @@ beforeEach(() => {
 /** Открыть вкладку и вернуть смонтированное — чтобы можно было нажимать кнопки. */
 async function mount() {
   const page = await import('../../app/pages/portal/template-tab.vue')
-  const mounted = await mountSuspended(page.default)
+  const mounted = await mountInShell(page.default)
   await new Promise(resolve => setTimeout(resolve, 0))
   return mounted
 }

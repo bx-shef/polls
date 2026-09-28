@@ -1,6 +1,7 @@
 import { defineEventHandler } from 'h3'
 import { readStoredRefs } from '../../b24/provision'
 import { readAllPublishedTemplates } from '../../b24/read-templates'
+import { surveyChoice } from '../../domain/invitations/portal-calls'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -29,8 +30,9 @@ export default defineEventHandler(async (event) => {
 
   return {
     ok: true as const,
-    // Наружу уходит только то, чем выбирают: схему во вкладке показывать незачем,
-    // а весит она больше всего остального вместе взятого.
-    surveys: surveys.map(s => ({ code: s.code, version: s.version, title: s.title })),
+    // Наружу уходит только то, чем выбирают: название, версия и сколько в ней разделов
+    // и вопросов. Саму схему во вкладке показывать незачем, а весит она больше всего
+    // остального вместе взятого — разбор у `surveyChoice`.
+    surveys: surveys.map(surveyChoice),
   }
 })

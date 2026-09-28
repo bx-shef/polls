@@ -620,15 +620,18 @@ async function save(): Promise<void> {
             v-if="published"
             class="mt-3"
             color="air-secondary-accent"
-            title="Эта версия уже опубликована"
             description="Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию."
-          />
-          <HelpLink
-            v-if="published"
-            anchor="edit-survey"
-            label="Как устроены версии?"
-            class="mt-2"
-          />
+          >
+            <template #title>
+              <span class="inline-flex items-center gap-1">
+                Эта версия уже опубликована
+                <HelpLink
+                  anchor="edit-survey"
+                  label="Как устроены версии?"
+                />
+              </span>
+            </template>
+          </B24Alert>
         </B24Card>
 
         <!-- ⚠ Претензии показываются ВЫШЕ самой анкеты. Их читают, когда собираются

@@ -1,6 +1,7 @@
-import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { mockNuxtImport, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { defineEventHandler, readBody } from 'h3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mountInShell } from './in-shell'
 
 /**
  * Страница приложения (`/app`) в окружении Nuxt.
@@ -56,7 +57,7 @@ vi.mock('@bitrix24/b24jssdk', () => ({
 const { navigated } = vi.hoisted(() => ({ navigated: vi.fn() }))
 mockNuxtImport('navigateTo', () => navigated)
 
-const SURVEYS = [{ code: 'default', version: 3, title: 'Оценка работы по проекту' }]
+const SURVEYS = [{ code: 'default', version: 3, title: 'Оценка работы по проекту', sections: 2, questions: 5 }]
 
 let surveysReply: unknown = { ok: true, surveys: SURVEYS }
 /** Роут упал целиком: сеть, 500, отвалившийся портал. */
@@ -71,7 +72,7 @@ registerEndpoint('/api/portal/surveys', defineEventHandler(async (event) => {
 
 async function openApp(query = '') {
   const AppPage = (await import('../../app/pages/app.vue')).default
-  return mountSuspended(AppPage, { route: `/app${query}` })
+  return mountInShell(AppPage, { route: `/app${query}` })
 }
 
 /** Дождаться, пока отработает `onMounted` со своими ожиданиями. */
@@ -167,7 +168,7 @@ describe('страница приложения', () => {
 })
 
 /**
- * Этот же адрес портал открывает слайдером, когда кнопка «Что это значит?» просит справку.
+ * Этот же адрес портал открывает слайдером, когда значок справки (`HelpLink`) просит её.
  *
  * ⚠ `openSliderAppPage` переоткрывает НАШ адрес приложения, а раздел приезжает в `place` —
  * другого канала у него нет (разбор — `app/utils/help.ts`). Если `/app` его не прочитает, слайдер

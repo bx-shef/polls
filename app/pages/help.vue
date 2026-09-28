@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { FAQ, FAQ_AGENT_PROMPT, FAQ_INTRO } from '#shared/faq'
+import { copyToClipboard } from '~/utils/clipboard'
 
 /**
  * The app's help: answers for the manager and the portal administrator.
  *
  * ⚠ СТРАНИЦА ПУБЛИЧНАЯ, а layout у неё портальный, и это не противоречие. Открывают её из двух мест:
- * ссылкой снаружи (карточка Маркета, письмо, поиск) и кнопкой «Что это значит?» внутри портала,
+ * ссылкой снаружи (карточка Маркета, письмо, поиск) и значком вопроса внутри портала,
  * где она рисуется в слайдере поверх карточки. Своя вёрстка лендинга в слайдере портала выглядела бы
  * чужой страницей, а светлая тема `b24ui` — своей в обоих случаях. Решение соседнего проекта
  * (`client-bank-alfa-by`, `app/pages/help.vue`). Исключение записано в `app/layouts/portal.vue`.
@@ -50,16 +51,20 @@ const TOC = FAQ.map(entry => ({ label: entry.question, to: `#${entry.id}` }))
 const llmsUrl = `${useRequestURL().origin}/llms.txt`
 
 const copied = ref(false)
+/** Скопировать не вышло ни одним путём — сказано, что скопировать руками. */
+const copyFailed = ref(false)
 
-/** Скопировать инструкцию вместе с адресом справки. Буфер недоступен — в iframe бывает, текст и так на экране. */
+/**
+ * Скопировать инструкцию вместе с адресом справки.
+ *
+ * ⚠ Через общий помощник, а не `navigator.clipboard` напрямую (issue #84, п. 4). Внутри портала
+ * справка открыта в слайдере — в том же фрейме без `clipboard-write`, — и прямой вызов там
+ * отказывал всегда: кнопка молчала ровно у тех, кто позвал справку из приложения. Не вышло и
+ * запасным путём — говорим об этом словами, а не оставляем прежнюю надпись на кнопке.
+ */
 async function copyPrompt(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(`${FAQ_AGENT_PROMPT}\n\nДокумент: ${llmsUrl}`)
-    copied.value = true
-  }
-  catch {
-    copied.value = false
-  }
+  copied.value = await copyToClipboard(`${FAQ_AGENT_PROMPT}\n\nДокумент: ${llmsUrl}`)
+  copyFailed.value = !copied.value
 }
 </script>
 
@@ -111,9 +116,19 @@ async function copyPrompt(): Promise<void> {
             :label="copied ? 'Скопировано' : 'Скопировать инструкцию'"
             color="air-secondary-accent"
             size="sm"
+            data-testid="faq-agent-copy"
             @click="copyPrompt"
           />
         </div>
+        <p
+          v-if="copyFailed"
+          class="text-sm"
+          role="status"
+          data-testid="faq-agent-copy-hint"
+        >
+          Браузер не дал скопировать сам. Выделите инструкцию и адрес справки выше и нажмите Ctrl+C
+          (на Mac — Cmd+C).
+        </p>
       </div>
     </B24Card>
   </div>

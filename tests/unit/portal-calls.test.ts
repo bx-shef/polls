@@ -9,6 +9,7 @@ import {
   readDealFacts,
   readPublishedTemplates,
   readSurveyHeader,
+  surveyChoice,
 } from '../../server/domain/invitations/portal-calls'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
@@ -131,6 +132,50 @@ describe('разбор списка шаблонов', () => {
     [null, 'нет ответа'],
   ])('не падает на негодном ответе (%#: %s)', (response) => {
     expect(readPublishedTemplates(response, TEMPLATE)).toEqual([])
+  })
+})
+
+describe('карточка анкеты в выборе вкладки сделки', () => {
+  /** Вопрос нужной формы: для подсчёта важен только сам факт вопроса. */
+  function question(key: string) {
+    return { key, sourceKey: key, title: key, type: 'scale' as const, weight: 1, scored: true, scale: { min: 0, max: 10 } }
+  }
+
+  function section(key: string, questions: string[]) {
+    return { key, title: key, scored: true, bands: [], questions: questions.map(question) }
+  }
+
+  it('считает разделы и вопросы во всех разделах', () => {
+    // На этой строчке «версия 2 · 3 раздела · 8 вопросов» менеджер различает анкеты
+    // с похожими названиями — посчитать её обязан сервер, у вкладки схемы нет.
+    const schema: SurveyTemplate = {
+      ...SCHEMA,
+      sections: [section('product', ['P1', 'P2', 'P3']), section('process', ['R1', 'R2']), section('open', ['T1', 'T2', 'T3'])],
+    }
+
+    expect(surveyChoice({ code: 'brand', version: 2, title: 'Бренд-платформа', schema })).toEqual({
+      code: 'brand',
+      version: 2,
+      title: 'Бренд-платформа',
+      sections: 3,
+      questions: 8,
+    })
+  })
+
+  it('вопрос из двух разделов считает дважды — так его видит клиент', () => {
+    // Расщеплённый при переносе вопрос стоит в обоих разделах под разными ключами
+    // и показывается на странице дважды.
+    const schema: SurveyTemplate = {
+      ...SCHEMA,
+      sections: [section('product', ['UF_1']), { ...section('personal', []), questions: [{ ...question('UF_1_personal'), sourceKey: 'UF_1' }] }],
+    }
+
+    expect(surveyChoice({ code: 'brand', version: 1, title: 'Бренд', schema }).questions).toBe(2)
+  })
+
+  it('пустая анкета — нули, а не падение', () => {
+    // Пустой список разделов — законная заготовка (см. `isTemplateShaped`).
+    expect(surveyChoice({ code: 'brand', version: 1, title: 'Бренд', schema: SCHEMA })).toMatchObject({ sections: 0, questions: 0 })
   })
 })
 

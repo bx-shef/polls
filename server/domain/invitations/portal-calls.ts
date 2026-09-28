@@ -106,6 +106,40 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
   return published
 }
 
+/** Карточка анкеты в выборе вкладки сделки: что выбрать и что о ней сказать одной строкой. */
+export interface SurveyChoice {
+  code: string
+  version: number
+  title: string
+  /** Сколько разделов в версии. */
+  sections: number
+  /** Сколько вопросов во всех разделах вместе. */
+  questions: number
+}
+
+/**
+ * Reduces a published template to its card in the deal tab's picker.
+ *
+ * ⚠ Наружу уходят ЧИСЛА, а не схема. Схема весит больше всего остального ответа вместе взятого,
+ * а вкладке из неё нужна одна строчка «версия 2 · 3 раздела · 8 вопросов» — по ней менеджер
+ * различает анкеты с похожими названиями. Считаем здесь, из схемы, которую роут и так прочитал:
+ * лишнего обращения к порталу это не стоит, а раньше схема просто выбрасывалась (issue #84).
+ *
+ * ⚠ Вопросы считаются по ключам, то есть так, как их увидит клиент: вопрос, стоявший в старом
+ * решении в двух секциях, после переноса стоит в обеих (см. `sourceKey` в модели) и на странице
+ * показывается дважды — значит, и здесь он два вопроса, а не один.
+ */
+export function surveyChoice(template: PublishedTemplate): SurveyChoice {
+  const { sections } = template.schema
+  return {
+    code: template.code,
+    version: template.version,
+    title: template.title,
+    sections: sections.length,
+    questions: sections.reduce((sum, section) => sum + section.questions.length, 0),
+  }
+}
+
 /**
  * Создать элемент «Опрос» — само приглашение.
  *
