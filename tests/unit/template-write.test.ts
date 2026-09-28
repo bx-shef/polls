@@ -191,6 +191,16 @@ describe('перенос против портала', () => {
     expect(p.of('crm.item.add').map(one => one.params.fields)).toMatchObject([{ stageId: 'DT1044_14:NEW', UF_CRM_7_STATE: 'draft' }])
   })
 
+  it('создавать нечего — про старое поле не спрашивает', async () => {
+    // Вызов, ответ которого ничего не меняет, — только лишний способ упасть под троттлингом.
+    const p = portal({ 'crm.item.list': { result: { items: [item('brand', 1)] } } })
+
+    const result = await writeTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, [schema('brand')], { apply: true })
+
+    expect(result.create).toEqual([])
+    expect(p.of('crm.item.fields')).toEqual([])
+  })
+
   it('повторный прогон не создаёт ничего', async () => {
     // Тот самый случай, ради которого всё это и строилось: перенос запускают несколько раз.
     const p = portal({ 'crm.item.list': { result: { items: [item('brand', 1), item('design', 1)] } } })
