@@ -53,3 +53,15 @@ export const DEAL_TAB_TITLE_EN = ownerLabel('Survey links')
 /** Вкладка конструктора в карточке «Шаблона опроса». */
 export const TEMPLATE_TAB_TITLE = ownerLabel('Конструктор')
 export const TEMPLATE_TAB_TITLE_EN = ownerLabel('Builder')
+
+/**
+ * Подписи наших полей, которые справка и страницы называют человеку, — БЕЗ метки: её ставит
+ * `ownerLabel` и при заведении поля на портале, и в тексте справки.
+ *
+ * ⚠ Здесь, а не в `server/`, по той же причине, что названия выше: сервер заводит поля с этими
+ * подписями, а справка их называет, и поле под другим именем человек в карточке не найдёт.
+ */
+export const RESULT_FIELD_LABEL = 'Результат опроса'
+export const LINK_FIELD_LABEL = 'Ссылка на анкету'
+export const SCORE_FIELD_LABEL = 'Оценка клиента'
+export const LAST_SURVEY_AT_FIELD_LABEL = 'Дата последнего опроса'

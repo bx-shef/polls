@@ -1,13 +1,14 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FAQ, FAQ_AGENT_PROMPT } from '../../shared/faq'
+import { mountInShell } from './in-shell'
 
 /**
- * Справка и кнопка «Что это значит?» в окружении Nuxt.
+ * Справка и значок справки (`HelpLink`) в окружении Nuxt.
  *
  * Страница — только отображение `shared/faq.ts`; то, что текст один на страницу и `llms.txt`,
  * держит `tests/unit/faq.test.ts`. Здесь — то, что без смонтированного компонента не проверить:
- * страница показывает все разделы с якорями, а кнопка открывает справку слайдером портала
+ * страница показывает все разделы с якорями, а значок открывает справку слайдером портала
  * и не молчит вне его.
  */
 
@@ -72,11 +73,89 @@ describe('страница справки', () => {
   })
 })
 
-describe('кнопка «Что это значит?»', () => {
-  async function mountLink() {
-    const HelpLink = (await import('../../app/components/HelpLink.vue')).default
-    return mountSuspended(HelpLink, { props: { anchor: 'scores' } })
+describe('копирование инструкции для ИИ-помощника', () => {
+  /**
+   * Буфер обмена, как его видит справка в слайдере портала: фрейм без `clipboard-write`,
+   * Clipboard API отказывает. `execCommand` отвечает тем, что задал сценарий.
+   */
+  let execCopies: boolean
+
+  beforeEach(() => {
+    execCopies = true
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async () => { throw new DOMException('Write permission denied.', 'NotAllowedError') } },
+    })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: () => execCopies })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, 'clipboard')
+    Reflect.deleteProperty(document, 'execCommand')
+  })
+
+  async function copyPrompt() {
+    const Help = (await import('../../app/pages/help.vue')).default
+    const page = await mountSuspended(Help, { route: '/help' })
+    await page.find('[data-testid="faq-agent-copy"]').trigger('click')
+    await settle()
+    return page
   }
+
+  it('в слайдере портала копирует запасным путём, а не молчит (issue #84)', async () => {
+    // ⚠ Кнопка звала `navigator.clipboard` напрямую и глотала отказ: внутри портала, откуда
+    // справку и открывают значком, она не копировала никогда.
+    const page = await copyPrompt()
+
+    expect(page.find('[data-testid="faq-agent-copy"]').text()).toBe('Скопировано')
+    expect(page.find('[data-testid="faq-agent-copy-hint"]').text()).toBe('')
+  })
+
+  it('живая область для диктора стоит в разметке ещё до нажатия', async () => {
+    // ⚠ Область `role="status"`, появившаяся в документе уже с текстом, экранные дикторы часто
+    // не зачитывают: подсказка «не вышло» прозвучала бы в пустоту. Поэтому область стоит всегда,
+    // а меняется только её текст. Нашли `/review` и `/code-review` в PR #89.
+    const Help = (await import('../../app/pages/help.vue')).default
+    const page = await mountSuspended(Help, { route: '/help' })
+
+    const hint = page.find('[data-testid="faq-agent-copy-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.attributes('role')).toBe('status')
+    expect(hint.text()).toBe('')
+  })
+
+  it('не вышло ни одним путём — говорит, как скопировать руками', async () => {
+    execCopies = false
+    const page = await copyPrompt()
+
+    expect(page.find('[data-testid="faq-agent-copy"]').text()).toBe('Скопировать инструкцию')
+    expect(page.find('[data-testid="faq-agent-copy-hint"]').text()).toContain('Ctrl+C')
+  })
+})
+
+describe('значок справки', () => {
+  async function mountLink(props: Record<string, unknown> = { anchor: 'scores' }) {
+    const HelpLink = (await import('../../app/components/HelpLink.vue')).default
+    return mountInShell(HelpLink, { props })
+  }
+
+  it('это КНОПКА с именем, а не голый значок', async () => {
+    // ⚠ Образец из документации набора — голый `HelpIcon` в подсказке. Такой значок не получает
+    // фокуса, не нажимается с клавиатуры, диктор его не называет, а на телефоне у него нет
+    // наведения. Имя кнопки — тот же текст, что в подсказке: раньше он был подписью ссылки.
+    const link = await mountLink({ anchor: 'scores', label: 'Как читать баллы?' })
+    const button = link.find('[data-testid="help-link"]')
+
+    expect(button.element.tagName).toBe('BUTTON')
+    expect(button.attributes('type')).toBe('button')
+    expect(button.attributes('aria-label')).toBe('Как читать баллы?')
+  })
+
+  it('без подписи зовётся «Что это значит?»', async () => {
+    const link = await mountLink()
+
+    expect(link.find('[data-testid="help-link"]').attributes('aria-label')).toBe('Что это значит?')
+  })
 
   it('в портале открывает справку слайдером — сразу на нужном разделе', async () => {
     const link = await mountLink()

@@ -54,6 +54,35 @@ export function readFramePass(raw: unknown): FramePass | null {
   }
 }
 
+/** What `framePass` needs from the frame's auth manager — structurally, so a test can stand in. */
+export interface FrameAuth {
+  getAuthData: () => unknown
+  refreshAuth: () => Promise<unknown>
+}
+
+/**
+ * Reads the frame pass, first renewing the frame token if it has expired.
+ *
+ * ⚠ ФРЕЙМОВЫЙ ТОКЕН ЖИВЁТ ЧАС (`AUTH_EXPIRES`), и после этого `getAuthData()` отдаёт `false` —
+ * так в исходнике SDK (`dist/esm/frame/auth.mjs`). Сам SDK продлевает токен только для СВОИХ
+ * вызовов REST, а наши страницы ходят на НАШ сервер: продлевать должны мы, вызовом `refreshAuth()`,
+ * который спрашивает новый токен у окна портала (документация: `bx24-refresh-auth`). Без этого
+ * вкладка, открытая дольше часа, отказывала бы навсегда — «Обновить», выпуск, отзыв, сохранение
+ * черновика в конструкторе. Нашли `/review` и `/code-review` в PR #89.
+ *
+ * `null` — пропуска нет и продлить не вышло: страница не из портала, либо портал не ответил.
+ */
+export async function framePass(auth: FrameAuth): Promise<FramePass | null> {
+  const current = readFramePass(auth.getAuthData())
+  if (current !== null) return current
+  try {
+    return readFramePass(await auth.refreshAuth())
+  }
+  catch {
+    return null
+  }
+}
+
 /**
  * Хост портала без схемы.
  *

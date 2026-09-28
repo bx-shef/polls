@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { DEAL_TAB_TITLE, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '#shared/portal-names'
-import { readFramePass } from '~/utils/frame-auth'
+import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
 /**
@@ -112,7 +112,7 @@ async function install() {
   stage.value = 'installing'
   failure.value = ''
 
-  const pass = readFramePass(frame!.auth.getAuthData())
+  const pass = await framePass(frame!.auth)
   if (pass === null || pass.refreshToken === '') {
     stage.value = 'failed'
     failure.value = 'Портал не передал данные авторизации. Переустановите приложение.'
@@ -194,7 +194,7 @@ async function retry() {
 
 /** Доустроить портал уже сохранёнными токенами: обмена гранта здесь нет. */
 async function finishProvisioning() {
-  const pass = readFramePass(frame!.auth.getAuthData())
+  const pass = await framePass(frame!.auth)
   if (pass === null) {
     stage.value = 'failed'
     failure.value = 'Портал не передал данные авторизации. Переустановите приложение.'

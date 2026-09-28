@@ -1,3 +1,4 @@
+import { formatScore } from '../../../shared/score-format'
 import type { SurveyTemplate } from './model'
 
 /**
@@ -58,10 +59,8 @@ export interface SectionScoreRow {
  */
 export const NO_SCORE_NOTE = 'без оценки'
 
-/** Балл в русской записи: запятая, а не точка, и без хвостовых нулей. Общий с лентой сделки. */
-export function formatScore(score: number): string {
-  return String(score).replace('.', ',')
-}
+// Запись балла — общая со страницами (`shared/score-format.ts`): вкладка сделки показывает тот же балл.
+export { formatScore }
 
 /**
  * Неполнота балла словами: «ответ на 2 из 5, пропуск — низшая оценка». Пусто, если ответили на всё.

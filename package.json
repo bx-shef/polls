@@ -31,6 +31,7 @@
     ]
   },
   "dependencies": {
+    "@bitrix24/b24icons-vue": "^2.0.8",
     "@bitrix24/b24jssdk": "^2.2.0",
     "@bitrix24/b24ui-nuxt": "^2.13.0",
     "drizzle-orm": "^0.45.2",

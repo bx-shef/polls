@@ -1,4 +1,4 @@
-import { ownerLabel, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../../../shared/portal-names'
+import { LINK_FIELD_LABEL, ownerLabel, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../../../shared/portal-names'
 
 // Названия живут в `shared/`: по ним же пишутся тексты страниц приложения (разбор — в шапке
 // `shared/portal-names.ts`). Здесь повторный вывоз, чтобы у вызывающих на сервере не менялись импорты.
@@ -145,7 +145,7 @@ export const SURVEY_FIELDS: readonly SmartProcessField[] = [
   // страшный секрет». У нас по-прежнему лежит только хеш токена — инвариант про НАШЕ хранилище
   // держится. Цена названа в `docs/PROCESS.md`: ответить вместо клиента может любой, кто видит
   // элемент. Тип `url` — ссылка кликается прямо из карточки; замерено на живом портале 28.09.
-  { postfix: 'LINK', userTypeId: 'url', label: 'Ссылка на анкету' },
+  { postfix: 'LINK', userTypeId: 'url', label: LINK_FIELD_LABEL },
   // ⚠ PRECISION обязателен: без него `double` округляется до целого — подтверждено
   // соседом на живом портале. Балл 7,5 превратился бы в 8 и молча испортил отчёт.
   { postfix: 'SCORE', userTypeId: 'double', label: 'Итоговый балл', settings: { PRECISION: 2 } },

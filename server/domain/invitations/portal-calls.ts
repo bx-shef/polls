@@ -4,6 +4,7 @@ import {
   CONTACT_ENTITY_TYPE_ID,
   DEAL_ENTITY_TYPE_ID,
 } from '../portals/smart-processes'
+import type { SurveyChoice } from '../../../shared/survey-choice'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -104,6 +105,33 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
   }
 
   return published
+}
+
+// Форма карточки выбора — общая со страницами (`shared/survey-choice.ts`): описанная здесь,
+// она расходилась бы с их копиями молча.
+export type { SurveyChoice }
+
+/**
+ * Reduces a published template to its card in the deal tab's picker.
+ *
+ * ⚠ Наружу уходят ЧИСЛА, а не схема. Схема весит больше всего остального ответа вместе взятого,
+ * а вкладке из неё нужна одна строчка «версия 2 · 3 раздела · 8 вопросов» — по ней менеджер
+ * различает анкеты с похожими названиями. Считаем здесь, из схемы, которую роут и так прочитал:
+ * лишнего обращения к порталу это не стоит, а раньше схема просто выбрасывалась (issue #84).
+ *
+ * ⚠ Вопросы считаются по ключам, то есть так, как их увидит клиент: вопрос, стоявший в старом
+ * решении в двух секциях, после переноса стоит в обеих (см. `sourceKey` в модели) и на странице
+ * показывается дважды — значит, и здесь он два вопроса, а не один.
+ */
+export function surveyChoice(template: PublishedTemplate): SurveyChoice {
+  const { sections } = template.schema
+  return {
+    code: template.code,
+    version: template.version,
+    title: template.title,
+    sections: sections.length,
+    questions: sections.reduce((sum, section) => sum + section.questions.length, 0),
+  }
 }
 
 /**

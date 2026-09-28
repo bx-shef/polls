@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { portalHost, readFramePass } from '../../app/utils/frame-auth'
+import { describe, expect, it, vi } from 'vitest'
+import { framePass, portalHost, readFramePass } from '../../app/utils/frame-auth'
 
 /**
  * Разбор данных фрейма. Файл существует под два конкретных дефекта, и оба прошли мимо
@@ -62,6 +62,48 @@ describe('пропуск из фрейма', () => {
 
     expect(pass).not.toBeNull()
     expect(pass!.refreshToken).toBe('')
+  })
+})
+
+describe('пропуск с продлением токена', () => {
+  /**
+   * Гвард под дефект PR #89: `getAuthData()` отдаёт `false`, как только фреймовый токен прожил
+   * час, а страницы читали пропуск только им. Вкладка, открытая дольше часа, отказывала навсегда —
+   * «Обновить», выпуск, отзыв, сохранение черновика. Нашли `/review` и `/code-review`.
+   */
+  it('протухший токен продлевается у окна портала, а не считается отказом', async () => {
+    const refreshAuth = vi.fn(async () => SDK_SHAPE)
+    const pass = await framePass({ getAuthData: () => false, refreshAuth })
+
+    expect(refreshAuth).toHaveBeenCalledTimes(1)
+    expect(pass!.authId).toBe('фреймовый-токен')
+    expect(pass!.memberId).toBe('a223c6b3710f85df22e9377d6c4f7553')
+  })
+
+  it('живой токен берётся как есть — окно портала лишний раз не спрашиваем', async () => {
+    // Продление — это сообщение родительскому окну с таймаутом. Делать его на каждый клик
+    // значило бы добавить задержку всем действиям ради часа, который ещё не истёк.
+    const refreshAuth = vi.fn(async () => SDK_SHAPE)
+    const pass = await framePass({ getAuthData: () => SDK_SHAPE, refreshAuth })
+
+    expect(pass).not.toBeNull()
+    expect(refreshAuth).not.toHaveBeenCalled()
+  })
+
+  it('портал не ответил на продление — null, а не исключение', async () => {
+    // SDK бросает `JSSDK_FRAME_REFRESH_AUTH_TIMEOUT`, если окно портала молчит. Страница на это
+    // отвечает своим «откройте из портала», а не падает с необработанным отказом.
+    const refreshAuth = vi.fn(async () => {
+      throw new Error('JSSDK_FRAME_REFRESH_AUTH_TIMEOUT')
+    })
+
+    await expect(framePass({ getAuthData: () => false, refreshAuth })).resolves.toBeNull()
+  })
+
+  it('продление вернуло мусор — не пропуск', async () => {
+    const refreshAuth = vi.fn(async () => false)
+
+    await expect(framePass({ getAuthData: () => false, refreshAuth })).resolves.toBeNull()
   })
 })
 

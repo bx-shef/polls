@@ -1,3 +1,4 @@
+import { RESULT_FIELD_LABEL } from '../../../shared/portal-names'
 import { buildFieldEntityId, type PortalCall, type SmartProcessRef } from './smart-processes'
 
 /**
@@ -45,7 +46,7 @@ export const SURVEY_RESULT_TYPE = 'shef_survey_result'
  * Прежде здесь был ещё и синоним «подпись поля с меткой», который метки не нёс: поверивший
  * ему завёл бы поле без метки, а «исправивший» — с двойной. Нашёл `/code-review` в PR #87.
  */
-export const SURVEY_RESULT_TITLE = 'Результат опроса'
+export const SURVEY_RESULT_TITLE = RESULT_FIELD_LABEL
 
 /** Путь обработчика поля. Относительный: абсолютный собирается из публичного хоста. */
 export const SURVEY_RESULT_HANDLER_PATH = '/uf/survey-result'

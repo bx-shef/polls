@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { MessageCommands, initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { DEAL_TAB_TITLE, SURVEY_SP_TITLE } from '#shared/portal-names'
-import { readFramePass } from '~/utils/frame-auth'
+import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { fieldContext } from '~/utils/placement'
 
@@ -141,7 +141,7 @@ onMounted(async () => {
       return
     }
 
-    const pass = readFramePass(frame.auth.getAuthData())
+    const pass = await framePass(frame.auth)
     if (pass === null) throw new Error('нет данных авторизации фрейма')
 
     const reply = await $fetch<SurveyResultReply>('/api/portal/survey-result', {
