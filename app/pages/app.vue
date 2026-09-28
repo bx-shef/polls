@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
-import { readFramePass } from '~/utils/frame-auth'
+import { DEAL_TAB_TITLE, TEMPLATE_SP_TITLE } from '#shared/portal-names'
+import type { SurveyChoice } from '#shared/survey-choice'
+import { framePass } from '~/utils/frame-auth'
 import { helpRouteFor } from '~/utils/help'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
@@ -20,11 +22,8 @@ import { isPreview, portalGate } from '~/utils/in-portal'
 
 definePageMeta({ layout: 'portal' })
 
-interface Survey {
-  code: string
-  version: number
-  title: string
-}
+/** A published survey the start screen lists: the shared reply shape (`shared/survey-choice.ts`). */
+type Survey = Pick<SurveyChoice, 'code' | 'version' | 'title'>
 
 /**
  * The shape `/api/portal/surveys` actually answers with.
@@ -83,7 +82,7 @@ onMounted(async () => {
     return
   }
 
-  // ⚠ Этот же адрес портал открывает слайдером, когда кнопка «Что это значит?» просит справку:
+  // ⚠ Этот же адрес портал открывает слайдером, когда значок справки (`HelpLink`) просит её:
   // `openSliderAppPage` переоткрывает НАШ адрес приложения, а раздел справки приезжает в `place`.
   // Страница сама не рисуется, а ведёт фрейм в справку — список анкет в слайдере справки был бы
   // разговором не о том. Разбор канала — в `app/utils/help.ts`.
@@ -118,7 +117,7 @@ onMounted(async () => {
 
 /** `frame` параметром, а не из замыкания: `!` при рефакторинге ломается молча. */
 async function loadSurveys(connection: B24Frame) {
-  const pass = readFramePass(connection.auth.getAuthData())
+  const pass = await framePass(connection.auth)
   if (pass === null) throw new Error('нет данных авторизации фрейма')
 
   const result = await $fetch<SurveysReply>(
@@ -165,17 +164,18 @@ async function loadSurveys(connection: B24Frame) {
         :description="failure"
       />
 
-      <template v-else-if="notProvisioned">
-        <B24Alert
-          color="air-primary-warning"
-          title="Приложение ещё настраивается"
-          description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение от имени администратора."
-        />
-        <HelpLink
-          anchor="not-working"
-          class="mt-2"
-        />
-      </template>
+      <B24Alert
+        v-else-if="notProvisioned"
+        color="air-primary-warning"
+        description="Смарт-процессы опросов на портале не найдены. Обычно это значит, что установка не завершилась — переустановите приложение от имени администратора."
+      >
+        <template #title>
+          <span class="inline-flex items-center gap-1">
+            Приложение ещё настраивается
+            <HelpLink anchor="not-working" />
+          </span>
+        </template>
+      </B24Alert>
 
       <template v-else>
         <!-- Заголовка здесь НЕТ: его несёт шапка панели. Две одинаковые строки подряд
@@ -190,7 +190,7 @@ async function loadSurveys(connection: B24Frame) {
           v-if="surveys.length === 0"
           color="air-secondary-accent"
           title="Опубликованных анкет пока нет"
-          description="Анкеты живут в смарт-процессе «Шаблон опроса» на вашем портале. Пока в нём нет ни одной опубликованной версии, выпускать нечего."
+          :description="`Анкеты живут в смарт-процессе «${TEMPLATE_SP_TITLE}» на вашем портале. Пока в нём нет ни одной опубликованной версии, выпускать нечего.`"
           class="mb-4"
         />
         <template v-else>
@@ -209,16 +209,18 @@ async function loadSurveys(connection: B24Frame) {
 
         <B24Alert
           color="air-secondary"
-          title="Где выпускать ссылку"
-          description="Откройте любую сделку и перейдите на вкладку «Опросы» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё."
-        />
-
-        <div class="mt-4">
-          <HelpLink
-            anchor="send-survey"
-            label="Как отправить опрос?"
-          />
-        </div>
+          :description="`Откройте любую сделку и перейдите на вкладку «${DEAL_TAB_TITLE}» в её карточке. Ссылка выпускается для конкретной сделки — так ответ и попадает именно в неё.`"
+        >
+          <template #title>
+            <span class="inline-flex items-center gap-1">
+              Где выпускать ссылку
+              <HelpLink
+                anchor="send-survey"
+                label="Как отправить опрос?"
+              />
+            </span>
+          </template>
+        </B24Alert>
       </template>
     </template>
   </B24DashboardPanel>

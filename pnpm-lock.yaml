@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@bitrix24/b24icons-vue':
+        specifier: ^2.0.8
+        version: 2.0.8(vue@3.5.42(typescript@5.9.3))
       '@bitrix24/b24jssdk':
         specifier: ^2.2.0
         version: 2.2.0

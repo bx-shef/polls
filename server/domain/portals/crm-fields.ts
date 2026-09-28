@@ -1,5 +1,6 @@
-import { CONTACT_ENTITY_TYPE_ID, DEAL_ENTITY_TYPE_ID } from './smart-processes'
+import { CONTACT_ENTITY_TYPE_ID, DEAL_ENTITY_TYPE_ID, FIELD_LABEL_LANGUAGE } from './smart-processes'
 import type { PortalCall } from './smart-processes'
+import { LAST_SURVEY_AT_FIELD_LABEL, ownerLabel, SCORE_FIELD_LABEL } from '../../../shared/portal-names'
 
 /**
  * The two fields we put on the client's own CRM entities: last survey score and its date.
@@ -50,10 +51,10 @@ export const SCORE_FIELDS: readonly CrmField[] = [
   // ⚠ `PRECISION` обязателен: без него `double` округляется до целого — подтверждено
   // соседом на живом портале. Балл 7,5 стал бы восьмёркой, и фильтр «ниже семи» врал бы
   // ровно на той границе, ради которой его и настраивают.
-  { code: LAST_SCORE_CODE, userTypeId: 'double', label: 'Оценка клиента', settings: { PRECISION: 2 } },
+  { code: LAST_SCORE_CODE, userTypeId: 'double', label: SCORE_FIELD_LABEL, settings: { PRECISION: 2 } },
   // Дата без времени: фильтруют по дню, а не по минуте, и тип совпадает с `COMPLETED_AT`
   // на элементе «Опроса» — одна и та же величина не должна быть разного типа в двух местах.
-  { code: LAST_SURVEY_AT_CODE, userTypeId: 'date', label: 'Дата последнего опроса' },
+  { code: LAST_SURVEY_AT_CODE, userTypeId: 'date', label: LAST_SURVEY_AT_FIELD_LABEL },
 ]
 
 /** Сущность CRM, на которой заводим поля: чем создавать, чем перечислять, как обновлять. */
@@ -64,6 +65,8 @@ export interface CrmEntity {
   addMethod: string
   /** `crm.<entity>.userfield.list` — перечисление уже существующих. */
   listMethod: string
+  /** `crm.<entity>.userfield.update` — правка подписи при переходе на ревизию 4. */
+  updateMethod: string
   /** Тот же тип для `crm.item.update`: обновляем сущности одним методом, как и везде. */
   entityTypeId: number
 }
@@ -72,6 +75,7 @@ export const DEAL_ENTITY: CrmEntity = {
   title: 'сделка',
   addMethod: 'crm.deal.userfield.add',
   listMethod: 'crm.deal.userfield.list',
+  updateMethod: 'crm.deal.userfield.update',
   entityTypeId: DEAL_ENTITY_TYPE_ID,
 }
 
@@ -79,30 +83,24 @@ export const CONTACT_ENTITY: CrmEntity = {
   title: 'контакт',
   addMethod: 'crm.contact.userfield.add',
   listMethod: 'crm.contact.userfield.list',
+  updateMethod: 'crm.contact.userfield.update',
   entityTypeId: CONTACT_ENTITY_TYPE_ID,
 }
 
 /** Сущности, на которых заводим поля. Компании здесь нет — см. шапку файла. */
 export const SCORED_ENTITIES: readonly CrmEntity[] = [DEAL_ENTITY, CONTACT_ENTITY]
 
-/** Перечислить пользовательские поля сущности. Страница за страницей — их бывает много. */
-export function buildListFieldsCall(entity: CrmEntity, start = 0): PortalCall {
-  return { method: entity.listMethod, params: start === 0 ? {} : { start } }
-}
-
 /**
- * Имена полей из ответа `crm.<entity>.userfield.list`.
+ * Lists one page of the entity's user fields, labels included.
  *
- * ⚠ Читаем `FIELD_NAME`, и он приходит УЖЕ С ПРЕФИКСОМ (`UF_CRM_…`) — так показано
- * в документации метода. Сравнивать его надо с `crmFieldName(code)`, а не с голым кодом.
+ * ⚠ С `LANG` — без него подписей в ответе нет, и миграция подписей переписывала бы наши поля
+ * при каждом прогоне (`FIELD_LABEL_LANGUAGE`, замер 28.09). Форма — из примеров документации.
  */
-export function readCrmFieldNames(response: unknown): string[] {
-  const result = (response as { result?: unknown } | null)?.result
-  if (!Array.isArray(result)) return []
-
-  return result
-    .map(row => (row as { FIELD_NAME?: unknown })?.FIELD_NAME)
-    .filter((name): name is string => typeof name === 'string' && name !== '')
+export function buildListFieldsCall(entity: CrmEntity, start = 0): PortalCall {
+  return {
+    method: entity.listMethod,
+    params: { filter: { LANG: FIELD_LABEL_LANGUAGE }, ...(start === 0 ? {} : { start }) },
+  }
 }
 
 /**
@@ -125,6 +123,81 @@ export function planMissingCrmFields(
     .map(field => buildCreateCrmFieldCall(entity, field))
 }
 
+/** An entity field as `crm.<entity>.userfield.list` returns it: enough to fix its label. */
+export interface ExistingCrmField {
+  /** `0` — the portal did not name it; the label then cannot be fixed. */
+  id: number
+  name: string
+  /**
+   * Card label. With `LANG` the portal sends a plain string (measured 28.09); a map by
+   * language is read too, the Russian one.
+   */
+  label: string
+}
+
+/**
+ * Entity fields with id and label. Nameless ones are skipped; one without an id keeps `0`.
+ *
+ * ⚠ Поле без идентификатора НЕ выбрасывается: его имя нужно плану создания. Выброси мы его,
+ * план счёл бы поле отсутствующим, создание упало бы на дубликате — а прежде имена читались
+ * отдельно и идентификатора не требовали. Подпись такому полю не правится: нечем. Поднял
+ * программист во втором круге панели PR #87.
+ *
+ * ⚠ `FIELD_NAME` приходит УЖЕ С ПРЕФИКСОМ (`UF_CRM_…`) — так показано в документации метода.
+ * Сравнивать его надо с `crmFieldName(code)`, а не с голым кодом.
+ *
+ * Прежде имена для плана создания читались отдельной функцией, а подписи — этой; с PR #87
+ * список читается один раз и служит обоим: второй раз листать поля сделки и контакта
+ * на критическом пути установки незачем.
+ */
+export function readCrmFields(response: unknown): ExistingCrmField[] {
+  const result = (response as { result?: unknown } | null)?.result
+  if (!Array.isArray(result)) return []
+
+  const fields: ExistingCrmField[] = []
+  for (const raw of result) {
+    const row = raw as Record<string, unknown> | null
+    if (typeof row?.FIELD_NAME !== 'string' || row.FIELD_NAME === '') continue
+    const id = Number(row.ID)
+    const label = row.EDIT_FORM_LABEL
+    const ru = typeof label === 'string' ? label : (label as { ru?: unknown } | null | undefined)?.ru
+    fields.push({ id: Number.isInteger(id) && id > 0 ? id : 0, name: row.FIELD_NAME, label: typeof ru === 'string' ? ru : '' })
+  }
+  return fields
+}
+
+/**
+ * Разовая миграция подписей наших полей на сделке и контакте: метка владельца `[sh]`.
+ *
+ * ⚠ Только свои поля, по коду. `EDIT_IN_LIST` здесь не трогаем: он стоял `N` с первого дня
+ * (issue #23), и живой портал это подтвердил 28.09.
+ *
+ * ⚠ Все три подписи сразу: по документации `crm.<entity>.userfield.update` каждая перезаписывается
+ * целиком, а не дополняется. Поменяв одну, мы оставили бы в фильтре и колонке старое имя.
+ */
+export function planCrmFieldLabels(
+  entity: CrmEntity,
+  fields: readonly CrmField[],
+  existing: readonly ExistingCrmField[],
+): PortalCall[] {
+  const byName = new Map(existing.map(field => [normalize(field.name), field]))
+  const calls: PortalCall[] = []
+
+  for (const field of fields) {
+    const found = byName.get(normalize(crmFieldName(field.code)))
+    const label = ownerLabel(field.label)
+    if (found === undefined || found.id === 0 || found.label === label) continue
+    calls.push({
+      method: entity.updateMethod,
+      params: {
+        id: found.id,
+        fields: { LIST_COLUMN_LABEL: label, LIST_FILTER_LABEL: label, EDIT_FORM_LABEL: label },
+      },
+    })
+  }
+  return calls
+}
+
 /**
  * Создать одно поле.
  *
@@ -136,16 +209,17 @@ export function planMissingCrmFields(
  * оценку клиента, которой клиент не ставил. Портал по умолчанию разрешает правку.
  */
 export function buildCreateCrmFieldCall(entity: CrmEntity, field: CrmField): PortalCall {
+  const label = ownerLabel(field.label)
   return {
     method: entity.addMethod,
     params: {
       fields: {
         FIELD_NAME: field.code,
         USER_TYPE_ID: field.userTypeId,
-        LABEL: field.label,
-        LIST_COLUMN_LABEL: field.label,
-        LIST_FILTER_LABEL: field.label,
-        EDIT_FORM_LABEL: field.label,
+        LABEL: label,
+        LIST_COLUMN_LABEL: label,
+        LIST_FILTER_LABEL: label,
+        EDIT_FORM_LABEL: label,
         SHOW_FILTER: 'Y',
         SHOW_IN_LIST: 'Y',
         EDIT_IN_LIST: 'N',

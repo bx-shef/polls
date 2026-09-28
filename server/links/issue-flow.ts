@@ -1,7 +1,9 @@
+import { safeRefusal } from '../domain/answers/portal-errors'
 import { buildSurveyUrl, createInvitation } from '../domain/invitations/invitation'
 import {
   buildCreateSurveyItemCall,
   buildDealFactsBatch,
+  buildItemLinkCall,
   buildInvitationTitle,
   readCreatedItemId,
   readDealFacts,
@@ -34,11 +36,14 @@ import { logger } from '../utils/logger'
  *    не ходит по инварианту, и промах кэша — это пожизненный 503 по выданной ссылке.
  * 2. Элемент смарт-процесса создаётся ВТОРЫМ: приглашение и есть этот элемент, источник
  *    истины — портал.
- * 3. Хеш токена пишется в наш кэш-индекс ПОСЛЕДНИМ, когда известен идентификатор элемента.
+ * 3. Хеш токена пишется в наш кэш-индекс, когда известен идентификатор элемента.
+ * 4. Адрес анкеты уходит в элемент ПОСЛЕДНИМ — когда индекс уже знает токен (`buildItemLinkCall`).
  *
  * Падение на третьем шаге оставляет на портале элемент без ссылки — это видно и чинится
  * перевыпуском. Обратный порядок оставил бы ссылку, ведущую в никуда, а её уже не отозвать:
- * она у человека в письме.
+ * она у человека в письме. По той же причине адрес в CRM появляется только четвёртым шагом:
+ * положенный в элемент раньше, он при упавшем индексе или при таймауте создания остался бы
+ * в карточке рабочей на вид ссылкой на «не найдено» (второй круг панели PR #87).
  */
 
 /** Что нужно знать, чтобы выпустить ссылку. Всё остальное функция добывает сама. */
@@ -70,9 +75,14 @@ export type IssueResult
 /**
  * Выпустить одну ссылку.
  *
- * ⚠ Токен наружу отдаётся ЕДИНСТВЕННЫЙ раз и только внутри `url`. Отдельного поля с ним
- * здесь нет намеренно: чем меньше мест, где он существует, тем меньше мест, откуда он утечёт.
- * Вызывающему, которому нужен сам токен (проверке), достаточно последнего сегмента адреса.
+ * ⚠ Токен наружу отдаётся только внутри `url`. Отдельного поля с ним здесь нет намеренно:
+ * чем меньше мест, где он существует, тем меньше мест, откуда он утечёт. Вызывающему, которому
+ * нужен сам токен (проверке), достаточно последнего сегмента адреса.
+ *
+ * ⚠ С 28.09 адрес живёт и в CRM клиента — в поле «Ссылка на анкету» элемента (решение
+ * владельца, issue #84, пункт 20: «это не страшный секрет»). У нас по-прежнему только хеш,
+ * инвариант про НАШЕ хранилище держится. Цена: ответить вместо клиента может любой, кто видит
+ * элемент, — записано в `docs/PROCESS.md`.
  */
 export async function issueLink(input: IssueInput): Promise<IssueResult> {
   const invitation = createInvitation({}, new Date())
@@ -109,23 +119,59 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
     client: deal,
     assignedById: input.assignedById,
   })
-  const itemId = readCreatedItemId(await input.call(createCall.method, createCall.params))
+  // ⚠ В `try`, и отказ наружу уходит только нашей строкой (`safeRefusal`). Битрикс24 цитирует
+  // присланное значение в тексте ошибки проверки поля, а в вызове лежат название сделки и её
+  // клиент. Необработанное исключение h3 и Nitro печатают целиком, в обход нашего журнала
+  // и его вырезания секретов. Ответы клиента по той же причине защищены в `deliver.ts`.
+  // Нашла безопасность в панели ревью PR #87 — тогда в этом вызове лежал и адрес с токеном.
+  let created: unknown
+  try {
+    created = await input.call(createCall.method, createCall.params)
+  }
+  catch (error) {
+    logger.error({ domain: input.domain, reason: safeRefusal(error) }, 'выпуск ссылки: портал не создал элемент')
+    return { ok: false, reason: 'item-not-created' }
+  }
+  const itemId = readCreatedItemId(created)
   if (itemId === null) {
     logger.error({ domain: input.domain }, 'выпуск ссылки: портал не вернул идентификатор элемента')
     return { ok: false, reason: 'item-not-created' }
   }
 
-  await insertLink({
-    portalId: input.portalId,
-    tokenHash: invitation.tokenHash,
-    itemId,
-    surveyCode: input.template.code,
-    surveyVersion: input.template.version,
-    expiresAt: invitation.expiresAt,
-    // ⚠ Шапка кладётся СНИМКОМ и только здесь. Публичная страница в портал не ходит,
-    // значит другого способа показать респонденту компанию и проект у неё нет.
-    header,
-  })
+  try {
+    await insertLink({
+      portalId: input.portalId,
+      tokenHash: invitation.tokenHash,
+      itemId,
+      surveyCode: input.template.code,
+      surveyVersion: input.template.version,
+      expiresAt: invitation.expiresAt,
+      // ⚠ Шапка кладётся СНИМКОМ и только здесь. Публичная страница в портал не ходит,
+      // значит другого способа показать респонденту компанию и проект у неё нет.
+      header,
+    })
+  }
+  catch (error) {
+    // ⚠ Бросаем СВОЮ ошибку, без исходной. Драйвер базы кладёт в текст «Failed query … params: …»,
+    // а в параметрах этой вставки — хеш токена и снимок шапки с именами компании, контакта
+    // и менеджера. Обработчик выпуска исключение не ловит, и h3 напечатал бы его целиком.
+    // Адреса в элементе при этом нет: он уходит туда только следующим шагом. Нашёл `/code-review`
+    // во втором круге PR #87.
+    logger.error({ domain: input.domain, itemId, sqlState: sqlState(error) }, 'выпуск ссылки: индекс ссылок не записан, элемент остался без ссылки')
+    // Исходную ошибку в `cause` не кладём намеренно: h3 печатает и её — ради этого и своя ошибка.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error('выпуск ссылки: индекс ссылок не записан')
+  }
+
+  // ⚠ Отказ здесь выпуск НЕ отменяет: ссылка уже работает, и выпустивший видит её во вкладке
+  // сделки. Не будет только адреса в карточке элемента — это видно, и в журнал уходит код.
+  const linkCall = buildItemLinkCall(input.survey, itemId, url)
+  try {
+    await input.call(linkCall.method, linkCall.params)
+  }
+  catch (error) {
+    logger.warn({ domain: input.domain, itemId, reason: safeRefusal(error) }, 'выпуск ссылки: адрес не записан в элемент — ссылка работает')
+  }
 
   // ⚠ В журнал уходит что угодно, кроме токена и его хеша. Ссылка живёт тридцать дней,
   // а журналы переживают инцидент и утекают вместе с ним.
@@ -141,4 +187,16 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
   )
 
   return { ok: true, url, expiresAt: invitation.expiresAt, itemId, header }
+}
+
+/**
+ * SQLSTATE of a database failure, if there is one: five characters and nothing of the query.
+ *
+ * Код ошибки Postgres безопасен для журнала и отличает «нет связи» от нарушенного ограничения;
+ * текст ошибки — нет (разбор — у вызывающего).
+ */
+function sqlState(error: unknown): string | undefined {
+  const bag = error as { code?: unknown, cause?: { code?: unknown } } | null
+  const code = bag?.cause?.code ?? bag?.code
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : undefined
 }

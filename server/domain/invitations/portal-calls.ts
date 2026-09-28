@@ -4,6 +4,7 @@ import {
   CONTACT_ENTITY_TYPE_ID,
   DEAL_ENTITY_TYPE_ID,
 } from '../portals/smart-processes'
+import type { SurveyChoice } from '../../../shared/survey-choice'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -106,6 +107,33 @@ export function readPublishedTemplates(response: unknown, template: SmartProcess
   return published
 }
 
+// Форма карточки выбора — общая со страницами (`shared/survey-choice.ts`): описанная здесь,
+// она расходилась бы с их копиями молча.
+export type { SurveyChoice }
+
+/**
+ * Reduces a published template to its card in the deal tab's picker.
+ *
+ * ⚠ Наружу уходят ЧИСЛА, а не схема. Схема весит больше всего остального ответа вместе взятого,
+ * а вкладке из неё нужна одна строчка «версия 2 · 3 раздела · 8 вопросов» — по ней менеджер
+ * различает анкеты с похожими названиями. Считаем здесь, из схемы, которую роут и так прочитал:
+ * лишнего обращения к порталу это не стоит, а раньше схема просто выбрасывалась (issue #84).
+ *
+ * ⚠ Вопросы считаются по ключам, то есть так, как их увидит клиент: вопрос, стоявший в старом
+ * решении в двух секциях, после переноса стоит в обеих (см. `sourceKey` в модели) и на странице
+ * показывается дважды — значит, и здесь он два вопроса, а не один.
+ */
+export function surveyChoice(template: PublishedTemplate): SurveyChoice {
+  const { sections } = template.schema
+  return {
+    code: template.code,
+    version: template.version,
+    title: template.title,
+    sections: sections.length,
+    questions: sections.reduce((sum, section) => sum + section.questions.length, 0),
+  }
+}
+
 /**
  * Создать элемент «Опрос» — само приглашение.
  *
@@ -153,7 +181,38 @@ export function buildCreateSurveyItemCall(
         // Дата без времени: поле создавалось типом `date`, и портал отрежет время сам —
         // но лучше отдать то, что он ждёт, чем полагаться на его снисходительность.
         [buildFieldName(survey.id, 'EXPIRES_AT')]: invitation.expiresAt.toISOString().slice(0, 10),
+        // ⚠ Адреса анкеты здесь НЕТ, и это не забывчивость: он уходит в элемент отдельным
+        // вызовом, когда наш индекс уже знает токен (`buildItemLinkCall`).
       },
+    },
+  }
+}
+
+/**
+ * Put the survey address into the invitation item — after our index already knows its token.
+ *
+ * ⚠ Решение владельца 28.09 (issue #84, пункт 20): адрес — в поле «Ссылка на анкету», «это
+ * не страшный секрет». У нас по-прежнему лежит только хеш токена.
+ *
+ * ⚠ ОТДЕЛЬНЫМ ВЫЗОВОМ ПОСЛЕ записи в наш индекс, а не при создании элемента. Первая редакция
+ * клала адрес прямо в `crm.item.add` — на вызов дешевле, — и в двух исходах в карточке оставалась
+ * рабочая на вид ссылка, ведущая на «не найдено»: упала запись в индекс, или `crm.item.add`
+ * ответил таймаутом, успев создать элемент. Первый исход чинился отзывом элемента, второй —
+ * ничем: идентификатора нет, отзывать нечего. Нашёл `/code-review` во втором круге PR #87.
+ * Теперь адрес в CRM появляется только у ссылки, которую наш индекс уже знает.
+ *
+ * ⚠ Пока донастройка не завела поле на портале (до часа после выката), портал ключ молча
+ * отбрасывает — замерено 28.09 и для `crm.item.add`, и для `crm.item.update`. У элементов этого
+ * окна адреса в карточке не будет; сама ссылка работает, её видит выпустивший во вкладке сделки.
+ */
+export function buildItemLinkCall(survey: SmartProcessRef, itemId: number, link: string): PortalCall {
+  return {
+    method: 'crm.item.update',
+    params: {
+      entityTypeId: survey.entityTypeId,
+      id: itemId,
+      useOriginalUfNames: 'Y',
+      fields: { [buildFieldName(survey.id, 'LINK')]: link },
     },
   }
 }

@@ -30,7 +30,10 @@ const TOKEN_BYTES = 32
  */
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
-/** Выпустить новый токен. Возвращается только здесь и только один раз — дальше живёт хеш. */
+/**
+ * Выпустить новый токен. Выпускается только здесь; у нас дальше живёт хеш, а сам токен — только
+ * в адресе анкеты (с 28.09 и в CRM клиента, см. `createInvitation`).
+ */
 export function mintToken(): string {
   return randomBytes(TOKEN_BYTES).toString('base64url')
 }

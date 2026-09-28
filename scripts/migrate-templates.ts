@@ -36,6 +36,7 @@ import { readLegacyTemplates } from '../server/domain/import/legacy-templates'
 import { readSnapshot } from '../server/domain/import/snapshot'
 import { DEFAULT_IMPORT_STATE, type TemplateState } from '../server/domain/import/template-write'
 import { findTemplateProcess, writeTemplates } from '../server/b24/write-templates'
+import { TEMPLATE_SP_TITLE } from '../shared/portal-names'
 
 interface Args {
   snapshot: string
@@ -146,7 +147,7 @@ async function main(): Promise<number> {
   const call = hookCall(args.hook)
   const template = await findTemplateProcess(call)
   if (template === null) {
-    die('\nСмарт-процесс «Шаблон опроса» на портале не найден. Сначала переустановка или «доустроить».', 1)
+    die(`\nСмарт-процесс «${TEMPLATE_SP_TITLE}» на портале не найден. Сначала переустановка или «доустроить».`, 1)
   }
 
   const result = await writeTemplates(call, template, templates, { apply: args.apply, state: args.state })

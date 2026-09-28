@@ -44,3 +44,31 @@ export class PortalError extends Error {
 export function refusalCode(error: unknown): string {
   return error instanceof PortalError ? error.code : ''
 }
+
+/**
+ * Коды отказов, которые лечатся повтором: предел запросов, перегрузка, сбой на стороне портала.
+ *
+ * Собрано из разделов «Errors» документации `crm.type.update`, `crm.item.update`
+ * и `crm.deal.userfield.update`. Всё прочее с кодом — права, тариф, проверка значения — повтор
+ * не вылечит.
+ */
+const RETRYABLE_CODES: readonly string[] = [
+  'QUERY_LIMIT_EXCEEDED',
+  'OPERATION_TIME_LIMIT',
+  'OVERLOAD_LIMIT',
+  'INTERNAL_SERVER_ERROR',
+  'ERROR_UNEXPECTED_ANSWER',
+]
+
+/**
+ * Whether a refusal is worth retrying later: a known transient code, or no portal code at all.
+ *
+ * ⚠ Отказ без кода — это не портал сказал «нет», а сеть, таймаут или наше собственное
+ * исключение; такое повтор лечит чаще всего. А отказ с кодом, которого нет в списке, повтором
+ * не лечится: держать ради него незавершённую работу значило бы ходить к порталу каждый час
+ * вечно. Нашёл `/review` во втором круге панели PR #87.
+ */
+export function isRetryableRefusal(error: unknown): boolean {
+  const code = refusalCode(error)
+  return code === '' || RETRYABLE_CODES.includes(code)
+}

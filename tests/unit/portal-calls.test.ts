@@ -4,12 +4,15 @@ import {
   buildListTemplatesCall,
   buildDealFactsBatch,
   buildInvitationTitle,
+  buildItemLinkCall,
   DEAL_ENTITY_TYPE_ID,
   readCreatedItemId,
   readDealFacts,
   readPublishedTemplates,
   readSurveyHeader,
+  surveyChoice,
 } from '../../server/domain/invitations/portal-calls'
+import { buildFieldName } from '../../server/domain/portals/smart-processes'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 
 /**
@@ -134,12 +137,76 @@ describe('разбор списка шаблонов', () => {
   })
 })
 
+describe('карточка анкеты в выборе вкладки сделки', () => {
+  /** Вопрос нужной формы: для подсчёта важен только сам факт вопроса. */
+  function question(key: string) {
+    return { key, sourceKey: key, title: key, type: 'scale' as const, weight: 1, scored: true, scale: { min: 0, max: 10 } }
+  }
+
+  function section(key: string, questions: string[]) {
+    return { key, title: key, scored: true, bands: [], questions: questions.map(question) }
+  }
+
+  it('считает разделы и вопросы во всех разделах', () => {
+    // На этой строчке «версия 2 · 3 раздела · 8 вопросов» менеджер различает анкеты
+    // с похожими названиями — посчитать её обязан сервер, у вкладки схемы нет.
+    const schema: SurveyTemplate = {
+      ...SCHEMA,
+      sections: [section('product', ['P1', 'P2', 'P3']), section('process', ['R1', 'R2']), section('open', ['T1', 'T2', 'T3'])],
+    }
+
+    expect(surveyChoice({ code: 'brand', version: 2, title: 'Бренд-платформа', schema })).toEqual({
+      code: 'brand',
+      version: 2,
+      title: 'Бренд-платформа',
+      sections: 3,
+      questions: 8,
+    })
+  })
+
+  it('вопрос из двух разделов считает дважды — так его видит клиент', () => {
+    // Расщеплённый при переносе вопрос стоит в обоих разделах под разными ключами
+    // и показывается на странице дважды.
+    const schema: SurveyTemplate = {
+      ...SCHEMA,
+      sections: [section('product', ['UF_1']), { ...section('personal', []), questions: [{ ...question('UF_1_personal'), sourceKey: 'UF_1' }] }],
+    }
+
+    expect(surveyChoice({ code: 'brand', version: 1, title: 'Бренд', schema }).questions).toBe(2)
+  })
+
+  it('пустая анкета — нули, а не падение', () => {
+    // Пустой список разделов — законная заготовка (см. `isTemplateShaped`).
+    expect(surveyChoice({ code: 'brand', version: 1, title: 'Бренд', schema: SCHEMA })).toMatchObject({ sections: 0, questions: 0 })
+  })
+})
+
 describe('создание приглашения', () => {
   const call = buildCreateSurveyItemCall(SURVEY, 42, {
     templateCode: 'brand',
     templateVersion: 1,
     expiresAt: new Date('2026-10-16T12:00:00Z'),
     title: 'Бренд-платформа',
+  })
+
+  it('НЕ кладёт адрес анкеты при создании — он уходит в элемент после записи в индекс', () => {
+    // Гвард под находку `/code-review` во втором круге PR #87: адрес, положенный в элемент
+    // при создании, при упавшем индексе или таймауте создания оставался в карточке рабочей
+    // на вид ссылкой на «не найдено», и отозвать её было нечем.
+    expect(call.params.fields).not.toHaveProperty(buildFieldName(SURVEY.id, 'LINK'))
+  })
+
+  it('кладёт адрес анкеты в поле «Ссылка на анкету» отдельным вызовом', () => {
+    // Решение владельца 28.09 (issue #84, пункт 20): «это не страшный секрет».
+    expect(buildItemLinkCall(SURVEY, 501, 'https://polls.example/s/tok')).toEqual({
+      method: 'crm.item.update',
+      params: {
+        entityTypeId: SURVEY.entityTypeId,
+        id: 501,
+        useOriginalUfNames: 'Y',
+        fields: { [buildFieldName(SURVEY.id, 'LINK')]: 'https://polls.example/s/tok' },
+      },
+    })
   })
 
   it('связывает приглашение со сделкой полем-родителем', () => {

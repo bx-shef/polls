@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
-import { readFramePass } from '~/utils/frame-auth'
+import { DEAL_TAB_TITLE, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '#shared/portal-names'
+import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 
 /**
@@ -111,7 +112,7 @@ async function install() {
   stage.value = 'installing'
   failure.value = ''
 
-  const pass = readFramePass(frame!.auth.getAuthData())
+  const pass = await framePass(frame!.auth)
   if (pass === null || pass.refreshToken === '') {
     stage.value = 'failed'
     failure.value = 'Портал не передал данные авторизации. Переустановите приложение.'
@@ -193,7 +194,7 @@ async function retry() {
 
 /** Доустроить портал уже сохранёнными токенами: обмена гранта здесь нет. */
 async function finishProvisioning() {
-  const pass = readFramePass(frame!.auth.getAuthData())
+  const pass = await framePass(frame!.auth)
   if (pass === null) {
     stage.value = 'failed'
     failure.value = 'Портал не передал данные авторизации. Переустановите приложение.'
@@ -253,7 +254,7 @@ async function finishProvisioning() {
         v-else-if="stage === 'done'"
         color="air-primary-success"
         title="Приложение установлено"
-        description="Смарт-процессы «Опрос» и «Шаблон опроса» созданы, вкладка «Опросы» появилась в карточке сделки. Можно закрывать это окно."
+        :description="`Смарт-процессы «${SURVEY_SP_TITLE}» и «${TEMPLATE_SP_TITLE}» созданы, вкладка «${DEAL_TAB_TITLE}» появилась в карточке сделки. Можно закрывать это окно.`"
       />
 
       <template v-else-if="stage === 'partial'">

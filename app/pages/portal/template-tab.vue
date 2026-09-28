@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
-import { readFramePass } from '~/utils/frame-auth'
+import { TEMPLATE_SP_TITLE } from '#shared/portal-names'
+import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { placementItemId } from '~/utils/placement'
 
 /**
- * The survey builder, living inside the «Шаблон опроса» smart-process card.
+ * The survey builder, living inside the template smart-process card (`TEMPLATE_SP_TITLE`).
  *
  * ⚠ ЗАЧЕМ ВКЛАДКА, А НЕ ОТДЕЛЬНЫЙ ЭКРАН ПРИЛОЖЕНИЯ. Анкета — это элемент смарт-процесса
  * на портале клиента: у него есть список, права, история и карточка. Свой экран со своим
@@ -194,7 +195,7 @@ onMounted(async () => {
 async function loadTemplate() {
   if (itemId.value === null) return
 
-  const pass = readFramePass(frame!.auth.getAuthData())
+  const pass = await framePass(frame!.auth)
   if (pass === null) {
     failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
@@ -308,7 +309,7 @@ function scaleOf(question: Question): { min: number, max: number } {
 async function release(action: 'publish' | 'new-version'): Promise<void> {
   if (itemId.value === null || frame === undefined) return
 
-  const pass = readFramePass(frame.auth.getAuthData())
+  const pass = await framePass(frame.auth)
   if (pass === null) {
     saveFailure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
@@ -405,7 +406,7 @@ async function openCard(newItemId: number, typeId: number): Promise<void> {
 async function save(): Promise<void> {
   if (draft.value === null || itemId.value === null || frame === undefined) return
 
-  const pass = readFramePass(frame.auth.getAuthData())
+  const pass = await framePass(frame.auth)
   if (pass === null) {
     failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
@@ -466,7 +467,7 @@ async function save(): Promise<void> {
         v-if="gate === 'outside'"
         color="air-secondary-accent"
         title="Откройте вкладку из Битрикс24"
-        description="Эта страница живёт внутри портала: она показывает анкету из карточки «Шаблона опроса» и без портала не знает ни анкеты, ни ваших прав на неё."
+        :description="`Эта страница живёт внутри портала: она показывает анкету из карточки «${TEMPLATE_SP_TITLE}» и без портала не знает ни анкеты, ни ваших прав на неё.`"
       />
 
       <B24Skeleton
@@ -630,15 +631,18 @@ async function save(): Promise<void> {
             v-if="published"
             class="mt-3"
             color="air-secondary-accent"
-            title="Эта версия уже опубликована"
             description="Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию."
-          />
-          <HelpLink
-            v-if="published"
-            anchor="edit-survey"
-            label="Как устроены версии?"
-            class="mt-2"
-          />
+          >
+            <template #title>
+              <span class="inline-flex items-center gap-1">
+                Эта версия уже опубликована
+                <HelpLink
+                  anchor="edit-survey"
+                  label="Как устроены версии?"
+                />
+              </span>
+            </template>
+          </B24Alert>
         </B24Card>
 
         <!-- ⚠ Претензии показываются ВЫШЕ самой анкеты. Их читают, когда собираются

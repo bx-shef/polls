@@ -27,6 +27,7 @@ import process from 'node:process'
 import { die, hookCall, report } from './-hook'
 import { findProcesses } from '../server/b24/write-templates'
 import { publishTemplates } from '../server/b24/publish-templates'
+import { SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../shared/portal-names'
 
 interface Args {
   hook: string
@@ -56,20 +57,20 @@ async function main(): Promise<number> {
   const call = hookCall(args.hook)
   const { template, survey } = await findProcesses(call)
   if (template === undefined) {
-    die('Смарт-процесс «Шаблон опроса» на портале не найден. Сначала переустановка или «доустроить».', 1)
+    die(`Смарт-процесс «${TEMPLATE_SP_TITLE}» на портале не найден. Сначала переустановка или «доустроить».`, 1)
   }
   if (survey === undefined) {
     // ⚠ Без «Опроса» не сосчитать, кто уже прошёл анкету, — а значит не отличить версию,
     // которую можно переименовать, от той, по которой собрана статистика. Продолжать вслепую
     // хуже, чем остановиться: мы бы разрешили ровно то, что запрещает инвариант.
-    die('Смарт-процесс «Опрос» на портале не найден — не сосчитать выпущенные приглашения.', 1)
+    die(`Смарт-процесс «${SURVEY_SP_TITLE}» на портале не найден — не сосчитать выпущенные приглашения.`, 1)
   }
 
   // ⚠ Называем, ЧТО именно посчитали. В вебхучном режиме смарт-процессы находятся по заголовку,
   // а заголовок не признак владения: совпасть может процесс, заведённый клиентом руками. Тогда
   // сводка по пройденным опросам окажется пустой, и переименование откроется там, где не должно.
   // Оператор обязан иметь возможность сверить числа глазами. Нашёл `/code-review` в PR #50.
-  console.info(`Смарт-процессы: «Шаблон опроса» entityTypeId ${template.entityTypeId}, «Опрос» ${survey.entityTypeId}.`)
+  console.info(`Смарт-процессы: «${TEMPLATE_SP_TITLE}» entityTypeId ${template.entityTypeId}, «${SURVEY_SP_TITLE}» ${survey.entityTypeId}.`)
 
   const result = await publishTemplates(call, template, survey, { apply: args.apply })
 
@@ -113,7 +114,7 @@ async function main(): Promise<number> {
     // что требует действия человека, и именно это он должен увидеть, закрывая терминал.
     console.info(`\n⚠ НЕ НАЗВАНЫ — не опубликованы: ${unnamed.length}`)
     for (const s of unnamed) console.info(`      ${s.code} v${s.version} — ${s.reason}`)
-    console.info('\n  Откройте смарт-процесс «Шаблон опроса» на портале и переименуйте эти элементы')
+    console.info(`\n  Откройте смарт-процесс «${TEMPLATE_SP_TITLE}» на портале и переименуйте эти элементы`)
     console.info('  по-человечески, затем повторите. Название видит респондент, и после публикации')
     console.info('  оно уже не меняется — версия неизменяема.')
   }
