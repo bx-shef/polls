@@ -5,6 +5,7 @@ import {
   commandStateFields,
   hasStateField,
   isIssuable,
+  isStateFieldName,
   planStageMoves,
   readCarryItems,
   planStages,
@@ -120,6 +121,13 @@ describe('состояние шаблона: публикация решаетс
     // Поля нет — только стадия; без стадий — только поле.
     expect(commandStateFields(TEMPLATE, 'draft', false)).toEqual({ stageId: 'DT1038_14:NEW' })
     expect(commandStateFields(TEMPLATE_OLD, 'draft', false)).toEqual({ UF_CRM_8_STATE: 'draft' })
+  })
+
+  it('наше старое поле узнаётся в любом написании портала — одно правило на обустройство и команды', () => {
+    // Портал отдаёт имя поля и слитно, и в camelCase (разбор у `normalizeFieldName`): прямое
+    // сравнение сочло бы живое поле удалённым, и команда перестала бы в него писать.
+    for (const name of ['UF_CRM_8_STATE', 'UF_CRM8_STATE', 'ufCrm8State']) expect(isStateFieldName(TEMPLATE, name)).toBe(true)
+    for (const name of ['UF_CRM_8_STATES', 'UF_CRM_80_STATE', 'UF_CRM_8_SCHEMA']) expect(isStateFieldName(TEMPLATE, name)).toBe(false)
   })
 
   it('ГЛАВНОЕ: старое поле команда ищет правом `crm`, а не правом на поля', () => {
@@ -272,6 +280,9 @@ describe('отбор переноса', () => {
     // Имена здесь — буквально, как замерено на портале 28.09. Нашёл `/code-review` во втором круге.
     expect(buildCarryListCall(TEMPLATE, 'template', 0).params.select)
       .toEqual(['id', 'stageId', 'updatedTime', 'ufCrm8State', 'ufCrm8PublishedAt', 'ufCrm8Code', 'ufCrm8Version', 'ufCrm8Schema'])
+    // Отбор — «одно из» всего списка значений, как у опросов: по первому значению он молча
+    // пропустил бы остальные, и поле удалилось бы с их состоянием. Закрывающий проход PR #93.
+    expect(buildCarryListCall(TEMPLATE, 'template', 0).params.filter).toEqual({ '>id': 0, '@ufCrm8State': ['published'] })
 
     const read = readCarryItems({ result: { items: [
       { id: 4, stageId: 'DT1038_14:NEW', updatedTime: '2026-09-25T10:00:00+03:00', ufCrm8State: 'published', ufCrm8PublishedAt: '2026-09-20T03:00:00+03:00' },
