@@ -507,9 +507,10 @@ describe('перенос старого поля «Состояние»', () => 
   it('имя удалённого поля уходит и из сохранённой раскладки карточки, остальное — как было', async () => {
     // Раскладка хранит поля по имени (замерено 28.09): без этого в карточке каждого старого
     // портала осталось бы имя без поля. Нашёл `/review` в панели PR #93.
+    // Разделы — как их отдаёт портал: с `type`, `name` и `title` (замерено 28.09).
     const layout = [
-      { name: 'survey_form', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_STATE' }, { name: 'UF_CRM_10_LINK' }] },
-      { name: 'client_own', elements: [{ name: 'UF_CRM_10_STATE' }] },
+      { type: 'section', name: 'survey_form', title: 'Анкета', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_STATE' }, { name: 'UF_CRM_10_LINK' }] },
+      { type: 'section', name: 'client_own', title: 'Своё', elements: [{ name: 'UF_CRM_10_STATE' }] },
     ]
     const p = portal({ 'crm.item.details.configuration.get': { result: layout } })
 
@@ -517,8 +518,8 @@ describe('перенос старого поля «Состояние»', () => 
 
     const [set] = p.of('crm.item.details.configuration.set')
     expect(set!.params.data).toEqual([
-      { name: 'survey_form', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_LINK' }] },
-      { name: 'client_own', elements: [] },
+      { type: 'section', name: 'survey_form', title: 'Анкета', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_LINK' }] },
+      { type: 'section', name: 'client_own', title: 'Своё', elements: [] },
     ])
   })
 
@@ -526,7 +527,7 @@ describe('перенос старого поля «Состояние»', () => 
     // ⚠ `set` перезаписывает раскладку целиком и на всех: записав пустое вместо непонятного, мы
     // стёрли бы клиенту его карточку. Нашёл тестировщик во втором круге панели PR #93.
     for (const answer of [
-      { result: [{ name: 'survey_form', elements: [{ name: 'UF_CRM_10_LINK' }] }] },
+      { result: [{ type: 'section', name: 'survey_form', title: 'Анкета', elements: [{ name: 'UF_CRM_10_LINK' }] }] },
       { result: [] },
       { result: null },
       { result: [{ name: 'survey_form', elements: 'не массив' }] },

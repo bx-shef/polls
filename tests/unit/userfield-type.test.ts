@@ -293,7 +293,7 @@ describe('ревизия 6: свои поля в раскладке, котор�
   })
 
   it('своих полей в раскладке нет вовсе — виджет и ссылка встают в конец первого раздела', () => {
-    const plan = planSurveyCard({ result: [{ name: 'mine', title: 'Моё', elements: [{ name: 'TITLE' }] }, { name: 'more', elements: [] }] }, SURVEY.id, true)
+    const plan = planSurveyCard({ result: [{ type: 'section', name: 'mine', title: 'Моё', elements: [{ name: 'TITLE' }] }, { type: 'section', name: 'more', title: 'Ещё', elements: [] }] }, SURVEY.id, true)
 
     expect(layoutOf(plan)).toEqual([['TITLE', f('RESULT'), f('LINK')], []])
   })
@@ -324,10 +324,52 @@ describe('ревизия 6: свои поля в раскладке, котор�
     layout[2]!.elements = [{ name: 'ufCrm8Score' }, { name: 'UF_CRM8_RESULT' }, { name: 'UF_CRM8_SCORES' }, { name: 'ufCrm8Answers' }]
     ;(layout[1]!.elements as { name: string }[]).push({ name: 'ufCrm8Link' })
 
-    expect(planSurveyCard({ result: layout }, SURVEY.id, true)).toEqual({
-      kind: 'write',
-      sections: expect.arrayContaining([expect.objectContaining({ name: CARD_RESULT_SECTION, elements: [{ name: 'ufCrm8Score' }, { name: 'UF_CRM8_RESULT' }] })]),
-    })
+    const sections = layoutOf(planSurveyCard({ result: layout }, SURVEY.id, true))
+
+    expect(sections[2]).toEqual(['ufCrm8Score', 'UF_CRM8_RESULT'])
+    // Ссылку в другом написании тоже узнаёт — второй не ставит.
+    expect(sections.flat().filter(name => /link/i.test(name))).toEqual(['ufCrm8Link'])
+  })
+
+  it('ГЛАВНОЕ: стоящему без «показывать всегда» виджету флаг ставит — иначе он спрятан, а JSON снят', () => {
+    // ⚠ Так бывает, когда виджет перетащили в карточку руками. Значения у поля не бывает никогда:
+    // без флага карточка прячет его в режиме просмотра, а JSON правка снимает — менеджер не видел бы
+    // ни виджета, ни ответов. Флаг — битовая маска: чужие биты сохраняются. Нашли программист,
+    // `/review` и `/code-review` в панели PR #98.
+    const withFlags = (flags: unknown) => {
+      const layout = ours()
+      layout[2]!.elements = [{ name: f('SCORE'), optionFlags: 1 }, { name: f('RESULT'), optionFlags: flags }, { name: f('ANSWERS') }]
+      const plan = planSurveyCard({ result: layout }, SURVEY.id, true)
+      return sectionsOf(plan)[2]!.elements.find(e => e.name === f('RESULT'))?.optionFlags
+    }
+
+    expect(withFlags('0')).toBe(1)
+    expect(withFlags(undefined)).toBe(1)
+    expect(withFlags(2)).toBe(3)
+    // Флаг уже есть — строкой, как его отдаёт портал, — не трогаем.
+    expect(withFlags('1')).toBe('1')
+  })
+
+  it('резервные якоря: виджет — после балла, ссылка — после версии или кода шаблона', () => {
+    const layout = ours()
+    layout[1]!.elements = [{ name: f('TEMPLATE_CODE') }, { name: f('TEMPLATE_VERSION') }]
+    layout[2]!.elements = [{ name: f('SCORE'), optionFlags: 1 }]
+    const byVersion = layoutOf(planSurveyCard({ result: layout }, SURVEY.id, true))
+
+    expect(byVersion[1]).toEqual([f('TEMPLATE_CODE'), f('TEMPLATE_VERSION'), f('LINK')])
+    expect(byVersion[2]).toEqual([f('SCORE'), f('RESULT')])
+
+    layout[1]!.elements = [{ name: 'OPPORTUNITY' }, { name: f('TEMPLATE_CODE') }, { name: 'COMMENTS' }]
+    expect(layoutOf(planSurveyCard({ result: layout }, SURVEY.id, true))[1]).toEqual(['OPPORTUNITY', f('TEMPLATE_CODE'), f('LINK'), 'COMMENTS'])
+  })
+
+  it('раздел, где были только JSON-поля, остаётся — пустым: чужой раздел не удаляем', () => {
+    // Раздел клиента — его решение, даже опустевший. Что портал принимает раздел без элементов,
+    // проверено живой репетицией (`docs/PROCESS.md`, раздел 9). Нашёл программист в панели PR #98.
+    const layout = ours()
+    layout[3]!.elements = [{ name: f('SCORES') }]
+
+    expect(layoutOf(planSurveyCard({ result: layout }, SURVEY.id, true))[3]).toEqual([])
   })
 
   it('всё уже на месте — писать нечего', () => {
@@ -345,5 +387,25 @@ describe('ревизия 6: свои поля в раскладке, котор�
     expect(planSurveyCard({ result: layout }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
     expect(planSurveyCard({ result: [null] }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
     expect(planSurveyCard({ result: 'испорчено' }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
+    expect(planSurveyCard({ result: [] }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
+    expect(planSurveyCard(null, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
+  })
+
+  it('ГЛАВНОЕ: раздел, который отверг бы сам портал, не отправляет — иначе ревизия держалась бы вечно', () => {
+    // ⚠ Проверка — ровно та, что у `set`: без `title`, без `name`, с `type` не `section`, элемент без
+    // `name`. Эти отказы портал отдаёт с пустым кодом, а пустой код мы считаем повторимым: портал
+    // стоял бы на ревизии 5 и обустраивался каждый час впустую. Нашёл `/code-review` в панели PR #98.
+    const broken = [
+      (section: Record<string, unknown>) => ({ ...section, title: undefined }),
+      (section: Record<string, unknown>) => ({ ...section, name: '' }),
+      (section: Record<string, unknown>) => ({ ...section, type: 'tab' }),
+      (section: Record<string, unknown>) => ({ ...section, elements: [{ optionFlags: 1 }] }),
+    ]
+    for (const spoil of broken) {
+      const layout = ours()
+      layout[3] = spoil(layout[3]!)
+
+      expect(planSurveyCard({ result: layout }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
+    }
   })
 })

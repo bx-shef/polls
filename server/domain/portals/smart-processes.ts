@@ -810,7 +810,7 @@ function toRelationParams(relation: TypeRelation): Record<string, unknown> {
 }
 
 /**
- * Настройка карточки «Опроса»: что видно и в каком порядке.
+ * Настройка карточки «Результата опросов»: что видно и в каком порядке.
  *
  * ⚠ Существует потому, что умолчание портала прячет главное. На живом портале «Сделка»
  * и «Клиент» лежали в разделе «Скрытые поля»: карточка показывала код шаблона, состояние
@@ -870,7 +870,7 @@ export function buildCardSections(spTypeId: number, resultField: boolean, staged
   ]
 }
 
-/** Имя нашего раздела с результатом. По нему узнаём свой раздел в чужой раскладке. */
+/** Имя нашего раздела с результатом в раскладке, которую мы ставим с нуля (`buildCardSections`). */
 export const CARD_RESULT_SECTION = 'survey_result'
 
 /**
@@ -911,30 +911,22 @@ interface CardAnchor {
  * - «Ссылки на анкету» нет нигде — она встаёт после «Ссылка действительна до», иначе после версии
  *   или кода шаблона, а их нет — в конец первого раздела;
  * - всё остальное — чужие разделы, чужие поля, порядок, флаги — уходит обратно как пришло.
- * Уже стоящие виджет и ссылку не двигаем и флагов им не меняем: куда их поставил клиент, там им
- * и место.
+ * Уже стоящие виджет и ссылку не двигаем: куда их поставил клиент, там им и место. Виджету лишь
+ * добавляем «показывать всегда», если его нет, — без флага он спрятан, а JSON снят.
  *
  * ⚠ Разово, при переходе на ревизию 6 (`CARD_REVISION`): повторяясь при каждом обустройстве, правка
  * возвращала бы клиенту поля, которые он убрал сам.
  */
 export function planSurveyCard(current: unknown, spTypeId: number, widget: boolean): SurveyCardPlan {
-  const listed = (current as { result?: unknown } | null)?.result
-  const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
-  if (!Array.isArray(listed) || listed.length === 0) return { kind: 'unreadable' }
-  if (!listed.every(section => section !== null && typeof section === 'object' && Array.isArray(elementsOf(section)))) {
-    return { kind: 'unreadable' }
-  }
+  const sections = readCardLayout(current)
+  if (sections === null) return { kind: 'unreadable' }
 
-  const sections = listed.map(section => ({ ...(section as Record<string, unknown>), elements: [...(elementsOf(section) as unknown[])] }))
   const rows = (index: number) => sections[index]!.elements
-  const isField = (element: unknown, postfix: string) => {
-    const name = (element as { name?: unknown } | null)?.name
-    return typeof name === 'string' && normalizeFieldName(name) === normalizeFieldName(buildFieldName(spTypeId, postfix))
-  }
   /** Section and position of the first field of `postfixes`, in layout order, or `null`. */
   const find = (postfixes: readonly string[]): [number, number] | null => {
+    const ours = postfixes.map(postfix => isOurField(spTypeId, postfix))
     for (let section = 0; section < sections.length; section++) {
-      const at = rows(section).findIndex(element => postfixes.some(postfix => isField(element, postfix)))
+      const at = rows(section).findIndex(element => ours.some(is => is(element)))
       if (at !== -1) return [section, at]
     }
     return null
@@ -950,7 +942,8 @@ export function planSurveyCard(current: unknown, spTypeId: number, widget: boole
   }
 
   let changed = false
-  if (widget && find([SURVEY_RESULT_FIELD]) === null) {
+  const standing = find([SURVEY_RESULT_FIELD])
+  if (widget && standing === null) {
     place({ name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 }, [
       { postfixes: CARD_JSON_FIELDS, after: false },
       { postfixes: ['COMPLETED_AT'], after: true },
@@ -958,9 +951,23 @@ export function planSurveyCard(current: unknown, spTypeId: number, widget: boole
     ])
     changed = true
   }
+  else if (widget && standing !== null) {
+    // ⚠ Стоящему виджету — «показывать всегда», если его нет. Значения у поля не бывает никогда,
+    // и без флага карточка прячет его в режиме просмотра, а JSON ниже снимается: менеджер не видел
+    // бы ни виджета, ни ответов. Так бывает, когда виджет перетащили в карточку руками. Флаг —
+    // битовая маска: к прочим битам клиента только добавляем свой. Нашли программист, `/review`
+    // и `/code-review` в панели PR #98.
+    const element = rows(standing[0])[standing[1]]!
+    const flags = Number(element.optionFlags) || 0
+    if ((flags & 1) === 0) {
+      rows(standing[0])[standing[1]] = { ...element, optionFlags: flags | 1 }
+      changed = true
+    }
+  }
   if (widget) {
+    const isJson = CARD_JSON_FIELDS.map(postfix => isOurField(spTypeId, postfix))
     for (const section of sections) {
-      const kept = section.elements.filter(element => !CARD_JSON_FIELDS.some(postfix => isField(element, postfix)))
+      const kept = section.elements.filter(element => !isJson.some(is => is(element)))
       if (kept.length === section.elements.length) continue
       section.elements = kept
       changed = true
@@ -977,6 +984,53 @@ export function planSurveyCard(current: unknown, spTypeId: number, widget: boole
   return changed ? { kind: 'write', sections } : { kind: 'keep' }
 }
 
+/** A card section as `crm.item.details.configuration.set` accepts it back. */
+export interface CardSection extends Record<string, unknown> {
+  name: string
+  title: string
+  type: 'section'
+  elements: Record<string, unknown>[]
+}
+
+/**
+ * Reads the card layout of a `crm.item.details.configuration.get` answer, or `null` when it is empty or not in the shape `set` takes back.
+ *
+ * ⚠ ПРОВЕРКА — РОВНО ТА, ЧТО У `set`: раздел — объект с непустыми строками `name` и `title`
+ * и `type: 'section'`, у каждого элемента — непустая строка `name` (раздел «Errors» документации
+ * метода, сверено 28.09). Отказы этой проверки портал отдаёт с ПУСТЫМ кодом ошибки, а пустой код
+ * мы считаем повторимым (`isRetryableRefusal`): отправив раздел, который метод отвергнет, мы держали
+ * бы ревизию вечно и обустраивали бы портал каждый час впустую. Нашёл `/code-review` в панели PR #98.
+ * И `set` перезаписывает раскладку целиком и на всех: не разобрав, не пишем (нашёл `/code-review`
+ * в PR #80). Разделы и их списки элементов — копии: читающий вправе их править.
+ */
+export function readCardLayout(current: unknown): CardSection[] | null {
+  const listed = (current as { result?: unknown } | null)?.result
+  if (!Array.isArray(listed) || listed.length === 0) return null
+  const sections: CardSection[] = []
+  for (const raw of listed) {
+    const section = raw as Record<string, unknown> | null
+    if (section === null || typeof section !== 'object' || section.type !== 'section') return null
+    if (!isFilledText(section.name) || !isFilledText(section.title) || !Array.isArray(section.elements)) return null
+    const elements = section.elements as unknown[]
+    if (!elements.every(element => element !== null && typeof element === 'object' && isFilledText((element as { name?: unknown }).name))) return null
+    sections.push({ ...section, elements: [...elements] } as CardSection)
+  }
+  return sections
+}
+
+/** A predicate: is this layout element our field `postfix` of this smart process, however the portal spells it. */
+export function isOurField(spTypeId: number, postfix: string): (element: unknown) => boolean {
+  const target = normalizeFieldName(buildFieldName(spTypeId, postfix))
+  return (element) => {
+    const name = (element as { name?: unknown } | null)?.name
+    return typeof name === 'string' && normalizeFieldName(name) === target
+  }
+}
+
+function isFilledText(value: unknown): value is string {
+  return typeof value === 'string' && value !== ''
+}
+
 /**
  * The card layout without our field, or `null` when there is nothing to take out.
  *
@@ -986,25 +1040,12 @@ export function planSurveyCard(current: unknown, spTypeId: number, widget: boole
  * раскладке — решение клиента.
  */
 export function planDropFieldFromCard(current: unknown, spTypeId: number, postfix: string): Record<string, unknown>[] | null {
-  const sections = (current as { result?: unknown } | null)?.result
-  if (!Array.isArray(sections) || sections.length === 0) return null
-
-  const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
-  // Не массив — не пишем: `set` перезаписывает раскладку целиком (разбор у `SurveyCardPlan`).
-  if (!sections.every(section => Array.isArray(elementsOf(section)))) return null
-
-  const target = normalizeFieldName(buildFieldName(spTypeId, postfix))
-  const isTarget = (element: unknown) => {
-    const name = (element as { name?: unknown } | null)?.name
-    return typeof name === 'string' && normalizeFieldName(name) === target
-  }
-  const rows = (section: unknown) => elementsOf(section) as unknown[]
-  if (!sections.some(section => rows(section).some(isTarget))) return null
-
-  return sections.map(section => ({
-    ...(section as Record<string, unknown>),
-    elements: rows(section).filter(element => !isTarget(element)),
-  }))
+  // Не разобрав, не пишем: `set` перезаписывает раскладку целиком (разбор у `readCardLayout`).
+  const sections = readCardLayout(current)
+  if (sections === null) return null
+  const isTarget = isOurField(spTypeId, postfix)
+  if (!sections.some(section => section.elements.some(isTarget))) return null
+  return sections.map(section => ({ ...section, elements: section.elements.filter(element => !isTarget(element)) }))
 }
 
 /** Прочитать общую настройку карточки. `scope: 'C'` — общая, не личная. */

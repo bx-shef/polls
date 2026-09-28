@@ -327,6 +327,9 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     if (!result.stages.settled || carried?.settled === false) {
       logger.warn({ domain: portal.domain }, 'стадии настроены не до конца — ревизию не отмечаем, донастройка вернётся')
     }
+    if (!result.cardSettled) {
+      logger.warn({ domain: portal.domain }, 'карточка «Результата опросов» не доделана — ревизию 6 не отмечаем, донастройка вернётся')
+    }
     const reached = reachedRevision(known.revision, result, carried)
     await storeProvisionRevision(budgeted, refs, reached, adopted)
 
@@ -341,6 +344,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         resultField: result.resultField,
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
+        cardSettled: result.cardSettled,
         ownership: result.ownership,
         stages: result.stages,
         carried,

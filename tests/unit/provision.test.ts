@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, reachedRevision, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, OWNERSHIP_REVISION, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 import { PortalError } from '../../server/domain/portals/portal-error'
@@ -301,7 +301,11 @@ describe('связь «Опроса» со сделкой', () => {
  * карточки для ВСЕХ пользователей, прошёл бы гейт незамеченным. Ровно тот класс отказа,
  * про который в проекте написано «все тесты зелёные при живой регрессии».
  */
-describe('раскладка карточки «Опроса»', () => {
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('раскладка карточки «Результата опросов»', () => {
   it('ставится там, где своей нет', async () => {
     const p = portal()
 
@@ -318,7 +322,7 @@ describe('раскладка карточки «Опроса»', () => {
     // ⚠ Метод перезаписывает раскладку целиком и сразу для всех пользователей. Клиент,
     // разложивший карточку под себя, получал бы нашу при каждой переустановке. С ревизии 6 (#84,
     // п. 15, решение владельца) в его раскладку встают только наши поля — один раз, при переходе.
-    const own = [{ name: 'своё', title: 'Своё', elements: [{ name: 'OPPORTUNITY' }] }]
+    const own = [{ type: 'section', name: 'своё', title: 'Своё', elements: [{ name: 'OPPORTUNITY' }] }]
     const upgrading = portal({ 'crm.item.details.configuration.get': { result: own } })
     const settled = portal({ 'crm.item.details.configuration.get': { result: own } })
 
@@ -326,7 +330,7 @@ describe('раскладка карточки «Опроса»', () => {
     const result = await provisionSmartProcesses(settled.call, {}, { previousRevision: 6 })
 
     expect(upgrading.of('crm.item.details.configuration.set').map(one => one.params.data)).toEqual([
-      [{ name: 'своё', title: 'Своё', elements: [{ name: 'OPPORTUNITY' }, { name: `UF_CRM_${SURVEY.id}_LINK` }] }],
+      [{ type: 'section', name: 'своё', title: 'Своё', elements: [{ name: 'OPPORTUNITY' }, { name: `UF_CRM_${SURVEY.id}_LINK` }] }],
     ])
     expect(result.cardConfigured).toBe(false)
     expect(settled.of('crm.item.details.configuration.set')).toHaveLength(0)
@@ -347,10 +351,10 @@ describe('раскладка карточки «Опроса»', () => {
     }
   })
 
-  it('отказ раскладки не роняет установку', async () => {
+  it('отказ раскладки не роняет установку — и, неповторимый, ревизию не держит', async () => {
     const p = portal({
       'crm.item.details.configuration.set': () => {
-        throw new Error('ACCESS_DENIED')
+        throw new PortalError('ACCESS_DENIED', 'Доступ запрещён')
       },
     })
 
@@ -358,11 +362,13 @@ describe('раскладка карточки «Опроса»', () => {
 
     expect(result.cardConfigured).toBe(false)
     expect(result.dealLinked).toBe(true)
+    // Держи его ревизия, портал обустраивался бы каждый час впустую: права повтором не лечатся.
+    expect(result.cardSettled).toBe(true)
   })
 })
 
 /**
- * Поле своего типа «Результат опроса» — виджет над JSON-полями в карточке «Опроса».
+ * Поле своего типа «Результат опроса» — виджет вместо JSON-полей в карточке «Результата опросов».
  *
  * ⚠ Первая редакция меняла адрес обработчика через `userfieldtype.delete` + `add` — по образцу
  * вкладок, где снятие безвредно. У типа поля так нельзя: на нём висят поля в карточках клиента,
@@ -559,14 +565,14 @@ describe('поле «Результат опроса»', () => {
     // Пересмотр решения PR #80 по слову владельца (#84, п. 15): прежде такая раскладка не трогалась
     // вовсе, и виджет у клиента не появлялся никогда.
     const p = portal({
-      'crm.item.details.configuration.get': { result: [{ name: 'своё', title: 'Своё', elements: [] }] },
+      'crm.item.details.configuration.get': { result: [{ type: 'section', name: 'своё', title: 'Своё', elements: [] }] },
     })
 
     const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
 
     expect(result.cardConfigured).toBe(true)
     expect(p.of('crm.item.details.configuration.set')[0]!.params.data).toEqual([
-      { name: 'своё', title: 'Своё', elements: [{ name: FIELD, optionFlags: 1 }, { name: `UF_CRM_${SURVEY.id}_LINK` }] },
+      { type: 'section', name: 'своё', title: 'Своё', elements: [{ name: FIELD, optionFlags: 1 }, { name: `UF_CRM_${SURVEY.id}_LINK` }] },
     ])
   })
 
@@ -584,6 +590,68 @@ describe('поле «Результат опроса»', () => {
     expect(reachedRevision(5, result)).toBe(5)
   })
 
+  it('ГЛАВНОЕ: повторимый отказ шага поля виджета тоже держит ревизию — без поля правка сняла бы не всё', async () => {
+    // ⚠ Без поля виджета правка ставит одну ссылку, JSON остаётся, а ревизия 6 отметилась бы — и к
+    // карточке мы не вернулись бы никогда. Нашли `/review` и `/code-review` в панели PR #98.
+    const refusing = (code: string) => portal({
+      'app.info': () => {
+        throw new PortalError(code, 'отказ')
+      },
+      'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, false) },
+    })
+    const retry = refusing('QUERY_LIMIT_EXCEEDED')
+    const refused = refusing('ACCESS_DENIED')
+
+    const held = await provisionSmartProcesses(retry.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
+    const settled = await provisionSmartProcesses(refused.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
+
+    expect([held.resultField, held.cardSettled, reachedRevision(5, held)]).toEqual(['failed', false, 5])
+    expect([settled.resultField, settled.cardSettled]).toEqual(['failed', true])
+  })
+
+  it('на портале ревизии 6 повторимый отказ раскладки ревизию не держит — правка ему уже не положена', async () => {
+    const p = portal({
+      ...withField(OUR_TYPE),
+      'crm.item.details.configuration.get': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 6 })
+
+    expect(result.cardSettled).toBe(true)
+    expect(reachedRevision(6, result)).toBe(6)
+  })
+
+  it('ГЛАВНОЕ: карточка уже на ревизии 6 — ни одной записи, хотя правка и положена', async () => {
+    // Идемпотентность правки на сквозном пути: без неё донастройка писала бы раскладку каждый час,
+    // пока портал держится ниже шестой. Нашёл тестировщик в панели PR #98.
+    const p = portal({
+      ...withField(OUR_TYPE),
+      'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, true) },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
+
+    expect(result.cardConfigured).toBe(false)
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+  })
+
+  it('ГЛАВНОЕ: у усыновлённого стоящую раскладку не трогает — это может быть «Опрос» клиента', async () => {
+    // ⚠ Найденный по названию смарт-процесс может оказаться собственным процессом клиента, и наши
+    // поля встали бы в его карточку у всех пользователей. Та же политика, что у стадий
+    // и переименования. Нашёл `/code-review` в панели PR #98.
+    const p = portal({
+      'crm.item.details.configuration.get': { result: [{ type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: 'TITLE' }] }] },
+    })
+
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY, adopted: { survey: true } }, { ...WITH_WIDGET, previousRevision: 5 })
+
+    expect(result.adoptedSurvey).toBe(true)
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect(result.cardSettled).toBe(true)
+  })
+
   it('непонятную раскладку не пишет, но говорит об этом', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const p = portal({
@@ -594,7 +662,6 @@ describe('поле «Результат опроса»', () => {
 
     expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
     expect(warn.mock.calls.some(([, message]) => String(message).includes('непонятной формы'))).toBe(true)
-    warn.mockRestore()
   })
 })
 
@@ -858,6 +925,10 @@ describe('идентификаторы на портале', () => {
     // Ревизия 6: разовая правка карточки. Отказ, который лечится повтором, держит портал на пятой.
     ['карточка не доделана — ревизия до неё', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false }, SETTLED, 5],
     ['стадии и карточка разом — держат стадии', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: false }, null, 4],
+    // Без `Math.max`, как у стадий: иначе портал, отмеченный шестой, к карточке не вернулся бы. Просил
+    // тестировщик в панели PR #98.
+    ['карточка не доделана на портале шестой ревизии — опускаем до пятой', 6, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false }, SETTLED, 5],
+    ['карточка не доделана, всё прежнее доделано — ревизия пятая', 2, { resultField: 'ok', ownership: { changes: 3, fieldsLocked: true, settled: true }, stages: SETTLED, cardSettled: false }, SETTLED, 5],
   ])('достигнутая ревизия: %s', (_, previous, result, carried, expected) => {
     // Гвард под находки `/code-review` и `/review` во втором круге PR #87: ревизия откатывалась
     // к нулю, не поднималась до уже сделанного и считалась у вызывающего особым случаем.
