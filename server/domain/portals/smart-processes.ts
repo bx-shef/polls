@@ -88,8 +88,9 @@ export interface SmartProcessRef {
  * | 3 | поле своего типа «Результат опроса» на «Опросе» и виджет в раскладке его карточки |
  * | 4 | префикс `[sh]` в названиях и подписях, поля закрыты от правки, у «Шаблона» выключены «Клиент» и роботы, поле «Ссылка на анкету» |
  * | 5 | штатные стадии у обоих смарт-процессов вместо своего поля «Состояние» (`server/domain/portals/stages.ts`) |
+ * | 6 | карточка «Результата опросов»: виджет и «Ссылка на анкету» в любой раскладке, JSON-поля уходят из неё (`planSurveyCard`) |
  */
-export const PROVISION_REVISION = 5
+export const PROVISION_REVISION = 6
 
 /**
  * Ревизия, с которой смарт-процессы живут на штатных стадиях.
@@ -100,13 +101,16 @@ export const PROVISION_REVISION = 5
 export const STAGES_REVISION = 5
 
 /**
- * Ревизия, с которой в карточке «Опроса» стоит виджет результата.
+ * Ревизия, с которой карточка «Результата опросов» показывает виджет и «Ссылку на анкету», а не JSON.
  *
  * ⚠ Отдельной константой, а не `PROVISION_REVISION`: правка чужой раскладки — разовая миграция
  * порталов, обустроенных ДО неё. Сравнивая с текущей ревизией, мы повторяли бы правку при каждом
- * следующем подъёме — и возвращали бы виджет клиенту, который его убрал.
+ * следующем подъёме — и возвращали бы клиенту поля, которые он убрал сам.
+ *
+ * Заменила ревизию 3 в этой роли: правка ревизии 6 ставит и виджет, и в любую раскладку, так что
+ * портал ниже третьей получает всё сразу (`planSurveyCard`).
  */
-export const RESULT_FIELD_REVISION = 3
+export const CARD_REVISION = 6
 
 /**
  * Ревизия, с которой наше на портале помечено префиксом `[sh]` и закрыто от правки.
@@ -852,19 +856,15 @@ export function buildCardSections(spTypeId: number, resultField: boolean, staged
       name: CARD_RESULT_SECTION,
       title: 'Результат',
       type: 'section',
-      // ⚠ Виджет ПОКА НАД JSON-полями, а не вместо них, — и это первый шаг из двух, а не
-      // компромисс. Что портал рисует пустое поле своего типа в режиме просмотра, живьём ещё
-      // не проверено; убрав JSON сразу, мы при промахе оставили бы менеджера без ответов вовсе.
-      // JSON уходит из раскладки вторым шагом, после живой проверки. Разбор — `docs/PROCESS.md`,
-      // раздел 9. Решение по итогам панели ревью PR #80.
+      // ⚠ Виджет ВМЕСТО JSON-полей — второй шаг #81, после живой проверки виджета владельцем 28.09
+      // («само поле — хорошо»). Не завелось поле виджета — JSON остаётся: без него менеджер остался бы
+      // без ответов вовсе. Данные JSON-полей на элементе остаются всегда: виджет читает именно их.
       elements: [
         { ...own('SCORE'), optionFlags: 1 },
         own('COMPLETED_AT'),
         // `optionFlags: 1` обязателен: значения у поля нет никогда, а пустое поле карточка
         // в режиме просмотра прячет — виджет не открылся бы ни разу.
-        ...(resultField ? [{ ...own(SURVEY_RESULT_FIELD), optionFlags: 1 }] : []),
-        own('SCORES'),
-        own('ANSWERS'),
+        ...(resultField ? [{ ...own(SURVEY_RESULT_FIELD), optionFlags: 1 }] : [own('SCORES'), own('ANSWERS')]),
       ],
     },
   ]
@@ -874,51 +874,107 @@ export function buildCardSections(spTypeId: number, resultField: boolean, staged
 export const CARD_RESULT_SECTION = 'survey_result'
 
 /**
- * Поставить виджет в раскладку, которая УЖЕ стоит на портале.
+ * What revision 6 does to a survey card layout that is already on the portal (`planSurveyCard`):
+ * - `write` — write these sections: something of ours was placed or taken out;
+ * - `keep` — everything of ours already stands as it should;
+ * - `unreadable` — a section came in a shape we do not understand, and nothing is written.
  *
- * ⚠ Существует ради порталов, установленных до поля своего типа. Раскладку мы ставим только
- * на пустом месте (`hasCardConfig`), значит у них она своя и новое поле в неё не попадёт
- * никогда: оно появится на элементе, но в карточке его не будет. Ровно тот класс отказа,
- * ради которого заводилась ревизия обустройства (issue #75), — новое не доезжает
- * до установленных.
- *
- * ⚠ Трогаем РОВНО ОДНО место — свой раздел `survey_result`, и только если виджета нет нигде.
- * Раскладка перезаписывается целиком и на всех пользователей, поэтому правило узкое:
- * - виджет уже где-то стоит (его поставили мы или переложил клиент) — ничего;
- * - нашего раздела нет (клиент собрал карточку по-своему) — ничего: его раскладка, его решение;
- * - хоть один раздел пришёл в непонятной форме — ничего: не разобрав, не пишем, как у связей;
- * - иначе виджет встаёт в наш раздел над первым JSON-полем (JSON остаётся — см. `buildCardSections`).
- *   Всё остальное уходит обратно в портал как пришло.
- *
- * ⚠ Вызывается ОДИН РАЗ — при переходе портала на ревизию 3, а не при каждом обустройстве.
- * Иначе клиент, сам убравший виджет, получал бы его обратно при каждой переустановке —
- * от этого `hasCardConfig` и защищает. Нашёл `/review`.
- *
- * `null` — менять нечего.
+ * ⚠ Не разобрав, не пишем: `set` перезаписывает раскладку целиком и на всех пользователей, и, отдав
+ * `[]` вместо непонятного `elements`, мы стёрли бы у всех то, что в разделе было. Нашёл `/code-review`
+ * в PR #80.
  */
-export function planResultFieldInCard(current: unknown, spTypeId: number): Record<string, unknown>[] | null {
-  const sections = (current as { result?: unknown } | null)?.result
-  if (!Array.isArray(sections)) return null
+export type SurveyCardPlan = { kind: 'write', sections: Record<string, unknown>[] } | { kind: 'keep' } | { kind: 'unreadable' }
 
+/** Our JSON fields that the widget shows in words; the card keeps them only while there is no widget. */
+const CARD_JSON_FIELDS: readonly string[] = ['SCORES', 'ANSWERS']
+
+/** Where to put one of our fields: before or after the first field of `postfixes` found in the layout. */
+interface CardAnchor {
+  postfixes: readonly string[]
+  after: boolean
+}
+
+/**
+ * Brings a survey card layout that is already on the portal to revision 6: the widget and the link in, JSON out.
+ *
+ * ⚠ ПЕРЕСМОТР РЕШЕНИЯ PR #80, ПО СЛОВУ ВЛАДЕЛЬЦА (#84, п. 15). Там правка знала один-единственный
+ * свой раздел `survey_result`, а в раскладке, собранной клиентом, не трогала ничего: «его раскладка,
+ * его решение». На тестовом портале раскладку пересобрали, виджет лёг в «Скрытые поля», и владелец
+ * доставал его руками; «Ссылка на анкету», заведённая ревизией 4, не встала в карточку ни одного
+ * старого портала. Теперь правило другое: в чужой раскладке трогаем только СВОИ поля, где бы они
+ * ни стояли:
+ * - виджета нет нигде — он встаёт рядом с нашими полями результата: на место первого JSON-поля,
+ *   иначе после даты прохождения или балла, а их нет — в конец первого раздела. Всегда
+ *   с «показывать всегда»: значения у поля нет никогда, и пустое карточка прячет;
+ * - JSON-поля уходят из любого раздела, но только когда поле виджета на портале есть (`widget`):
+ *   без виджета менеджер остался бы без ответов. Данные на элементе остаются — виджет читает их;
+ * - «Ссылки на анкету» нет нигде — она встаёт после «Ссылка действительна до», иначе после версии
+ *   или кода шаблона, а их нет — в конец первого раздела;
+ * - всё остальное — чужие разделы, чужие поля, порядок, флаги — уходит обратно как пришло.
+ * Уже стоящие виджет и ссылку не двигаем и флагов им не меняем: куда их поставил клиент, там им
+ * и место.
+ *
+ * ⚠ Разово, при переходе на ревизию 6 (`CARD_REVISION`): повторяясь при каждом обустройстве, правка
+ * возвращала бы клиенту поля, которые он убрал сам.
+ */
+export function planSurveyCard(current: unknown, spTypeId: number, widget: boolean): SurveyCardPlan {
+  const listed = (current as { result?: unknown } | null)?.result
   const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
-  // ⚠ Не массив — не пишем. Отдав `[]` вместо непонятного, мы заменили бы раздел одним
-  // виджетом и стёрли бы у всех пользователей то, что в нём было. Нашёл `/code-review`.
-  if (!sections.every(section => Array.isArray(elementsOf(section)))) return null
+  if (!Array.isArray(listed) || listed.length === 0) return { kind: 'unreadable' }
+  if (!listed.every(section => section !== null && typeof section === 'object' && Array.isArray(elementsOf(section)))) {
+    return { kind: 'unreadable' }
+  }
 
-  const same = (name: unknown, postfix: string) =>
-    typeof name === 'string' && normalizeFieldName(name) === normalizeFieldName(buildFieldName(spTypeId, postfix))
-  const rows = (section: unknown) => elementsOf(section) as (Record<string, unknown> | null)[]
+  const sections = listed.map(section => ({ ...(section as Record<string, unknown>), elements: [...(elementsOf(section) as unknown[])] }))
+  const rows = (index: number) => sections[index]!.elements
+  const isField = (element: unknown, postfix: string) => {
+    const name = (element as { name?: unknown } | null)?.name
+    return typeof name === 'string' && normalizeFieldName(name) === normalizeFieldName(buildFieldName(spTypeId, postfix))
+  }
+  /** Section and position of the first field of `postfixes`, in layout order, or `null`. */
+  const find = (postfixes: readonly string[]): [number, number] | null => {
+    for (let section = 0; section < sections.length; section++) {
+      const at = rows(section).findIndex(element => postfixes.some(postfix => isField(element, postfix)))
+      if (at !== -1) return [section, at]
+    }
+    return null
+  }
+  const place = (element: Record<string, unknown>, anchors: readonly CardAnchor[]) => {
+    for (const anchor of anchors) {
+      const found = find(anchor.postfixes)
+      if (found === null) continue
+      rows(found[0]).splice(found[1] + (anchor.after ? 1 : 0), 0, element)
+      return
+    }
+    rows(0).push(element)
+  }
 
-  if (sections.some(section => rows(section).some(element => same(element?.name, SURVEY_RESULT_FIELD)))) return null
-
-  const index = sections.findIndex(section => (section as { name?: unknown } | null)?.name === CARD_RESULT_SECTION)
-  if (index === -1) return null
-
-  const elements = [...rows(sections[index])]
-  const at = elements.findIndex(element => same(element?.name, 'SCORES') || same(element?.name, 'ANSWERS'))
-  elements.splice(at === -1 ? elements.length : at, 0, { name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 })
-
-  return sections.map((section, i) => i === index ? { ...(section as Record<string, unknown>), elements } : section as Record<string, unknown>)
+  let changed = false
+  if (widget && find([SURVEY_RESULT_FIELD]) === null) {
+    place({ name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 }, [
+      { postfixes: CARD_JSON_FIELDS, after: false },
+      { postfixes: ['COMPLETED_AT'], after: true },
+      { postfixes: ['SCORE'], after: true },
+    ])
+    changed = true
+  }
+  if (widget) {
+    for (const section of sections) {
+      const kept = section.elements.filter(element => !CARD_JSON_FIELDS.some(postfix => isField(element, postfix)))
+      if (kept.length === section.elements.length) continue
+      section.elements = kept
+      changed = true
+    }
+  }
+  if (find(['LINK']) === null) {
+    place({ name: buildFieldName(spTypeId, 'LINK') }, [
+      { postfixes: ['EXPIRES_AT'], after: true },
+      { postfixes: ['TEMPLATE_VERSION'], after: true },
+      { postfixes: ['TEMPLATE_CODE'], after: true },
+    ])
+    changed = true
+  }
+  return changed ? { kind: 'write', sections } : { kind: 'keep' }
 }
 
 /**
@@ -934,7 +990,7 @@ export function planDropFieldFromCard(current: unknown, spTypeId: number, postfi
   if (!Array.isArray(sections) || sections.length === 0) return null
 
   const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
-  // Не массив — не пишем: `set` перезаписывает раскладку целиком (разбор у `planResultFieldInCard`).
+  // Не массив — не пишем: `set` перезаписывает раскладку целиком (разбор у `SurveyCardPlan`).
   if (!sections.every(section => Array.isArray(elementsOf(section)))) return null
 
   const target = normalizeFieldName(buildFieldName(spTypeId, postfix))
@@ -970,7 +1026,7 @@ export function hasCardConfig(response: unknown): boolean {
   return Array.isArray(result) && result.length > 0
 }
 
-/** Записать общую раскладку карточки — нашу с нуля или поправленную `planResultFieldInCard`. */
+/** Записать общую раскладку карточки — нашу с нуля или поправленную `planSurveyCard`. */
 export function buildSetCardConfigCall(entityTypeId: number, sections: Record<string, unknown>[]): PortalCall {
   return {
     method: 'crm.item.details.configuration.set',

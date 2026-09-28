@@ -4,7 +4,7 @@ import {
   SURVEY_RESULT_FIELD,
   buildCardSections,
   buildFieldName,
-  planResultFieldInCard,
+  planSurveyCard,
 } from '../../server/domain/portals/smart-processes'
 import {
   SURVEY_RESULT_TYPE,
@@ -166,15 +166,13 @@ describe('раскладка карточки с нуля', () => {
   const widget = buildFieldName(SURVEY.id, SURVEY_RESULT_FIELD)
   const json = [buildFieldName(SURVEY.id, 'SCORES'), buildFieldName(SURVEY.id, 'ANSWERS')]
 
-  it('ставит виджет НАД JSON-полями, а JSON пока оставляет', () => {
-    // ⚠ Первый шаг из двух: что портал рисует пустое поле своего типа, живьём ещё не проверено.
-    // Убрав JSON сразу, мы при промахе оставили бы менеджера без ответов. Панель ревью PR #80.
+  it('ставит виджет ВМЕСТО JSON-полей', () => {
+    // Второй шаг #81: виджет живьём показал результат (владелец, 28.09), и JSON в карточке больше
+    // не нужен. Данные JSON-полей на элементе остаются — виджет читает именно их.
     const names = namesIn(buildCardSections(SURVEY.id, true))
 
-    for (const name of json) {
-      expect(names).toContain(name)
-      expect(names.indexOf(widget)).toBeLessThan(names.indexOf(name))
-    }
+    expect(names).toContain(widget)
+    for (const name of json) expect(names).not.toContain(name)
   })
 
   it('показывает виджет всегда, хотя значения у поля нет', () => {
@@ -195,89 +193,145 @@ describe('раскладка карточки с нуля', () => {
   })
 })
 
-describe('виджет в раскладку, которая уже стоит', () => {
+/** The sections a `write` plan sends to the portal, with their elements. */
+function sectionsOf(plan: ReturnType<typeof planSurveyCard>): { name: string, elements: { name: string, optionFlags?: number }[] }[] {
+  expect(plan.kind).toBe('write')
+  return (plan as { sections: unknown }).sections as { name: string, elements: { name: string, optionFlags?: number }[] }[]
+}
+
+/** Names of every element of the layout, section by section — what goes back to the portal. */
+function layoutOf(plan: ReturnType<typeof planSurveyCard>): string[][] {
+  expect(plan.kind).toBe('write')
+  return (plan as { sections: Record<string, unknown>[] }).sections.map(section => (section.elements as { name: string }[]).map(e => e.name))
+}
+
+describe('ревизия 6: свои поля в раскладке, которая уже стоит', () => {
+  const f = (postfix: string) => buildFieldName(SURVEY.id, postfix)
+
   /** Раскладка, как её поставила прежняя версия приложения, плюс чужой раздел клиента. */
-  function installed(): Record<string, unknown>[] {
+  function ours(): Record<string, unknown>[] {
     return [
       { name: 'survey_about', title: 'Об опросе', type: 'section', elements: [{ name: 'TITLE', optionFlags: 1 }] },
+      { name: 'survey_form', title: 'Анкета', type: 'section', elements: [{ name: f('TEMPLATE_CODE') }, { name: f('TEMPLATE_VERSION') }, { name: f('EXPIRES_AT') }] },
       {
         name: CARD_RESULT_SECTION,
         title: 'Результат',
         type: 'section',
-        elements: [
-          { name: 'UF_CRM_8_SCORE', optionFlags: 1 },
-          { name: 'UF_CRM_8_COMPLETED_AT' },
-          { name: 'UF_CRM_8_SCORES' },
-          { name: 'UF_CRM_8_ANSWERS' },
-        ],
+        elements: [{ name: f('SCORE'), optionFlags: 1 }, { name: f('COMPLETED_AT') }, { name: f('RESULT'), optionFlags: 1 }, { name: f('SCORES') }, { name: f('ANSWERS') }],
       },
-      { name: 'client_own', title: 'Своё', type: 'section', elements: [{ name: 'OPPORTUNITY' }] },
+      { name: 'client_own', title: 'Своё', type: 'section', elements: [{ name: 'OPPORTUNITY', optionFlags: 1 }] },
     ]
   }
 
-  it('ставит виджет над первым JSON-полем и ничего не убирает', () => {
-    const planned = planResultFieldInCard({ result: installed() }, SURVEY.id)
+  /** Раскладка, как её собирает сам портал: «Об элементе» и «Дополнительно» со всеми нашими полями подряд. */
+  function portalDefault(): Record<string, unknown>[] {
+    return [
+      { name: 'main', title: 'Об элементе', type: 'section', elements: [{ name: 'TITLE' }, { name: 'PARENT_ID_2' }] },
+      {
+        name: 'additional',
+        title: 'Дополнительно',
+        type: 'section',
+        elements: ['TEMPLATE_CODE', 'TEMPLATE_VERSION', 'EXPIRES_AT', 'LINK', 'SCORE', 'COMPLETED_AT', 'ANSWERS', 'SCORES'].map(postfix => ({ name: f(postfix) })),
+      },
+    ]
+  }
 
-    expect(namesIn(planned)).toEqual(['UF_CRM_8_SCORE', 'UF_CRM_8_COMPLETED_AT', 'UF_CRM_8_RESULT', 'UF_CRM_8_SCORES', 'UF_CRM_8_ANSWERS'])
+  it('ГЛАВНОЕ: наша раскладка — JSON уходит, ссылка встаёт после срока, остальное как было', () => {
+    // Раскладка тестового портала 28.09 — ровно такая: виджет над JSON, ссылки нет вовсе,
+    // потому что ревизия 4 завела поле, а в стоящую раскладку его не поставила.
+    const plan = planSurveyCard({ result: ours() }, SURVEY.id, true)
+
+    expect(layoutOf(plan)).toEqual([
+      ['TITLE'],
+      [f('TEMPLATE_CODE'), f('TEMPLATE_VERSION'), f('EXPIRES_AT'), f('LINK')],
+      [f('SCORE'), f('COMPLETED_AT'), f('RESULT')],
+      ['OPPORTUNITY'],
+    ])
   })
 
-  it('остальное уходит обратно как пришло', () => {
-    // ⚠ Метод перезаписывает раскладку целиком и на всех. Всё, что не наш раздел, обязано
-    // вернуться в портал без единого изменения — иначе мы правим то, что настроил клиент.
-    const before = installed()
-    const planned = planResultFieldInCard({ result: installed() }, SURVEY.id)!
+  it('ГЛАВНОЕ: раскладка портала — виджет встаёт на место первого JSON-поля, а не в «Скрытые поля»', () => {
+    // ⚠ Пересмотр решения PR #80, по слову владельца (#84, п. 15): правка знала только свой раздел
+    // `survey_result`, и в раскладке, собранной порталом, виджет лёг в «Скрытые поля» — владелец
+    // доставал его руками. Теперь в чужой раскладке трогаем свои поля, где бы они ни стояли.
+    const plan = planSurveyCard({ result: portalDefault() }, SURVEY.id, true)
 
-    expect(planned[0]).toEqual(before[0])
-    expect(planned[2]).toEqual(before[2])
-    expect(planned.map(s => s.name)).toEqual(before.map(s => s.name))
+    expect(layoutOf(plan)[1]).toEqual([f('TEMPLATE_CODE'), f('TEMPLATE_VERSION'), f('EXPIRES_AT'), f('LINK'), f('SCORE'), f('COMPLETED_AT'), f('RESULT')])
+    const placed = sectionsOf(plan)[1]!.elements.find(e => e.name === f('RESULT'))
+    // Значения у поля нет никогда: без «показывать всегда» карточка его прятала бы.
+    expect(placed?.optionFlags).toBe(1)
   })
 
-  it('узнаёт JSON-поля в любом написании имени', () => {
-    // Портал отдаёт имя поля в трёх формах (разбор у `normalizeFieldName`).
-    const layout = installed()
-    ;(layout[1]!.elements as { name: string }[])[2]!.name = 'UF_CRM8_SCORES'
+  it('ГЛАВНОЕ: без поля виджета JSON не снимается — менеджер остался бы без ответов', () => {
+    const plan = planSurveyCard({ result: ours().map(s => ({ ...s, elements: (s.elements as { name: string }[]).filter(e => e.name !== f('RESULT')) })) }, SURVEY.id, false)
 
-    expect(namesIn(planResultFieldInCard({ result: layout }, SURVEY.id))).toEqual(
-      ['UF_CRM_8_SCORE', 'UF_CRM_8_COMPLETED_AT', 'UF_CRM_8_RESULT', 'UF_CRM8_SCORES', 'UF_CRM_8_ANSWERS'],
-    )
+    expect(layoutOf(plan)[2]).toEqual([f('SCORE'), f('COMPLETED_AT'), f('SCORES'), f('ANSWERS')])
+    // Ссылка встаёт и так: её поле заводится вместе с остальными, виджет ей не нужен.
+    expect(layoutOf(plan)[1]).toContain(f('LINK'))
   })
 
-  it('не пишет, если хоть один раздел пришёл в непонятной форме', () => {
-    // ⚠ Отдав `[]` вместо непонятного `elements`, мы заменили бы раздел одним виджетом и стёрли бы
-    // у всех пользователей то, что в нём было: раскладка перезаписывается целиком. Нашёл `/code-review`.
-    const layout = installed()
-    layout[1]!.elements = { 0: { name: 'UF_CRM_8_SCORE' } }
+  it('ГЛАВНОЕ: чужое уходит обратно как пришло — разделы, поля, порядок и флаги', () => {
+    // ⚠ Метод перезаписывает раскладку целиком и на всех пользователей: всё, что не наше, обязано
+    // вернуться в портал без единого изменения.
+    const before = ours()
+    const plan = planSurveyCard({ result: ours() }, SURVEY.id, true) as { sections: Record<string, unknown>[] }
 
-    expect(planResultFieldInCard({ result: layout }, SURVEY.id)).toBeNull()
+    expect(plan.sections[0]).toEqual(before[0])
+    expect(plan.sections[3]).toEqual(before[3])
+    expect(plan.sections.map(s => [s.name, s.title, s.type])).toEqual(before.map(s => [s.name, s.title, s.type]))
   })
 
-  it('дописывает виджет в конец, если JSON-поля клиент уже убрал', () => {
-    const layout = installed()
-    layout[1]!.elements = [{ name: 'UF_CRM_8_SCORE', optionFlags: 1 }]
+  it('виджет и ссылку, которые клиент уже поставил, не двигает и не дублирует', () => {
+    // Владелец положил виджет в свой раздел руками — там ему и место; флагов ему тоже не меняем.
+    const layout = portalDefault()
+    ;(layout[0]!.elements as { name: string }[]).push({ name: f('RESULT') })
 
-    expect(namesIn(planResultFieldInCard({ result: layout }, SURVEY.id))).toEqual(['UF_CRM_8_SCORE', 'UF_CRM_8_RESULT'])
+    const plan = planSurveyCard({ result: layout }, SURVEY.id, true)
+
+    expect(layoutOf(plan)[0]).toEqual(['TITLE', 'PARENT_ID_2', f('RESULT')])
+    expect(layoutOf(plan).flat().filter(name => name === f('RESULT'))).toHaveLength(1)
+    expect(layoutOf(plan).flat().filter(name => name === f('LINK'))).toHaveLength(1)
   })
 
-  it('ничего не делает, если виджет уже где-то стоит', () => {
-    // Клиент переложил виджет в свой раздел — это его решение, и второй экземпляр ему не нужен.
-    const layout = installed()
-    ;(layout[2]!.elements as { name: string }[]).push({ name: 'UF_CRM_8_RESULT' })
+  it('своих полей в раскладке нет вовсе — виджет и ссылка встают в конец первого раздела', () => {
+    const plan = planSurveyCard({ result: [{ name: 'mine', title: 'Моё', elements: [{ name: 'TITLE' }] }, { name: 'more', elements: [] }] }, SURVEY.id, true)
 
-    expect(planResultFieldInCard({ result: layout }, SURVEY.id)).toBeNull()
+    expect(layoutOf(plan)).toEqual([['TITLE', f('RESULT'), f('LINK')], []])
   })
 
-  it('ничего не делает, если нашего раздела нет', () => {
-    // Клиент собрал карточку по-своему — его раскладка, его решение.
-    const layout = installed().filter(s => s.name !== CARD_RESULT_SECTION)
+  it('без JSON-полей виджет встаёт после даты прохождения', () => {
+    const layout = ours()
+    layout[2]!.elements = [{ name: f('SCORE'), optionFlags: 1 }, { name: f('COMPLETED_AT') }]
 
-    expect(planResultFieldInCard({ result: layout }, SURVEY.id)).toBeNull()
+    expect(layoutOf(planSurveyCard({ result: layout }, SURVEY.id, true))[2]).toEqual([f('SCORE'), f('COMPLETED_AT'), f('RESULT')])
   })
 
-  it.each<[unknown, string]>([
-    [{ result: null }, 'раскладки нет — её ставит `buildCardSections`'],
-    [{ result: 'испорчено' }, 'не список'],
-    [null, 'ничего'],
-  ])('не трогает непонятное (%#: %s)', (response) => {
-    expect(planResultFieldInCard(response, SURVEY.id)).toBeNull()
+  it('узнаёт свои поля в любом написании имени', () => {
+    // Портал отдаёт имя поля в трёх формах (разбор у `normalizeFieldName`): не узнав JSON-поле,
+    // правка его оставила бы, а не узнав виджет — поставила бы второй.
+    const layout = ours()
+    layout[2]!.elements = [{ name: 'ufCrm8Score' }, { name: 'UF_CRM8_RESULT' }, { name: 'UF_CRM8_SCORES' }, { name: 'ufCrm8Answers' }]
+    ;(layout[1]!.elements as { name: string }[]).push({ name: 'ufCrm8Link' })
+
+    expect(planSurveyCard({ result: layout }, SURVEY.id, true)).toEqual({
+      kind: 'write',
+      sections: expect.arrayContaining([expect.objectContaining({ name: CARD_RESULT_SECTION, elements: [{ name: 'ufCrm8Score' }, { name: 'UF_CRM8_RESULT' }] })]),
+    })
+  })
+
+  it('всё уже на месте — писать нечего', () => {
+    const settled = planSurveyCard({ result: ours() }, SURVEY.id, true) as { sections: Record<string, unknown>[] }
+
+    expect(planSurveyCard({ result: settled.sections }, SURVEY.id, true)).toEqual({ kind: 'keep' })
+  })
+
+  it('ГЛАВНОЕ: хоть один раздел в непонятной форме — не пишет ничего', () => {
+    // ⚠ Отдав `[]` вместо непонятного `elements`, мы стёрли бы раздел у всех пользователей:
+    // раскладка перезаписывается целиком. Нашёл `/code-review` в PR #80.
+    const layout = ours()
+    layout[2]!.elements = { 0: { name: f('SCORE') } }
+
+    expect(planSurveyCard({ result: layout }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
+    expect(planSurveyCard({ result: [null] }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
+    expect(planSurveyCard({ result: 'испорчено' }, SURVEY.id, true)).toEqual({ kind: 'unreadable' })
   })
 })

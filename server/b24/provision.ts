@@ -59,7 +59,7 @@ import {
   type SmartProcessKind,
   planDealRelation,
   planDropFieldFromCard,
-  planResultFieldInCard,
+  planSurveyCard,
   readTypeRelations,
   planMissingFields,
   readCreatedRef,
@@ -77,7 +77,7 @@ import {
   buildFieldName,
   normalizeFieldName,
   PROVISION_REVISION,
-  RESULT_FIELD_REVISION,
+  CARD_REVISION,
   STAGES_REVISION,
   ourFields,
   type ExistingField,
@@ -256,10 +256,15 @@ export interface ProvisionResult extends SmartProcessRefs {
    */
   dealLinked: boolean
   /**
-   * Записали ли мы раскладку карточки «Опроса» — с нуля или поставив виджет в свой раздел.
-   * `false` — там уже всё стояло, раскладка чужая либо не вышло.
+   * Записали ли мы раскладку карточки «Опроса» — с нуля или поправив свои поля в стоящей (`planSurveyCard`).
+   * `false` — там уже всё стояло, раскладку не разобрать либо не вышло.
    */
   cardConfigured: boolean
+  /**
+   * Доделана ли разовая правка карточки ревизии 6. `false` — отказ, который лечится повтором:
+   * вызывающий НЕ отмечает ревизию 6, и донастройка вернётся (`reachedRevision`).
+   */
+  cardSettled: boolean
   /**
    * Что с полем своего типа «Результат опроса».
    *
@@ -496,7 +501,7 @@ export async function storeProvisionRevision(
  */
 export function reachedRevision(
   previous: number,
-  result: Pick<ProvisionResult, 'resultField' | 'ownership' | 'stages'>,
+  result: Pick<ProvisionResult, 'resultField' | 'ownership' | 'stages' | 'cardSettled'>,
   carried: StagesOutcome | null = null,
 ): number {
   if (result.resultField === 'deferred') return previous
@@ -508,6 +513,8 @@ export function reachedRevision(
   // бы к донастройке никогда: `max(5, 4)` — снова пять. Все разовые шаги ниже пятой ревизии
   // закрыты воротами «меньше», так что повтор их не тронет. Нашёл `/code-review` в панели PR #93.
   if (!result.stages.settled || carried?.settled === false) return STAGES_REVISION - 1
+  // Карточка не доделана — портал на ревизии до неё: стадии и всё прежнее на месте.
+  if (!result.cardSettled) return CARD_REVISION - 1
   return PROVISION_REVISION
 }
 
@@ -746,7 +753,7 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 }
 
 /**
- * Разложить карточку «Опроса» так, чтобы в ней было видно главное.
+ * Разложить карточку «Результата опросов» так, чтобы в ней было видно главное.
  *
  * ⚠ Целиком — только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает
  * раскладку целиком и сразу для всех пользователей — это настройка клиента, а не наша.
@@ -754,30 +761,36 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
  * натворили бы со связями, если бы не сливали их. Поэтому сначала читаем, и ставим, только
  * если пусто.
  *
- * ⚠ Если раскладка уже стоит — единственная правка, которую мы себе позволяем: поставить
- * виджет в СВОЙ раздел (`planResultFieldInCard`, там же — почему это не посягательство
- * на чужую раскладку). Иначе порталы, установленные раньше, не увидели бы виджета никогда.
- * И только при переходе на ревизию с виджетом (`upgradeToResultField`): повторяясь при каждом
- * обустройстве, правка возвращала бы виджет клиенту, который убрал его сам.
+ * ⚠ Если раскладка уже стоит — правим в ней только свои поля (`planSurveyCard`, там же —
+ * почему и где), и только при переходе на ревизию 6 (`due`): повторяясь при каждом обустройстве,
+ * правка возвращала бы клиенту поля, которые он убрал сам.
  *
- * `resultField` — заведено ли поле виджета. Без него раскладка остаётся при JSON: ставить
- * в карточку поле, которого на элементе нет, значит показать пустое место вместо ответов.
+ * `widget` — заведено ли поле виджета. Без него раскладка остаётся при JSON: ставить в карточку
+ * поле, которого на элементе нет, значит показать пустое место вместо ответов.
  *
- * Возвращает, записали ли мы раскладку. `false` здесь — и «не поставили», и «там уже своя»:
+ * Возвращает, записали ли мы раскладку. `false` здесь — и «не поставили», и «там уже всё стоит»:
  * различать их незачем, действие одно и то же — не трогать.
  */
 async function ensureCardConfig(
   call: RestCall,
   ref: SmartProcessRef,
-  resultField: boolean,
-  upgradeToResultField: boolean,
+  widget: boolean,
+  due: boolean,
 ): Promise<boolean> {
   const read = buildReadCardConfigCall(ref.entityTypeId)
   const current = await call(read.method, read.params)
 
-  const sections = !hasCardConfig(current)
-    ? buildCardSections(ref.id, resultField, isStaged(ref))
-    : resultField && upgradeToResultField ? planResultFieldInCard(current, ref.id) : null
+  let sections: Record<string, unknown>[] | null = null
+  if (!hasCardConfig(current)) {
+    sections = buildCardSections(ref.id, widget, isStaged(ref))
+  }
+  else if (due) {
+    const plan = planSurveyCard(current, ref.id, widget)
+    // Не разобрав, не пишем — но и молчать нельзя: виджета и ссылки в карточке не будет, а JSON
+    // останется, и узнать это надо из журнала, а не от клиента.
+    if (plan.kind === 'unreadable') logger.warn({ typeId: ref.id }, 'раскладка карточки «Результата опросов» непонятной формы — виджет и ссылка не поставлены, JSON не убран')
+    if (plan.kind === 'write') sections = plan.sections
+  }
   if (sections === null) return false
 
   const set = buildSetCardConfigCall(ref.entityTypeId, sections)
@@ -849,16 +862,17 @@ export async function provisionSmartProcesses(
   // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
   // мы поменяли бы местами главное и второстепенное.
   let cardConfigured = false
+  let cardSettled = true
+  const cardDue = (options.previousRevision ?? 0) < CARD_REVISION
   try {
-    cardConfigured = await ensureCardConfig(
-      call,
-      survey.ref,
-      resultField === 'ok',
-      (options.previousRevision ?? 0) < RESULT_FIELD_REVISION,
-    )
+    cardConfigured = await ensureCardConfig(call, survey.ref, resultField === 'ok', cardDue)
   }
   catch (error) {
-    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Опроса» не настроена')
+    // ⚠ Разовая правка ревизии 6 на отказе, который лечится повтором, держит ревизию: отметив её,
+    // мы не вернулись бы к карточке никогда, и на старых порталах виджет со ссылкой так и не встали
+    // бы, а JSON остался бы. Отказ, который повтор не вылечит, — как прежде, только журнал.
+    if (cardDue && isRetryableRefusal(error)) cardSettled = false
+    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Результата опросов» не настроена')
   }
 
   // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
@@ -900,6 +914,7 @@ export async function provisionSmartProcesses(
     addedFields: templateFields.added + surveyFields.added,
     dealLinked,
     cardConfigured,
+    cardSettled,
     resultField,
     crmFields,
     ownership,
