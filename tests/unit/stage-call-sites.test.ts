@@ -149,26 +149,31 @@ describe('«Шаблон опроса» со стадиями', () => {
     expect(draft).not.toHaveProperty('UF_CRM_8_STATE')
   })
 
-  it('команды переноса пишут стадию, а не старое поле', () => {
+  it('команды переноса пишут стадию, а старое поле — только пока оно живо', () => {
+    // Рядом со стадией старое поле пишется, пока оно на портале: вебхук не видит, чем читает
+    // приложение (разбор у `writesLegacyState`).
     const planned = { code: 'brand', version: 1, title: 'Бренд', schema: SCHEMA }
-    const created = fieldsOf(buildCreateTemplateCall(TEMPLATE, planned, 'published', new Date('2026-09-28T10:00:00Z')))
-    const renamed = fieldsOf(buildPublishCall(TEMPLATE, {
-      id: 4, code: 'brand', version: 1, name: 'Бренд', schema: SCHEMA, action: 'publish', issued: 0, setPublishedAt: true,
-    } as Parameters<typeof buildPublishCall>[1], new Date('2026-09-28T10:00:00Z')))
+    const publish = { id: 4, code: 'brand', version: 1, name: 'Бренд', schema: SCHEMA, action: 'publish', issued: 0, setPublishedAt: true } as Parameters<typeof buildPublishCall>[1]
+    const at = new Date('2026-09-28T10:00:00Z')
 
-    expect(created.stageId).toBe('DT1038_14:SUCCESS')
-    expect(created).not.toHaveProperty('UF_CRM_8_STATE')
-    expect(renamed.stageId).toBe('DT1038_14:SUCCESS')
-    expect(renamed).not.toHaveProperty('UF_CRM_8_STATE')
+    for (const legacy of [false, true]) {
+      const created = fieldsOf(buildCreateTemplateCall(TEMPLATE, planned, 'published', at, legacy))
+      const published = fieldsOf(buildPublishCall(TEMPLATE, publish, at, legacy))
+
+      expect(created.stageId).toBe('DT1038_14:SUCCESS')
+      expect(published.stageId).toBe('DT1038_14:SUCCESS')
+      expect([created.UF_CRM_8_STATE, published.UF_CRM_8_STATE]).toEqual(legacy ? ['published', 'published'] : [undefined, undefined])
+    }
   })
 
   it('ГЛАВНОЕ: переименование опубликованной версии стадию не трогает — снятая остаётся снятой', () => {
     // ⚠ Переименование досталось и снятым с публикации (`isFrozen`). Пиши оно стадию
     // «Опубликован», повторный запуск команды вернул бы в выпуск версию, которую администратор
     // снял, — в обход его решения. Нашли `/review`, `/code-review` и программист в панели PR #93.
+    // И при живом старом поле — тоже: переименование состояния не трогает вовсе.
     const fields = fieldsOf(buildPublishCall(TEMPLATE, {
       id: 4, code: 'brand', version: 1, name: 'Бренд 2024', schema: SCHEMA, action: 'rename', issued: 0, setPublishedAt: false,
-    } as Parameters<typeof buildPublishCall>[1], new Date('2026-09-28T10:00:00Z')))
+    } as Parameters<typeof buildPublishCall>[1], new Date('2026-09-28T10:00:00Z'), true))
 
     expect(fields).not.toHaveProperty('stageId')
     expect(fields).not.toHaveProperty('UF_CRM_8_STATE')

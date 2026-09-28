@@ -232,7 +232,7 @@ describe('публикация против портала', () => {
     // администратор включил сам, приложение читает старое поле. Запиши команда одну стадию — оно
     // прочитало бы опубликованную анкету черновиком (разбор у `writesLegacyState`). Нашёл
     // `/code-review` в панели PR #93.
-    const p = ready({ 'userfieldconfig.list': { result: { fields: [{ id: 72, fieldName: 'UF_CRM_8_STATE', userTypeId: 'string' }] } } })
+    const p = ready({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_8_SCHEMA: {}, UF_CRM_8_STATE: {} } } } })
 
     const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
 
@@ -245,7 +245,7 @@ describe('публикация против портала', () => {
   })
 
   it('старого поля уже нет — публикация пишет только стадию', async () => {
-    const p = ready({ 'userfieldconfig.list': { result: { fields: [{ id: 73, fieldName: 'UF_CRM_8_SCHEMA', userTypeId: 'string' }] } } })
+    const p = ready({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_8_SCHEMA: {} } } } })
 
     await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
 

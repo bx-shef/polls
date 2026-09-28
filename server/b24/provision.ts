@@ -898,16 +898,6 @@ export async function provisionSmartProcesses(
   }
 }
 
-/**
- * Our old `STATE` field of a smart process as the portal lists it now; `null` — deleted, or never made.
- *
- * Для операторских команд (`writesLegacyState`): обустройство берёт поле из своего листания
- * (`ProvisionResult.stateFields`) и отдельным вызовом его не ищет.
- */
-export async function findStateField(call: RestCall, ref: SmartProcessRef): Promise<ExistingField | null> {
-  return stateFieldIn(await listAllFields(call, ref.id), ref)
-}
-
 /** Our `STATE` field among the fields a smart process had before this run, if any. */
 function stateFieldIn(fields: readonly ExistingField[], ref: SmartProcessRef): ExistingField | null {
   const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))

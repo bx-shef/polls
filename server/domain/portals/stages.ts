@@ -1,5 +1,5 @@
 import { SURVEY_STAGE_NAMES, TEMPLATE_STAGE_NAMES } from '../../../shared/portal-names'
-import { buildFieldName, camelFieldName, readFlag } from './smart-processes'
+import { buildFieldName, camelFieldName, normalizeFieldName, readFlag } from './smart-processes'
 import type { PortalCall, SmartProcessRef } from './smart-processes'
 
 /**
@@ -247,6 +247,31 @@ export function templateStateFields(ref: SmartProcessRef, stage: 'draft' | 'publ
  */
 export function commandStateFields(ref: SmartProcessRef, stage: 'draft' | 'published', legacyField: boolean): Record<string, unknown> {
   return { ...templateStateFields(ref, stage), ...(legacyField ? { [buildFieldName(ref.id, 'STATE')]: stage } : {}) }
+}
+
+/**
+ * Lists the item fields of a smart process under their original names.
+ *
+ * ⚠ `crm.item.fields`, а не `userfieldconfig.list`: этому нужно право `userfieldconfig`, а вебхуку
+ * операторской команды хватает `crm` — требовать от него права на поля ради одной проверки значило
+ * бы сломать команду там, где она работала. Своё поле он показывает, пока оно есть, и перестаёт
+ * после удаления (замерено 28.09).
+ */
+export function buildItemFieldsCall(ref: SmartProcessRef): PortalCall {
+  return { method: 'crm.item.fields', params: { entityTypeId: ref.entityTypeId, useOriginalUfNames: 'Y' } }
+}
+
+/**
+ * Whether a `crm.item.fields` answer still has our old `STATE` field.
+ *
+ * Ответ не прочитать — `true`: лишнюю запись в поле, которого нет, портал молча принимает (замерено
+ * 28.09), а недописанная в живое оставила бы анкету черновиком для приложения на старом поле.
+ */
+export function hasStateField(response: unknown, ref: SmartProcessRef): boolean {
+  const fields = (response as { result?: { fields?: unknown } } | null)?.result?.fields
+  if (fields === null || typeof fields !== 'object') return true
+  const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
+  return Object.keys(fields).some(key => normalizeFieldName(key) === name)
 }
 
 /** Turns stages on for a smart process. */

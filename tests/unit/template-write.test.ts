@@ -183,7 +183,7 @@ describe('перенос против портала', () => {
 
   it('ГЛАВНОЕ: стадии включены, а старое поле живо — черновик пишется и стадией, и им', async () => {
     // ⚠ Тот же разбор, что у публикации (`writesLegacyState`): вебхук не видит, чем читает приложение.
-    const p = portal({ 'userfieldconfig.list': { result: { fields: [{ id: 72, fieldName: 'UF_CRM_7_STATE', userTypeId: 'string' }] } } })
+    const p = portal({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_7_STATE: {} } } } })
 
     await writeTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, [schema('brand')], { apply: true })
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCarryListCall,
+  buildItemFieldsCall,
   commandStateFields,
+  hasStateField,
   isIssuable,
   planStageMoves,
   readCarryItems,
@@ -118,6 +120,18 @@ describe('состояние шаблона: публикация решаетс
     // Поля нет — только стадия; без стадий — только поле.
     expect(commandStateFields(TEMPLATE, 'draft', false)).toEqual({ stageId: 'DT1038_14:NEW' })
     expect(commandStateFields(TEMPLATE_OLD, 'draft', false)).toEqual({ UF_CRM_8_STATE: 'draft' })
+  })
+
+  it('ГЛАВНОЕ: старое поле команда ищет правом `crm`, а не правом на поля', () => {
+    // ⚠ `userfieldconfig.list` требует у вебхука права `userfieldconfig`, которого у команды может
+    // не быть: проверка ради одного поля сломала бы команду там, где она работала. Поле в ответе
+    // `crm.item.fields` есть, пока оно есть на портале, — замерено 28.09.
+    expect(buildItemFieldsCall(TEMPLATE)).toEqual({ method: 'crm.item.fields', params: { entityTypeId: 1038, useOriginalUfNames: 'Y' } })
+    expect(hasStateField({ result: { fields: { id: {}, UF_CRM_8_STATE: {} } } }, TEMPLATE)).toBe(true)
+    expect(hasStateField({ result: { fields: { id: {}, UF_CRM_8_SCHEMA: {} } } }, TEMPLATE)).toBe(false)
+    // Ответ не прочитать — пишем и поле: лишнюю запись в несуществующее портал молча принимает,
+    // а недописанная в живое оставила бы анкету черновиком для приложения на старом поле.
+    expect(hasStateField({ error: 'QUERY_LIMIT_EXCEEDED' }, TEMPLATE)).toBe(true)
   })
 })
 

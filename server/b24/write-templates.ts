@@ -12,8 +12,8 @@ import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readFlag, readNe
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
-import { findStateField, listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
-import { buildListCategoriesCall, isStaged, readDefaultCategoryId } from '../domain/portals/stages'
+import { listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
+import { buildItemFieldsCall, buildListCategoriesCall, hasStateField, isStaged, readDefaultCategoryId } from '../domain/portals/stages'
 import { logger } from '../utils/logger'
 
 /**
@@ -120,10 +120,13 @@ export async function writeTemplates(
  *
  * ⚠ Поле ищется, а не пишется наугад, хотя запись в несуществующее поле портал принимает молча
  * (замерено 28.09): молчаливое согласие портала — не контракт, а по коду должно быть видно,
- * когда команда пишет в старое поле.
+ * когда команда пишет в старое поле. Ищется правом `crm` (`buildItemFieldsCall`) — одним вызовом
+ * на прогон команды.
  */
 export async function writesLegacyState(call: RestCall, template: SmartProcessRef): Promise<boolean> {
-  return isStaged(template) && await findStateField(call, template) !== null
+  if (!isStaged(template)) return false
+  const probe = buildItemFieldsCall(template)
+  return hasStateField(await call(probe.method, probe.params), template)
 }
 
 /** Все пары «код + версия» с портала, со всех страниц. */
