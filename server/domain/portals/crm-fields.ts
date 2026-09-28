@@ -1,6 +1,6 @@
 import { CONTACT_ENTITY_TYPE_ID, DEAL_ENTITY_TYPE_ID, FIELD_LABEL_LANGUAGE } from './smart-processes'
 import type { PortalCall } from './smart-processes'
-import { ownerLabel } from '../../../shared/portal-names'
+import { LAST_SURVEY_AT_FIELD_LABEL, ownerLabel, SCORE_FIELD_LABEL } from '../../../shared/portal-names'
 
 /**
  * The two fields we put on the client's own CRM entities: last survey score and its date.
@@ -51,10 +51,10 @@ export const SCORE_FIELDS: readonly CrmField[] = [
   // ⚠ `PRECISION` обязателен: без него `double` округляется до целого — подтверждено
   // соседом на живом портале. Балл 7,5 стал бы восьмёркой, и фильтр «ниже семи» врал бы
   // ровно на той границе, ради которой его и настраивают.
-  { code: LAST_SCORE_CODE, userTypeId: 'double', label: 'Оценка клиента', settings: { PRECISION: 2 } },
+  { code: LAST_SCORE_CODE, userTypeId: 'double', label: SCORE_FIELD_LABEL, settings: { PRECISION: 2 } },
   // Дата без времени: фильтруют по дню, а не по минуте, и тип совпадает с `COMPLETED_AT`
   // на элементе «Опроса» — одна и та же величина не должна быть разного типа в двух местах.
-  { code: LAST_SURVEY_AT_CODE, userTypeId: 'date', label: 'Дата последнего опроса' },
+  { code: LAST_SURVEY_AT_CODE, userTypeId: 'date', label: LAST_SURVEY_AT_FIELD_LABEL },
 ]
 
 /** Сущность CRM, на которой заводим поля: чем создавать, чем перечислять, как обновлять. */

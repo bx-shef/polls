@@ -3,6 +3,7 @@ import CircleCheckIcon from '@bitrix24/b24icons-vue/outline/CircleCheckIcon'
 import CopyIcon from '@bitrix24/b24icons-vue/outline/CopyIcon'
 import RefreshIcon from '@bitrix24/b24icons-vue/outline/RefreshIcon'
 import { initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
+import { DEAL_TAB_TITLE, TEMPLATE_SP_TITLE, TEMPLATE_TAB_TITLE } from '#shared/portal-names'
 import { copyToClipboard } from '~/utils/clipboard'
 import { readFramePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
@@ -215,16 +216,9 @@ const canRefresh = computed(() => inPortal.value && !loading.value && dealId.val
  */
 let frame: B24Frame | undefined
 
-/**
- * Имя вкладки — то же, под которым портал показывает её в карточке сделки.
- *
- * ⚠ С меткой владельца `[sh]` (решение 28.09, issue #84, п. 22): так вкладка и смарт-процессы
- * приложения не путаются с одноимёнными у клиента. Регистрирует вкладку сервер — имя там и здесь
- * обязано совпадать, иначе человек ищет в карточке вкладку, которой под этим именем нет.
- */
-const TAB_TITLE = '[sh] Ссылки на опросы'
-
-useHead({ title: TAB_TITLE })
+// Имя вкладки — то же, под которым её регистрирует сервер (`shared/portal-names.ts`): человек
+// ищет в карточке сделки вкладку под этим именем, и разойтись им нельзя.
+useHead({ title: DEAL_TAB_TITLE })
 
 onMounted(async () => {
   try {
@@ -555,7 +549,7 @@ const issuedNote = computed(() => {
     <template #header>
       <B24DashboardNavbar
         :toggle="false"
-        :title="TAB_TITLE"
+        :title="DEAL_TAB_TITLE"
       >
         <!-- ⚠ «Обновить» в шапке, а не таймер: почему — у `refresh`. -->
         <template #right>
@@ -594,7 +588,7 @@ const issuedNote = computed(() => {
           v-if="gate === 'outside'"
           color="air-secondary-accent"
           title="Откройте вкладку из Битрикс24"
-          description="Эта страница живёт внутри портала: ссылку она выпускает для конкретной сделки и без портала не знает ни сделки, ни ваших прав на неё. Откройте карточку сделки и вкладку «[sh] Ссылки на опросы» в ней."
+          :description="`Эта страница живёт внутри портала: ссылку она выпускает для конкретной сделки и без портала не знает ни сделки, ни ваших прав на неё. Откройте карточку сделки и вкладку «${DEAL_TAB_TITLE}» в ней.`"
         />
 
         <B24Skeleton
@@ -716,7 +710,7 @@ const issuedNote = computed(() => {
             <B24Alert
               v-if="surveys.length === 0"
               color="air-secondary-accent"
-              description="Выпускать нечего: на портале нет ни одной опубликованной анкеты. Соберите и опубликуйте её на вкладке «[sh] Конструктор» в карточке «[sh] Шаблон опроса», а потом нажмите «Обновить»."
+              :description="`Выпускать нечего: на портале нет ни одной опубликованной анкеты. Соберите и опубликуйте её на вкладке «${TEMPLATE_TAB_TITLE}» в карточке «${TEMPLATE_SP_TITLE}», а потом нажмите «Обновить».`"
             >
               <template #title>
                 <span class="inline-flex items-center gap-1">
