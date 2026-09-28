@@ -710,6 +710,26 @@ describe('порядок миграции целиком', () => {
     expect(messages).toContain('штатные стадии не включены — состояние остаётся в поле «Состояние»')
     expect(messages).toContain('стадии настроены не до конца — ревизию не отмечаем, донастройка вернётся')
   })
+
+  it('карточка не доделана — в журнал с доменом, и ревизия 6 не отмечается', async () => {
+    // Без этой строки портал, который донастройка берёт каждый час, в журнале было бы не узнать:
+    // у миграции 4 и стадий такая строка есть. Нашли программист, `/review` и `/code-review`
+    // в панели PR #98.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({
+      'crm.item.details.configuration.set': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const line = warn.mock.calls.find(([, message]) => String(message).includes('ревизию 6 не отмечаем'))
+    expect(line?.[0]).toEqual({ domain: 'shef.bitrix24.ru' })
+    const stored = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!).revision)
+    expect(stored.at(-1)).toBe(5)
+  })
 })
 
 describe('операторские команды по вебхуку', () => {
