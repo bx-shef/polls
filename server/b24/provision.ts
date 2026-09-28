@@ -91,9 +91,9 @@ import {
  * и создадут дубликат, а лимит на Базовом тарифе — 150 на весь портал. Установка приходит
  * одним событием, так что сегодня это выполняется само.
  *
- * ⚠ Вызывающий обязан обернуть `call` в `withDeadline`. Холодная установка — это около
- * тридцати последовательных вызовов под троттлингом SDK (точное число держит тест «холодная
- * установка» в `tests/unit/provision.test.ts`); без общего предела одна медленная сеть
+ * ⚠ Вызывающий обязан обернуть `call` в `withDeadline`. Холодная установка — это 41
+ * последовательный вызов под троттлингом SDK (число и порядок держит тест «холодная установка:
+ * ровно 41 вызов портала» в `tests/unit/provision-outcome.test.ts`); без общего предела одна медленная сеть
  * держит HTTP-запрос установки до таймаута прокси. Предел на один вызов есть в клиенте,
  * но он не ограничивает цепочку целиком.
  */
@@ -183,21 +183,35 @@ export interface ProvisionOptions {
   previousRevision?: number
 }
 
+/** Which of our smart processes were once found by title instead of being created or remembered. */
+export type AdoptedKinds = Partial<Record<SmartProcessKind, true>>
+
 export interface StoredProvision extends Partial<SmartProcessRefs> {
   /** `0` — портал обустраивался до появления ревизий либо не обустраивался вовсе. */
   revision: number
+  /**
+   * Смарт-процессы, которые мы когда-то нашли по названию («усыновили»), а не создали.
+   *
+   * ⚠ Хранится ВМЕСТЕ с идентификаторами и переживает прогоны. Без него защита «чужой смарт-
+   * процесс не переименовываем» держалась ровно один прогон: идентификатор усыновлённого
+   * сохранялся, и уже следующий прогон — донастройка после `installFinish` через час — считал
+   * его своим и переименовывал, выключая клиенту роботов. Нашёл `/code-review` во втором круге
+   * PR #87, воспроизведя двумя прогонами.
+   */
+  adopted: AdoptedKinds
 }
 
 export interface ProvisionResult extends SmartProcessRefs {
   createdTemplate: boolean
   createdSurvey: boolean
   /**
-   * Смарт-процесс не создан нами, а найден на портале по заголовку.
+   * Смарт-процесс не создан нами, а найден на портале по заголовку — этим прогоном или одним
+   * из прошлых (признак хранится вместе с идентификаторами, `StoredProvision.adopted`).
    *
-   * Вызывающий обязан это залогировать: заголовки «Опрос» и «Шаблон опроса» — обычные
-   * слова, и совпасть может чужой смарт-процесс, заведённый клиентом руками. Отличить
-   * его от нашего, потерявшего идентификатор, нечем — а дальше мы допишем в него свои
-   * поля. Пока признака владения нет, единственная защита — видимый след в журнале.
+   * Вызывающий обязан это залогировать и сохранить: заголовки «Опрос» и «Шаблон опроса» —
+   * обычные слова, и совпасть может чужой смарт-процесс, заведённый клиентом руками. Отличить
+   * его от нашего, потерявшего идентификатор, нечем — а дальше мы допишем в него свои поля.
+   * Переименовывать и перенастраивать усыновлённый мы не станем никогда (`settleSmartProcesses`).
    */
   adoptedTemplate: boolean
   adoptedSurvey: boolean
@@ -292,9 +306,9 @@ export async function isPortalAdmin(call: RestCall): Promise<boolean> {
 export async function readStoredRefs(call: RestCall): Promise<StoredProvision> {
   const response = await call('app.option.get', { option: SP_REFS_OPTION }) as { result?: unknown } | null
   const raw = response?.result
-  if (typeof raw !== 'string' || raw === '') return { revision: 0 }
+  if (typeof raw !== 'string' || raw === '') return { revision: 0, adopted: {} }
   try {
-    const parsed = JSON.parse(raw) as Partial<SmartProcessRefs> & { revision?: unknown }
+    const parsed = JSON.parse(raw) as Partial<SmartProcessRefs> & { revision?: unknown, adopted?: Record<string, unknown> }
     const revision = Number(parsed.revision)
     return {
       template: validRef(parsed.template),
@@ -303,13 +317,26 @@ export async function readStoredRefs(call: RestCall): Promise<StoredProvision> {
       // выглядеть устаревшим. Подставив текущую, мы объявили бы настроенным всё, что уже
       // установлено, — то есть закрыли бы ровно ту дыру, ради которой отметка и заводится.
       revision: Number.isInteger(revision) && revision > 0 ? revision : 0,
+      adopted: {
+        ...(parsed.adopted?.template === true ? { template: true } : {}),
+        ...(parsed.adopted?.survey === true ? { survey: true } : {}),
+      },
     }
   }
   catch {
     // Испорченное значение не должно мешать установке: не прочитали — значит найдём
     // смарт-процессы по заголовку и перезапишем.
-    return { revision: 0 }
+    return { revision: 0, adopted: {} }
   }
+}
+
+/** The stored option: refs, and the revision and adoption marks when there are any. */
+function storedOption(refs: SmartProcessRefs, revision: number, adopted: AdoptedKinds): string {
+  return JSON.stringify({
+    ...refs,
+    ...(revision > 0 ? { revision } : {}),
+    ...(adopted.template === true || adopted.survey === true ? { adopted } : {}),
+  })
 }
 
 /**
@@ -319,10 +346,16 @@ export async function readStoredRefs(call: RestCall): Promise<StoredProvision> {
  * и запись без ревизии её стирала: портал ревизии 3, на котором не закрылись поля, следующим
  * прогоном читался как ревизия 0 — и разовая правка раскладки срабатывала снова, возвращая
  * виджет в карточку клиента, который его убрал. Нашёл `/code-review` в PR #87.
+ *
+ * ⚠ И вместе с признаком усыновления — по той же причине: он обязан пережить прогон
+ * (`StoredProvision.adopted`).
  */
-export async function storeRefs(call: RestCall, refs: SmartProcessRefs, revision = 0): Promise<void> {
-  const stored = revision > 0 ? { ...refs, revision } : refs
-  await call('app.option.set', { options: { [SP_REFS_OPTION]: JSON.stringify(stored) } })
+export async function storeRefs(
+  call: RestCall,
+  refs: SmartProcessRefs,
+  keep: { revision?: number, adopted?: AdoptedKinds } = {},
+): Promise<void> {
+  await call('app.option.set', { options: { [SP_REFS_OPTION]: storedOption(refs, keep.revision ?? 0, keep.adopted ?? {}) } })
 }
 
 /**
@@ -335,14 +368,19 @@ export async function storeRefs(call: RestCall, refs: SmartProcessRefs, revision
  *
  * ⚠ Мягкие отказы отметку НЕ отменяют, и это осознанный размен. Связь со сделкой не настроится
  * на тарифе, который запрещает править смарт-процессы; вкладка не встанет, если публичный адрес
- * не задан. Считая такой портал вечно устаревшим, мы ходили бы к нему с семнадцатью вызовами
+ * не задан. Считая такой портал вечно устаревшим, мы ходили бы к нему с десятками вызовов
  * каждый час — без единого шанса что-то изменить. Эти отказы и без того пишутся в журнал
  * громко, ошибкой.
+ *
+ * `revision` меньше текущей — когда доделано всё, кроме разовой миграции (`register.ts`).
  */
-export async function storeProvisionRevision(call: RestCall, refs: SmartProcessRefs): Promise<void> {
-  await call('app.option.set', {
-    options: { [SP_REFS_OPTION]: JSON.stringify({ ...refs, revision: PROVISION_REVISION }) },
-  })
+export async function storeProvisionRevision(
+  call: RestCall,
+  refs: SmartProcessRefs,
+  revision: number = PROVISION_REVISION,
+  adopted: AdoptedKinds = {},
+): Promise<void> {
+  await call('app.option.set', { options: { [SP_REFS_OPTION]: storedOption(refs, revision, adopted) } })
 }
 
 function validRef(ref: SmartProcessRef | undefined): SmartProcessRef | undefined {
@@ -451,8 +489,10 @@ async function ensureSmartProcess(
   types: readonly Record<string, unknown>[],
   titles: readonly string[],
   kind: SmartProcessKind,
+  // Усыновлён одним из прошлых прогонов: сохранённый идентификатор ещё не значит «наш».
+  adoptedBefore: boolean,
 ): Promise<EnsuredSmartProcess> {
-  if (known !== undefined) return { ref: known, created: false, adopted: false }
+  if (known !== undefined) return { ref: known, created: false, adopted: adoptedBefore }
 
   const found = findTypeByTitle(types, titles)
   if (found !== null) return { ref: found, created: false, adopted: true }
@@ -621,14 +661,14 @@ async function ensureCardConfig(
  */
 export async function provisionSmartProcesses(
   call: RestCall,
-  known: Partial<SmartProcessRefs> = {},
+  known: Partial<SmartProcessRefs> & { adopted?: AdoptedKinds } = {},
   options: ProvisionOptions = {},
 ): Promise<ProvisionResult> {
   // Список запрашиваем, только если хоть один идентификатор неизвестен, — и один раз на оба.
   const types = known.template !== undefined && known.survey !== undefined ? [] : await listAllTypes(call)
 
-  const template = await ensureSmartProcess(call, known.template, types, TEMPLATE_SP_TITLES, 'template')
-  const survey = await ensureSmartProcess(call, known.survey, types, SURVEY_SP_TITLES, 'survey')
+  const template = await ensureSmartProcess(call, known.template, types, TEMPLATE_SP_TITLES, 'template', known.adopted?.template === true)
+  const survey = await ensureSmartProcess(call, known.survey, types, SURVEY_SP_TITLES, 'survey', known.adopted?.survey === true)
 
   const templateFields = await ensureFields(call, template.ref, TEMPLATE_FIELDS)
   const surveyFields = await ensureFields(call, survey.ref, SURVEY_FIELDS)
@@ -656,7 +696,7 @@ export async function provisionSmartProcesses(
   const resultHandlerUrl = options.resultHandlerUrl ?? null
   if (resultHandlerUrl !== null) {
     try {
-      resultField = await ensureSurveyResultField(call, resultHandlerUrl, survey.ref)
+      resultField = await ensureSurveyResultField(call, resultHandlerUrl, survey.ref, surveyFields.existing)
     }
     catch (error) {
       logger.warn({ reason: safeRefusal(error) }, 'поле «Результат опроса» не заведено')
@@ -779,6 +819,8 @@ async function ensureOwnership(call: RestCall, input: OwnershipInput): Promise<O
  * испортили бы чужие настройки — до ревизии 4 усыновлённому только дописывались поля. Наш,
  * потерявший идентификатор при переустановке, останется со старым названием: это видно
  * в журнале (`adopted`) и правится руками. Нашли `/review` и `/code-review` в PR #87.
+ * Признак усыновления хранится вместе с идентификаторами (`StoredProvision.adopted`): иначе
+ * уже следующий прогон считал бы такой смарт-процесс известным и переименовал бы его.
  * Созданный этим запуском уже носит нынешнее название и нужные возможности.
  *
  * Смарт-процесс, которого нет в списке портала, не трогаем: «переименовать» его было бы
@@ -806,7 +848,10 @@ async function settleSmartProcesses(call: RestCall, input: OwnershipInput, outco
     const current = readTypeTitle(types, sp.ref.id)
     if (current === null) continue
     if (current !== title) await updateType(call, buildRenameTypeCall(sp.ref, title), outcome)
-    if (template && hasTemplateExtras(types, sp.ref.id) === true) {
+    // ⚠ Не «включено ли», а «не выключено ли наверняка»: при флаге непонятной формы выключение
+    // шлётся всё равно — оно идемпотентно, а промолчав, мы оставили бы роботов включёнными
+    // навсегда и молча. Нашёл `/code-review` во втором круге PR #87.
+    if (template && hasTemplateExtras(types, sp.ref.id) !== false) {
       await updateType(call, buildTemplateFeaturesCall(sp.ref), outcome)
     }
   }
@@ -1027,6 +1072,9 @@ export async function ensureSurveyResultField(
   call: RestCall,
   handlerUrl: string,
   survey: SmartProcessRef,
+  // Поля «Результата опросов», уже прочитанные шагом полей. Поле виджета тот шаг не создаёт,
+  // так что список до его создания для этой проверки точен, а второй раз листать его незачем.
+  listed?: readonly ExistingField[],
 ): Promise<ResultFieldOutcome> {
   const app = readAppInfo(await call('app.info', {}))
   if (!app.installed) {
@@ -1048,7 +1096,7 @@ export async function ensureSurveyResultField(
   const name = buildFieldName(survey.id, SURVEY_RESULT_FIELD)
   // Сверка по канонической форме имени: `userfieldconfig.list` отдаёт его в другом написании,
   // и прямое сравнение считало бы существующее поле отсутствующим (разбор — у `buildFieldName`).
-  const existing = (await listAllFields(call, survey.id))
+  const existing = (listed ?? await listAllFields(call, survey.id))
     .find(field => normalizeFieldName(field.name) === normalizeFieldName(name))
   if (existing !== undefined) {
     if (isOurFieldType(existing.userTypeId, app.id)) return 'ok'

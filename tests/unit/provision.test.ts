@@ -737,7 +737,7 @@ describe('идентификаторы на портале', () => {
     // ⚠ `revision: 0`, хотя в значении её нет вовсе, — и это несущее. Портал, обустроенный
     // ДО появления отметки (issue #75), обязан выглядеть устаревшим, иначе фоновая донастройка
     // сочтёт свежими ровно тех клиентов, ради которых она и заведена.
-    expect(await readStoredRefs(p.call)).toEqual({ template: TEMPLATE, survey: SURVEY, revision: 0 })
+    expect(await readStoredRefs(p.call)).toEqual({ template: TEMPLATE, survey: SURVEY, revision: 0, adopted: {} })
   })
 
   it.each<[unknown, string]>([
@@ -749,7 +749,7 @@ describe('идентификаторы на портале', () => {
 
     // Не прочитали — найдём смарт-процессы по заголовку и перезапишем. Установка не должна
     // спотыкаться о собственную настройку.
-    expect(await readStoredRefs(p.call)).toEqual({ template: undefined, survey: undefined, revision: 0 })
+    expect(await readStoredRefs(p.call)).toEqual({ template: undefined, survey: undefined, revision: 0, adopted: {} })
   })
 
   it('ГЛАВНОЕ: ревизия читается числом, а неизвестная — нулём (issue #75)', async () => {
@@ -781,10 +781,29 @@ describe('идентификаторы на портале', () => {
     // клиента, который его убрал.
     const p = portal()
 
-    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, 3)
+    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { revision: 3 })
 
     const written = p.of('app.option.set')[0]!.params.options as Record<string, string>
     expect(JSON.parse(written[SP_REFS_OPTION]!)).toEqual({ template: TEMPLATE, survey: SURVEY, revision: 3 })
+  })
+
+  it('ГЛАВНОЕ: помнит, какой смарт-процесс усыновлён', async () => {
+    // Гвард под находку `/code-review` во втором круге PR #87: без признака в опции следующий
+    // прогон считал усыновлённый смарт-процесс своим и переименовывал его.
+    const p = portal()
+
+    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { adopted: { template: true } })
+
+    const written = (p.of('app.option.set')[0]!.params.options as Record<string, string>)[SP_REFS_OPTION]!
+    expect(JSON.parse(written)).toEqual({ template: TEMPLATE, survey: SURVEY, adopted: { template: true } })
+    const back = portal({ 'app.option.get': { result: written } })
+    expect((await readStoredRefs(back.call)).adopted).toEqual({ template: true })
+  })
+
+  it('признак усыновления читается только явным true', async () => {
+    const p = portal({ 'app.option.get': { result: JSON.stringify({ template: TEMPLATE, survey: SURVEY, adopted: { template: 'yes', survey: 1 } }) } })
+
+    expect((await readStoredRefs(p.call)).adopted).toEqual({})
   })
 })
 
@@ -799,7 +818,7 @@ describe('общий бюджет времени', () => {
   })
 
   it('останавливает цепочку, а не просто перестаёт ждать ответа', async () => {
-    // Холодная установка — около тридцати вызовов подряд под троттлингом SDK. Предел на один
+    // Холодная установка — 41 вызов подряд под троттлингом SDK. Предел на один
     // вызов такую цепочку не ограничивает: важно, что бюджет проверяется ПЕРЕД вызовом
     // и портал перестаёт получать запросы, а не что мы отвернулись от ответа.
     const p = portal()
@@ -928,6 +947,37 @@ describe('ревизия 4: метка владельца и закрытые п
     expect(added).toEqual([expect.objectContaining({ fieldName: `UF_CRM_${SURVEY.id}_LINK`, editInList: 'N', editFormLabel: { ru: '[sh] Ссылка на анкету' } })])
   })
 
+  it('поля сделки, не прочитанные шагом создания, миграция перечитывает сама', async () => {
+    // Гвард из второго круга панели PR #87: эта ветка не выполнялась ни одним тестом. Список
+    // полей сделки упал на шаге создания — подписи всё равно должны доехать.
+    let dealLists = 0
+    const p = legacyPortal({
+      'crm.deal.userfield.list': () => {
+        dealLists++
+        if (dealLists === 1) throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        return { result: [{ ID: 11, FIELD_NAME: 'UF_CRM_SHEF_SURVEY_SCORE', EDIT_FORM_LABEL: 'Оценка клиента' }] }
+      },
+    })
+
+    const result = await migrate(p)
+
+    expect(result.crmFields).toBeNull()
+    expect(p.of('crm.deal.userfield.update')).toHaveLength(1)
+    expect(result.ownership?.settled).toBe(true)
+  })
+
+  it('поля сделки не прочитались и повторно — миграция не завершена', async () => {
+    const p = legacyPortal({
+      'crm.deal.userfield.list': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+    })
+
+    const result = await migrate(p)
+
+    expect(result.ownership?.settled).toBe(false)
+  })
+
   it('подпись поля сделки получает метку, уже помеченное у контакта не трогается', async () => {
     const p = legacyPortal()
 
@@ -973,6 +1023,39 @@ describe('ревизия 4: метка владельца и закрытые п
 
     expect(result.adoptedTemplate).toBe(true)
     expect(typeUpdates(p)).toEqual([{ title: '[sh] Результат опросов' }])
+    // Список, прочитанный поиском, миграция берёт готовым — второй раз не просит.
+    expect(p.of('crm.type.list')).toHaveLength(1)
+  })
+
+  it('усыновлённый прошлым прогоном не переименовывается и теперь', async () => {
+    // Признак хранится с идентификаторами: сохранённый идентификатор ещё не значит «наш».
+    const p = legacyPortal()
+
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY, adopted: { template: true } }, { previousRevision: 3 })
+
+    expect(result.adoptedTemplate).toBe(true)
+    expect(typeUpdates(p)).toEqual([{ title: '[sh] Результат опросов' }])
+  })
+
+  it('известный, но пропавший из списка портала не трогается вслепую', async () => {
+    // Гвард из второго круга панели PR #87: пропуск «нет в списке» можно было убрать, и не краснело
+    // ничего. Идентификатор мог уйти в корзину — переименовывать по нему было бы вслепую.
+    const p = legacyPortal({ 'crm.type.list': { result: { types: [LEGACY_TYPES.result.types[1]] } } })
+
+    const result = await migrate(p)
+
+    expect(typeUpdates(p)).toEqual([{ title: '[sh] Результат опросов' }])
+    expect(result.ownership?.settled).toBe(true)
+  })
+
+  it('флаг «Шаблона» непонятной формы — выключение шлётся всё равно', async () => {
+    // Выключение идемпотентно, а промолчав, мы оставили бы роботов включёнными навсегда.
+    const odd = { ...LEGACY_TYPES.result.types[0], isClientEnabled: 'N', isAutomationEnabled: 1 }
+    const p = legacyPortal({ 'crm.type.list': { result: { types: [odd, LEGACY_TYPES.result.types[1]] } } })
+
+    await migrate(p)
+
+    expect(typeUpdates(p)).toContainEqual({ isClientEnabled: 'N', isAutomationEnabled: 'N' })
   })
 
   it('созданный сейчас не переименовывается, известный рядом — да', async () => {
@@ -1016,7 +1099,8 @@ describe('ревизия 4: метка владельца и закрытые п
     const result = await migrate(p)
 
     expect(lockedIds(p)).toHaveLength(TEMPLATE_FIELDS.length + LEGACY_SURVEY_FIELDS.length)
-    expect(result.ownership?.fieldsLocked).toBe(false)
+    // Правок сделано на одну меньше: упавший вызов правкой не считается.
+    expect(result.ownership).toEqual({ changes: 3 + TEMPLATE_FIELDS.length + LEGACY_SURVEY_FIELDS.length - 1 + 1, fieldsLocked: false, settled: true })
   })
 
   it('двухсотый ответ с открытым полем закрытием не считается', async () => {

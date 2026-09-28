@@ -382,18 +382,23 @@ export function readTypeTitle(types: readonly Record<string, unknown>[], id: num
 /**
  * Whether the smart process has «Client» or automation switched on; `null` when unknown.
  *
- * ⚠ `null` и при флаге непонятной формы, а не «выключено». Документация отдаёт флаги строками
- * `Y`/`N`, но прочитай мы незнакомую форму как «выключено», у «Шаблона» с включёнными роботами
- * они так и остались бы включёнными — молча. Тот же приём «не гадать», что у разбора связей
- * (`readTypeRelations`). Нашёл программист в панели ревью PR #87.
+ * `true` — хоть один флаг известно включён; `false` — оба известно выключены; `null` — смарт-
+ * процесса нет в списке либо флаг непонятной формы, и включённого среди понятных нет.
+ *
+ * ⚠ Непонятная форма — «не знаем», а не «выключено». Документация отдаёт флаги строками `Y`/`N`,
+ * но прочитай мы незнакомую форму как «выключено», у «Шаблона» с включёнными роботами они так
+ * и остались бы включёнными — молча. Тот же приём «не гадать», что у разбора связей
+ * (`readTypeRelations`). Нашёл программист в панели ревью PR #87; что неизвестный второй флаг
+ * не должен глушить известное «включено» у первого — `/code-review` во втором круге.
  */
 export function hasTemplateExtras(types: readonly Record<string, unknown>[], id: number): boolean | null {
   const type = types.find(type => Number(type.id) === id)
   if (type === undefined) return null
   const client = readFlag(type.isClientEnabled)
   const automation = readFlag(type.isAutomationEnabled)
-  if (client === null || automation === null) return null
-  return client || automation
+  if (client === true || automation === true) return true
+  if (client === false && automation === false) return false
+  return null
 }
 
 function readFlag(value: unknown): boolean | null {

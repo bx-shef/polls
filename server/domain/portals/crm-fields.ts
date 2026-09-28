@@ -125,6 +125,7 @@ export function planMissingCrmFields(
 
 /** An entity field as `crm.<entity>.userfield.list` returns it: enough to fix its label. */
 export interface ExistingCrmField {
+  /** `0` — the portal did not name it; the label then cannot be fixed. */
   id: number
   name: string
   /**
@@ -135,7 +136,12 @@ export interface ExistingCrmField {
 }
 
 /**
- * Entity fields with id and label. Ones without a name or an id are skipped.
+ * Entity fields with id and label. Nameless ones are skipped; one without an id keeps `0`.
+ *
+ * ⚠ Поле без идентификатора НЕ выбрасывается: его имя нужно плану создания. Выброси мы его,
+ * план счёл бы поле отсутствующим, создание упало бы на дубликате — а прежде имена читались
+ * отдельно и идентификатора не требовали. Подпись такому полю не правится: нечем. Поднял
+ * программист во втором круге панели PR #87.
  *
  * ⚠ `FIELD_NAME` приходит УЖЕ С ПРЕФИКСОМ (`UF_CRM_…`) — так показано в документации метода.
  * Сравнивать его надо с `crmFieldName(code)`, а не с голым кодом.
@@ -151,11 +157,11 @@ export function readCrmFields(response: unknown): ExistingCrmField[] {
   const fields: ExistingCrmField[] = []
   for (const raw of result) {
     const row = raw as Record<string, unknown> | null
-    const id = Number(row?.ID)
-    if (typeof row?.FIELD_NAME !== 'string' || row.FIELD_NAME === '' || !Number.isInteger(id) || id <= 0) continue
+    if (typeof row?.FIELD_NAME !== 'string' || row.FIELD_NAME === '') continue
+    const id = Number(row.ID)
     const label = row.EDIT_FORM_LABEL
     const ru = typeof label === 'string' ? label : (label as { ru?: unknown } | null | undefined)?.ru
-    fields.push({ id, name: row.FIELD_NAME, label: typeof ru === 'string' ? ru : '' })
+    fields.push({ id: Number.isInteger(id) && id > 0 ? id : 0, name: row.FIELD_NAME, label: typeof ru === 'string' ? ru : '' })
   }
   return fields
 }
@@ -180,7 +186,7 @@ export function planCrmFieldLabels(
   for (const field of fields) {
     const found = byName.get(normalize(crmFieldName(field.code)))
     const label = ownerLabel(field.label)
-    if (found === undefined || found.label === label) continue
+    if (found === undefined || found.id === 0 || found.label === label) continue
     calls.push({
       method: entity.updateMethod,
       params: {

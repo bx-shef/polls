@@ -27,9 +27,6 @@ export { DEAL_ENTITY_TYPE_ID } from '../portals/smart-processes'
 /** Состояние только что выпущенного приглашения. */
 export const SURVEY_STATE_SENT = 'sent'
 
-/** Состояние приглашения, по которому ответа не будет: отозвано или не состоялось. */
-export const SURVEY_STATE_REVOKED = 'revoked'
-
 /**
  * Прочитать список опубликованных шаблонов.
  *
@@ -130,15 +127,6 @@ export function buildCreateSurveyItemCall(
     client?: Pick<DealFacts, 'contactId' | 'companyId'>
     /** Кто выпустил ссылку. Ноль — не знаем, портал поставит владельца токена. */
     assignedById?: number
-    /**
-     * Адрес анкеты — в поле «Ссылка на анкету». Решение владельца 28.09 (issue #84, пункт 20):
-     * «это не страшный секрет». У нас по-прежнему лежит только хеш токена.
-     *
-     * ⚠ Пока донастройка не завела поле на портале (до часа после выката), портал ключ молча
-     * отбрасывает и элемент всё равно создаёт — замерено 28.09. У элементов этого окна ссылки
-     * в карточке не будет; сама ссылка работает, её видит выпустивший во вкладке сделки.
-     */
-    link: string
   },
 ): PortalCall {
   return {
@@ -165,32 +153,38 @@ export function buildCreateSurveyItemCall(
         // Дата без времени: поле создавалось типом `date`, и портал отрежет время сам —
         // но лучше отдать то, что он ждёт, чем полагаться на его снисходительность.
         [buildFieldName(survey.id, 'EXPIRES_AT')]: invitation.expiresAt.toISOString().slice(0, 10),
-        [buildFieldName(survey.id, 'LINK')]: invitation.link,
+        // ⚠ Адреса анкеты здесь НЕТ, и это не забывчивость: он уходит в элемент отдельным
+        // вызовом, когда наш индекс уже знает токен (`buildItemLinkCall`).
       },
     },
   }
 }
 
 /**
- * Withdraw an invitation item whose link never made it into our index.
+ * Put the survey address into the invitation item — after our index already knows its token.
  *
- * ⚠ Адрес анкеты пишется в элемент при создании, то есть ДО того, как хеш токена ляжет в наш
- * кэш-индекс. Упади запись в индекс — в карточке осталась бы рабочая на вид ссылка, ведущая
- * на «не найдено», и менеджер отправил бы её клиенту. Поэтому адрес стирается, а приглашение
- * помечается отозванным: виджет результата скажет «ответа по ней не будет». Пустая строка
- * очищает поле типа `url` — замерено 28.09. Нашёл `/review` в PR #87.
+ * ⚠ Решение владельца 28.09 (issue #84, пункт 20): адрес — в поле «Ссылка на анкету», «это
+ * не страшный секрет». У нас по-прежнему лежит только хеш токена.
+ *
+ * ⚠ ОТДЕЛЬНЫМ ВЫЗОВОМ ПОСЛЕ записи в наш индекс, а не при создании элемента. Первая редакция
+ * клала адрес прямо в `crm.item.add` — на вызов дешевле, — и в двух исходах в карточке оставалась
+ * рабочая на вид ссылка, ведущая на «не найдено»: упала запись в индекс, или `crm.item.add`
+ * ответил таймаутом, успев создать элемент. Первый исход чинился отзывом элемента, второй —
+ * ничем: идентификатора нет, отзывать нечего. Нашёл `/code-review` во втором круге PR #87.
+ * Теперь адрес в CRM появляется только у ссылки, которую наш индекс уже знает.
+ *
+ * ⚠ Пока донастройка не завела поле на портале (до часа после выката), портал ключ молча
+ * отбрасывает — замерено 28.09 и для `crm.item.add`, и для `crm.item.update`. У элементов этого
+ * окна адреса в карточке не будет; сама ссылка работает, её видит выпустивший во вкладке сделки.
  */
-export function buildWithdrawSurveyItemCall(survey: SmartProcessRef, itemId: number): PortalCall {
+export function buildItemLinkCall(survey: SmartProcessRef, itemId: number, link: string): PortalCall {
   return {
     method: 'crm.item.update',
     params: {
       entityTypeId: survey.entityTypeId,
       id: itemId,
       useOriginalUfNames: 'Y',
-      fields: {
-        [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_REVOKED,
-        [buildFieldName(survey.id, 'LINK')]: '',
-      },
+      fields: { [buildFieldName(survey.id, 'LINK')]: link },
     },
   }
 }

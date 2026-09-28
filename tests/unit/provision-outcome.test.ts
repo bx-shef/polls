@@ -108,6 +108,42 @@ describe('вкладки приложения', () => {
   })
 })
 
+describe('цена холодной установки', () => {
+  it('холодная установка: ровно 41 вызов портала, миграция ревизии 4 — ни одного', async () => {
+    // ⚠ Число держится намеренно, целой последовательностью. Установка — синхронный путь под
+    // общим пределом 45 секунд (`PROVISION_BUDGET_MS`), и каждый новый шаг на нём должен быть
+    // виден в ревью, а не проявиться таймаутом у клиента. Комментарии проекта называли холодную
+    // установку «17–19 вызовов» — это цена донастройки готового портала, а холодная давно втрое
+    // дороже: числа не держал ни один тест. Поднял программист в панели PR #87, что ссылки
+    // на гвард нет — `/code-review` во втором круге.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.option.get': { result: '' },
+      'crm.type.add': (params: Record<string, unknown>) => {
+        const title = (params.fields as { title: string }).title
+        return { result: { type: title.includes('Шаблон') ? { id: 8, entityTypeId: 1038 } : { id: 10, entityTypeId: 1040 } } }
+      },
+      'userfieldconfig.list': { result: { fields: [] } },
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+      'crm.type.get': { result: { type: { relations: { parent: [], child: [] } } } },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    expect(p.calls).toEqual([
+      'user.admin', 'app.option.get', 'crm.type.list', 'crm.type.add', 'crm.type.add',
+      'userfieldconfig.list', ...Array(5).fill('userfieldconfig.add'),
+      'userfieldconfig.list', ...Array(9).fill('userfieldconfig.add'),
+      'crm.type.get', 'crm.type.update',
+      'app.info', 'userfieldtype.list', 'userfieldtype.add', 'userfieldconfig.add',
+      'crm.item.details.configuration.get', 'crm.item.details.configuration.set',
+      'crm.deal.userfield.list', 'crm.deal.userfield.add', 'crm.deal.userfield.add',
+      'crm.contact.userfield.list', 'crm.contact.userfield.add', 'crm.contact.userfield.add',
+      'app.option.set', 'placement.unbind', 'placement.bind', 'placement.unbind', 'placement.bind', 'app.option.set',
+    ])
+  })
+})
+
 describe('исход обустройства', () => {
   it('ГЛАВНОЕ: без прав администратора — `not-admin`, и портал не трогаем', async () => {
     // ⚠ Права проверяются ПЕРВЫМИ и при установке, а не когда метод понадобится: без них
@@ -195,11 +231,11 @@ describe('что уходит в журнал', () => {
  * ни у одного клиента, поставившего приложение из Маркета.
  */
 describe('отметка ревизии', () => {
-  /** Записали ли в `app.option` отметку ревизии (а не только идентификаторы). */
+  /** Записали ли в `app.option` отметку текущей ревизии, 4. */
   function revisionStored(p: ReturnType<typeof portal>): boolean {
     return p.call.mock.calls
       .filter(([method]) => method === 'app.option.set')
-      .some(([, params]) => JSON.stringify(params).includes('revision'))
+      .some(([, params]) => JSON.stringify(params).includes('\\"revision\\":4'))
   }
 
   it('НЕ ставится, пока установка не завершена', async () => {
@@ -239,7 +275,7 @@ describe('отметка ревизии', () => {
     return JSON.parse(Object.values(options)[0]!) as Record<string, unknown>
   }
 
-  it('ГЛАВНОЕ: НЕ ставится, пока наши поля не закрылись от правки — и это ошибка в журнале', async () => {
+  it('ГЛАВНОЕ: четвёртая НЕ ставится, пока наши поля не закрылись от правки — и это ошибка в журнале', async () => {
     // Открытые поля позволяют подделать ответ клиента и опубликовать шаблон в обход проверок
     // (issue #84, пункты 12 и 16). Отметь мы ревизию — донастройка не вернулась бы никогда.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
@@ -252,7 +288,25 @@ describe('отметка ревизии', () => {
 
     expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
     expect(revisionStored(p)).toBe(false)
+    // Всё, кроме миграции 4, на месте — портал отмечен ревизией до неё.
+    expect(storedOption(p).revision).toBe(3)
     expect(error.mock.calls.some(([, message]) => String(message).includes('не закрыты от правки'))).toBe(true)
+  })
+
+  it('портал ревизии 2 с незаконченной миграцией поднимается до ревизии 3, а не стоит на месте', async () => {
+    // Гвард под находку `/code-review` во втором круге PR #87: иначе разовая правка раскладки
+    // ревизии 3 повторялась бы каждый час, возвращая виджет клиенту, который его убрал.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.option.get': { result: JSON.stringify({ template: { entityTypeId: 1038, id: 8 }, survey: { entityTypeId: 1040, id: 10 }, revision: 2 }) },
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+      'userfieldconfig.list': OPEN_FIELD,
+      'userfieldconfig.update': () => { throw new PortalError('ACCESS_DENIED', 'Доступ запрещён') },
+    })
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    expect(storedOption(p).revision).toBe(3)
   })
 
   it('ГЛАВНОЕ: незакрывшиеся поля не стирают прежнюю ревизию', async () => {
@@ -305,6 +359,35 @@ describe('отметка ревизии', () => {
     await provisionWithCall(p.call, 'shef.bitrix24.ru')
 
     expect(revisionStored(p)).toBe(false)
+  })
+
+  it('ГЛАВНОЕ: усыновлённый по названию не переименовывается и следующим прогоном', async () => {
+    // Гвард под находку `/code-review` во втором круге PR #87, воспроизведённую двумя прогонами.
+    // Мастер установки обустраивает портал до `installFinish`: поле виджета откладывается, ревизия
+    // не отмечается, и через час приходит донастройка. Без признака усыновления в опции она
+    // считала чужой «Шаблон опроса» клиента своим — и выключала ему роботов.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    let option = ''
+    const shared = (installed: boolean) => ({
+      'app.option.get': () => ({ result: option }),
+      'app.option.set': (params: Record<string, unknown>) => {
+        option = Object.values(params.options as Record<string, string>)[0]!
+        return { result: true }
+      },
+      'app.info': { result: { ID: 219, INSTALLED: installed } },
+      'crm.type.list': { result: { types: [{ id: 8, entityTypeId: 1038, title: 'Шаблон опроса', isClientEnabled: 'Y', isAutomationEnabled: 'Y' }] } },
+      'crm.type.add': { result: { type: { id: 10, entityTypeId: 1040 } } },
+    })
+    const first = portal(shared(false))
+    const second = portal(shared(true))
+
+    await provisionWithCall(first.call, 'shef.bitrix24.ru')
+    await provisionWithCall(second.call, 'shef.bitrix24.ru')
+
+    const touched = [...first.call.mock.calls, ...second.call.mock.calls]
+      .filter(([method, params]) => method === 'crm.type.update' && (params as { id?: number }).id === 8)
+    expect(touched).toEqual([])
+    expect(JSON.parse(option).adopted).toEqual({ template: true })
   })
 
   it('ставится на портале, которому миграция уже не нужна', async () => {

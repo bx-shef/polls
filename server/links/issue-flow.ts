@@ -3,7 +3,7 @@ import { buildSurveyUrl, createInvitation } from '../domain/invitations/invitati
 import {
   buildCreateSurveyItemCall,
   buildDealFactsBatch,
-  buildWithdrawSurveyItemCall,
+  buildItemLinkCall,
   buildInvitationTitle,
   readCreatedItemId,
   readDealFacts,
@@ -36,13 +36,14 @@ import { logger } from '../utils/logger'
  *    не ходит по инварианту, и промах кэша — это пожизненный 503 по выданной ссылке.
  * 2. Элемент смарт-процесса создаётся ВТОРЫМ: приглашение и есть этот элемент, источник
  *    истины — портал.
- * 3. Хеш токена пишется в наш кэш-индекс ПОСЛЕДНИМ, когда известен идентификатор элемента.
+ * 3. Хеш токена пишется в наш кэш-индекс, когда известен идентификатор элемента.
+ * 4. Адрес анкеты уходит в элемент ПОСЛЕДНИМ — когда индекс уже знает токен (`buildItemLinkCall`).
  *
- * Падение на третьем шаге оставило бы в элементе адрес анкеты, ведущий на «не найдено»: с 28.09
- * адрес пишется в элемент вторым шагом. Поэтому элемент тогда отзывается — адрес стирается,
- * состояние становится «отозвано» (`withdrawItem`), и это видно и чинится перевыпуском.
- * Обратный порядок оставил бы ссылку, ведущую в никуда, а её уже не отозвать: она у человека
- * в письме.
+ * Падение на третьем шаге оставляет на портале элемент без ссылки — это видно и чинится
+ * перевыпуском. Обратный порядок оставил бы ссылку, ведущую в никуда, а её уже не отозвать:
+ * она у человека в письме. По той же причине адрес в CRM появляется только четвёртым шагом:
+ * положенный в элемент раньше, он при упавшем индексе или при таймауте создания остался бы
+ * в карточке рабочей на вид ссылкой на «не найдено» (второй круг панели PR #87).
  */
 
 /** Что нужно знать, чтобы выпустить ссылку. Всё остальное функция добывает сама. */
@@ -117,13 +118,12 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
     title: buildInvitationTitle(input.template.title, deal?.title ?? ''),
     client: deal,
     assignedById: input.assignedById,
-    link: url,
   })
-  // ⚠ В `try`, и отказ наружу уходит только нашей строкой (`safeRefusal`). С 28.09 в вызове
-  // лежит адрес анкеты С ТОКЕНОМ, а Битрикс24 цитирует присланное значение в тексте ошибки
-  // проверки поля. Необработанное исключение h3 и Nitro печатают целиком, в обход нашего
-  // журнала и его вырезания секретов, — токен уехал бы в журнал сырым текстом. Ответы клиента
-  // по той же причине защищены в `deliver.ts`. Нашла безопасность в панели ревью PR #87.
+  // ⚠ В `try`, и отказ наружу уходит только нашей строкой (`safeRefusal`). Битрикс24 цитирует
+  // присланное значение в тексте ошибки проверки поля, а в вызове лежат название сделки и её
+  // клиент. Необработанное исключение h3 и Nitro печатают целиком, в обход нашего журнала
+  // и его вырезания секретов. Ответы клиента по той же причине защищены в `deliver.ts`.
+  // Нашла безопасность в панели ревью PR #87 — тогда в этом вызове лежал и адрес с токеном.
   let created: unknown
   try {
     created = await input.call(createCall.method, createCall.params)
@@ -152,8 +152,25 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
     })
   }
   catch (error) {
-    await withdrawItem(input, itemId)
-    throw error
+    // ⚠ Бросаем СВОЮ ошибку, без исходной. Драйвер базы кладёт в текст «Failed query … params: …»,
+    // а в параметрах этой вставки — хеш токена и снимок шапки с именами компании, контакта
+    // и менеджера. Обработчик выпуска исключение не ловит, и h3 напечатал бы его целиком.
+    // Адреса в элементе при этом нет: он уходит туда только следующим шагом. Нашёл `/code-review`
+    // во втором круге PR #87.
+    logger.error({ domain: input.domain, itemId, sqlState: sqlState(error) }, 'выпуск ссылки: индекс ссылок не записан, элемент остался без ссылки')
+    // Исходную ошибку в `cause` не кладём намеренно: h3 печатает и её — ради этого и своя ошибка.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error('выпуск ссылки: индекс ссылок не записан')
+  }
+
+  // ⚠ Отказ здесь выпуск НЕ отменяет: ссылка уже работает, и выпустивший видит её во вкладке
+  // сделки. Не будет только адреса в карточке элемента — это видно, и в журнал уходит код.
+  const linkCall = buildItemLinkCall(input.survey, itemId, url)
+  try {
+    await input.call(linkCall.method, linkCall.params)
+  }
+  catch (error) {
+    logger.warn({ domain: input.domain, itemId, reason: safeRefusal(error) }, 'выпуск ссылки: адрес не записан в элемент — ссылка работает')
   }
 
   // ⚠ В журнал уходит что угодно, кроме токена и его хеша. Ссылка живёт тридцать дней,
@@ -173,20 +190,13 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
 }
 
 /**
- * Отозвать элемент, чья ссылка не легла в наш индекс: стереть адрес, пометить «отозвано».
+ * SQLSTATE of a database failure, if there is one: five characters and nothing of the query.
  *
- * Отказ портала здесь только пишется в журнал: исходную беду — упавшую запись в индекс —
- * вызывающий бросает дальше сам, и прятать её за второй ошибкой нельзя.
+ * Код ошибки Postgres безопасен для журнала и отличает «нет связи» от нарушенного ограничения;
+ * текст ошибки — нет (разбор — у вызывающего).
  */
-async function withdrawItem(input: IssueInput, itemId: number): Promise<void> {
-  const withdraw = buildWithdrawSurveyItemCall(input.survey, itemId)
-  try {
-    await input.call(withdraw.method, withdraw.params)
-  }
-  catch (error) {
-    logger.error(
-      { domain: input.domain, itemId, reason: safeRefusal(error) },
-      'выпуск ссылки: элемент с неработающей ссылкой не отозван — сотрите адрес в карточке руками',
-    )
-  }
+function sqlState(error: unknown): string | undefined {
+  const bag = error as { code?: unknown, cause?: { code?: unknown } } | null
+  const code = bag?.cause?.code ?? bag?.code
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : undefined
 }

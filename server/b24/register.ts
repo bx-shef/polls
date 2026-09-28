@@ -6,7 +6,7 @@ import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
-import { PROVISION_REVISION } from '../domain/portals/smart-processes'
+import { OWNERSHIP_REVISION, PROVISION_REVISION } from '../domain/portals/smart-processes'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
 import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
@@ -28,9 +28,11 @@ import { logger } from '../utils/logger'
 /**
  * Бюджет времени на всё обустройство.
  *
- * Холодная установка — 17–19 вызовов подряд под троттлингом SDK, это единицы секунд
- * на здоровом портале. Сорок пять секунд — четырёхкратный запас и при этом заведомо
- * меньше таймаута общего `nginx-proxy`.
+ * Донастройка готового портала — 16–18 вызовов подряд под троттлингом SDK, холодная установка —
+ * 41 (число держит тест «цена холодной установки» в `provision-outcome.test.ts`). Это секунды
+ * на здоровом портале; сорок пять секунд — запас и при этом заведомо меньше таймаута общего
+ * `nginx-proxy`. Прежде здесь стояло «холодная — 17–19»: это цена донастройки, а холодная
+ * установка давно втрое дороже, и запас был меньше, чем казалось (панель ревью PR #87).
  */
 const PROVISION_BUDGET_MS = 45_000
 
@@ -166,8 +168,9 @@ async function provisionPortal(portal: {
     // копия записи — без compare-and-swap по прежней паре и без условия `status <> 'deleted'`,
     // то есть в обход обеих защит, которые ради этих же гонок и заводились. Комментарий
     // при этом обещал «не воскресит удалённый портал»: до появления стирания это было верно,
-    // а с ним стало неправдой. Обустройство — это около тридцати вызовов под бюджетом
-    // в 45 секунд, и продление посреди них вполне реально. Нашла панель ревью PR #34.
+    // а с ним стало неправдой. Холодное обустройство — это 41 вызов под бюджетом в 45 секунд
+    // (тест «цена холодной установки»), и продление посреди них вполне реально. Нашла панель
+    // ревью PR #34.
     async next => saveRefreshedTokens(portal.id, {
       accessToken: encryptSecret(next.accessToken),
       refreshToken: encryptSecret(next.refreshToken),
@@ -207,8 +210,14 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       previousRevision: known.revision,
     })
     // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
-    // портал к ревизии 0 (разбор — у `storeRefs`).
-    await storeRefs(budgeted, { template: result.template, survey: result.survey }, known.revision)
+    // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
+    // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
+    const refs = { template: result.template, survey: result.survey }
+    const adopted = {
+      ...(result.adoptedTemplate ? { template: true as const } : {}),
+      ...(result.adoptedSurvey ? { survey: true as const } : {}),
+    }
+    await storeRefs(budgeted, refs, { revision: known.revision, adopted })
 
     if (result.adoptedTemplate || result.adoptedSurvey) {
       // Взяли на портале смарт-процесс, которого не создавали. Обычно это наш же,
@@ -277,14 +286,21 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       logger.warn({ domain: portal.domain }, 'метка владельца доставлена не везде — ревизию не отмечаем, донастройка вернётся')
     }
     const unfinished = ownership !== null && (!ownership.fieldsLocked || !ownership.settled)
-    if (result.resultField !== 'deferred' && !unfinished) {
-      await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
+    // ⚠ Не доделана только миграция 4 — отмечаем ревизию до неё: всё прежнее на месте. Иначе
+    // портал ревизии 2 оставался бы на ней, и разовая правка раскладки ревизии 3 повторялась бы
+    // каждый час, возвращая виджет клиенту, который его убрал. Нашёл `/code-review` во втором
+    // круге PR #87.
+    const reached = result.resultField === 'deferred'
+      ? known.revision
+      : unfinished ? Math.max(known.revision, OWNERSHIP_REVISION - 1) : PROVISION_REVISION
+    if (result.resultField !== 'deferred') {
+      await storeProvisionRevision(budgeted, refs, reached, adopted)
     }
 
     logger.info(
       {
         domain: portal.domain,
-        revision: PROVISION_REVISION,
+        revision: reached,
         created: [result.createdTemplate, result.createdSurvey],
         addedFields: result.addedFields,
         placed,

@@ -187,7 +187,9 @@ describe('подписи полей сделки и контакта: метка
     expect(planCrmFieldLabels(CONTACT_ENTITY, SCORE_FIELDS, existing)).toEqual([])
   })
 
-  it('читает подпись и строкой, и по языкам; без идентификатора поле пропускает', () => {
+  it('читает подпись и строкой, и по языкам; поле без идентификатора оставляет с нулём', () => {
+    // Имя поля без идентификатора нужно плану создания: выброси мы его, план счёл бы поле
+    // отсутствующим, и создание упало бы на дубликате. Поднял программист во втором круге PR #87.
     const response = {
       result: [
         { ID: '11', FIELD_NAME: 'UF_CRM_SHEF_SURVEY_SCORE', EDIT_FORM_LABEL: 'Оценка' },
@@ -199,6 +201,11 @@ describe('подписи полей сделки и контакта: метка
     expect(readCrmFields(response)).toEqual([
       { id: 11, name: 'UF_CRM_SHEF_SURVEY_SCORE', label: 'Оценка' },
       { id: 12, name: 'UF_CRM_SHEF_SURVEY_AT', label: 'Дата' },
+      { id: 0, name: 'UF_CRM_NO_ID', label: 'Без ID' },
     ])
+  })
+
+  it('подпись поля без идентификатора не правит — нечем', () => {
+    expect(planCrmFieldLabels(DEAL_ENTITY, SCORE_FIELDS, [{ id: 0, name: 'UF_CRM_SHEF_SURVEY_SCORE', label: 'Оценка клиента' }])).toEqual([])
   })
 })
