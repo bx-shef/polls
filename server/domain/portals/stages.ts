@@ -1,4 +1,4 @@
-import { buildFieldName } from './smart-processes'
+import { buildFieldName, camelFieldName } from './smart-processes'
 import type { PortalCall, SmartProcessRef } from './smart-processes'
 
 /**
@@ -93,6 +93,11 @@ export const UNUSED_STAGES: readonly { code: string, portalName: string }[] = [
 /** Whether the smart process lives on native stages — its funnel is set up by revision 5. */
 export function isStaged(ref: SmartProcessRef): ref is StagedRef {
   return ref.categoryId !== undefined
+}
+
+/** The same smart process, still on the old `STATE` field: its funnel is not ours to use yet. */
+export function unstaged(ref: SmartProcessRef): SmartProcessRef {
+  return { entityTypeId: ref.entityTypeId, id: ref.id }
 }
 
 /** The full stage id: `DT1040_16:SUCCESS`. */
@@ -267,6 +272,60 @@ export function planStages(specs: readonly StageSpec[], existing: readonly Exist
     calls.push({ method: 'crm.status.delete', params: { id: stage.id } })
   }
   return calls
+}
+
+/** Which of our smart processes a carry works on: they differ in what the old field held. */
+export type CarryKind = 'template' | 'survey'
+
+/**
+ * One page of the elements the carry still has to move, after the element `afterId`.
+ *
+ * ⚠ ОТБИРАЕТ ПОРТАЛ, И ТОЛЬКО ТО, ЧТО НАДО ПЕРЕВЕСТИ: первая стадия и старое поле со значением,
+ * которое стадию меняет. Первая редакция листала все элементы с `select: ['*']` — на портале
+ * с сотнями опросов перенос не укладывался в бюджет обустройства (портал уходил в `degraded`),
+ * а в память сервера ехали ответы клиентов, которые переносу не нужны. Нашли `/review`,
+ * `/code-review` и безопасность в панели PR #93.
+ *
+ * ⚠ БЕЗ `useOriginalUfNames` И В CAMELCASE — единственная форма, в которой узкий `select` отдаёт
+ * `id`, `stageId` и `updatedTime` (у `camelFieldName`). Отбор и `>id` замерены на портале 28.09.
+ *
+ * ⚠ Листаем по `>id`, а не смещением: переведённые элементы выпадают из отбора, и смещение
+ * перескакивало бы через непрочитанные.
+ */
+export function buildCarryListCall(ref: StagedRef, kind: CarryKind, afterId: number): PortalCall {
+  const state = camelFieldName(ref.id, 'STATE')
+  const own = kind === 'template' ? ['PUBLISHED_AT', 'CODE', 'VERSION', 'SCHEMA'].map(postfix => camelFieldName(ref.id, postfix)) : []
+  return {
+    method: 'crm.item.list',
+    params: {
+      entityTypeId: ref.entityTypeId,
+      select: ['id', 'stageId', 'updatedTime', state, ...own],
+      filter: {
+        'stageId': stageId(ref, 'NEW'),
+        '>id': afterId,
+        ...(kind === 'template' ? { [state]: 'published' } : { [`@${state}`]: ['completed', 'revoked'] }),
+      },
+      order: { id: 'ASC' },
+    },
+  }
+}
+
+/**
+ * Reads a carry page into elements under our original field names — what `planStageMoves` reads.
+ *
+ * `null` — ответ не той формы. ⚠ Не пустой список: пустой значит «переносить нечего», и поле
+ * удалилось бы вместе с состоянием элементов, которых мы просто не прочитали.
+ */
+export function readCarryItems(response: unknown, ref: StagedRef, kind: CarryKind): Record<string, unknown>[] | null {
+  const items = (response as { result?: { items?: unknown } } | null)?.result?.items
+  if (!Array.isArray(items)) return null
+  const postfixes = kind === 'template' ? ['STATE', 'PUBLISHED_AT', 'CODE', 'VERSION', 'SCHEMA'] : ['STATE']
+  return items.flatMap((raw) => {
+    if (raw === null || typeof raw !== 'object') return []
+    const item = raw as Record<string, unknown>
+    const own = Object.fromEntries(postfixes.map(postfix => [buildFieldName(ref.id, postfix), item[camelFieldName(ref.id, postfix)]]))
+    return [{ id: item.id, stageId: item.stageId, updatedTime: item.updatedTime, ...own }]
+  })
 }
 
 /**

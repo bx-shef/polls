@@ -813,6 +813,11 @@ describe('идентификаторы на портале', () => {
     ['стадии не доделаны — ревизия до них', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED }, SETTLED, 4],
     ['перенос «Состояния» не доделан — ревизия до него', 4, { resultField: 'ok', ownership: null, stages: SETTLED }, UNSETTLED, 4],
     ['миграция 4 и стадии разом — держит та, что раньше', 2, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: false, settled: true }, stages: UNSETTLED }, null, 3],
+    // ⚠ Портал уже на пятой, а смарт-процесс на нём пересоздан, и его воронка не прочиталась:
+    // ревизия ОПУСКАЕТСЯ до четвёртой. С `max(previous, 4)` портал не вернулся бы к донастройке
+    // никогда. Нашёл `/code-review` в панели PR #93; строку с шестой просил тестировщик.
+    ['стадии не доделаны на портале пятой ревизии — опускаем до четвёртой', 5, { resultField: 'ok', ownership: null, stages: UNSETTLED }, null, 4],
+    ['и выше пятой — тоже', 6, { resultField: 'ok', ownership: null, stages: UNSETTLED }, null, 4],
   ])('достигнутая ревизия: %s', (_, previous, result, carried, expected) => {
     // Гвард под находки `/code-review` и `/review` во втором круге PR #87: ревизия откатывалась
     // к нулю, не поднималась до уже сделанного и считалась у вызывающего особым случаем.

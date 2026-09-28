@@ -8,7 +8,7 @@ import {
   type TemplateWritePlan,
 } from '../domain/import/template-write'
 import { readCreatedItemId } from '../domain/invitations/portal-calls'
-import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
+import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readFlag, readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
@@ -183,8 +183,16 @@ async function withFunnel(
 ): Promise<SmartProcessRef | undefined> {
   if (ref === null) return undefined
   const type = types.find(one => Number(one.id) === ref.id)
-  if (type?.isStagesEnabled !== 'Y') return ref
+  // ⚠ Флаг портал отдаёт и `'Y'`, и `true` (разбор у `readFlag`): сравнив только с `'Y'`, команда
+  // на `true` молча вернулась бы к удалённому полю. Нашёл `/review` в панели PR #93.
+  if (readFlag(type?.isStagesEnabled) !== true) return ref
   const list = buildListCategoriesCall(ref)
   const categoryId = readDefaultCategoryId(await call(list.method, list.params))
-  return categoryId === null ? ref : { ...ref, categoryId }
+  if (categoryId === null) {
+    // Стадии включены, а воронки портал не назвал — писать стадией нечем, пишем полем. Громко:
+    // после миграции поля может не быть, и запись в него портал молча отбросит.
+    logger.warn({ typeId: ref.id }, 'стадии включены, но воронка по умолчанию не найдена — команда пишет старым полем')
+    return ref
+  }
+  return { ...ref, categoryId }
 }

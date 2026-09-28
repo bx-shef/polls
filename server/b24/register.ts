@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { carryStatesToStages, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
-import type { RestCall } from './provision'
+import { CARRY_BUDGET_MS, carryStates, dropStateField, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline, type RestCall, type StagesOutcome } from './provision'
+import { isStaged, unstaged } from '../domain/portals/stages'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
@@ -212,27 +212,40 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
     // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
     // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
-    const refs = { template: result.template, survey: result.survey }
     const adopted = {
       ...(result.adoptedTemplate ? { template: true as const } : {}),
       ...(result.adoptedSurvey ? { survey: true as const } : {}),
     }
+
+    // ⚠ Перенос старого поля «Состояние» в стадии, ревизия 5, — разово. Порядок вокруг сохранения
+    // ссылок у шаблонов и опросов РАЗНЫЙ, и почему — у `carryStates`. Коротко: шаблоны переносятся
+    // ДО того, как приложение начнёт читать их стадией, опросы — ПОСЛЕ, потому что их одновременно
+    // пишет доставка. Предел времени у переноса свой и общий на все его шаги (`CARRY_BUDGET_MS`).
+    const carried: StagesOutcome | null = known.revision < STAGES_REVISION ? { changes: 0, settled: true } : null
+    const clock = { deadline: Date.now() + CARRY_BUDGET_MS, now: Date.now }
+    let template = result.template
+    if (carried !== null && isStaged(template) && !result.createdTemplate
+      && !await carryStates(budgeted, template, 'template', carried, clock)) {
+      // Не перенесли — шаблоны этим прогоном остаются на старом поле: прочитанные стадией,
+      // опубликованные без даты стали бы правимыми черновиками. Донастройка вернётся.
+      template = unstaged(template)
+    }
+
+    // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
+    // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
+    // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
+    const refs = { template, survey: result.survey }
     await storeRefs(budgeted, refs, { revision: known.revision, adopted })
 
-    // ⚠ Перенос старого поля «Состояние» в стадии — ПОСЛЕ сохранения ссылок: только теперь
-    // приложение пишет состояние стадией, и перенос подберёт всё, что записано полем до того
-    // (разбор — у `carryStatesToStages`). Разово, при переходе на ревизию 5.
-    const carried = known.revision < STAGES_REVISION
-      ? await carryStatesToStages(budgeted, refs, { template: result.createdTemplate, survey: result.createdSurvey })
-      : null
-    const unstaged = [
-      ...(refs.template.categoryId === undefined ? ['template'] : []),
-      ...(refs.survey.categoryId === undefined ? ['survey'] : []),
+    const unstagedKinds = [
+      ...(result.template.categoryId === undefined ? ['template'] : []),
+      ...(result.survey.categoryId === undefined ? ['survey'] : []),
     ]
-    if (unstaged.length > 0 && known.revision < STAGES_REVISION) {
-      // Смарт-процесс остался на старом поле: усыновлённый, тариф или отказ портала. Приложение
-      // работает, но канбана и роботов на стадиях у клиента нет — узнать это надо из журнала.
-      logger.warn({ domain: portal.domain, unstaged }, 'штатные стадии не включены — состояние остаётся в поле «Состояние»')
+    if (unstagedKinds.length > 0 && known.revision < STAGES_REVISION) {
+      // Смарт-процесс остался на старом поле: усыновлённый без стадий, тариф или отказ портала.
+      // Приложение работает, но канбана и роботов на стадиях у клиента нет — узнать это надо
+      // из журнала.
+      logger.warn({ domain: portal.domain, unstaged: unstagedKinds }, 'штатные стадии не включены — состояние остаётся в поле «Состояние»')
     }
 
     // ⚠ Только о НОВОМ усыновлении. Признак теперь переживает прогоны, и без этой проверки
@@ -268,6 +281,23 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     )
     if (!builderPlaced) {
       logger.warn({ domain: portal.domain }, 'вкладка конструктора не зарегистрирована')
+    }
+
+    // ⚠ Перенос опросов — ПОСЛЕ сохранения ссылок и после вкладок. После сохранения: с этой минуты
+    // доставка пишет стадией, и перенос подберёт всё, что записано полем до того. После вкладок:
+    // перенос — единственный шаг, чья цена растёт с числом элементов, и упёршись в свой предел,
+    // он не должен оставить портал без вкладок. Шаблоны проходятся второй раз — подобрать
+    // опубликованное между первым проходом и сохранением. Поле удаляется только после чистого
+    // прохода: удаление необратимо.
+    if (carried !== null) {
+      const staged = [
+        { ref: refs.template, kind: 'template' as const, created: result.createdTemplate },
+        { ref: refs.survey, kind: 'survey' as const, created: result.createdSurvey },
+      ]
+      for (const { ref, kind, created } of staged) {
+        if (!isStaged(ref) || created) continue
+        if (await carryStates(budgeted, ref, kind, carried, clock)) await dropStateField(budgeted, ref, carried)
+      }
     }
 
     // Отказ поля своего типа установку не роняет: без виджета результат виден прежними

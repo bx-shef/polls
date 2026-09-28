@@ -229,6 +229,22 @@ export function normalizeFieldName(name: string): string {
   return name.replace(/_/g, '').toLowerCase()
 }
 
+/**
+ * The camelCase name `crm.item.*` uses for our field without `useOriginalUfNames`: `ufCrm10State`.
+ *
+ * ⚠ Нужен ровно там, где без системных полей нельзя, а `select: ['*']` тянул бы лишнее: с флагом
+ * `useOriginalUfNames: 'Y'` портал в узком `select` отдаёт одни пользовательские поля, без `id`
+ * и `stageId` (разбор — «`crm.item.list` с `useOriginalUfNames` молча теряет системные поля»
+ * в `docs/PROCESS.md`). Без флага узкий `select` в camelCase отдаёт и те и другие — замерено 28.09.
+ */
+export function camelFieldName(spTypeId: number, postfix: string): string {
+  return buildFieldName(spTypeId, postfix)
+    .toLowerCase()
+    .split('_')
+    .map((part, index) => index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1))
+    .join('')
+}
+
 /** Вызов, готовый к отправке в портал. Домен их только собирает, отправляет интеграция. */
 export interface PortalCall {
   method: string
@@ -430,7 +446,8 @@ export function hasTemplateExtras(types: readonly Record<string, unknown>[], id:
   return null
 }
 
-function readFlag(value: unknown): boolean | null {
+/** A yes/no flag as the portal sends it: `'Y'`/`'N'` or a boolean. `null` — anything else. */
+export function readFlag(value: unknown): boolean | null {
   if (value === 'Y' || value === true) return true
   if (value === 'N' || value === false) return false
   return null
@@ -900,6 +917,36 @@ export function planResultFieldInCard(current: unknown, spTypeId: number): Recor
   elements.splice(at === -1 ? elements.length : at, 0, { name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 })
 
   return sections.map((section, i) => i === index ? { ...(section as Record<string, unknown>), elements } : section as Record<string, unknown>)
+}
+
+/**
+ * The card layout without our field, or `null` when there is nothing to take out.
+ *
+ * ⚠ Раскладка хранит поля по имени, и удалённое поле в ней остаётся (замерено 28.09). Удаляя поле
+ * «Состояние» миграцией ревизии 5, мы оставили бы в каждой уже сохранённой раскладке имя без поля.
+ * Нашёл `/review` в панели PR #93. Убираем только его и только там, где оно есть: остальное в
+ * раскладке — решение клиента.
+ */
+export function planDropFieldFromCard(current: unknown, spTypeId: number, postfix: string): Record<string, unknown>[] | null {
+  const sections = (current as { result?: unknown } | null)?.result
+  if (!Array.isArray(sections) || sections.length === 0) return null
+
+  const elementsOf = (section: unknown) => (section as { elements?: unknown } | null)?.elements
+  // Не массив — не пишем: `set` перезаписывает раскладку целиком (разбор у `planResultFieldInCard`).
+  if (!sections.every(section => Array.isArray(elementsOf(section)))) return null
+
+  const target = normalizeFieldName(buildFieldName(spTypeId, postfix))
+  const isTarget = (element: unknown) => {
+    const name = (element as { name?: unknown } | null)?.name
+    return typeof name === 'string' && normalizeFieldName(name) === target
+  }
+  const rows = (section: unknown) => elementsOf(section) as unknown[]
+  if (!sections.some(section => rows(section).some(isTarget))) return null
+
+  return sections.map(section => ({
+    ...(section as Record<string, unknown>),
+    elements: rows(section).filter(element => !isTarget(element)),
+  }))
 }
 
 /** Прочитать общую настройку карточки. `scope: 'C'` — общая, не личная. */
