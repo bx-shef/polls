@@ -44,6 +44,7 @@ const link = (over: Partial<IssuedLink> = {}): IssuedLink => ({
   version: 1,
   expiresAt: '2026-10-24T00:00:00+03:00',
   completedAt: '',
+  shownAs: 'sent',
   score: null,
   assignedById: 7,
   createdAt: '2026-09-24T12:00:00+03:00',
@@ -138,11 +139,11 @@ describe('состояние ссылки', () => {
   const PAST = '2026-09-01T00:00:00+03:00'
 
   it('ждём ответа, пока срок не вышел', () => {
-    expect(issuedState(link(), NOW)).toBe('active')
+    expect(issuedState(link(), NOW, 'sent')).toBe('active')
   })
 
   it('истекла, когда срок позади', () => {
-    expect(issuedState(link({ expiresAt: PAST }), NOW)).toBe('expired')
+    expect(issuedState(link({ expiresAt: PAST }), NOW, 'sent')).toBe('expired')
   })
 
   it('ГЛАВНОЕ: отозванная остаётся отозванной и после срока', () => {
@@ -154,7 +155,7 @@ describe('состояние ссылки', () => {
 
   it('пройденная остаётся пройденной и после срока', () => {
     // У неё уже есть ответ клиента, и срок к ней отношения не имеет.
-    expect(issuedState(link({ completedAt: '2026-09-20T03:00:00+03:00', expiresAt: PAST }), NOW)).toBe('completed')
+    expect(issuedState(link({ completedAt: '2026-09-20T03:00:00+03:00', expiresAt: PAST }), NOW, 'sent')).toBe('completed')
   })
 
   it('ГЛАВНОЕ: «пройдена» — по дате прохождения, «отозвана» — по нашей строке, стадия не решает ничего', () => {
@@ -180,6 +181,14 @@ describe('состояние ссылки', () => {
     expect(issuedState(link(), NOW, 'completed')).toBe('completed')
   })
 
+  it('ГЛАВНОЕ: строки нет — ответа не будет, как по отозванной, и гасить нечего', () => {
+    // Выпуск упал между элементом и нашей строкой, или элемент завели руками в канбане: страницы
+    // у него нет. Показанный живым, он висел бы с кнопкой «Отозвать», которая ничего не может.
+    // Нашёл `/code-review` во втором круге панели PR #93.
+    expect(issuedState(link(), NOW, null)).toBe('revoked')
+    expect(isRevocable(link(), NOW, null)).toBe(false)
+  })
+
   it('пройденная не становится отозванной, даже если база и портал разошлись', () => {
     // Ответ клиента в портале — сильнейший факт: «отозвано» задним числом значило бы,
     // что его как будто не было.
@@ -188,8 +197,8 @@ describe('состояние ссылки', () => {
 
   it('без срока не выдумывает просрочку', () => {
     // Поле может быть пустым у элементов, созданных до того, как срок начали писать.
-    expect(issuedState(link({ expiresAt: '' }), NOW)).toBe('active')
-    expect(issuedState(link({ expiresAt: 'не дата' }), NOW)).toBe('active')
+    expect(issuedState(link({ expiresAt: '' }), NOW, 'sent')).toBe('active')
+    expect(issuedState(link({ expiresAt: 'не дата' }), NOW, 'sent')).toBe('active')
   })
 
   it('гасить можно только живую', () => {

@@ -153,7 +153,19 @@ export function report(error: unknown): number {
   // кода выбрать нечем. Печатается КОД — машинное поле ответа, чужого в нём нет.
   const detail = error.code === '' ? '' : ` (${error.code})`
   console.error(`\nНе получилось: ${safeRefusal(error)}${detail}`)
+  const hint = OWN_HINTS[error.code]
+  if (hint !== undefined) console.error(hint)
   return 1
+}
+
+/**
+ * Что делать оператору по нашим собственным кодам отказа.
+ *
+ * Текст наш, чужого в нём нет, — поэтому печатается как есть, в отличие от прозы портала.
+ */
+const OWN_HINTS: Record<string, string> = {
+  SHEF_MIGRATION_PENDING: 'Портал посреди перехода на штатные стадии (ревизия 5): старое поле «Состояние» ещё не перенесено. '
+    + 'Дождитесь донастройки портала — до часа — и повторите команду.',
 }
 
 /**

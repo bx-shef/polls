@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { CARRY_BUDGET_MS, carryStates, dropStateField, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline, type RestCall, type StagesOutcome } from './provision'
+import { CARRY_BUDGET_MS, CARRY_TAIL_RESERVE_MS, carryStates, dropStateField, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline, type RestCall, type StagesOutcome } from './provision'
 import { isStaged, unstaged } from '../domain/portals/stages'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
@@ -199,6 +199,8 @@ async function provisionPortal(portal: {
 export async function provisionWithCall(call: RestCall, domain: string): Promise<'ok' | 'not-admin' | 'no-scope' | 'failed'> {
   const portal = { domain }
   const budgeted = withDeadline(call, PROVISION_BUDGET_MS)
+  // Тот же срок, что у `withDeadline`: предел переноса обязан уложиться в него (`CARRY_TAIL_RESERVE_MS`).
+  const allowedUntil = Date.now() + PROVISION_BUDGET_MS
 
   try {
     if (!await isPortalAdmin(budgeted)) return 'not-admin'
@@ -211,9 +213,6 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH),
       previousRevision: known.revision,
     })
-    // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
-    // портал к ревизии 0 (разбор — у `storeRefs`). И с признаком усыновления: без него уже
-    // следующий прогон считал бы чужой смарт-процесс своим (`StoredProvision.adopted`).
     const adopted = {
       ...(result.adoptedTemplate ? { template: true as const } : {}),
       ...(result.adoptedSurvey ? { survey: true as const } : {}),
@@ -224,12 +223,17 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // ДО того, как приложение начнёт читать их стадией, опросы — ПОСЛЕ, потому что их одновременно
     // пишет доставка. Предел времени у переноса свой и общий на все его шаги (`CARRY_BUDGET_MS`).
     const carried: StagesOutcome | null = known.revision < STAGES_REVISION ? { changes: 0, settled: true } : null
-    const clock = { deadline: Date.now() + CARRY_BUDGET_MS, now: Date.now }
+    const clock = { deadline: Math.min(Date.now() + CARRY_BUDGET_MS, allowedUntil - CARRY_TAIL_RESERVE_MS), now: Date.now }
     let template = result.template
     if (carried !== null && isStaged(template) && !result.createdTemplate
-      && !await carryStates(budgeted, template, 'template', carried, clock)) {
+      && !await carryStates(budgeted, template, 'template', result.stateFields.template, carried, clock)
+      && (known.template === undefined || !isStaged(known.template))) {
       // Не перенесли — шаблоны этим прогоном остаются на старом поле: прочитанные стадией,
       // опубликованные без даты стали бы правимыми черновиками. Донастройка вернётся.
+      // ⚠ Только при ПЕРВОМ переключении. Прошлый прогон, уже сохранивший шаблоны со стадиями, мог и
+      // удалить поле: вернув их на него после одного временного отказа, мы читали бы анкеты
+      // из пустоты — не выпускались бы и правились. Нашли `/review` и `/code-review` во втором круге
+      // панели PR #93. Поля нет — `carryStates` чистый и сюда не доходит.
       template = unstaged(template)
     }
 
@@ -298,7 +302,8 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       ]
       for (const { ref, kind, created } of staged) {
         if (!isStaged(ref) || created) continue
-        if (await carryStates(budgeted, ref, kind, carried, clock)) await dropStateField(budgeted, ref, carried)
+        const field = result.stateFields[kind]
+        if (await carryStates(budgeted, ref, kind, field, carried, clock)) await dropStateField(budgeted, ref, field, carried, clock)
       }
     }
 

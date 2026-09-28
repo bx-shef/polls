@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildCarryListCall,
   isIssuable,
   planStageMoves,
+  readCarryItems,
   planStages,
   readDefaultCategoryId,
   readStages,
@@ -180,7 +182,7 @@ describe('перенос старого поля «Состояние» в ст�
       { id: 20, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'draft', UF_CRM_8_PUBLISHED_AT: null, updatedTime: '2026-09-25T10:00:00+03:00' },
     ]
 
-    const calls = planStageMoves(TEMPLATE, items, templateMoveOf(TEMPLATE))
+    const calls = planStageMoves(TEMPLATE, items, templateMoveOf(TEMPLATE, '2026-09-28'))
 
     expect(calls.map(call => [call.params.id, call.params.fields])).toEqual([
       [4, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
@@ -190,5 +192,55 @@ describe('перенос старого поля «Состояние» в ст�
     const moved = { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-21' }
     expect(isIssuable(TEMPLATE, moved)).toBe(true)
     expect(TEMPLATE_STAGES.published.code).toBe('SUCCESS')
+  })
+
+  it('шаблон не в первой стадии: дату досылаем, стадию не трогаем; правка не прочиталась — день сегодняшний', () => {
+    const items = [
+      { id: 4, stageId: 'DT1038_14:FAIL', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-21T14:05:00+03:00' },
+      { id: 5, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '', updatedTime: 'не дата' },
+      { id: 6, stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '2026-09-20', updatedTime: '2026-09-25T10:00:00+03:00' },
+    ]
+
+    expect(planStageMoves(TEMPLATE, items, templateMoveOf(TEMPLATE, '2026-09-28')).map(call => [call.params.id, call.params.fields])).toEqual([
+      [4, { UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
+      [5, { stageId: 'DT1038_14:SUCCESS', UF_CRM_8_PUBLISHED_AT: '2026-09-28' }],
+    ])
+  })
+})
+
+describe('отбор переноса', () => {
+  it('ГЛАВНОЕ: имена полей в отборе и разборе — буквальные, в camelCase портала', () => {
+    // ⚠ Подделка в тестах переноса пересчитывает camelCase своей копией алгоритма, и неверное имя
+    // «Даты публикации» прошло бы их все: перенос перезаписал бы настоящую дату днём правки.
+    // Имена здесь — буквально, как замерено на портале 28.09. Нашёл `/code-review` во втором круге.
+    expect(buildCarryListCall(TEMPLATE, 'template', 0).params.select)
+      .toEqual(['id', 'stageId', 'updatedTime', 'ufCrm8State', 'ufCrm8PublishedAt', 'ufCrm8Code', 'ufCrm8Version', 'ufCrm8Schema'])
+
+    const read = readCarryItems({ result: { items: [
+      { id: 4, stageId: 'DT1038_14:NEW', updatedTime: '2026-09-25T10:00:00+03:00', ufCrm8State: 'published', ufCrm8PublishedAt: '2026-09-20T03:00:00+03:00' },
+    ] } }, TEMPLATE, 'template')
+
+    expect(read).toEqual([expect.objectContaining({ id: 4, UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00' })])
+    // Датированная так и уходит без даты в записи: настоящую дату не трогаем.
+    expect(planStageMoves(TEMPLATE, read!, templateMoveOf(TEMPLATE, '2026-09-28'))[0]!.params.fields).toEqual({ stageId: 'DT1038_14:SUCCESS' })
+  })
+
+  it('строка, которую не прочитать, делает весь ответ непрочитанным — не пропускается молча', () => {
+    // Пропусти мы её, перенос вышел бы «чистым» без её перевода, и поле удалилось бы с её состоянием.
+    const bad = [null, 'строка', { stageId: 'DT1040_16:NEW', ufCrm10State: 'completed' }, { id: 5, ufCrm10State: 'что-то' }]
+    for (const row of bad) {
+      expect(readCarryItems({ result: { items: [row] } }, SURVEY, 'survey')).toBeNull()
+    }
+    expect(readCarryItems({ result: {} }, SURVEY, 'survey')).toBeNull()
+    expect(readCarryItems({ result: { items: [] } }, SURVEY, 'survey')).toEqual([])
+  })
+})
+
+describe('выпуск без стадий у элемента', () => {
+  it('администратор выключил стадии — сужать нечем, выпуск решает дата', () => {
+    // ⚠ Портал тогда прячет `stageId` (замерено 28.09), и без этой ветки выпуск молча встал бы
+    // целиком. Нашёл `/code-review` во втором круге панели PR #93.
+    expect(isIssuable(TEMPLATE, { UF_CRM_8_PUBLISHED_AT: '2026-09-20' })).toBe(true)
+    expect(isIssuable(TEMPLATE, { UF_CRM_8_PUBLISHED_AT: '' })).toBe(false)
   })
 })

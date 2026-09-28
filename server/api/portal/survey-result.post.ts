@@ -2,7 +2,8 @@ import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyItemAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import { readAllPublishedTemplates } from '../../b24/read-templates'
-import { buildFieldName } from '../../domain/portals/smart-processes'
+import { issuedState, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { buildFieldName, type SmartProcessRef } from '../../domain/portals/smart-processes'
 import { isSurveyCard } from '../../domain/portals/userfield-type'
 import type { SurveyTemplate } from '../../domain/surveys/model'
 import { buildResultSections, readAnswersField, readScoresField } from '../../domain/surveys/result-view'
@@ -73,7 +74,7 @@ export default defineEventHandler(async (event) => {
   // виджет не обещал ответа по истёкшей или отозванной ссылке, по которой его уже не будет.
   if (answers === null) {
     const status = (await readLinkStatuses(session.portal.id, [itemId])).get(itemId) ?? null
-    return { ok: true as const, completed: false as const, state: waitingState(status, field('EXPIRES_AT'), new Date()) }
+    return { ok: true as const, completed: false as const, state: waitingState(access.item, survey, status, new Date()) }
   }
 
   const code = typeof field('TEMPLATE_CODE') === 'string' ? (field('TEMPLATE_CODE') as string).trim() : ''
@@ -100,17 +101,26 @@ export default defineEventHandler(async (event) => {
 })
 
 /**
- * Why no answer is coming: `revoked`, `expired`, or empty — still waiting.
+ * Why there is no answer in the card yet: on its way, revoked, expired, or empty — still waiting.
  *
- * ⚠ «Отозвана» — по нашей строке `link_index`, а не по стадии: страницу закрывает она, а стадию
- * с ревизии 5 двигают в канбане. Виджет, прочитав стадию, обещал бы «ответа не будет» по живой
- * ссылке. Разбор — у `issuedState`. «Истекла» — по сроку, как во вкладке сделки: статусом
- * истечение не отмечается нигде.
+ * ⚠ ТЕ ЖЕ ПРАВИЛА, ЧТО У ВКЛАДКИ СДЕЛКИ, — через `issuedState`, а не своей копией. Первая редакция
+ * повторила проверку срока и забыла порядок: ответ, принятый до срока и ещё не доставленный, после
+ * срока показывался как «клиент не ответил», пока вкладка звала его пройденным. Нашли `/review`
+ * и `/code-review` во втором круге панели PR #93. «Отозвана» — по нашей строке, а не по стадии:
+ * страницу закрывает она, а стадию двигают в канбане (разбор у `issuedState`).
  */
-function waitingState(status: string | null, expiresAt: unknown, now: Date): '' | 'revoked' | 'expired' {
-  if (status === 'revoked') return 'revoked'
-  const expires = typeof expiresAt === 'string' ? Date.parse(expiresAt) : Number.NaN
-  return !Number.isNaN(expires) && expires < now.getTime() ? 'expired' : ''
+function waitingState(
+  item: Record<string, unknown>,
+  survey: SmartProcessRef,
+  status: string | null,
+  now: Date,
+): '' | 'delivering' | 'revoked' | 'expired' {
+  const link = readIssuedLinks({ result: { items: [item] } }, survey)[0]
+  if (link === undefined) return ''
+  const state = issuedState(link, now, status)
+  // Ответа в карточке нет, а ссылка «пройдена» — значит, ответ принят и ещё едет в портал.
+  if (state === 'completed') return 'delivering'
+  return state === 'active' ? '' : state
 }
 
 /** Строго положительное целое либо `null`. Пустота — не ноль. */

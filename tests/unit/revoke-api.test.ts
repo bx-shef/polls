@@ -128,11 +128,34 @@ describe('отзыв ссылки', () => {
     expect(stageWrites()).toEqual([])
   })
 
-  it('уже отозванную базой второй раз не гасит', async () => {
+  it('уже отозванную базой и на портале второй раз не гасит', async () => {
     linkStatus = 'revoked'
+    item = { ...item, stageId: 'DT1040_16:FAIL' }
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: false, reason: 'not-revocable' })
     expect(probe.revoked).toEqual([])
+    expect(stageWrites()).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: наша строка погашена, а «Отозвана» до портала не дошла — повторное нажатие дописывает', async () => {
+    // ⚠ Прошлый отзыв упал между двумя записями: ссылка уже не открывается, а элемент «Отправлен».
+    // Без этой ветки повтор отвечал «нечего гасить», и роботы клиента на «Отозвана» не сработали бы
+    // никогда. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+    linkStatus = 'revoked'
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(probe.revoked).toEqual([])
+    expect(stageWrites().map(one => one.params.fields)).toEqual([{ stageId: 'DT1040_16:FAIL' }])
+  })
+
+  it('элемент без нашей строки — страницы нет, гасить нечего', async () => {
+    linkStatus = null
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: false, reason: 'not-revocable' })
+    expect(probe.revoked).toEqual([])
+    expect(stageWrites()).toEqual([])
   })
 })

@@ -5,7 +5,7 @@ import {
   DEAL_ENTITY_TYPE_ID,
 } from '../portals/smart-processes'
 import type { SurveyChoice } from '../../../shared/survey-choice'
-import { isIssuable, surveyStateFields, templateStateOf } from '../portals/stages'
+import { isFrozen, isIssuable, surveyStateFields, templateStateOf } from '../portals/stages'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
 
@@ -94,8 +94,7 @@ export function readPublishedTemplates(
 
   for (const raw of items) {
     const item = raw as Record<string, unknown>
-    const state = templateStateOf(template, item)
-    if (which === 'issuable' ? !isIssuable(template, item) : state !== 'published' && state !== 'retired') continue
+    if (which === 'issuable' ? !isIssuable(template, item) : !isFrozen(templateStateOf(template, item))) continue
 
     const code = typeof item[codeField] === 'string' ? item[codeField] : ''
     const version = Number(item[versionField])

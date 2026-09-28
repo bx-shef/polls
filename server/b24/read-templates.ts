@@ -25,7 +25,7 @@ import type { RestCall } from './provision'
  */
 const MAX_PAGES = 20
 
-/** Все опубликованные шаблоны портала: для выпуска или когда-либо опубликованные (`readPublishedTemplates`). */
+/** Reads every published template of the portal: issuable now, or ever published (`readPublishedTemplates`). */
 export async function readAllPublishedTemplates(
   call: RestCall,
   template: SmartProcessRef,

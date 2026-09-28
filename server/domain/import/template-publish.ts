@@ -340,7 +340,7 @@ export function buildListSurveysCall(survey: SmartProcessRef, start = 0): Portal
   }
 }
 
-/** Досчитать сводку использования по странице «Опросов». Копится по страницам. */
+/** Adds one page of survey elements to the usage summary; accumulates across pages. */
 export function tallySurveyUsage(
   response: unknown,
   survey: SmartProcessRef,

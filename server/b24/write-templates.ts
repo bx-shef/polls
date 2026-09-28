@@ -12,7 +12,7 @@ import { findTypeByTitle, SURVEY_SP_TITLES, TEMPLATE_SP_TITLES, readFlag, readNe
 import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
-import { listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
+import { hasStateField, listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
 import { buildListCategoriesCall, readDefaultCategoryId } from '../domain/portals/stages'
 import { logger } from '../utils/logger'
 
@@ -39,6 +39,9 @@ const MAX_PAGES = 50
 
 /** Наш код отказа: портал ответил успехом, но элемента не создал. */
 export const PORTAL_CREATED_NOTHING = 'SHEF_CREATED_NOTHING'
+
+/** Наш код отказа: портал посреди перехода на штатные стадии, команде работать рано (`withFunnel`). */
+export const PORTAL_MIGRATION_PENDING = 'SHEF_MIGRATION_PENDING'
 
 /** Чем кончился перенос. Обе половины идут в отчёт клиенту, а не только успех. */
 export interface TemplateWriteResult extends TemplateWritePlan {
@@ -186,6 +189,15 @@ async function withFunnel(
   // ⚠ Флаг портал отдаёт и `'Y'`, и `true` (разбор у `readFlag`): сравнив только с `'Y'`, команда
   // на `true` молча вернулась бы к удалённому полю. Нашёл `/review` в панели PR #93.
   if (readFlag(type?.isStagesEnabled) !== true) return ref
+  // ⚠ СТАДИИ ВКЛЮЧЕНЫ, А СТАРОЕ ПОЛЕ ЕЩЁ НА МЕСТЕ — портал посреди миграции ревизии 5, и команда
+  // отказывается работать. Приложение в этом окне может держать шаблоны на старом поле (перенос
+  // не прошёл), а может уже читать их стадией; вебхуку сохранённые ссылки недоступны, и угадать
+  // нечем. Угадав не так, `publish:templates` прочитала бы опубликованную полем анкету черновиком
+  // и переписала бы название версии, по которой уже собраны ответы. Окно — до часа: миграцию
+  // докатывает донастройка. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+  if (await hasStateField(call, ref)) {
+    throw new PortalError(PORTAL_MIGRATION_PENDING, 'портал посреди перехода на штатные стадии')
+  }
   const list = buildListCategoriesCall(ref)
   const categoryId = readDefaultCategoryId(await call(list.method, list.params))
   if (categoryId === null) {

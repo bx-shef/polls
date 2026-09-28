@@ -297,6 +297,15 @@ export interface ProvisionResult extends SmartProcessRefs {
    * вокруг сохранения идентификаторов у него свой для шаблонов и опросов: почему — там.
    */
   stages: StagesOutcome
+  /**
+   * Our old `STATE` field of each smart process, as the field listing of this run found it; `null` — none.
+   *
+   * ⚠ Берётся из того же листания полей, что и заведение недостающих, — а не отдельным вызовом
+   * перед переносом. Отдельный вызов делал перенос зависимым от ещё одного отказа, и по его
+   * временному отказу приложение не знало, есть ли поле вообще: возвращать ли шаблоны на старое
+   * поле или его уже нет. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+   */
+  stateFields: { template: ExistingField | null, survey: ExistingField | null }
 }
 
 /** Итог настройки стадий и переноса на них старого поля «Состояние» (ревизия 5). */
@@ -324,6 +333,17 @@ export interface StagesOutcome {
  * ревизия не отмечается, и следующая донастройка продолжит: переведённые из отбора уже выпали.
  */
 export const CARRY_BUDGET_MS = 15_000
+
+/**
+ * What the carry leaves of the whole provisioning budget for the steps after it, ms.
+ *
+ * ⚠ Предел переноса — внутри общего, а не рядом. Первая редакция отсчитывала свои пятнадцать секунд
+ * от конца обустройства, и на медленном портале (0,7 с на вызов) перенос упирался в общий предел:
+ * прогон кончался `failed`, портал уходил в `degraded` — ровно то, от чего свой предел заводился.
+ * После переноса ещё удаление поля, раскладка карточки и отметка ревизии — до четырёх вызовов.
+ * Нашли `/review` и `/code-review` во втором круге панели PR #93 — пробой на подделке портала.
+ */
+export const CARRY_TAIL_RESERVE_MS = 8_000
 
 /** When the carry must stop starting new calls. `now` is injectable for tests. */
 export interface CarryClock {
@@ -874,7 +894,24 @@ export async function provisionSmartProcesses(
     crmFields,
     ownership,
     stages,
+    stateFields: { template: stateFieldIn(templateFields.existing, template.ref), survey: stateFieldIn(surveyFields.existing, survey.ref) },
   }
+}
+
+/**
+ * Whether our old `STATE` field is still on the smart process — the carry of revision 5 has not ended.
+ *
+ * Для операторских команд: им сохранённые ссылки недоступны, и понять, закончилась ли миграция,
+ * они могут только по самому полю (разбор у `withFunnel`).
+ */
+export async function hasStateField(call: RestCall, ref: SmartProcessRef): Promise<boolean> {
+  return stateFieldIn(await listAllFields(call, ref.id), ref) !== null
+}
+
+/** Our `STATE` field among the fields a smart process had before this run, if any. */
+function stateFieldIn(fields: readonly ExistingField[], ref: SmartProcessRef): ExistingField | null {
+  const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
+  return fields.find(field => normalizeFieldName(field.name) === name) ?? null
 }
 
 /** What the one-off revision 4 migration works from: all of it is already read by the steps before it. */
@@ -1115,16 +1152,19 @@ async function setUpStages(
   if (isStaged(ref)) return sp.adopted ? ref : await nameStages(call, ref, specs, outcome)
 
   if (sp.adopted) {
-    try {
-      if (!await stagesAlreadyOn(call, ref, types)) return ref
-    }
-    catch (error) {
-      refuseStages(outcome, 'стадии усыновлённого', error, ref)
-      return ref
-    }
+    // ⚠ НЕ УЗНАЛИ — ОБУСТРОЙСТВО ПАДАЕТ, а не идёт дальше старым полем. Здесь, в отличие от своего
+    // смарт-процесса, поля «Состояние» может уже не быть: пойдя дальше без воронки, обустройство
+    // завело бы его заново, пустым, и до следующей донастройки все опубликованные анкеты читались бы
+    // из пустоты — не выпускались бы и правились. Упавшее обустройство — это «ещё настраивается»
+    // и повтор, а не чтение неправды. Нашёл `/code-review` во втором круге панели PR #93.
+    if (!await stagesAlreadyOn(call, ref, types)) return ref
+    const list = buildListCategoriesCall(ref)
+    const categoryId = readDefaultCategoryId(await call(list.method, list.params))
+    if (categoryId === null) throw new Error('стадии усыновлённого смарт-процесса включены, а воронка по умолчанию не найдена')
+    return { ...ref, categoryId }
   }
   // Созданный этим запуском уже со стадиями (`buildCreateSmartProcessCall`); включать незачем.
-  else if (!sp.created) {
+  if (!sp.created) {
     const enable = buildEnableStagesCall(ref)
     try {
       await call(enable.method, enable.params)
@@ -1152,7 +1192,7 @@ async function setUpStages(
     return ref
   }
 
-  return sp.adopted ? ref : await nameStages(call, ref as StagedRef, specs, outcome)
+  return await nameStages(call, ref as StagedRef, specs, outcome)
 }
 
 /**
@@ -1207,6 +1247,9 @@ async function nameStages(
 /**
  * Carries the old `STATE` field of one smart process over to its stages. `true` — nothing is left.
  *
+ * `field` — our `STATE` field as this run's field listing found it (`ProvisionResult.stateFields`);
+ * `null` — переносить нечего: поле удалил прошлый прогон или его не было вовсе.
+ *
  * Revision 5, once; the caller decides the order around saving the refs (`register.ts`):
  * - шаблоны переносятся ДО того, как приложение начнёт читать их стадией, — иначе опубликованные,
  *   ещё стоящие в первой стадии без даты, прочитались бы правимыми черновиками;
@@ -1214,27 +1257,26 @@ async function nameStages(
  *   переносом и сохранением, остался бы «Отправленным» навсегда. Шаблоны проходятся второй раз
  *   тогда же — подобрать опубликованное в этом промежутке.
  *
- * ⚠ ЛЮБОЙ НЕЗАКОНЧЕННЫЙ ИСХОД ДЕРЖИТ РЕВИЗИЮ (`StagesOutcome.settled`): отказ, свой предел
- * времени (`CARRY_BUDGET_MS`), предел страниц. Поле при этом остаётся — удаление необратимо.
+ * ⚠ НЕЗАКОНЧЕННЫЙ ИСХОД — `false`, и поле тогда не удаляется: удаление необратимо. Держит ли он
+ * ревизию, решает `unfinished`: свой предел времени (`CARRY_BUDGET_MS`), предел страниц, ответ,
+ * который не прочитать, и повторимый отказ — держат, отказ, который повтор не вылечит, — нет.
  *
- * Поля «Состояние» нет — переносить нечего: его уже удалил прошлый прогон. Отбор по полю,
- * которого нет, портал отвергает (замерено 28.09), поэтому наличие проверяется до отбора.
+ * ⚠ Строка отбора, в которой не видно того, по чему отбирали, — тоже незаконченный перенос, а не
+ * «переводить нечего». Иначе расхождение формы (другое написание поля, другой `id`) выглядело бы
+ * чистым проходом без единого перевода, и поле удалилось бы вместе с состоянием всех элементов.
+ * Нашли `/review` и `/code-review` во втором круге панели PR #93.
  */
 export async function carryStates(
   call: RestCall,
   ref: StagedRef,
   kind: CarryKind,
+  field: ExistingField | null,
   outcome: StagesOutcome,
   clock: CarryClock,
 ): Promise<boolean> {
-  try {
-    if (await findStateField(call, ref) === undefined) return true
-  }
-  catch (error) {
-    return unfinished(outcome, 'перенос состояния', ref, error)
-  }
+  if (field === null) return true
 
-  const moveOf = kind === 'template' ? templateMoveOf(ref) : surveyMoveOf(ref)
+  const moveOf = kind === 'template' ? templateMoveOf(ref, new Date(clock.now()).toISOString().slice(0, 10)) : surveyMoveOf(ref)
   let clean = true
   let after = 0
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -1248,7 +1290,7 @@ export async function carryStates(
       return unfinished(outcome, 'перенос состояния', ref, error)
     }
     const items = readCarryItems(response, ref, kind)
-    if (items === null) return unfinished(outcome, 'перенос состояния: ответ не той формы', ref)
+    if (items === null) return unfinished(outcome, 'перенос состояния: ответ не прочитать', ref)
     if (kind === 'template') reportUnchecked(ref, items)
     for (const move of planStageMoves(ref, items, moveOf)) {
       if (clock.now() >= clock.deadline) return unfinished(outcome, 'перенос состояния: время вышло', ref)
@@ -1260,8 +1302,10 @@ export async function carryStates(
         clean = unfinished(outcome, 'перенос состояния', ref, error)
       }
     }
+    if (readNextOffset(response) === null) return clean
+    // Портал говорит «есть ещё», а курсор не двигается — дальше не прочитать, это не «всё».
     const last = Number(items.at(-1)?.id)
-    if (readNextOffset(response) === null || !Number.isInteger(last) || last <= after) return clean
+    if (!Number.isInteger(last) || last <= after) return unfinished(outcome, 'перенос состояния: листание не продвигается', ref)
     after = last
   }
   // Упёрлись в предел страниц — перенесли не всё, и поле удалять нельзя.
@@ -1274,16 +1318,31 @@ export async function carryStates(
  *
  * ⚠ Только после ЧИСТОГО переноса — решение владельца «свои упраздни». Удаление необратимо:
  * не переведя хоть один элемент, мы потеряли бы его состояние вместе с полем.
+ *
+ * ⚠ У УСЫНОВЛЁННОГО — ТОЖЕ, и это решение, а не недосмотр (безопасность во втором круге панели
+ * PR #93 спросила прямо). Поле называется `UF_CRM_<id>_STATE` по номеру самого смарт-процесса,
+ * и заводим его мы; перенос переводит только элементы с нашими значениями в нём, то есть наши.
+ * Чаще всего усыновлённый — наш же, переживший переустановку посреди миграции, и оставить ему
+ * поле значило бы не довести миграцию никогда.
  */
-export async function dropStateField(call: RestCall, ref: StagedRef, outcome: StagesOutcome): Promise<void> {
+export async function dropStateField(
+  call: RestCall,
+  ref: StagedRef,
+  field: ExistingField | null,
+  outcome: StagesOutcome,
+  clock: CarryClock,
+): Promise<void> {
+  if (field === null) return
+  if (clock.now() >= clock.deadline) {
+    unfinished(outcome, 'удаление поля «Состояние»: время вышло', ref)
+    return
+  }
+  if (field.id === 0) {
+    // Удалять нечем: портал не назвал идентификатор настроек. Поле остаётся, и это видно.
+    logger.warn({ typeId: ref.id }, 'стадии: поле «Состояние» не удалено — портал не назвал его идентификатор')
+    return
+  }
   try {
-    const field = await findStateField(call, ref)
-    if (field === undefined) return
-    if (field.id === 0) {
-      // Удалять нечем: портал не назвал идентификатор настроек. Поле остаётся, и это видно.
-      logger.warn({ typeId: ref.id }, 'стадии: поле «Состояние» не удалено — портал не назвал его идентификатор')
-      return
-    }
     await call('userfieldconfig.delete', { moduleId: 'crm', id: field.id })
     outcome.changes++
   }
@@ -1306,12 +1365,6 @@ export async function dropStateField(call: RestCall, ref: StagedRef, outcome: St
   }
 }
 
-/** Our `STATE` field of a smart process, if it is still there. */
-async function findStateField(call: RestCall, ref: SmartProcessRef): Promise<ExistingField | undefined> {
-  const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
-  return (await listAllFields(call, ref.id)).find(one => normalizeFieldName(one.name) === name)
-}
-
 /**
  * Tells the log about templates published before the schema check existed, and the carry keeps them.
  *
@@ -1319,26 +1372,51 @@ async function findStateField(call: RestCall, ref: SmartProcessRef): Promise<Exi
  * схемы, которую с #77 делает публикация. Выпускать по ним можно было и до ревизии 5, так что
  * перенос ничего не расширяет; но и молча принять их за проверенные нельзя. В журнал — коды
  * и версии, без схем: схема — текст клиента. Нашла безопасность в панели PR #93.
+ *
+ * ⚠ Только журнал, и потому НИКОГДА не бросает. Проверка схемы рассчитана на схемы из конструктора,
+ * а здесь бывают правленные руками — без названия или диапазонов; брошенное ею исключение уронило бы
+ * всё обустройство, и миграция не закончилась бы никогда. Такая схема — тоже «не проходит проверку».
+ * Нашёл `/review` во втором круге панели PR #93.
  */
 function reportUnchecked(ref: StagedRef, items: readonly Record<string, unknown>[]): void {
+  const field = (postfix: string) => buildFieldName(ref.id, postfix)
+  const label = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? String(value) : '?'
   const unchecked = items.flatMap((item) => {
-    if (typeof item[buildFieldName(ref.id, 'PUBLISHED_AT')] === 'string' && item[buildFieldName(ref.id, 'PUBLISHED_AT')] !== '') return []
-    const schema = parseTemplateSchema(item[buildFieldName(ref.id, 'SCHEMA')])
-    const broken = schema === null || validateTemplate(schema).some(problem => problem.level === 'error')
-    return broken ? [`${String(item[buildFieldName(ref.id, 'CODE')])} v${String(item[buildFieldName(ref.id, 'VERSION')])}`] : []
+    const dated = item[field('PUBLISHED_AT')]
+    if (typeof dated === 'string' && dated !== '') return []
+    let broken: boolean
+    try {
+      const schema = parseTemplateSchema(item[field('SCHEMA')])
+      broken = schema === null || validateTemplate(schema).some(problem => problem.level === 'error')
+    }
+    catch {
+      broken = true
+    }
+    return broken ? [`${label(item[field('CODE')])} v${label(item[field('VERSION')])}`] : []
   })
   if (unchecked.length > 0) {
     logger.warn({ typeId: ref.id, unchecked }, 'стадии: опубликованные до проверки схемы анкеты не проходят её — выпуск по ним сохранён')
   }
 }
 
-/** Marks the carry unfinished — revision 5 stays pending — and says why. Returns `false`. */
+/**
+ * Marks the carry unfinished and says why. Returns `false`.
+ *
+ * ⚠ Ревизию держит всё, что лечится повтором: свой предел времени, предел страниц, ответ, который
+ * не прочитать, повторимый отказ портала. Отказ, который повтор не вылечит (права, обязательное
+ * по стадии поле клиента на одном элементе), — ошибкой в журнал, и ревизию он НЕ держит: иначе
+ * один такой элемент гонял бы донастройку портала каждый час бесконечно. Тот же размен, что
+ * у `refuse` ревизии 4. Поле в обоих случаях остаётся: перенос не чистый. Нашёл `/code-review`
+ * во втором круге панели PR #93.
+ */
 function unfinished(outcome: StagesOutcome, step: string, ref: SmartProcessRef, error?: unknown): false {
+  const reason = error === undefined ? {} : { reason: safeRefusal(error) }
+  if (error !== undefined && !isRetryableRefusal(error)) {
+    logger.error({ step, typeId: ref.id, ...reason }, 'стадии: перенос не доделан, портал отказал — повтор не поможет')
+    return false
+  }
   outcome.settled = false
-  logger.warn(
-    { step, typeId: ref.id, ...(error === undefined ? {} : { reason: safeRefusal(error) }) },
-    'стадии: перенос не доделан, донастройка вернётся',
-  )
+  logger.warn({ step, typeId: ref.id, ...reason }, 'стадии: перенос не доделан, донастройка вернётся')
   return false
 }
 

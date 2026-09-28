@@ -225,6 +225,25 @@ describe('результат', () => {
     expect(await handler({})).toEqual({ ok: true, completed: false, state: 'revoked' })
   })
 
+  it('ГЛАВНОЕ: ответ принят, но ещё не доставлен — «едет в портал», а не «клиент не ответил»', async () => {
+    // ⚠ Первая редакция повторила проверку срока и забыла порядок: после срока такой ответ
+    // показывался как «не ответил», пока вкладка звала его пройденным. Теперь правила одни —
+    // `issuedState`. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+    linkStatus = 'completed'
+    access = { ok: true, item: item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2, EXPIRES_AT: '2026-09-01T00:00:00+03:00' }) }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true, completed: false, state: 'delivering' })
+  })
+
+  it('строки нет — ответа не будет, как по отозванной', async () => {
+    linkStatus = null
+    access = { ok: true, item: item({ TEMPLATE_CODE: 'brand', TEMPLATE_VERSION: 2 }) }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true, completed: false, state: 'revoked' })
+  })
+
   it('ГЛАВНОЕ: стадия «Отозвана» при живой ссылке — виджет ждёт ответа, а не хоронит его', async () => {
     // ⚠ Стадию с ревизии 5 двигает в канбане любой сотрудник, а страницу закрывает наша строка.
     // Прочитав отзыв со стадии, виджет сказал бы «ответа не будет» — а клиент ответит, ссылка

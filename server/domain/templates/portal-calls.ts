@@ -19,17 +19,10 @@ import { templateStateFields, templateStateOf } from '../portals/stages'
 /** Состояние шаблона: черновик правится, опубликованная и снятая с публикации версии неизменяемы. */
 export const TEMPLATE_STATE_DRAFT = 'draft'
 export const TEMPLATE_STATE_PUBLISHED = 'published'
-export const TEMPLATE_STATE_RETIRED = 'retired'
 
-/**
- * Whether a template version must not change: published, or published once and retired since.
- *
- * ⚠ Снятая с публикации — тоже неизменяема: по ней уже выпускали ссылки и собирали ответы.
- * «Снял с публикации, поправил, вернул» склеило бы две разные анкеты под одним номером.
- */
-export function isFrozen(state: string): boolean {
-  return state === TEMPLATE_STATE_PUBLISHED || state === TEMPLATE_STATE_RETIRED
-}
+// Правило неизменяемости живёт рядом с состояниями шаблона — в `stages.ts`; отсюда его берут роуты
+// конструктора и вкладка. Одна копия: вторая разошлась бы с первой при новом неизменяемом состоянии.
+export { isFrozen } from '../portals/stages'
 
 /** Шаблон, каким его открывает конструктор. */
 export interface TemplateItem {

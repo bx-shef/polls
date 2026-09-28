@@ -113,6 +113,46 @@ describe('настройка стадий', () => {
     expect(added.some(name => name.endsWith('_STATE'))).toBe(false)
   })
 
+  it('ГЛАВНОЕ: усыновлённый прошлым прогоном — стадии узнаются у самого типа, и тоже только чтением', async () => {
+    // Оба идентификатора сохранены — список типов не листается, и спросить можно только `crm.type.get`.
+    // Эту ветку не держал ни один тест: нашёл тестировщик во втором круге панели PR #93.
+    const p = portal({
+      'crm.type.get': (params: Record<string, unknown>) => ({ result: { type: {
+        isStagesEnabled: params.id === 10 ? 'Y' : 'N',
+        relations: { parent: [{ entityTypeId: 2, isChildrenListEnabled: 'Y' }], child: [] },
+      } } }),
+    })
+
+    const result = await provisionSmartProcesses(
+      p.call,
+      { template: TEMPLATE, survey: SURVEY, adopted: { survey: true } },
+      { previousRevision: 4 },
+    )
+
+    expect(result.survey).toEqual({ ...SURVEY, categoryId: 16 })
+    expect(p.of('crm.type.get').map(one => one.params.id)).toContain(10)
+    expect(p.of('crm.type.update').filter(one => one.params.id === 10 && 'isStagesEnabled' in (one.params.fields as object))).toEqual([])
+    expect(p.of('crm.status.list').map(one => (one.params.filter as { ENTITY_ID: string }).ENTITY_ID)).not.toContain('DYNAMIC_1040_STAGE_16')
+  })
+
+  it('ГЛАВНОЕ: усыновлённый со стадиями, воронка не прочиталась — обустройство падает, а не заводит поле заново', async () => {
+    // ⚠ Пойдя дальше старым полем, обустройство завело бы «Состояние» заново, пустым, и до следующей
+    // донастройки анкеты читались бы из пустоты. Нашёл `/code-review` во втором круге панели PR #93.
+    const p = portal({
+      'app.option.get': { result: '' },
+      'crm.type.list': { result: { types: [
+        { id: 8, entityTypeId: 1038, title: '[sh] Шаблон опроса', isStagesEnabled: 'Y' },
+        { id: 10, entityTypeId: 1040, title: '[sh] Результат опросов', isStagesEnabled: 'Y' },
+      ] } },
+      'crm.category.list': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+    })
+
+    await expect(provisionSmartProcesses(p.call, {}, { previousRevision: 0 })).rejects.toThrow()
+    expect(p.of('userfieldconfig.add')).toEqual([])
+  })
+
   it('тариф не дал включить стадии — смарт-процесс остаётся на старом поле, и это ошибка в журнале', async () => {
     const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
     const p = portal({
@@ -195,17 +235,15 @@ describe('настройка стадий', () => {
 describe('перенос старого поля «Состояние»', () => {
   const STAGED_TEMPLATE = { ...TEMPLATE, categoryId: 14 }
   const STAGED_SURVEY = { ...SURVEY, categoryId: 16 }
-  const FIELDS = {
-    result: { fields: [
-      { id: 71, fieldName: 'UF_CRM_10_STATE', userTypeId: 'string', editInList: 'N' },
-      { id: 72, fieldName: 'UF_CRM_8_STATE', userTypeId: 'string', editInList: 'N' },
-    ] },
-  }
-  const clock = () => ({ deadline: Number.POSITIVE_INFINITY, now: () => 0 })
+  /** Наши поля «Состояние» — такими их нашло листание полей обустройства (`stateFields`). */
+  const SURVEY_FIELD = { id: 71, name: 'UF_CRM_10_STATE', userTypeId: 'string', editInList: 'N' as const, label: '' }
+  const TEMPLATE_FIELD = { id: 72, name: 'UF_CRM_8_STATE', userTypeId: 'string', editInList: 'N' as const, label: '' }
+  const clock = () => ({ deadline: Number.POSITIVE_INFINITY, now: () => Date.parse('2026-09-28T10:00:00Z') })
+  const fresh = () => ({ changes: 0, settled: true })
 
   /**
-   * Подделка списка элементов, которая ОТБИРАЕТ, как портал: по стадии, значению поля и `>id`,
-   * отдаёт поля в camelCase и помнит переводы — следующий отбор их уже не находит.
+   * Подделка списка элементов, которая ОТБИРАЕТ, как портал: по стадии (если спросили), значению
+   * поля и `>id`, отдаёт поля в camelCase и помнит переводы — следующий отбор их уже не находит.
    */
   function stored(items: Record<number, Record<string, unknown>[]>, pageSize = 50) {
     const camel = (name: string) => name.toLowerCase().split('_').map((part, i) => i === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)).join('')
@@ -215,7 +253,7 @@ describe('перенос старого поля «Состояние»', () => 
       const wanted = ([] as unknown[]).concat(filter[stateKey])
       const matches = (items[params.entityTypeId as number] ?? []).filter((item) => {
         const state = Object.entries(item).find(([key]) => camel(key) === stateKey.replace('@', ''))?.[1]
-        return item.stageId === filter.stageId && Number(item.id) > Number(filter['>id']) && wanted.includes(state)
+        return (filter.stageId === undefined || item.stageId === filter.stageId) && Number(item.id) > Number(filter['>id']) && wanted.includes(state)
       })
       const page = matches.slice(0, pageSize).map(item => Object.fromEntries(Object.entries(item).map(([key, value]) => [key.startsWith('UF_') ? camel(key) : key, value])))
       return { result: { items: page }, ...(matches.length > pageSize ? { next: pageSize } : {}) }
@@ -225,7 +263,7 @@ describe('перенос старого поля «Состояние»', () => 
       Object.assign(item, params.fields as object)
       return { result: { item: { id: params.id } } }
     }
-    return { 'crm.item.list': list, 'crm.item.update': update, 'userfieldconfig.list': FIELDS }
+    return { 'crm.item.list': list, 'crm.item.update': update }
   }
 
   it('ГЛАВНОЕ: переводит по старому полю и только потом удаляет поле', async () => {
@@ -237,10 +275,10 @@ describe('перенос старого поля «Состояние»', () => 
       ],
       1038: [{ id: 4, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: null, updatedTime: '2026-09-21T10:00:00+03:00' }],
     }))
-    const outcome = { changes: 0, settled: true }
+    const outcome = fresh()
 
-    for (const [ref, kind] of [[STAGED_TEMPLATE, 'template'], [STAGED_SURVEY, 'survey']] as const) {
-      if (await carryStates(p.call, ref, kind, outcome, clock())) await dropStateField(p.call, ref, outcome)
+    for (const [ref, kind, field] of [[STAGED_TEMPLATE, 'template', TEMPLATE_FIELD], [STAGED_SURVEY, 'survey', SURVEY_FIELD]] as const) {
+      if (await carryStates(p.call, ref, kind, field, outcome, clock())) await dropStateField(p.call, ref, field, outcome, clock())
     }
 
     expect(p.of('crm.item.update').map(one => [one.params.id, one.params.fields])).toEqual([
@@ -262,7 +300,7 @@ describe('перенос старого поля «Состояние»', () => 
     // `/code-review` и безопасность в панели PR #93.
     const p = portal(stored({ 1040: [] }))
 
-    await carryStates(p.call, STAGED_SURVEY, 'survey', { changes: 0, settled: true }, clock())
+    await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, fresh(), clock())
 
     const [list] = p.of('crm.item.list')
     expect(list!.params).toEqual({
@@ -273,28 +311,65 @@ describe('перенос старого поля «Состояние»', () => 
     })
   })
 
-  it('ГЛАВНОЕ: не перевёлся хоть один элемент — поле остаётся, прочие переведены, ревизия ждёт', async () => {
-    const items = {
-      1040: [
-        { id: 1, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' },
-        { id: 2, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'revoked' },
-      ],
-    }
+  it('ГЛАВНОЕ: шаблоны — в любой стадии: дата досылается всегда, стадия двигается только из первой', async () => {
+    // ⚠ Опубликованная полем анкета без даты, которую администратор успел перетащить из «Черновика»
+    // до переноса, иначе не получила бы даты — и после удаления поля навсегда читалась бы правимым
+    // черновиком. Нашёл `/review` во втором круге панели PR #93.
+    const items = { 1038: [
+      { id: 4, stageId: 'DT1038_14:FAIL', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-21T10:00:00+03:00' },
+      { id: 5, stageId: 'DT1038_14:SUCCESS', UF_CRM_8_STATE: 'published', UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00', updatedTime: '2026-09-25T10:00:00+03:00' },
+    ] }
+    const p = portal(stored(items))
+
+    expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, fresh(), clock())).toBe(true)
+
+    expect((p.of('crm.item.list')[0]!.params.filter as Record<string, unknown>)).not.toHaveProperty('stageId')
+    // Снятая администратором осталась снятой, но получила дату; датированной делать нечего.
+    expect(p.of('crm.item.update').map(one => [one.params.id, one.params.fields])).toEqual([
+      [4, { UF_CRM_8_PUBLISHED_AT: '2026-09-21' }],
+    ])
+  })
+
+  it('отказ, который повтор не вылечит, — ошибкой в журнал: поле остаётся, но ревизию он не держит', async () => {
+    // ⚠ Держи он ревизию, один такой элемент гонял бы донастройку портала каждый час бесконечно.
+    // Тот же размен, что у `refuse` ревизии 4. Нашёл `/code-review` во втором круге панели PR #93.
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const items = { 1040: [
+      { id: 1, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' },
+      { id: 2, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'revoked' },
+    ] }
     const fake = stored(items)
     const p = portal({
       ...fake,
       'crm.item.update': (params: Record<string, unknown>) => {
-        // Отказ, который повтор не вылечит, — и всё равно ревизию держим: иначе перенос
-        // не запустился бы больше никогда, а элемент остался бы в первой стадии навсегда.
         if (params.id === 1) throw new PortalError('ACCESS_DENIED', 'Access denied')
         return fake['crm.item.update'](params)
       },
     })
-    const outcome = { changes: 0, settled: true }
+    const outcome = fresh()
 
-    const clean = await carryStates(p.call, STAGED_SURVEY, 'survey', outcome, clock())
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
+    expect(outcome.settled).toBe(true)
+    expect(items[1040][1]!.stageId).toBe('DT1040_16:FAIL')
+    expect(error.mock.calls.some(([, message]) => String(message).includes('повтор не поможет'))).toBe(true)
+  })
 
-    expect(clean).toBe(false)
+  it('ГЛАВНОЕ: повторимый отказ на элементе — поле остаётся, прочие переведены, ревизия ждёт', async () => {
+    const items = { 1040: [
+      { id: 1, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' },
+      { id: 2, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'revoked' },
+    ] }
+    const fake = stored(items)
+    const p = portal({
+      ...fake,
+      'crm.item.update': (params: Record<string, unknown>) => {
+        if (params.id === 1) throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        return fake['crm.item.update'](params)
+      },
+    })
+    const outcome = fresh()
+
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
     expect(outcome.settled).toBe(false)
     expect(items[1040][1]!.stageId).toBe('DT1040_16:FAIL')
   })
@@ -304,21 +379,31 @@ describe('перенос старого поля «Состояние»', () => 
     const items = { 1040: [5, 6, 7].map(id => ({ id, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' })) }
     const p = portal(stored(items, 2))
 
-    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', { changes: 0, settled: true }, clock())).toBe(true)
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, fresh(), clock())).toBe(true)
 
     expect(p.of('crm.item.update').map(one => one.params.id)).toEqual([5, 6, 7])
     expect(p.of('crm.item.list').map(one => (one.params.filter as Record<string, unknown>)['>id'])).toEqual([0, 6])
   })
 
+  it('ГЛАВНОЕ: портал говорит «есть ещё», а листание не продвигается — не «всё перенесено»', async () => {
+    // ⚠ Вернув здесь «чисто», мы удалили бы поле с непрочитанными страницами. Нашли `/review`
+    // и `/code-review` во втором круге панели PR #93.
+    const p = portal({ 'crm.item.list': { result: { items: [] }, next: 50 } })
+    const outcome = fresh()
+
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
+    expect(outcome.settled).toBe(false)
+    expect(p.of('crm.item.list')).toHaveLength(1)
+  })
+
   it('ГЛАВНОЕ: упёрся в предел страниц — не «перенесено всё», поле остаётся', async () => {
     let next = 0
     const p = portal({
-      'userfieldconfig.list': FIELDS,
-      'crm.item.list': () => ({ result: { items: [{ id: ++next, stageId: 'DT1040_16:NEW', ufCrm10State: 'sent' }] }, next: 50 }),
+      'crm.item.list': () => ({ result: { items: [{ id: ++next, stageId: 'DT1040_16:NEW', ufCrm10State: 'completed' }] }, next: 50 }),
     })
-    const outcome = { changes: 0, settled: true }
+    const outcome = fresh()
 
-    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', outcome, clock())).toBe(false)
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
     expect(outcome.settled).toBe(false)
   })
 
@@ -328,9 +413,9 @@ describe('перенос старого поля «Состояние»', () => 
     const items = { 1040: [1, 2, 3].map(id => ({ id, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' })) }
     const p = portal(stored(items))
     let now = 0
-    const outcome = { changes: 0, settled: true }
+    const outcome = fresh()
 
-    const clean = await carryStates(p.call, STAGED_SURVEY, 'survey', outcome, { deadline: 3, now: () => now++ })
+    const clean = await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, { deadline: 3, now: () => now++ })
 
     expect(clean).toBe(false)
     expect(outcome.settled).toBe(false)
@@ -340,45 +425,63 @@ describe('перенос старого поля «Состояние»', () => 
   it('ответ не той формы — не «переносить нечего»', async () => {
     // Пустой список значил бы «всё перенесено», и поле удалилось бы вместе с состоянием
     // элементов, которых мы просто не прочитали.
-    const p = portal({ 'userfieldconfig.list': FIELDS, 'crm.item.list': { result: {} } })
-    const outcome = { changes: 0, settled: true }
+    const p = portal({ 'crm.item.list': { result: {} } })
+    const outcome = fresh()
 
-    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', outcome, clock())).toBe(false)
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
     expect(outcome.settled).toBe(false)
   })
 
+  it('ГЛАВНОЕ: в строке отбора не видно того, по чему отбирали, — перенос не закончен', async () => {
+    // ⚠ Другое написание поля у портала выглядело бы чистым проходом без единого перевода, и поле
+    // удалилось бы вместе с состоянием всех элементов. Нашёл `/code-review` во втором круге панели.
+    const p = portal({ 'crm.item.list': { result: { items: [{ ID: 7, stageId: 'DT1040_16:NEW', UF_CRM_10_STATE: 'completed' }] } } })
+    const outcome = fresh()
+
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
+    expect(outcome.settled).toBe(false)
+    expect(p.of('crm.item.update')).toEqual([])
+  })
+
   it('поля «Состояние» уже нет — ни отбора, ни удаления', async () => {
-    // Отбор по полю, которого нет, портал отвергает (замерено 28.09).
     const p = portal()
-    const outcome = { changes: 0, settled: true }
+    const outcome = fresh()
 
-    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', outcome, clock())).toBe(true)
-    await dropStateField(p.call, STAGED_SURVEY, outcome)
+    expect(await carryStates(p.call, STAGED_SURVEY, 'survey', null, outcome, clock())).toBe(true)
+    await dropStateField(p.call, STAGED_SURVEY, null, outcome, clock())
 
-    expect(p.of('crm.item.list')).toEqual([])
-    expect(p.of('userfieldconfig.delete')).toEqual([])
+    expect(p.calls).toEqual([])
   })
 
   it('поле без идентификатора настроек не удаляется — и это видно в журнале', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-    const p = portal({ 'userfieldconfig.list': { result: { fields: [{ fieldName: 'UF_CRM_10_STATE', userTypeId: 'string' }] } } })
+    const p = portal()
 
-    await dropStateField(p.call, STAGED_SURVEY, { changes: 0, settled: true })
+    await dropStateField(p.call, STAGED_SURVEY, { ...SURVEY_FIELD, id: 0 }, fresh(), clock())
 
     expect(p.of('userfieldconfig.delete')).toEqual([])
     expect(warn.mock.calls.some(([, message]) => String(message).includes('не удалено'))).toBe(true)
   })
 
+  it('время переноса вышло — поле удаляется следующей донастройкой, а не за пределом', async () => {
+    const p = portal()
+    const outcome = fresh()
+
+    await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, outcome, { deadline: 0, now: () => 1 })
+
+    expect(p.of('userfieldconfig.delete')).toEqual([])
+    expect(outcome.settled).toBe(false)
+  })
+
   it('повторимый отказ удаления держит ревизию', async () => {
     const p = portal({
-      'userfieldconfig.list': FIELDS,
       'userfieldconfig.delete': () => {
         throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
       },
     })
-    const outcome = { changes: 0, settled: true }
+    const outcome = fresh()
 
-    await dropStateField(p.call, STAGED_SURVEY, outcome)
+    await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, outcome, clock())
 
     expect(outcome.settled).toBe(false)
   })
@@ -390,9 +493,9 @@ describe('перенос старого поля «Состояние»', () => 
       { name: 'survey_form', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_STATE' }, { name: 'UF_CRM_10_LINK' }] },
       { name: 'client_own', elements: [{ name: 'UF_CRM_10_STATE' }] },
     ]
-    const p = portal({ 'userfieldconfig.list': FIELDS, 'crm.item.details.configuration.get': { result: layout } })
+    const p = portal({ 'crm.item.details.configuration.get': { result: layout } })
 
-    await dropStateField(p.call, STAGED_SURVEY, { changes: 0, settled: true })
+    await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, fresh(), clock())
 
     const [set] = p.of('crm.item.details.configuration.set')
     expect(set!.params.data).toEqual([
@@ -401,16 +504,38 @@ describe('перенос старого поля «Состояние»', () => 
     ])
   })
 
+  it('ГЛАВНОЕ: раскладку без нашего поля или непонятную — не переписывает вовсе', async () => {
+    // ⚠ `set` перезаписывает раскладку целиком и на всех: записав пустое вместо непонятного, мы
+    // стёрли бы клиенту его карточку. Нашёл тестировщик во втором круге панели PR #93.
+    for (const answer of [
+      { result: [{ name: 'survey_form', elements: [{ name: 'UF_CRM_10_LINK' }] }] },
+      { result: [] },
+      { result: null },
+      { result: [{ name: 'survey_form', elements: 'не массив' }] },
+    ]) {
+      const p = portal({ 'crm.item.details.configuration.get': answer })
+
+      await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, fresh(), clock())
+
+      expect(p.of('crm.item.details.configuration.set')).toEqual([])
+    }
+  })
+
   it('опубликованные до проверки схемы — в журнал кодами, без схем, и выпуск по ним сохраняется', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const holed = JSON.stringify({ code: 'brand', title: 'Бренд', sections: [{ key: 's', title: 'Раздел', scored: true, bands: [{ from: 0, to: 3, text: 'Плохо' }], questions: [{ key: 'q', sourceKey: 'q', title: 'Секретная формулировка', type: 'scale', weight: 100, scored: true, scale: { min: 0, max: 10 } }] }] })
-    const items = { 1038: [{ id: 4, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: 2, UF_CRM_8_SCHEMA: holed, UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-21T10:00:00+03:00' }] }
+    // Правленная руками схема без названия и диапазонов: проверка на ней бросает, а обустройство — нет.
+    const bare = JSON.stringify({ code: 'bare', sections: [{ key: 's', questions: [{ key: 'q', type: 'scale' }] }] })
+    const items = { 1038: [
+      { id: 4, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: 2, UF_CRM_8_SCHEMA: holed, UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-21T10:00:00+03:00' },
+      { id: 5, stageId: 'DT1038_14:NEW', UF_CRM_8_STATE: 'published', UF_CRM_8_SCHEMA: bare, UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-21T10:00:00+03:00' },
+    ] }
     const p = portal(stored(items))
 
-    await carryStates(p.call, STAGED_TEMPLATE, 'template', { changes: 0, settled: true }, clock())
+    expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, fresh(), clock())).toBe(true)
 
     const line = warn.mock.calls.find(([, message]) => String(message).includes('до проверки схемы'))
-    expect(line?.[0]).toMatchObject({ unchecked: ['brand v2'] })
+    expect(line?.[0]).toMatchObject({ unchecked: ['brand v2', '? v?'] })
     expect(JSON.stringify(line)).not.toContain('Секретная формулировка')
     expect(items[1038][0]!.stageId).toBe('DT1038_14:SUCCESS')
   })
@@ -427,7 +552,7 @@ describe('порядок миграции целиком', () => {
   const listed = (items: Record<number, Record<string, unknown>[]>) => (params: Record<string, unknown>) => {
     const carry = (params.select as string[] | undefined)?.some(name => name.endsWith('State')) === true
     const stage = (params.filter as Record<string, unknown> | undefined)?.stageId
-    return { result: { items: carry ? (items[params.entityTypeId as number] ?? []).filter(item => item.stageId === stage) : [] } }
+    return { result: { items: carry ? (items[params.entityTypeId as number] ?? []).filter(item => stage === undefined || item.stageId === stage) : [] } }
   }
 
   it('ГЛАВНОЕ: опросы переносятся ПОСЛЕ сохранения признака «на стадиях», шаблоны — ДО', async () => {
@@ -453,6 +578,10 @@ describe('порядок миграции целиком', () => {
     const stored = JSON.parse(Object.values((p.calls[firstStore]!.params.options as Record<string, string>))[0]!)
     expect(stored.survey).toEqual({ ...SURVEY, categoryId: 16 })
     expect(stored.template).toEqual({ ...TEMPLATE, categoryId: 14 })
+    // ⚠ Поле удаляется у ОБОИХ: у шаблона — вторым проходом после сохранения, другого места для
+    // этого нет. Выпади этот проход, поле шаблона не удалялось бы никогда. Нашёл тестировщик
+    // во втором круге панели PR #93: без этой строки его можно было убрать, не покраснив ни теста.
+    expect(p.of('userfieldconfig.delete').map(one => one.params.id)).toEqual([72, 71])
   })
 
   it('ГЛАВНОЕ: шаблоны не перенеслись — этим прогоном они остаются на старом поле, ревизия ждёт', async () => {
@@ -467,12 +596,68 @@ describe('порядок миграции целиком', () => {
       },
     })
 
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
     expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
 
     const stores = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!))
     expect(stores[0].template).toEqual(TEMPLATE)
     expect(stores.at(-1).revision).toBe(4)
     expect(p.of('userfieldconfig.delete').map(one => one.params.id)).toEqual([71])
+    // Стадии-то включены — не доделан перенос. «Стадии не включены» здесь было бы неправдой.
+    // Нашёл тестировщик во втором круге панели PR #93.
+    const messages = warn.mock.calls.map(([, message]) => String(message))
+    expect(messages).not.toContain('штатные стадии не включены — состояние остаётся в поле «Состояние»')
+    expect(messages).toContain('стадии: перенос не доделан, донастройка вернётся')
+  })
+
+  it('ГЛАВНОЕ: шаблоны, уже сохранённые со стадиями, после временного отказа на старое поле не возвращаются', async () => {
+    // ⚠ Прошлый прогон мог и удалить поле: вернув шаблоны на него, мы читали бы анкеты из пустоты —
+    // не выпускались бы и правились. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({
+      'app.option.get': { result: JSON.stringify({ template: { ...TEMPLATE, categoryId: 14 }, survey: { ...SURVEY, categoryId: 16 }, revision: 4 }) },
+      'userfieldconfig.list': FIELDS,
+      'crm.item.list': (params: Record<string, unknown>) => {
+        if (params.entityTypeId === 1038 && (params.select as string[] | undefined)?.includes('ufCrm8State')) {
+          throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        }
+        return { result: { items: [] } }
+      },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const stores = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!))
+    expect(stores.every(stored => stored.template.categoryId === 14)).toBe(true)
+    expect(stores.at(-1).revision).toBe(4)
+  })
+
+  it('ГЛАВНОЕ: предел переноса — внутри общего бюджета: медленный портал не роняет обустройство', async () => {
+    // ⚠ Первая редакция отсчитывала пятнадцать секунд переноса от конца обустройства, и на портале
+    // с 0,7 с на вызов прогон упирался в общий предел: `failed`, портал в `degraded`. Нашли `/review`
+    // и `/code-review` во втором круге панели PR #93 — пробой на подделке портала.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const surveys = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, stageId: 'DT1040_16:NEW', ufCrm10State: 'completed' }))
+      const base = portal({ 'userfieldconfig.list': FIELDS, 'crm.item.list': listed({ 1040: surveys }) })
+      const slow = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+        vi.setSystemTime(Date.now() + 700)
+        return base.call(method, params)
+      })
+
+      expect(await provisionWithCall(slow, 'shef.bitrix24.ru')).toBe('ok')
+
+      const stores = base.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!))
+      expect(stores.at(-1).revision).toBe(4)
+      expect(base.of('userfieldconfig.delete').map(one => one.params.id)).not.toContain(71)
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   it('в журнал — что стадии не включены и что миграция не доделана', async () => {
@@ -526,6 +711,21 @@ describe('операторские команды по вебхуку', () => {
     })
 
     expect((await findProcesses(p.call)).survey).toEqual({ ...SURVEY, categoryId: 16 })
+  })
+
+  it('ГЛАВНОЕ: посреди миграции — стадии включены, а старое поле на месте — команда отказывается работать', async () => {
+    // ⚠ Приложение в этом окне может держать шаблоны на старом поле, а может уже читать их стадией;
+    // вебхуку не угадать. Угадав не так, `publish:templates` переписала бы название версии, по которой
+    // уже собраны ответы. Нашли `/review` и `/code-review` во втором круге панели PR #93.
+    const p = portal({
+      'app.option.get': () => {
+        throw new Error('Application context required')
+      },
+      'crm.type.list': { result: { types: [{ id: 8, entityTypeId: 1038, title: '[sh] Шаблон опроса', isStagesEnabled: 'Y' }] } },
+      'userfieldconfig.list': { result: { fields: [{ id: 72, fieldName: 'UF_CRM_8_STATE', userTypeId: 'string', editInList: 'N' }] } },
+    })
+
+    await expect(findProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_MIGRATION_PENDING' })
   })
 
   it('стадии включены, а воронки портал не назвал — пишет старым полем и говорит об этом', async () => {

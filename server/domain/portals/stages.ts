@@ -1,5 +1,5 @@
 import { SURVEY_STAGE_NAMES, TEMPLATE_STAGE_NAMES } from '../../../shared/portal-names'
-import { buildFieldName, camelFieldName } from './smart-processes'
+import { buildFieldName, camelFieldName, readFlag } from './smart-processes'
 import type { PortalCall, SmartProcessRef } from './smart-processes'
 
 /**
@@ -12,10 +12,13 @@ import type { PortalCall, SmartProcessRef } from './smart-processes'
  *
  * ⚠ ДВА РЕЖИМА, И ЭТО НЕ НЕРЕШИТЕЛЬНОСТЬ. Смарт-процесс со стадиями узнаётся по `categoryId`
  * в сохранённой ссылке: его ставит миграция ревизии 5, когда стадии включены и воронка
- * настроена. Без него элемент живёт по-старому, полем `STATE`. Прежний путь нужен в трёх случаях,
- * и только первый проходит сам:
+ * настроена. Без него элемент живёт по-старому, полем `STATE`. Прежний путь нужен в четырёх
+ * случаях, и два первых проходят сами:
  * - в окно выката, пока миграция ещё не дошла до портала (стадии выключены — `stageId` портал
  *   молча отбрасывает, замерено 28.09);
+ * - у шаблонов — в прогоне, где их перенос до переключения не прошёл: прочитанные стадией,
+ *   опубликованные без даты стали бы черновиками (разбор у `carryStates`); следующая донастройка
+ *   переключит;
  * - у смарт-процесса, найденного по названию («усыновлённого»), чьи стадии выключены: стадии
  *   чужого процесса мы не включаем;
  * - на портале, чей тариф не даёт включить стадии.
@@ -192,6 +195,16 @@ export function templateStateOf(ref: SmartProcessRef, item: Record<string, unkno
 }
 
 /**
+ * Whether a template version must not change: published, or published once and retired since.
+ *
+ * ⚠ Снятая с публикации — тоже неизменяема: по ней уже выпускали ссылки и собирали ответы.
+ * «Снял с публикации, поправил, вернул» склеило бы две разные анкеты под одним номером.
+ */
+export function isFrozen(state: string): boolean {
+  return state === 'published' || state === 'retired'
+}
+
+/**
  * Whether a link may be issued by this template version.
  *
  * ⚠ Со стадиями — И дата публикации, И стадия «Опубликован». Версию, которую администратор
@@ -201,7 +214,11 @@ export function templateStateOf(ref: SmartProcessRef, item: Record<string, unkno
  */
 export function isIssuable(ref: SmartProcessRef, item: Record<string, unknown>): boolean {
   if (templateStateOf(ref, item) !== 'published') return false
-  return !isStaged(ref) || stageCodeOf(ref, item.stageId) === TEMPLATE_STAGES.published.code
+  // ⚠ Стадии нет у элемента вовсе — администратор выключил стадии у смарт-процесса (портал тогда
+  // прячет `stageId`, замерено 28.09). Сужать нечем, решает одна дата: иначе выпуск молча встал бы
+  // целиком, без следа в журнале. Нашёл `/code-review` во втором круге панели PR #93.
+  if (!isStaged(ref) || item.stageId === undefined) return true
+  return stageCodeOf(ref, item.stageId) === TEMPLATE_STAGES.published.code
 }
 
 /** The fields that put a template element into a stage — a stage, or the old field. */
@@ -231,7 +248,9 @@ export function buildListCategoriesCall(ref: SmartProcessRef): PortalCall {
 export function readDefaultCategoryId(response: unknown): number | null {
   const categories = (response as { result?: { categories?: unknown } } | null)?.result?.categories
   if (!Array.isArray(categories)) return null
-  const found = categories.find(category => (category as { isDefault?: unknown }).isDefault === 'Y')
+  // Флаг — через `readFlag`: портал отдаёт его и `'Y'`, и `true`, и сравнение с одной формой
+  // однажды не нашло бы воронку вовсе. Нашёл `/code-review` во втором круге панели PR #93.
+  const found = categories.find(category => readFlag((category as { isDefault?: unknown }).isDefault) === true)
   const id = Number((found as { id?: unknown } | undefined)?.id)
   return Number.isInteger(id) && id > 0 ? id : null
 }
@@ -308,54 +327,64 @@ export function buildCarryListCall(ref: StagedRef, kind: CarryKind, afterId: num
     params: {
       entityTypeId: ref.entityTypeId,
       select: ['id', 'stageId', 'updatedTime', state, ...own],
-      filter: {
-        'stageId': stageId(ref, 'NEW'),
-        '>id': afterId,
-        ...(kind === 'template' ? { [state]: 'published' } : { [`@${state}`]: ['completed', 'revoked'] }),
-      },
+      // ⚠ Шаблоны — в ЛЮБОЙ стадии, опросы — только в первой. Опубликованная полем анкета без даты,
+      // которую администратор успел перетащить из «Черновика» до переноса, иначе не получила бы даты,
+      // и после удаления поля навсегда читалась бы правимым черновиком. Стадию при этом переводим
+      // только из первой: куда её увёл администратор, там она и останется. Нашёл `/review`
+      // во втором круге панели PR #93.
+      filter: kind === 'template'
+        ? { '>id': afterId, [state]: 'published' }
+        : { 'stageId': stageId(ref, 'NEW'), '>id': afterId, [`@${state}`]: ['completed', 'revoked'] },
       order: { id: 'ASC' },
     },
   }
 }
 
+/** The old values each carry selects by: an element that shows none of them was read wrongly. */
+const CARRIED_VALUES: Readonly<Record<CarryKind, readonly string[]>> = {
+  template: ['published'],
+  survey: ['completed', 'revoked'],
+}
+
 /**
  * Reads a carry page into elements under our original field names — what `planStageMoves` reads.
  *
- * `null` — ответ не той формы. ⚠ Не пустой список: пустой значит «переносить нечего», и поле
- * удалилось бы вместе с состоянием элементов, которых мы просто не прочитали.
+ * `null` — ответ не прочитать: не той формы, ИЛИ в строке нет того, по чему её отбирали, — номера
+ * элемента или старого значения. ⚠ Не пустой список и не пропуск строки: пустое значит «переносить
+ * нечего», и поле удалилось бы вместе с состоянием элементов, которых мы просто не прочитали. Другое
+ * написание поля у портала выглядело бы ровно так. Нашли `/review` и `/code-review`.
  */
 export function readCarryItems(response: unknown, ref: StagedRef, kind: CarryKind): Record<string, unknown>[] | null {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
   if (!Array.isArray(items)) return null
   const postfixes = kind === 'template' ? ['STATE', 'PUBLISHED_AT', 'CODE', 'VERSION', 'SCHEMA'] : ['STATE']
-  return items.flatMap((raw) => {
-    if (raw === null || typeof raw !== 'object') return []
+  const read: Record<string, unknown>[] = []
+  for (const raw of items) {
+    if (raw === null || typeof raw !== 'object') return null
     const item = raw as Record<string, unknown>
+    const id = Number(item.id)
+    const state = asText(item[camelFieldName(ref.id, 'STATE')])
+    if (!Number.isInteger(id) || id <= 0 || !CARRIED_VALUES[kind].includes(state)) return null
     const own = Object.fromEntries(postfixes.map(postfix => [buildFieldName(ref.id, postfix), item[camelFieldName(ref.id, postfix)]]))
-    return [{ id: item.id, stageId: item.stageId, updatedTime: item.updatedTime, ...own }]
-  })
+    read.push({ id, stageId: item.stageId, updatedTime: item.updatedTime, ...own })
+  }
+  return read
 }
 
 /**
  * Moves that carry the old `STATE` over to stages, for the elements of one page.
  *
- * ⚠ ТОЛЬКО ИЗ ПЕРВОЙ СТАДИИ. Включённые стадии ставят все прежние элементы в первую, а миграция
- * идёт на живом портале, и пока она листает страницы, элемент могут уже перевести по-новому:
- * опрос пройден — «Пройдена». Переведя его по старому полю, прочитанному раньше, мы вернули бы
- * его назад. Элемент не в первой стадии уже переведён — им или новым кодом.
- *
- * `moveOf` — что записать в элемент по старому полю, стадию вместе с прочим; `null` — оставить.
+ * `moveOf` — что записать в элемент по старому полю; `null` — оставить как есть.
  */
 export function planStageMoves(
   ref: StagedRef,
   items: readonly Record<string, unknown>[],
   moveOf: (item: Record<string, unknown>) => Record<string, unknown> | null,
 ): PortalCall[] {
-  const first = stageId(ref, 'NEW')
   return items.flatMap((item) => {
     const id = Number(item.id)
     const fields = moveOf(item)
-    if (!Number.isInteger(id) || id <= 0 || fields === null || item.stageId !== first) return []
+    if (!Number.isInteger(id) || id <= 0 || fields === null) return []
     return [{
       method: 'crm.item.update',
       params: { entityTypeId: ref.entityTypeId, id, useOriginalUfNames: 'Y', fields },
@@ -363,12 +392,20 @@ export function planStageMoves(
   })
 }
 
-/** What a survey link's element gets by its old `STATE`: answered or revoked; the rest stay first. */
+/**
+ * What a survey link's element gets by its old `STATE`: answered or revoked; the rest stay first.
+ *
+ * ⚠ ТОЛЬКО ИЗ ПЕРВОЙ СТАДИИ. Включённые стадии ставят все прежние элементы в первую, а миграция
+ * идёт на живом портале, и пока она листает страницы, элемент могут уже перевести по-новому:
+ * опрос пройден — «Пройдена». Переведя его по старому полю, прочитанному раньше, мы вернули бы
+ * его назад. Элемент не в первой стадии уже переведён — им, новым кодом или человеком.
+ */
 export function surveyMoveOf(ref: StagedRef): (item: Record<string, unknown>) => Record<string, unknown> | null {
   const field = buildFieldName(ref.id, 'STATE')
+  const first = stageId(ref, 'NEW')
   return (item) => {
     const state = asText(item[field])
-    if (state !== 'completed' && state !== 'revoked') return null
+    if (item.stageId !== first || (state !== 'completed' && state !== 'revoked')) return null
     return { stageId: stageId(ref, SURVEY_STAGES[state].code) }
   }
 }
@@ -382,19 +419,26 @@ export function surveyMoveOf(ref: StagedRef): (item: Record<string, unknown>) =>
  * (`templateStateOf`), и без неё они стали бы черновиками, а выпускать ссылки стало бы не по чему.
  * Уже опубликованное принимаем как есть, а все новые обходы проверок этот модуль закрывает.
  * Дата — день последней правки элемента: у неизменяемой версии это и есть публикация, а «сегодня»
- * соврало бы в единственном поле, по которому потом восстанавливают, когда анкета вышла.
+ * соврало бы в единственном поле, по которому потом восстанавливают, когда анкета вышла. `today` —
+ * только запасной день, когда правка не прочиталась.
  */
-export function templateMoveOf(ref: StagedRef): (item: Record<string, unknown>) => Record<string, unknown> | null {
+export function templateMoveOf(ref: StagedRef, today: string): (item: Record<string, unknown>) => Record<string, unknown> | null {
   const stateField = buildFieldName(ref.id, 'STATE')
   const dateField = buildFieldName(ref.id, 'PUBLISHED_AT')
+  const first = stageId(ref, 'NEW')
   return (item) => {
     if (asText(item[stateField]) !== 'published') return null
-    const day = asText(item.updatedTime).slice(0, 10)
-    const missing = asText(item[dateField]) === '' && /^\d{4}-\d{2}-\d{2}$/.test(day)
-    return {
-      stageId: stageId(ref, TEMPLATE_STAGES.published.code),
+    // Правка элемента не прочиталась — сегодняшний день: неточная дата лучше снятой публикации.
+    const updated = asText(item.updatedTime).slice(0, 10)
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(updated) ? updated : today
+    const missing = asText(item[dateField]) === ''
+    // Стадию — только из первой: куда её увёл администратор, там она и останется. Дату — всегда,
+    // когда её нет: без неё после удаления поля анкета стала бы черновиком (разбор у `buildCarryListCall`).
+    const fields = {
+      ...(item.stageId === first ? { stageId: stageId(ref, TEMPLATE_STAGES.published.code) } : {}),
       ...(missing ? { [dateField]: day } : {}),
     }
+    return Object.keys(fields).length === 0 ? null : fields
   }
 }
 

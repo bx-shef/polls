@@ -214,6 +214,14 @@ export const linkIndex = pgTable('link_index', {
   uniqueIndex('link_index_token_hash_key').on(table.tokenHash),
   index('link_index_expires_idx').on(table.expiresAt),
   /**
+   * Поиск по «портал + элемент» — с ревизии 5 на каждом открытии вкладки сделки и виджета
+   * результата: «отозвана» читается отсюда (`readLinkStatuses`), а не со стадии, которую двигают
+   * в канбане. Строки не удаляются, так что без индекса каждое открытие листало бы всю таблицу
+   * всех порталов. Им же пользуется отзыв (`revokeLink`). Нашли `/review` и `/code-review`
+   * во втором круге панели PR #93.
+   */
+  index('link_index_portal_item_idx').on(table.portalId, table.itemId),
+  /**
    * ⚠ «СХЕМА РАНЬШЕ ССЫЛКИ» — ОГРАНИЧЕНИЕ БАЗЫ, А НЕ ПОРЯДОК СТРОК В ОБРАБОТЧИКЕ (issue #21).
    *
    * Выпуск делает три шага по порядку: кэш схемы версии → элемент смарт-процесса → хеш токена

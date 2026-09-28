@@ -1,7 +1,7 @@
 import { buildFieldName, type PortalCall, type SmartProcessRef } from '../portals/smart-processes'
 import { SURVEY_STATE_COMPLETED } from '../answers/portal-calls'
 import { SURVEY_STATE_SENT } from './portal-calls'
-import { buildSurveyStateCall } from '../portals/stages'
+import { buildSurveyStateCall, surveyStateOf, type SurveyState } from '../portals/stages'
 
 /**
  * The links already issued for a deal — read from the portal, not from our database.
@@ -45,13 +45,20 @@ export interface IssuedLink {
   expiresAt: string
   /** Дата прохождения: пишет её только доставка, вместе с ответами. Пусто — ответа в портале нет. */
   completedAt: string
+  /**
+   * What the element's stage (or old field) shows — our reflection, not the truth.
+   *
+   * Решений по нему не принимаем (разбор в шапке); нужен ровно затем, чтобы отзыв мог дописать
+   * отражение, когда наша строка уже погашена, а запись стадии тогда не дошла.
+   */
+  shownAs: SurveyState | ''
   score: number | null
   /** Кто выпустил: ответственный за элемент. Ноль — портал не прислал. */
   assignedById: number
   createdAt: string
 }
 
-/** Что показывать человеку. Считается по состоянию и сроку, полем нигде не лежит. */
+/** What to show a person: counted from the completion date, our row and the deadline, never stored. */
 export type IssuedState = 'active' | 'completed' | 'revoked' | 'expired'
 
 /**
@@ -111,6 +118,7 @@ export function readIssuedLinks(response: unknown, survey: SmartProcessRef): Iss
       version: asPositiveInt(item[field('TEMPLATE_VERSION')]) ?? 0,
       expiresAt: text(item[field('EXPIRES_AT')]),
       completedAt: text(item[field('COMPLETED_AT')]),
+      shownAs: surveyStateOf(survey, item),
       score: asScore(item[field('SCORE')]),
       assignedById: asPositiveInt(item.assignedById) ?? 0,
       createdAt: text(item.createdTime),
@@ -121,18 +129,24 @@ export function readIssuedLinks(response: unknown, survey: SmartProcessRef): Iss
 /**
  * Что показать в списке напротив ссылки.
  *
- * `linkStatus` — состояние нашей строки `link_index` (`readLinkStatuses`); `null` — строки нет:
- * элемент создан не приложением, и страницы у него нет вовсе.
+ * `linkStatus` — состояние нашей строки `link_index` (`readLinkStatuses`), и передаётся всегда:
+ * без него отзыв не виден вовсе. Параметр обязательный нарочно — забытый, он молча показывал бы
+ * погашенную ссылку живой (`/review` и `/code-review` во втором круге панели PR #93).
  *
  * ⚠ Порядок проверок — смысловой, а не произвольный. Пройденная — первой: у неё уже есть ответ
  * клиента, и ни отзыв, ни срок к ней отношения не имеют. База «пройдена» раньше портала: ответ
  * принят и ждёт доставки — гасить его уже нечего. Отозванная остаётся отозванной, даже когда
  * её срок вышел: менеджер должен видеть, что её погасили, а не что она «просто истекла».
  * Поменяв порядок, мы стёрли бы разницу между «её остановили» и «её не открыли».
+ *
+ * ⚠ Строки нет (`null`) — страницы у элемента нет вовсе: выпуск упал между элементом и нашей
+ * строкой, или элемент завели руками в канбане. Ответа по нему не будет, как по отозванной, и
+ * отозвать его нечем — показанный живым, он висел бы с кнопкой, которая ничего не может. Нашёл
+ * `/code-review` во втором круге панели PR #93.
  */
-export function issuedState(link: IssuedLink, now: Date, linkStatus: string | null = null): IssuedState {
+export function issuedState(link: IssuedLink, now: Date, linkStatus: string | null): IssuedState {
   if (link.completedAt !== '' || linkStatus === SURVEY_STATE_COMPLETED) return 'completed'
-  if (linkStatus === SURVEY_STATE_REVOKED) return 'revoked'
+  if (linkStatus === SURVEY_STATE_REVOKED || linkStatus === null) return 'revoked'
 
   const expires = Date.parse(link.expiresAt)
   if (!Number.isNaN(expires) && expires < now.getTime()) return 'expired'
@@ -141,7 +155,7 @@ export function issuedState(link: IssuedLink, now: Date, linkStatus: string | nu
 }
 
 /** Ссылку ещё можно остановить: она не пройдена, не отозвана и не истекла. */
-export function isRevocable(link: IssuedLink, now: Date, linkStatus: string | null = null): boolean {
+export function isRevocable(link: IssuedLink, now: Date, linkStatus: string | null): boolean {
   return issuedState(link, now, linkStatus) === 'active'
 }
 
