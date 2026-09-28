@@ -252,7 +252,7 @@ describe('перенос старого поля «Состояние»', () => 
   /** Наши поля «Состояние» — такими их нашло листание полей обустройства (`stateFields`). */
   const SURVEY_FIELD = { id: 71, name: 'UF_CRM_10_STATE', userTypeId: 'string', editInList: 'N' as const, label: '' }
   const TEMPLATE_FIELD = { id: 72, name: 'UF_CRM_8_STATE', userTypeId: 'string', editInList: 'N' as const, label: '' }
-  const clock = () => ({ deadline: Number.POSITIVE_INFINITY, now: () => Date.parse('2026-09-28T10:00:00Z') })
+  const clock = () => ({ deadline: Number.POSITIVE_INFINITY, now: () => Date.parse('2026-09-28T10:00:00Z'), domain: 'shef.bitrix24.ru' })
   const fresh = () => ({ changes: 0, settled: true })
 
   /**
@@ -366,10 +366,10 @@ describe('перенос старого поля «Состояние»', () => 
     expect(await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, clock())).toBe(false)
     expect(outcome.settled).toBe(true)
     expect(items[1040][1]!.stageId).toBe('DT1040_16:FAIL')
-    // ⚠ С номером элемента: перенос к нему больше не вернётся, и найти его иначе нечем. Нашёл
-    // `/code-review` в панели PR #93.
+    // ⚠ С номером элемента и порталом: перенос к нему больше не вернётся, и найти его иначе нечем,
+    // а номер смарт-процесса портала не называет. Нашли `/code-review` и `/review` в панели PR #93.
     const line = error.mock.calls.find(([, message]) => String(message).includes('повтор не поможет'))
-    expect(line?.[0]).toMatchObject({ itemId: 1, reason: expect.any(String) })
+    expect(line?.[0]).toMatchObject({ domain: 'shef.bitrix24.ru', itemId: 1, reason: expect.any(String) })
   })
 
   it('ГЛАВНОЕ: повторимый отказ на элементе — поле остаётся, прочие переведены, ревизия ждёт', async () => {
@@ -433,7 +433,7 @@ describe('перенос старого поля «Состояние»', () => 
     let now = 0
     const outcome = fresh()
 
-    const clean = await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, { deadline: 3, now: () => now++ })
+    const clean = await carryStates(p.call, STAGED_SURVEY, 'survey', SURVEY_FIELD, outcome, { deadline: 3, now: () => now++, domain: 'shef.bitrix24.ru' })
 
     expect(clean).toBe(false)
     expect(outcome.settled).toBe(false)
@@ -485,7 +485,7 @@ describe('перенос старого поля «Состояние»', () => 
     const p = portal()
     const outcome = fresh()
 
-    await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, outcome, { deadline: 0, now: () => 1 })
+    await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, outcome, { deadline: 0, now: () => 1, domain: 'shef.bitrix24.ru' })
 
     expect(p.of('userfieldconfig.delete')).toEqual([])
     expect(outcome.settled).toBe(false)
@@ -588,10 +588,10 @@ describe('отчёт о непроверенных анкетах', () => {
       row(7, 'published', 'parked', 'PREPARATION'),
     ] } } })
 
-    expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, { changes: 0, settled: true }, { deadline: Number.POSITIVE_INFINITY, now: Date.now })).toBe(true)
+    expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, { changes: 0, settled: true }, { deadline: Number.POSITIVE_INFINITY, now: Date.now, domain: 'shef.bitrix24.ru' })).toBe(true)
 
     const line = warn.mock.calls.find(([, message]) => String(message).includes('до проверки схемы'))
-    expect(line?.[0]).toMatchObject({ unchecked: ['brand v2'] })
+    expect(line?.[0]).toMatchObject({ domain: 'shef.bitrix24.ru', unchecked: ['brand v2'] })
     expect(p.of('crm.item.update').map(one => one.params.id)).toEqual([4, 6, 7])
   })
 })

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PortalError } from '../../server/domain/portals/portal-error'
 
 /**
  * Обработчик списка ссылок сделки: `server/api/portal/links.post.ts`.
@@ -17,10 +18,22 @@ const SURVEY = { entityTypeId: 1040, id: 10, categoryId: 16 }
 let items: Record<string, unknown>[]
 let statuses: Map<number, string>
 let writes: { method: string, params: Record<string, unknown> }[]
+let attempts: number[]
 let failWrites: boolean
+/** Elements the portal refuses for good: a stage-required field, say. */
+let refuseFor: Set<number>
+/**
+ * `PortalError` of the same module instance the route loads.
+ *
+ * ⚠ После `vi.resetModules()` роут получает свой экземпляр модуля, и отказ, брошенный классом
+ * из верхнего импорта, для `instanceof` роута — чужой: код не прочитается, и отказ сочтётся
+ * повторимым. Класс берётся тем же импортом, что и у роута.
+ */
+let Refusal: typeof PortalError
 
 async function loadHandler() {
   writes = []
+  attempts = []
   vi.doMock('../../server/api/portal/-session', () => ({
     openPortalSession: async () => ({
       portal: { id: 'портал', domain: 'shef.bitrix24.ru' },
@@ -28,6 +41,8 @@ async function loadHandler() {
       authId: 'фреймовый-токен',
       call: async (method: string, params: Record<string, unknown> = {}) => {
         if (method === 'crm.item.list') return { result: { items } }
+        attempts.push(params.id as number)
+        if (refuseFor.has(params.id as number)) throw new Refusal('ACCESS_DENIED', 'поле обязательно на стадии')
         if (failWrites) throw new Error('портал не ответил за 10 с на crm.item.update')
         writes.push({ method, params })
         return { result: { item: { id: params.id } } }
@@ -44,6 +59,7 @@ async function loadHandler() {
   })
   vi.resetModules()
 
+  ;({ PortalError: Refusal } = await import('../../server/domain/portals/portal-error'))
   const { default: handler } = await import('../../server/api/portal/links.post')
   return (handler as unknown as (event: unknown) => Promise<{ ok: boolean, links: { itemId: number, state: string }[] }>)
 }
@@ -58,6 +74,7 @@ const element = (id: number, stage: string, completedAt = '') => ({
 
 beforeEach(() => {
   failWrites = false
+  refuseFor = new Set()
 })
 
 afterEach(() => {
@@ -107,6 +124,24 @@ describe('список ссылок сделки', () => {
 
     expect(reply.links.map(link => link.state)).toEqual(['revoked', 'revoked', 'revoked', 'revoked', 'revoked'])
     expect(writes.map(one => one.params.id)).toEqual([54, 55, 56])
+  })
+
+  it('ГЛАВНОЕ: отказ, который повтор не вылечит, место в пределе не занимает — следующее открытие дописывает старших', async () => {
+    // ⚠ Предел берёт самые новые. Получи они отказ, который повтор не вылечит (поле, обязательное
+    // по стадии «Отозвана»), они занимали бы все три места на каждом открытии — три заведомо
+    // проваленные записи, а старшие не дописались бы никогда. Нашёл `/review` в закрывающем проходе.
+    items = [58, 57, 56, 55, 54].map(id => element(id, 'NEW'))
+    statuses = new Map(items.map(one => [one.id as number, 'revoked']))
+    refuseFor = new Set([58, 57, 56])
+    const handler = await loadHandler()
+
+    await handler({})
+    const firstTry = attempts.splice(0)
+    await handler({})
+
+    expect(firstTry).toEqual([58, 57, 56])
+    expect(attempts).toEqual([55, 54])
+    expect(writes.map(one => one.params.id)).toEqual([55, 54])
   })
 
   it('неудача дописывания список не роняет — починит следующее открытие', async () => {

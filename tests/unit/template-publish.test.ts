@@ -123,6 +123,30 @@ describe('что публикуем', () => {
     expect(plan.skip.map(one => one.kind)).toEqual(['has-answers'])
   })
 
+  it('ГЛАВНОЕ: версия с датой публикации — опубликована, в каком бы режиме команда ни читала', () => {
+    // ⚠ Стадии у «Шаблона» выключены, а старого поля уже нет: команда читает режимом старого поля
+    // (`withFunnel`), и состояние пусто у всех. Прочти она такую версию черновиком — переписала бы
+    // ей название в схеме и дату, в том числе пройденной: охрана «есть ответы» стоит только на
+    // опубликованных. Нашёл `/review` в закрывающем проходе панели PR #93.
+    const legacyMode: SmartProcessRef = { ...TEMPLATE }
+    const read = readTemplateItems({ result: { items: [{
+      id: 4,
+      title: 'Новое название',
+      UF_CRM_8_CODE: 'brand',
+      UF_CRM_8_VERSION: 1,
+      UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00',
+      UF_CRM_8_SCHEMA: JSON.stringify(SCHEMA),
+    }] } }, legacyMode)
+
+    const answered = planTemplatePublish(read, new Map<string, VersionUsage>([[usageKey('brand', 1), { issued: 3, completed: 2 }]]))
+    const quiet = planTemplatePublish(read)
+
+    expect(answered.publish).toEqual([])
+    expect(answered.skip.map(one => one.kind)).toEqual(['has-answers'])
+    // Не пройдена — только переименование, и дата публикации остаётся настоящей.
+    expect(quiet.publish.map(one => [one.action, one.setPublishedAt])).toEqual([['rename', false]])
+  })
+
   it('выпущенные, но не пройденные ссылки переименованию не мешают — и всё же считаются', () => {
     // Их страницы показывают схему на момент выпуска, то есть прежнее название. Оператор
     // обязан узнать об этом числом, а не догадаться.

@@ -347,10 +347,18 @@ export const CARRY_BUDGET_MS = 15_000
  */
 export const CARRY_TAIL_RESERVE_MS = 8_000
 
-/** When the carry must stop starting new calls. `now` is injectable for tests. */
-export interface CarryClock {
+/** One carry run: when it must stop starting new calls, and which portal it works on. `now` is injectable for tests. */
+export interface CarryRun {
   deadline: number
   now: () => number
+  /**
+   * The portal's domain — for the log only.
+   *
+   * ⚠ Номер смарт-процесса у каждого портала свой и портала не называет, а строка переноса бывает
+   * единственным следом застрявшей анкеты: без домена дежурный не знал бы, кому звонить. Нашёл
+   * `/review` в закрывающем проходе панели PR #93.
+   */
+  domain: string
 }
 
 /** Итог разовой миграции ревизии 4. */
@@ -1262,52 +1270,52 @@ export async function carryStates(
   kind: CarryKind,
   field: ExistingField | null,
   outcome: StagesOutcome,
-  clock: CarryClock,
+  run: CarryRun,
 ): Promise<boolean> {
   if (field === null) return true
 
-  const moveOf = kind === 'template' ? templateMoveOf(ref, new Date(clock.now()).toISOString().slice(0, 10)) : surveyMoveOf(ref)
+  const moveOf = kind === 'template' ? templateMoveOf(ref, new Date(run.now()).toISOString().slice(0, 10)) : surveyMoveOf(ref)
   let clean = true
   let after = 0
   for (let page = 0; page < MAX_PAGES; page++) {
-    if (clock.now() >= clock.deadline) return unfinished(outcome, 'перенос состояния: время вышло', ref)
+    if (run.now() >= run.deadline) return unfinished(outcome, run, 'перенос состояния: время вышло', ref)
     let response: unknown
     try {
       const list = buildCarryListCall(ref, kind, after)
       response = await call(list.method, list.params)
     }
     catch (error) {
-      return unfinished(outcome, 'перенос состояния', ref, error)
+      return unfinished(outcome, run, 'перенос состояния', ref, error)
     }
     const items = readCarryItems(response, ref, kind)
-    if (items === null) return unfinished(outcome, 'перенос состояния: ответ не прочитать', ref)
+    if (items === null) return unfinished(outcome, run, 'перенос состояния: ответ не прочитать', ref)
     // В отчёт — только то, что после перевода останется выпускаемым: строку с чужим значением перевод
     // пропускает, а снятая или уведённая администратором в свою стадию не выпускается и так — «выпуск
     // по ним сохранён» о них соврал бы. Нашёл `/code-review` в панели PR #93.
     if (kind === 'template') {
-      reportUnchecked(ref, items.filter((item) => {
+      reportUnchecked(ref, run, items.filter((item) => {
         const move = moveOf(item)
         return move !== null && isIssuable(ref, { ...item, ...move })
       }))
     }
     for (const move of planStageMoves(ref, items, moveOf)) {
-      if (clock.now() >= clock.deadline) return unfinished(outcome, 'перенос состояния: время вышло', ref)
+      if (run.now() >= run.deadline) return unfinished(outcome, run, 'перенос состояния: время вышло', ref)
       try {
         await call(move.method, move.params)
         outcome.changes++
       }
       catch (error) {
-        clean = unfinished(outcome, 'перенос состояния', ref, error, Number(move.params.id))
+        clean = unfinished(outcome, run, 'перенос состояния', ref, error, Number(move.params.id))
       }
     }
     if (readNextOffset(response) === null) return clean
     // Портал говорит «есть ещё», а курсор не двигается — дальше не прочитать, это не «всё».
     const last = Number(items.at(-1)?.id)
-    if (!Number.isInteger(last) || last <= after) return unfinished(outcome, 'перенос состояния: листание не продвигается', ref)
+    if (!Number.isInteger(last) || last <= after) return unfinished(outcome, run, 'перенос состояния: листание не продвигается', ref)
     after = last
   }
   // Упёрлись в предел страниц — перенесли не всё, и поле удалять нельзя.
-  return unfinished(outcome, 'перенос состояния: предел страниц', ref)
+  return unfinished(outcome, run, 'перенос состояния: предел страниц', ref)
 }
 
 /**
@@ -1328,16 +1336,16 @@ export async function dropStateField(
   ref: StagedRef,
   field: ExistingField | null,
   outcome: StagesOutcome,
-  clock: CarryClock,
+  run: CarryRun,
 ): Promise<void> {
   if (field === null) return
-  if (clock.now() >= clock.deadline) {
-    unfinished(outcome, 'удаление поля «Состояние»: время вышло', ref)
+  if (run.now() >= run.deadline) {
+    unfinished(outcome, run, 'удаление поля «Состояние»: время вышло', ref)
     return
   }
   if (field.id === 0) {
     // Удалять нечем: портал не назвал идентификатор настроек. Поле остаётся, и это видно.
-    logger.warn({ typeId: ref.id }, 'стадии: поле «Состояние» не удалено — портал не назвал его идентификатор')
+    logger.warn({ domain: run.domain, typeId: ref.id }, 'стадии: поле «Состояние» не удалено — портал не назвал его идентификатор')
     return
   }
   try {
@@ -1359,7 +1367,7 @@ export async function dropStateField(
     outcome.changes++
   }
   catch (error) {
-    logger.warn({ typeId: ref.id, reason: safeRefusal(error) }, 'стадии: имя поля «Состояние» осталось в раскладке карточки')
+    logger.warn({ domain: run.domain, typeId: ref.id, reason: safeRefusal(error) }, 'стадии: имя поля «Состояние» осталось в раскладке карточки')
   }
 }
 
@@ -1376,7 +1384,7 @@ export async function dropStateField(
  * всё обустройство, и миграция не закончилась бы никогда. Такая схема — тоже «не проходит проверку».
  * Нашёл `/review` во втором круге панели PR #93.
  */
-function reportUnchecked(ref: StagedRef, items: readonly Record<string, unknown>[]): void {
+function reportUnchecked(ref: StagedRef, run: CarryRun, items: readonly Record<string, unknown>[]): void {
   const field = (postfix: string) => buildFieldName(ref.id, postfix)
   const label = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? String(value) : '?'
   const unchecked = items.flatMap((item) => {
@@ -1393,7 +1401,7 @@ function reportUnchecked(ref: StagedRef, items: readonly Record<string, unknown>
     return broken ? [`${label(item[field('CODE')])} v${label(item[field('VERSION')])}`] : []
   })
   if (unchecked.length > 0) {
-    logger.warn({ typeId: ref.id, unchecked }, 'стадии: опубликованные до проверки схемы анкеты не проходят её — выпуск по ним сохранён')
+    logger.warn({ domain: run.domain, typeId: ref.id, unchecked }, 'стадии: опубликованные до проверки схемы анкеты не проходят её — выпуск по ним сохранён')
   }
 }
 
@@ -1414,8 +1422,9 @@ function reportUnchecked(ref: StagedRef, items: readonly Record<string, unknown>
  * в `docs/PROCESS.md`. Номер элемента нашего смарт-процесса — не идентификатор клиента.
  * Нашёл `/code-review` в панели PR #93.
  */
-function unfinished(outcome: StagesOutcome, step: string, ref: SmartProcessRef, error?: unknown, itemId?: number): false {
+function unfinished(outcome: StagesOutcome, run: CarryRun, step: string, ref: SmartProcessRef, error?: unknown, itemId?: number): false {
   const context = {
+    domain: run.domain,
     step,
     typeId: ref.id,
     ...(itemId === undefined ? {} : { itemId }),

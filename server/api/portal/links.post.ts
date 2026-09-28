@@ -4,6 +4,7 @@ import { readStoredRefs } from '../../b24/provision'
 import { buildListIssuedCall, buildRevokeCall, issuedState, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
 import { readLinkStatuses } from '../../links/issue'
 import { safeRefusal } from '../../domain/answers/portal-errors'
+import { isRetryableRefusal } from '../../domain/portals/portal-error'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -15,6 +16,17 @@ import { openPortalSession } from './-session'
  * и в худшем случае, а остальное допишут следующие открытия. Нашёл `/code-review` в панели PR #93.
  */
 const MAX_REPAIRS_PER_VIEW = 3
+
+/**
+ * Lost revokes the portal refused for good in this process, as `domain/itemId`.
+ *
+ * ⚠ Отказ, который повтор не вылечит (поле, обязательное по стадии «Отозвана», у одних элементов
+ * заполнено, у других нет), иначе повторялся бы на каждом открытии: три заведомо проваленные записи
+ * в портал клиента и три строки в журнал. И предел, взятый с самых новых, навсегда заняли бы они —
+ * старшие за ними не дописались бы никогда. Такой элемент пробуем раз за жизнь процесса; новый
+ * выкат попробует снова. Нашёл `/review` в закрывающем проходе панели PR #93.
+ */
+const refusedRepairs = new Set<string>()
 
 /**
  * Lists the links already issued for a deal.
@@ -69,7 +81,10 @@ export default defineEventHandler(async (event) => {
   // клиента на «Отозвана» не сработали бы. Неудача список не роняет — починит следующее открытие.
   // Нашёл `/review` в третьем круге панели PR #93. Параллельно и не больше предела — там же, почему.
   const survey = refs.survey
-  const lost = links.filter(one => needsRevokeRepair(one, statuses.get(one.itemId) ?? null)).slice(0, MAX_REPAIRS_PER_VIEW)
+  const keyOf = (itemId: number) => `${session.portal.domain}/${itemId}`
+  const lost = links
+    .filter(one => needsRevokeRepair(one, statuses.get(one.itemId) ?? null) && !refusedRepairs.has(keyOf(one.itemId)))
+    .slice(0, MAX_REPAIRS_PER_VIEW)
   await Promise.allSettled(lost.map(async (link) => {
     try {
       const repair = buildRevokeCall(survey, link.itemId)
@@ -77,6 +92,7 @@ export default defineEventHandler(async (event) => {
       logger.info({ domain: session.portal.domain, itemId: link.itemId }, 'отзыв ссылки дописан на портал')
     }
     catch (error) {
+      if (!isRetryableRefusal(error)) refusedRepairs.add(keyOf(link.itemId))
       logger.warn({ domain: session.portal.domain, itemId: link.itemId, reason: safeRefusal(error) }, 'отзыв ссылки не дописан на портал')
     }
   }))

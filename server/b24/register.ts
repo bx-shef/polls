@@ -280,7 +280,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // чистого прохода: удаление необратимо.
     const carried: StagesOutcome | null = known.revision < STAGES_REVISION ? { changes: 0, settled: true } : null
     if (carried !== null) {
-      const clock = { deadline: Math.min(Date.now() + CARRY_BUDGET_MS, allowedUntil - CARRY_TAIL_RESERVE_MS), now: Date.now }
+      const run = { deadline: Math.min(Date.now() + CARRY_BUDGET_MS, allowedUntil - CARRY_TAIL_RESERVE_MS), now: Date.now, domain: portal.domain }
       const staged = [
         { ref: refs.template, kind: 'template' as const, created: result.createdTemplate },
         { ref: refs.survey, kind: 'survey' as const, created: result.createdSurvey },
@@ -288,7 +288,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       for (const { ref, kind, created } of staged) {
         if (!isStaged(ref) || created) continue
         const field = result.stateFields[kind]
-        if (await carryStates(budgeted, ref, kind, field, carried, clock)) await dropStateField(budgeted, ref, field, carried, clock)
+        if (await carryStates(budgeted, ref, kind, field, carried, run)) await dropStateField(budgeted, ref, field, carried, run)
       }
     }
 
