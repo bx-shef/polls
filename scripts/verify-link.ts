@@ -46,6 +46,7 @@ import {
 } from '../server/domain/answers/timeline-activity'
 import { hashToken } from '../server/domain/links/token'
 import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../server/domain/portals/smart-processes'
+import { formatAnswerDate } from '../shared/answer-date'
 import { SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../shared/portal-names'
 import type { PublishedTemplate } from '../server/domain/invitations/portal-calls'
 import { issueLink } from '../server/links/issue-flow'
@@ -95,7 +96,17 @@ function expect(condition: unknown, text: string): asserts condition {
   die(`  ✗ ${text}`, 1)
 }
 
-/** Ответы на анкету: балльные — восьмёрками, текстовые — меткой прогона. */
+/**
+ * The day every date question is answered with — in wire form.
+ *
+ * ⚠ Постоянный, а не «сегодня»: проверка ищет его в записанном дважды — записью провода в поле
+ * ответов и русской записью в деле ленты, — и сверять удобнее с тем, что известно заранее.
+ * Живой путь даты до портала прежде не проверялся вовсе: вопросу «Дата» проверка отвечала `null`
+ * (`/code-review`, PR #91).
+ */
+export const VERIFY_DATE = '2026-09-28'
+
+/** Answers to the survey: scale questions with eights, text ones with the run marker, dates with `VERIFY_DATE`. */
 export function buildAnswers(template: PublishedTemplate, marker: string): Record<string, number | string | null> {
   const answers: Record<string, number | string | null> = {}
   let firstScale = true
@@ -109,6 +120,10 @@ export function buildAnswers(template: PublishedTemplate, marker: string): Recor
         // и погорело, а подделкой такое не доказать.
         answers[question.key] = firstScale ? null : Math.min(8, question.scale?.max ?? 10)
         firstScale = false
+        continue
+      }
+      if (question.type === 'date') {
+        answers[question.key] = VERIFY_DATE
         continue
       }
       answers[question.key] = question.type === 'text' ? marker : null
@@ -300,9 +315,20 @@ async function main(): Promise<number> {
   const parsed = JSON.parse(written) as Record<string, unknown>
   expect(skipped !== '' && parsed[skipped] === null, `пропущенный вопрос «${skipped}» записан как null, а не нулём`)
 
+  // ⚠ Дата — записью провода: русская запись появляется только на показе, и `28.09.2026`
+  // в поле ответов значило бы, что формат показа уехал в данные (issue #84, п. 13).
+  const dated = Object.entries(answers).find(([, value]) => value === VERIFY_DATE)?.[0]
+  if (dated === undefined) console.log('  · вопроса «Дата» в этой анкете нет: путь даты не проверен (есть в анкете media)')
+  else expect(parsed[dated] === VERIFY_DATE, `дата «${dated}» записана записью провода ${VERIFY_DATE}`)
+
   step('Дело в истории сделки')
   const { count: activities, id: activityId } = await findActivity(call, issued.itemId)
   expect(activities === 1, `дел с нашей меткой: ${activities}`)
+  if (dated !== undefined) {
+    // И в деле — по-русски: лента до issue #84 печатала дату с провода как есть.
+    const text = await readActivityText(call, activityId!)
+    expect(text.includes(formatAnswerDate(VERIFY_DATE)), `в деле дата по-русски: ${formatAnswerDate(VERIFY_DATE)}`)
+  }
 
   step(`Дело видно и в карточке «${SURVEY_SP_TITLE}»`)
   // ⚠ Дело создаётся владельцем-сделкой, а к элементу «Опроса» привязывается вторым шагом
@@ -363,6 +389,12 @@ async function findActivity(
     count: Array.isArray(answer.result) ? answer.result.length : 0,
     id: readFoundActivityId(answer),
   }
+}
+
+/** The activity's text as the portal stored it: `crm.activity.get`, field `DESCRIPTION`. */
+async function readActivityText(call: ReturnType<typeof hookCall>, activityId: string): Promise<string> {
+  const answer = await call('crm.activity.get', { id: Number(activityId) }) as { result?: { DESCRIPTION?: unknown } }
+  return typeof answer.result?.DESCRIPTION === 'string' ? answer.result.DESCRIPTION : ''
 }
 
 /** Привязки дела, перечитанные с портала. */

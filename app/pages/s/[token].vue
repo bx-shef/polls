@@ -99,6 +99,34 @@ const { data, error } = await useFetch<SurveyResponse>(`/api/s/${token}`, { igno
  * «—», и первое же касание записывает настоящее число — в том числе ноль.
  */
 const answers = reactive<Record<string, number | string | null>>({})
+
+/**
+ * Date questions typed only in part, by question key: the survey is not sent while any is.
+ *
+ * ⚠ Частичную дату поле наружу не отдаёт — в `answers` она выглядит ровно как «не ответил»,
+ * и анкета уезжала с «Спасибо!» на экране, а одноразовая ссылка закрывалась. Что дописать,
+ * говорит подсказка у самого вопроса (`DateInput.vue`), а здесь — только «не отправлять».
+ * Нашли `/review` и `/code-review` в PR #91.
+ */
+const unfinishedDates = reactive<Record<string, boolean>>({})
+
+/**
+ * Date widgets on the page by question key: before sending, each is asked to check itself.
+ *
+ * Подсказку по уходу фокуса виджет показывает и сам, но на него при отправке опираться нельзя —
+ * почему, у `check` в `DateInput.vue`.
+ */
+const dateInputs = new Map<string, { check: () => void }>()
+
+/** Keeps the widget of a date question, or forgets it when the widget goes away. */
+function keepDateInput(key: string, input: unknown): void {
+  if (input !== null && typeof input === 'object' && 'check' in input) dateInputs.set(key, input as { check: () => void })
+  else dateInputs.delete(key)
+}
+
+/** Why the survey was not sent: a date is typed only in part. */
+const UNFINISHED_DATE = 'Одна из дат дописана не до конца — допишите её или сотрите поле. Что именно не так, сказано у самого вопроса.'
+
 const sending = ref(false)
 const sent = ref(false)
 const problems = ref<{ key: string, detail: string }[]>([])
@@ -208,8 +236,13 @@ const MAX_TEXT_BYTES = 8 * 1024
 
 async function submit() {
   if (sending.value) return
-  sending.value = true
   problems.value = []
+  for (const input of dateInputs.values()) input.check()
+  if (Object.values(unfinishedDates).some(Boolean)) {
+    failure.value = UNFINISHED_DATE
+    return
+  }
+  sending.value = true
   failure.value = ''
 
   try {
@@ -481,11 +514,15 @@ async function submit() {
 
               Ответ приходит строкой `ГГГГ-ММ-ДД` или `null`: нетронутая дата — «не ответил»,
               как и нетронутый ползунок, а не сегодняшний день, выбранный за человека.
+              «Дата не дописана» — отдельным событием: в `answers` она неотличима от пропуска,
+              почему — у `unfinishedDates`.
             -->
             <LazySurveyDateInput
               v-else-if="question.type === 'date'"
+              :ref="(input: unknown) => keepDateInput(question.key, input)"
               :labelledby="`q${si}-${qi}`"
               @answer="answers[question.key] = $event"
+              @incomplete="unfinishedDates[question.key] = $event"
             />
 
             <template v-else>
@@ -576,6 +613,14 @@ async function submit() {
   --ink: #fffdf5;
   --ink-dim: rgba(255, 253, 245, 0.5);
   --mint: #25ce51;
+  --alert: #ff958c;
+
+  /* Поля ответа — одни на всю анкету: текстовое поле ниже и поле даты
+     (`app/components/survey/DateInput.vue`) берут цвета отсюда, а не своими литералами. */
+  --field-bg: #fff;
+  --field-ink: #17181a;
+  --field-line: rgba(255, 253, 245, 0.25);
+  --field-radius: 0.25rem;
 
   min-height: 100vh;
   background: var(--sheet);
@@ -810,7 +855,8 @@ legend {
   color: var(--ink);
 }
 
-/* Имя для экранного диктора, но не для глаза: приём стандартный, не своя выдумка. */
+/* Имя для экранного диктора, но не для глаза: приём стандартный, не своя выдумка.
+   Копия живёт в `app/components/survey/DateInput.vue` — стили здесь `scoped`. */
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -881,10 +927,10 @@ legend {
 
 .text :deep(textarea) {
   padding: 0.6rem 0.7rem;
-  border: 1px solid rgba(255, 253, 245, 0.25);
-  border-radius: 0.25rem;
-  background: #fff;
-  color: #17181a;
+  border: 1px solid var(--field-line);
+  border-radius: var(--field-radius);
+  background: var(--field-bg);
+  color: var(--field-ink);
   font: inherit;
   /* Высоту считает `autoresize`; ручная растяжка спорила бы с ним. */
   resize: none;
@@ -897,12 +943,12 @@ legend {
 }
 
 .counter.over {
-  color: #ff958c;
+  color: var(--alert);
 }
 
 .problem {
   margin: 0.75rem 0 0;
-  color: #ff958c;
+  color: var(--alert);
   font-size: 0.9rem;
 }
 

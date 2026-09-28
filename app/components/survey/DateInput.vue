@@ -2,6 +2,7 @@
 import type { InputDateProps } from '@bitrix24/b24ui-nuxt'
 import { localeContextInjectionKey } from '@bitrix24/b24ui-nuxt/composables/useLocale'
 import { ru } from '@bitrix24/b24ui-nuxt/locale'
+import { ANSWER_YEARS, isCalendarDate, isoDay } from '#shared/answer-date'
 
 /**
  * The date question widget of the public survey page: a date field with a calendar.
@@ -28,7 +29,8 @@ import { ru } from '@bitrix24/b24ui-nuxt/locale'
  * открывался и тут же закрывался — всплывающее окно успевало решить, что щелчок был снаружи.
  * Одним куском с полем он приезжает раньше, чем его откроют.
  *
- * Отдаёт наружу строку `ГГГГ-ММ-ДД` или `null` — объект даты живёт только здесь.
+ * Отдаёт наружу строку `ГГГГ-ММ-ДД` или `null` — объект даты живёт только здесь, — и признак
+ * «дата не дописана», по которому страница не отправит анкету.
  */
 
 const props = defineProps<{
@@ -37,15 +39,17 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /** Ответ: день в записи провода или `null` — «не ответил». */
+  /** The answer: a day in wire form, or `null` for «не ответил». */
   answer: [value: string | null]
+  /** Whether the field holds a date typed only in part: the page must not send the survey then. */
+  incomplete: [value: boolean]
 }>()
 
-/** Дата так, как её понимают поле и календарь набора: объект `@internationalized/date`. */
+/** A date as the kit's field and calendar understand it: an `@internationalized/date` object. */
 type PickedDate = NonNullable<InputDateProps['modelValue']>
 
 /**
- * Выбранная дата — объектом, в том виде, в каком её понимает виджет.
+ * The chosen date as an object, the form the widget understands.
  *
  * ⚠ Ответ уходит странице строкой, а объект живёт здесь, по образцу ползунка: там положение
  * ручки отдельно от ответа, здесь объект виджета отдельно от строки. Вычислять объект из строки
@@ -61,11 +65,23 @@ type PickedDate = NonNullable<InputDateProps['modelValue']>
  */
 const picked = shallowRef<PickedDate>()
 
-/** Открыт ли календарь. */
+/** Whether the calendar is open. */
 const open = ref(false)
 
+/** The field's row: its parts are read to tell «не начинал» from «начал и не дописал». */
+const row = useTemplateRef<HTMLDivElement>('row')
+
+/** Whether the hint «дата не дописана» is shown. */
+const unfinished = ref(false)
+
+/** The hint's id: the field refers to it, so a screen reader reads it along with the field. */
+const hintId = computed(() => `${props.labelledby}-hint`)
+
+/** What to do with a date typed only in part. */
+const HINT = `Допишите дату: день, месяц и год от ${ANSWER_YEARS.min} до ${ANSWER_YEARS.max} — или сотрите поле.`
+
 /**
- * Русский словарь набора — для подписей кнопок календаря («Следующий месяц» и соседей).
+ * The kit's Russian dictionary — for the calendar's button labels («Следующий месяц» and the rest).
  *
  * ⚠ Обычно его раздаёт `<B24App>`, а его на публичной странице нет и быть не должно (гвард
  * в `tests/unit/page-layouts.test.ts`): без этой строки экранный диктор называл бы кнопки
@@ -75,34 +91,92 @@ const open = ref(false)
 provide(localeContextInjectionKey, shallowRef(ru))
 
 /**
- * Записать дату — набранную в поле или выбранную в календаре.
+ * Records the date typed in the field or chosen in the calendar.
  *
- * Стёртое поле и снятый в календаре выбор приходят `undefined` и уезжают `null`: «не ответил»,
- * как у любого вопроса. Недонабранная дата (день есть, года нет) — тоже `undefined`: виджет
- * отдаёт значение, только когда дата собрана целиком.
+ * Стёртое поле приходит `undefined` и уезжает `null`: «не ответил», как у любого вопроса.
+ *
+ * ⚠ ОТВЕТОМ СТАНОВИТСЯ ТОЛЬКО ДАТА, КОТОРУЮ ПРИМЕТ СЕРВЕР. Поле набора собирает дату после
+ * каждой цифры, как только все три части не пусты: год «2026», набранный по цифре, по пути
+ * отдаёт 2-й, 20-й и 202-й годы, а «28.09.26» так и остаётся 26-м. Здесь было написано, что
+ * «виджет отдаёт значение, только когда дата собрана целиком», и для года это было неправдой:
+ * `0026-09-28` уезжал в портал, а ссылка одноразовая. Нашли `/review` и `/code-review` в PR #91.
+ * Проверка — та же функция, что на сервере (`shared/answer-date.ts`): расходиться им негде.
+ * Всё, что её не прошло, уезжает `null` и становится поводом для подсказки — но только когда
+ * человек уйдёт из поля (`leave`), иначе она мигала бы на каждой цифре года.
  */
 function pick(value: PickedDate | null | undefined): void {
   picked.value = value ?? undefined
-  emit('answer', value ? isoDay(value) : null)
+  const day = value ? isoDay(value) : null
+  const accepted = day !== null && isCalendarDate(day) ? day : null
+  emit('answer', accepted)
+  // A finished date clears the hint at once; an unfinished one waits until the field is left.
+  if (accepted !== null) settle(false)
 }
 
-/** Выбрать день в календаре и закрыть его: второй щелчок по уже выбранному дню снимает выбор. */
+/**
+ * Picks a day in the calendar and closes it.
+ *
+ * ⚠ Повторный щелчок по уже выбранному дню дату НЕ снимает — на календаре стоит `prevent-deselect`.
+ * Прежде снимал: человек открывал календарь проверить дату, «подтверждал» её щелчком — окно
+ * закрывалось, будто всё в порядке, а уезжало «не ответил». Нашёл `/code-review` в PR #91.
+ * Стереть дату по-прежнему можно в самом поле, как любое поле.
+ */
 function pickFromCalendar(value: PickedDate | null | undefined): void {
   pick(value)
   open.value = false
 }
 
 /**
- * День в записи провода: `ГГГГ-ММ-ДД`.
+ * Whether the date is typed only in part: some parts are filled, yet there is no date to send.
  *
- * ⚠ Собирается из ПОЛЕЙ даты явно, а не `toString()`: формат провода — наш договор с сервером
- * (`server/domain/surveys/answer-date.ts`), а не формат чужой библиотеки, у которой значение
- * со временем печатается с хвостом `T00:00:00`, и сервер его справедливо отверг бы.
+ * ⚠ По разметке поля, а не по значению: частичную дату поле набора наружу не отдаёт вовсе —
+ * значение пустое, пока не заполнены все три части, — и «28.09.гггг» молча уезжала бы как
+ * «не ответил» при «Спасибо!» на экране. Прежде текстовое поле принимало «28.09», и человек
+ * по привычке набирает так же. Нашли `/review` и `/code-review` в PR #91. Пустую часть поле
+ * помечает `data-placeholder` (`reka-ui`, `useDateField.js`) — тот же признак, по которому
+ * стили ниже красят подсказку «дд.мм.гггг».
  */
-function isoDay(date: { year: number, month: number, day: number }): string {
-  const pad = (value: number, width: number) => String(value).padStart(width, '0')
-  return `${pad(date.year, 4)}-${pad(date.month, 2)}-${pad(date.day, 2)}`
+function typedInPart(): boolean {
+  const parts = row.value?.querySelectorAll('[data-segment]:not([data-segment="literal"])') ?? []
+  const filled = [...parts].some(part => !part.hasAttribute('data-placeholder'))
+  const complete = picked.value !== undefined && isCalendarDate(isoDay(picked.value))
+  return filled && !complete
 }
+
+/** Shows or hides the hint and tells the page, once per change. */
+function settle(value: boolean): void {
+  if (unfinished.value === value) return
+  unfinished.value = value
+  emit('incomplete', value)
+}
+
+/**
+ * Checks the field once focus leaves it.
+ *
+ * Переход между частями поля (день → месяц) — не уход из поля: такие переходы пропускаются.
+ * Календарь всплывает в `body`, вне поля, и уход в него считается уходом, но выбранный там день
+ * снимет подсказку сам (`pick`). Кнопка «Отправить» получает фокус раньше, чем нажатие, так что
+ * к отправке признак уже на месте.
+ */
+function leave(event: FocusEvent): void {
+  const next = event.relatedTarget
+  if (next instanceof Node && row.value?.contains(next)) return
+  settle(typedInPart())
+}
+
+/**
+ * Checks the field on demand — the page calls it right before sending.
+ *
+ * ⚠ Уход фокуса — не опора для отправки. В WebKit на iOS, то есть и в мобильном клиенте
+ * Битрикс24, нажатие кнопки не обязано уводить фокус из поля: «Отправить» сработала бы раньше,
+ * чем поле заметило недописанную дату. Поэтому страница перед отправкой спрашивает каждое поле
+ * сама, а подсказка по уходу фокуса — только чтобы сказать раньше.
+ */
+function check(): void {
+  settle(typedInPart())
+}
+
+defineExpose({ check })
 </script>
 
 <template>
@@ -111,7 +185,11 @@ function isoDay(date: { year: number, month: number, day: number }): string {
     не ставит на такой корень атрибут `scoped`-стилей. Правило на классе поля молча
     не применялось — см. разбор у стилей ниже.
   -->
-  <div class="date-row">
+  <div
+    ref="row"
+    class="date-row"
+    @focusout="leave"
+  >
     <!--
       ⚠ `locale="ru"` на поле и на календаре обязателен. Без `<B24App>` набор считает локаль
       английской, и поле встало бы в американском порядке «мм/дд/гггг»: человек, набравший
@@ -127,6 +205,7 @@ function isoDay(date: { year: number, month: number, day: number }): string {
       :range="false"
       :model-value="picked"
       :aria-labelledby="props.labelledby"
+      :aria-describedby="hintId"
       @update:model-value="pick"
     >
       <template #trailing>
@@ -161,6 +240,7 @@ function isoDay(date: { year: number, month: number, day: number }): string {
               color="air-primary-success"
               locale="ru"
               calendar-label="Календарь"
+              prevent-deselect
               :range="false"
               :multiple="false"
               :model-value="picked"
@@ -170,6 +250,15 @@ function isoDay(date: { year: number, month: number, day: number }): string {
         </B24Popover>
       </template>
     </B24InputDate>
+    <!-- Живая область стоит всегда, меняется только текст: появившуюся уже с текстом дикторы
+         часто не зачитывают (урок PR #89). -->
+    <p
+      :id="hintId"
+      class="hint"
+      role="status"
+    >
+      {{ unfinished ? HINT : '' }}
+    </p>
   </div>
 </template>
 
@@ -178,8 +267,10 @@ function isoDay(date: { year: number, month: number, day: number }): string {
   ⚠ Поле даты — по тем же правилам, что текстовое поле страницы, и по той же причине: на тёмном
   листе заказчика поле набора в своих цветах было бы чужим. Белое, с тёмным текстом, той же
   рамкой и тем же скруглением — два поля одной анкеты не должны выглядеть взятыми из двух
-  макетов. Во всю ширину его не растягиваем: в дате десять знаков, и поле на весь лист читалось
-  бы приглашением написать абзац.
+  макетов. Поэтому цвета не литералами, а переменными `--field-*`, которые объявляет лист
+  страницы (`.page` в `app/pages/s/[token].vue`), — прежде они были скопированы, и правка макета
+  в одном месте молча развела бы поля (`/code-review`, PR #91). Во всю ширину поле
+  не растягиваем: в дате десять знаков, и поле на весь лист читалось бы приглашением написать абзац.
 
   ⚠ Правила идут ЧЕРЕЗ `.date-row :deep(…)`, а не на `.date` напрямую. У `B24InputDate` в корне
   шаблона два узла, и Vue не ставит на такой корень атрибут области видимости стилей: правило
@@ -194,13 +285,13 @@ function isoDay(date: { year: number, month: number, day: number }): string {
 }
 
 .date-row :deep(.date) {
-  border: 1px solid rgba(255, 253, 245, 0.25);
-  border-radius: 0.25rem;
-  background: #fff;
+  border: 1px solid var(--field-line);
+  border-radius: var(--field-radius);
+  background: var(--field-bg);
 }
 
 .date-row :deep([data-segment]) {
-  color: #17181a;
+  color: var(--field-ink);
 }
 
 .date-row :deep([data-segment][data-placeholder]),
@@ -219,7 +310,7 @@ function isoDay(date: { year: number, month: number, day: number }): string {
 
 .pick:hover,
 .pick:focus-visible {
-  color: #17181a;
+  color: var(--field-ink);
 }
 
 .pick svg {
@@ -232,7 +323,12 @@ function isoDay(date: { year: number, month: number, day: number }): string {
   stroke-linejoin: round;
 }
 
-/* Имя для экранного диктора, но не для глаза — тот же приём, что у сброса ползунка на странице. */
+/*
+  Имя для экранного диктора, но не для глаза — тот же приём, что у сброса ползунка на странице
+  (`.visually-hidden` в `app/pages/s/[token].vue`). Копия, а не общий класс: стили страницы
+  `scoped` и до компонента не доходят. Правится — то в обоих местах; значок календаря в кнопке
+  тоже повторяет контур из шапки страницы.
+*/
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -242,6 +338,17 @@ function isoDay(date: { year: number, month: number, day: number }): string {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* Подсказка о недописанной дате — цветом претензий страницы; пустая места не занимает. */
+.hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: var(--alert);
+}
+
+.hint:empty {
+  margin: 0;
 }
 
 /*

@@ -1,5 +1,5 @@
 import type { AnswerValue } from '../surveys/answer'
-import { formatAnswerDate } from '../surveys/answer-date'
+import { formatAnswerDate } from '../../../shared/answer-date'
 import type { SurveyTemplate } from '../surveys/model'
 import { NO_SCORE_NOTE, formatScore, partialScoreNote } from '../surveys/result-view'
 import type { SectionScore, SurveyScore } from '../surveys/scoring'

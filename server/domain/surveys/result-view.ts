@@ -1,5 +1,5 @@
 import { formatScore } from '../../../shared/score-format'
-import { formatAnswerDate } from './answer-date'
+import { formatAnswerDate } from '../../../shared/answer-date'
 import type { SurveyTemplate } from './model'
 
 /**
@@ -117,12 +117,17 @@ export function buildResultSections(
   scores: Map<string, SectionScoreRow>,
 ): ResultSection[] {
   if (template === null) {
+    // ⚠ Типов вопросов без схемы не знаем, поэтому по-русски пишется всё, что ЯВЛЯЕТСЯ датой
+    // провода, — и только оно: «в пятницу» или число `formatAnswerDate` вернёт как пришло. Без
+    // этого одно прохождение снова читалось бы двумя датами: в карточке `2026-09-28`, в деле
+    // ленты — `28.09.2026` (дело собирается при доставке, и схема у него есть всегда). Нашли
+    // `/review` и `/code-review` в PR #91.
     return [{
       key: '',
       title: 'Ответы',
       score: '',
       note: '',
-      answers: Object.entries(answers).map(([key, value]) => ({ key, title: key, value: showAnswer(value), scale: '' })),
+      answers: Object.entries(answers).map(([key, value]) => ({ key, title: key, value: showDate(value), scale: '' })),
     }]
   }
 

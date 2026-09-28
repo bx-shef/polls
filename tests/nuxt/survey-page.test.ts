@@ -1,6 +1,6 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { defineEventHandler, readBody, setResponseStatus } from 'h3'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import SurveyPage from '../../app/pages/s/[token].vue'
 
 /**
@@ -43,6 +43,9 @@ const TOKENS = {
   datedCleared: 'k'.repeat(43),
   datedUntouched: 'l'.repeat(43),
   datedPicked: 'm'.repeat(43),
+  datedRepicked: 'n'.repeat(43),
+  datedShortYear: 'o'.repeat(43),
+  datedNoYear: 'p'.repeat(43),
 }
 
 /** Анкета с одним балльным и одним текстовым вопросом; заголовок — с попыткой инъекции. */
@@ -135,6 +138,9 @@ serveRecording(TOKENS.datedTyped, DATED)
 serveRecording(TOKENS.datedCleared, DATED)
 serveRecording(TOKENS.datedUntouched, DATED)
 serveRecording(TOKENS.datedPicked, DATED)
+serveRecording(TOKENS.datedRepicked, DATED)
+serveRecording(TOKENS.datedShortYear, DATED)
+serveRecording(TOKENS.datedNoYear, DATED)
 
 async function openPage(token: string) {
   return mountSuspended(SurveyPage, { route: `/s/${token}` })
@@ -363,6 +369,25 @@ describe('вердикт после отправки', () => {
 describe('вопрос с датой', () => {
   type Page = Awaited<ReturnType<typeof openPage>>
 
+  /**
+   * Страницы, открытые в этом блоке, — чтобы убрать их за собой.
+   *
+   * ⚠ Календарь всплывает в `body`, вне страницы, и ищется по всему документу. Тест, упавший
+   * с открытым календарём, оставил бы его ячейки следующему — и тот прошёл бы по чужому окну.
+   * Нашёл `/code-review` в PR #91.
+   */
+  const opened: Page[] = []
+
+  async function openDated(token: string) {
+    const page = await openPage(token)
+    opened.push(page)
+    return page
+  }
+
+  afterEach(() => {
+    for (const page of opened.splice(0)) page.unmount()
+  })
+
   /** Набрать цифры в часть поля даты так, как набирает человек, — по клавише. */
   async function type(page: Page, part: 'day' | 'month' | 'year', keys: string[]) {
     const segment = page.find(`.date [data-segment="${part}"]`)
@@ -399,7 +424,7 @@ describe('вопрос с датой', () => {
   it('рисует поле даты с календарём, а не текстовое поле (issue #84, п. 13)', async () => {
     // ⚠ ГВАРД ПОД ДЕФЕКТ. Всё, что не шкала, падало в ветку `v-else` с текстовым полем,
     // и на вопрос «Дата» клиент писал что угодно: «в пятницу», «28.09», «не знаю».
-    const page = await openPage(TOKENS.dated)
+    const page = await openDated(TOKENS.dated)
 
     expect(page.findComponent({ name: 'B24InputDate' }).exists()).toBe(true)
     expect(page.find('textarea').exists()).toBe(false)
@@ -409,7 +434,7 @@ describe('вопрос с датой', () => {
   it('поле даты — в русском порядке: день, месяц, год', async () => {
     // ⚠ Без `locale="ru"` набор без `<B24App>` считает локаль английской и ставит поле
     // в порядке «мм/дд/гггг»: человек, набравший «10.09» по-русски, получил бы 9 октября.
-    const page = await openPage(TOKENS.dated)
+    const page = await openDated(TOKENS.dated)
     const parts = page.findAll('.date [data-segment]').filter(part => part.attributes('data-segment') !== 'literal')
 
     expect(parts.map(part => part.attributes('data-segment'))).toEqual(['day', 'month', 'year'])
@@ -417,7 +442,7 @@ describe('вопрос с датой', () => {
   })
 
   it('набранная дата уезжает строкой ГГГГ-ММ-ДД — той, что ждёт сервер', async () => {
-    const page = await openPage(TOKENS.datedTyped)
+    const page = await openDated(TOKENS.datedTyped)
     await typeDate(page)
     await send(page)
 
@@ -427,25 +452,32 @@ describe('вопрос с датой', () => {
   it('стёртая дата снова «не отвечал»: уезжает `null`, а не последняя набранная', async () => {
     // Отдельной кнопки сброса, как у ползунка, у даты нет — и не нужна: поле стирается
     // как любое поле. Но только если стёртое действительно становится `null`.
-    const page = await openPage(TOKENS.datedCleared)
+    //
+    // Стирается поле ЦЕЛИКОМ: стёртый день при набранных месяце и годе — уже не пропуск,
+    // а недописанная дата, и её страница не отправит (тест ниже).
+    const page = await openDated(TOKENS.datedCleared)
     await typeDate(page)
     await type(page, 'day', ['Backspace', 'Backspace'])
+    await type(page, 'month', ['Backspace', 'Backspace'])
+    await type(page, 'year', ['Backspace', 'Backspace', 'Backspace', 'Backspace'])
     await send(page)
 
     expect(posted[TOKENS.datedCleared]).toEqual({ D1: null })
   })
 
-  it('нетронутая дата не уезжает датой — ни сегодняшней, ни какой-либо ещё', async () => {
-    // Инвариант «нет ответа — это `null`» — тот же, что у ползунка: подставить «сегодня»
-    // значило бы ответить за человека.
-    const page = await openPage(TOKENS.datedUntouched)
+  it('нетронутое поле даты ответом не уезжает: без касания виджет молчит', async () => {
+    // Инвариант «нет ответа — это `null`» — тот же, что у ползунка. Держит этот тест одно:
+    // нетронутый виджет ничего не отдаёт. «Не подставлять сегодня» в самой записи ответа держит
+    // «стёртая дата…» выше — там виджет отдаёт значение, и подмена была бы видна. Прежнее
+    // название обещало больше, чем проверялось (тестировщик PR #91).
+    const page = await openDated(TOKENS.datedUntouched)
     await send(page)
 
     expect(posted[TOKENS.datedUntouched]!.D1 ?? null).toBeNull()
   })
 
   it('день, выбранный в календаре, уезжает этим днём, и календарь закрывается', async () => {
-    const page = await openPage(TOKENS.datedPicked)
+    const page = await openDated(TOKENS.datedPicked)
     await openCalendar(page)
 
     const day = calendarCells().find(cell => !cell.hasAttribute('data-outside-view'))!
@@ -465,7 +497,7 @@ describe('вопрос с датой', () => {
     // странице нет: без словаря, отданного страницей, экранный диктор читал бы «Next month»
     // посреди русской анкеты. Название календаря словарь не переводит вовсе — «Event Date»
     // приходит из `reka-ui`, и его закрывает `calendar-label`.
-    const page = await openPage(TOKENS.dated)
+    const page = await openDated(TOKENS.dated)
     await openCalendar(page)
 
     const labels = [...document.querySelectorAll('[aria-label]')].map(element => element.getAttribute('aria-label') ?? '')
@@ -473,8 +505,133 @@ describe('вопрос с датой', () => {
     expect(labels).toContain('Следующий месяц')
     expect(labels.some(label => label.startsWith('Календарь, '))).toBe(true)
     expect(labels.join(' | ')).not.toMatch(/Next month|Previous month|Event Date/)
+  })
 
-    // Всплывшее живёт в `body` и пережило бы тест: убираем за собой.
-    page.unmount()
+  it('календарь пишет месяц и дни недели по-русски — видимым текстом, а не только для диктора', async () => {
+    // ⚠ Гвард под находку тестировщика PR #91: `locale="ru"` у календаря не держал ни один тест.
+    // Словарь, раздаваемый страницей, переводит только подписи кнопок, а заголовок месяца и шапку
+    // дней недели календарь строит сам по своей локали — без неё «September 2026» и «Su Mo Tu».
+    const page = await openDated(TOKENS.dated)
+    await openCalendar(page)
+
+    const heading = document.querySelector('[data-slot="heading"]')?.textContent ?? ''
+    const weekDays = [...document.querySelectorAll('[data-slot="headCell"]')].map(cell => cell.textContent?.trim() ?? '')
+
+    expect(heading).toMatch(/[а-яё]/i)
+    expect(heading).not.toMatch(/[a-z]{3,}/i)
+    expect(weekDays).toHaveLength(7)
+    expect(weekDays.join(' ')).toMatch(/[а-яё]/i)
+    expect(weekDays.join(' ')).not.toMatch(/[a-z]/i)
+  })
+
+  it('повторный щелчок по выбранному дню дату НЕ стирает, а подтверждает', async () => {
+    // ⚠ Гвард под находку `/code-review` в PR #91. Человек открывает календарь проверить дату
+    // и «подтверждает» её щелчком — прежде это снимало выбор, окно закрывалось, будто всё
+    // в порядке, и уезжало «не ответил». Теперь на календаре `prevent-deselect`.
+    const page = await openDated(TOKENS.datedRepicked)
+    await openCalendar(page)
+    const day = calendarCells().find(cell => !cell.hasAttribute('data-outside-view'))!
+    const value = day.getAttribute('data-value')
+    day.click()
+    await vi.waitFor(() => {
+      expect(calendarCells()).toHaveLength(0)
+    })
+
+    await openCalendar(page)
+    calendarCells().find(cell => cell.getAttribute('data-value') === value)!.click()
+    await vi.waitFor(() => {
+      expect(calendarCells()).toHaveLength(0)
+    })
+    await send(page)
+
+    expect(posted[TOKENS.datedRepicked]).toEqual({ D1: value })
+  })
+
+  it('год из двух цифр датой не уезжает, и анкета не отправляется, пока его не допишут', async () => {
+    // ⚠ Гвард под находку `/review` и `/code-review` в PR #91. Поле набора собирает дату после
+    // каждой цифры года, и «28.09.26», набранное по привычке, уезжало как `0026-09-28` — сервер
+    // принимал его настоящим днём, а одноразовая ссылка закрывалась навсегда.
+    const page = await openDated(TOKENS.datedShortYear)
+    await type(page, 'day', ['2', '8'])
+    await type(page, 'month', ['0', '9'])
+    await type(page, 'year', ['2', '6'])
+    await page.find('.date-row').trigger('focusout')
+
+    expect(page.find('.hint').text()).toContain('Допишите дату')
+    await page.find('button[type="submit"]').trigger('submit')
+    await vi.waitFor(() => {
+      expect(page.text()).toContain('дописана не до конца')
+    })
+    expect(posted[TOKENS.datedShortYear]).toBeUndefined()
+
+    await type(page, 'year', ['Backspace', 'Backspace', '2', '0', '2', '6'])
+    await page.find('.date-row').trigger('focusout')
+    expect(page.find('.hint').text()).toBe('')
+    await send(page)
+
+    expect(posted[TOKENS.datedShortYear]).toEqual({ D1: '2026-09-28' })
+  })
+
+  it('дата без года не уезжает молча «не ответил»: подсказка у вопроса, отправка ждёт', async () => {
+    // ⚠ Гвард под находку `/review` и `/code-review` в PR #91. Частичную дату поле наружу
+    // не отдаёт вовсе, и «28.09.гггг» уезжала пропуском при «Спасибо!» на экране. Прежде
+    // текстовое поле принимало «28.09», и человек по привычке набирает так же. Стёртое поле —
+    // законный пропуск, и тогда анкета уходит.
+    //
+    // ⚠ Отправка — БЕЗ ухода фокуса из поля: в WebKit на iOS нажатие кнопки его не уводит,
+    // и страница обязана спросить поле сама. Путь через уход фокуса держит тест выше.
+    const page = await openDated(TOKENS.datedNoYear)
+    await type(page, 'day', ['2', '8'])
+    await type(page, 'month', ['0', '9'])
+
+    await page.find('button[type="submit"]').trigger('submit')
+    await vi.waitFor(() => {
+      expect(page.text()).toContain('дописана не до конца')
+    })
+    const hint = page.find('.hint')
+    expect(hint.attributes('role')).toBe('status')
+    expect(hint.text()).toContain('Допишите дату')
+    expect(posted[TOKENS.datedNoYear]).toBeUndefined()
+
+    await type(page, 'month', ['Backspace', 'Backspace'])
+    await type(page, 'day', ['Backspace', 'Backspace'])
+    await page.find('.date-row').trigger('focusout')
+    await send(page)
+
+    expect(posted[TOKENS.datedNoYear]!.D1 ?? null).toBeNull()
+  })
+
+  it('виджет отдаёт ответом только дату, которую примет сервер, — не 26-й год', async () => {
+    // ⚠ Гвард под находку `/review` и `/code-review` в PR #91 — на самом виджете, а не на странице:
+    // страница недописанную дату тоже не отправит, и её тест прошёл бы, даже если виджет снова
+    // начал бы отдавать `0026-09-28` (обратная мутация это показала). Второй рубеж не заменяет
+    // первого: ответ, уехавший из виджета, уже лежит в `answers`.
+    const DateInput = (await import('../../app/components/survey/DateInput.vue')).default
+    const input = await mountSuspended(DateInput, { props: { labelledby: 'q0-0' } })
+    const typeInto = async (part: string, keys: string[]) => {
+      for (const key of keys) await input.find(`.date [data-segment="${part}"]`).trigger('keydown', { key })
+    }
+    await typeInto('day', ['2', '8'])
+    await typeInto('month', ['0', '9'])
+    await typeInto('year', ['2', '6'])
+
+    const sent = (input.emitted('answer') ?? []).map(([value]) => value)
+    expect(sent.at(-1)).toBeNull()
+    expect(sent).not.toContain('0026-09-28')
+
+    await typeInto('year', ['Backspace', 'Backspace', '2', '0', '2', '6'])
+    expect((input.emitted('answer') ?? []).map(([value]) => value).at(-1)).toBe('2026-09-28')
+    input.unmount()
+  })
+
+  it('переход между частями поля подсказку не показывает — только уход из поля', async () => {
+    // Иначе «допишите дату» мигало бы на каждом переходе от дня к месяцу, пока человек пишет.
+    const page = await openDated(TOKENS.dated)
+    await type(page, 'day', ['2', '8'])
+    const month = page.find('.date [data-segment="month"]').element
+
+    await page.find('.date-row').trigger('focusout', { relatedTarget: month })
+
+    expect(page.find('.hint').text()).toBe('')
   })
 })

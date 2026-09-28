@@ -90,13 +90,15 @@ describe('настоящая конфигурация заказчика', () =>
     expect(off).toMatchObject({ type: 'scale', weight: 0, scored: false })
   })
 
-  it('переносит единственный вопрос-дату текстом и говорит об этом', () => {
+  it('переносит единственный вопрос-дату вопросом «Дата» — без предупреждения об искажении', () => {
+    // Дата переносится буквально: у вопроса «Дата» свой календарь (issue #84, п. 13). Прежде
+    // отчёт говорил оператору «перенесён текстом», и после календаря это стало неправдой
+    // (`/review` и `/code-review`, PR #91): отчёт перечисляет только то, что НЕ перенеслось.
     const media = templates.find(t => t.code === 'media')!
     const date = media.sections.flatMap(s => s.questions).find(q => q.key === 'UF_HQ_QUEST_NDATE')!
 
     expect(date.type).toBe('date')
-    expect(warnings.filter(w => w.code === 'date-as-text').map(w => `${w.template}/${w.at}`))
-      .toEqual(['media/UF_HQ_QUEST_NDATE'])
+    expect(warnings.filter(w => w.at === 'UF_HQ_QUEST_NDATE')).toEqual([])
   })
 
   it('читает границы шкалы и когда они строки, и когда числа', () => {

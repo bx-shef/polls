@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer'
-import { isCalendarDate } from './answer-date'
+import { ANSWER_YEARS, isCalendarDate } from '../../../shared/answer-date'
 import { scaleOf, type SurveyTemplate } from './model'
 
 /**
@@ -50,6 +50,17 @@ export interface AnswerProblem {
 export type AnswerCheck
   = | { ok: true, answers: Record<string, AnswerValue> }
     | { ok: false, problems: AnswerProblem[] }
+
+/**
+ * What a respondent is told when a date answer is not a date.
+ *
+ * ⚠ Текст понятен и БЕЗ календаря. Ссылка живёт тридцать дней, и страница, открытая до выката,
+ * ещё рисует на месте даты текстовое поле: прежнее «ответ должен быть датой из календаря» такому
+ * человеку не говорило, что делать, — календаря на его экране нет, а перезагрузка страницы теряет
+ * все набранные ответы. Запись и пример он может набрать и в текстовом поле. Нашли `/review`
+ * и `/code-review` в PR #91.
+ */
+const NOT_A_DATE_DETAIL = `дату укажите в виде ГГГГ-ММ-ДД, например 2026-09-28, с годом от ${ANSWER_YEARS.min} до ${ANSWER_YEARS.max} — или оставьте поле пустым`
 
 /**
  * Проверить и нормализовать присланные ответы.
@@ -120,7 +131,7 @@ export function checkAnswers(template: SurveyTemplate, submitted: unknown): Answ
       // подделкой или со страницы, открытой до выката, — и принять его молча значило бы записать
       // в портал «дату», которую нельзя ни показать датой, ни сравнить с другой (issue #84, п. 13).
       if (typeof value !== 'string' || !isCalendarDate(value)) {
-        problems.push({ key, code: 'not-a-date', detail: 'ответ должен быть датой из календаря' })
+        problems.push({ key, code: 'not-a-date', detail: NOT_A_DATE_DETAIL })
         continue
       }
       // В предел анкеты в байтах не идёт, как и оценка: после проверки это ровно десять байт.

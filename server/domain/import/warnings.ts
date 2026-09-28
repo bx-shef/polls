@@ -17,7 +17,6 @@ import type { SurveyTemplate } from '../surveys/model'
  * |---|---|
  * | `question-split` | вопрос стоял в двух секциях с разными весами — ключ расщеплён |
  * | `zero-weight` | вес `0` означал «не идёт в оценку» — стал явным флагом |
- * | `date-as-text` | тип `DATE` перенесён текстом в ISO: типа даты в новой модели нет |
  * | `html-stripped` | текст интерпретации хранился готовым HTML — вычищен до текста |
  * | `weights-not-100` | сумма весов в секции не даёт 100 |
  * | `band-open-end` | верхняя граница диапазона в источнике была нулём: прочитана как «до верха шкалы» |
@@ -28,7 +27,6 @@ import type { SurveyTemplate } from '../surveys/model'
 export type ImportWarningCode
   = | 'question-split'
     | 'zero-weight'
-    | 'date-as-text'
     | 'html-stripped'
     | 'weights-not-100'
     | 'band-gap'
