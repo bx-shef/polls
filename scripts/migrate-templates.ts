@@ -154,6 +154,10 @@ async function main(): Promise<number> {
 
   console.info(`\n${result.dryRun ? '=== СУХОЙ ПРОГОН, ничего не записано ===' : '=== ЗАПИСЬ ==='}`)
   console.info(`  состояние версий : ${args.state}`)
+  if (result.legacyField) {
+    // Приложение на этом портале может читать старое поле — разбор у `writesLegacyState`.
+    console.info('  старое поле      : «Состояние» ещё на портале — запись идёт и в него, рядом со стадией')
+  }
   console.info(`  создать          : ${result.create.length}${result.dryRun ? '' : ` (записано ${result.written})`}`)
   for (const c of result.create) console.info(`      ${c.code} v${c.version} — «${c.title}»`)
   if (result.skip.length > 0) {

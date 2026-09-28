@@ -92,7 +92,9 @@ import {
   buildEnableStagesCall,
   buildListCategoriesCall,
   buildListStagesCall,
+  isIssuable,
   isStaged,
+  isStateFieldName,
   planStageMoves,
   planStages,
   readCarryItems,
@@ -900,8 +902,7 @@ export async function provisionSmartProcesses(
 
 /** Our `STATE` field among the fields a smart process had before this run, if any. */
 function stateFieldIn(fields: readonly ExistingField[], ref: SmartProcessRef): ExistingField | null {
-  const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
-  return fields.find(field => normalizeFieldName(field.name) === name) ?? null
+  return fields.find(field => isStateFieldName(ref, field.name)) ?? null
 }
 
 /** What the one-off revision 4 migration works from: all of it is already read by the steps before it. */
@@ -1280,9 +1281,15 @@ export async function carryStates(
     }
     const items = readCarryItems(response, ref, kind)
     if (items === null) return unfinished(outcome, 'перенос состояния: ответ не прочитать', ref)
-    // В отчёт — только то, что перенос переведёт: строку с чужим значением он пропускает, и выпуска
-    // по ней не было и не будет. Нашёл `/code-review` в панели PR #93.
-    if (kind === 'template') reportUnchecked(ref, items.filter(item => moveOf(item) !== null))
+    // В отчёт — только то, что после перевода останется выпускаемым: строку с чужим значением перевод
+    // пропускает, а снятая или уведённая администратором в свою стадию не выпускается и так — «выпуск
+    // по ним сохранён» о них соврал бы. Нашёл `/code-review` в панели PR #93.
+    if (kind === 'template') {
+      reportUnchecked(ref, items.filter((item) => {
+        const move = moveOf(item)
+        return move !== null && isIssuable(ref, { ...item, ...move })
+      }))
+    }
     for (const move of planStageMoves(ref, items, moveOf)) {
       if (clock.now() >= clock.deadline) return unfinished(outcome, 'перенос состояния: время вышло', ref)
       try {

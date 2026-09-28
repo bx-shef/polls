@@ -240,11 +240,34 @@ describe('публикация против портала', () => {
     const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
 
     expect(result.published).toBe(2)
+    expect(result.legacyField).toBe(true)
     const fields = p.of('crm.item.update').map(one => one.params.fields as Record<string, unknown>)
     expect(fields.map(one => [one.stageId, one.UF_CRM_8_STATE])).toEqual([
       ['DT1038_14:SUCCESS', 'published'],
       ['DT1038_14:SUCCESS', 'published'],
     ])
+  })
+
+  it('решение писать старое поле видно и в сухом прогоне', async () => {
+    // Запись в поле, которое приложение, возможно, читает, — решение, и оператор необратимой
+    // операции должен видеть его до `--apply`. Нашёл `/code-review` в закрывающем проходе PR #93.
+    const p = ready({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_8_STATE: {} } } } })
+
+    const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY)
+
+    expect(result.dryRun).toBe(true)
+    expect(result.legacyField).toBe(true)
+    expect(p.of('crm.item.update')).toEqual([])
+  })
+
+  it('публиковать нечего — про старое поле не спрашивает', async () => {
+    // Вызов, ответ которого ничего не меняет, — только лишний способ упасть под троттлингом.
+    const p = ready({ 'crm.item.list:1038': { result: { items: [card('brand', { title: 'brand' })] } } })
+
+    const result = await publishTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, SURVEY, { apply: true })
+
+    expect(result.publish).toEqual([])
+    expect(p.of('crm.item.fields')).toEqual([])
   })
 
   it('старого поля уже нет — публикация пишет только стадию', async () => {

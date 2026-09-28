@@ -48,6 +48,14 @@ export interface TemplateWriteResult extends TemplateWritePlan {
   failed: { code: string, version: number, reason: string }[]
   /** Был ли это сухой прогон. В отчёте это первое, что нужно знать. */
   dryRun: boolean
+  /**
+   * Пишет ли команда рядом со стадией и старое поле «Состояние» (`writesLegacyState`).
+   *
+   * ⚠ В отчёт: запись в поле, которое приложение, возможно, читает, — решение, и оператор
+   * необратимой операции должен видеть его и в сухом прогоне. Нашёл `/code-review`
+   * в закрывающем проходе панели PR #93.
+   */
+  legacyField: boolean
 }
 
 /**
@@ -71,11 +79,12 @@ export async function writeTemplates(
 
   const existing = await listExistingVersions(call, template)
   const plan = planTemplateWrites(templates, existing)
-  const result: TemplateWriteResult = { ...plan, written: 0, failed: [], dryRun }
+  // Проверка поля — чтение, и она идёт и в сухом прогоне: «посмотреть» и «записать» — один код.
+  const legacyField = plan.create.length > 0 && await writesLegacyState(call, template)
+  const result: TemplateWriteResult = { ...plan, written: 0, failed: [], dryRun, legacyField }
 
   if (dryRun) return result
 
-  const legacyField = await writesLegacyState(call, template)
   for (const planned of plan.create) {
     const create = buildCreateTemplateCall(template, planned, state, options.now ?? new Date(), legacyField)
     try {

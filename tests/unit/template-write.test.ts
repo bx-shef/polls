@@ -185,8 +185,9 @@ describe('перенос против портала', () => {
     // ⚠ Тот же разбор, что у публикации (`writesLegacyState`): вебхук не видит, чем читает приложение.
     const p = portal({ 'crm.item.fields': { result: { fields: { id: {}, UF_CRM_7_STATE: {} } } } })
 
-    await writeTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, [schema('brand')], { apply: true })
+    const result = await writeTemplates(p.call, { ...TEMPLATE, categoryId: 14 }, [schema('brand')], { apply: true })
 
+    expect(result.legacyField).toBe(true)
     expect(p.of('crm.item.add').map(one => one.params.fields)).toMatchObject([{ stageId: 'DT1044_14:NEW', UF_CRM_7_STATE: 'draft' }])
   })
 

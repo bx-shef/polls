@@ -43,6 +43,8 @@ export interface TemplatePublishResult extends TemplatePublishPlan {
   failed: { code: string, version: number, reason: string }[]
   /** Был ли это сухой прогон. */
   dryRun: boolean
+  /** Пишет ли публикация рядом со стадией и старое поле «Состояние» (`writesLegacyState`); в отчёт. */
+  legacyField: boolean
 }
 
 /**
@@ -63,11 +65,13 @@ export async function publishTemplates(
   const items = await listAllItems(call, template)
   const usage = await tallyUsage(call, survey)
   const plan = planTemplatePublish(items, usage)
-  const result: TemplatePublishResult = { ...plan, published: 0, failed: [], dryRun }
+  // Состояние пишет только публикация черновика, переименование его не трогает. Проверка поля —
+  // чтение, и она идёт и в сухом прогоне: «посмотреть» и «опубликовать» — один код.
+  const legacyField = plan.publish.some(one => one.action === 'publish') && await writesLegacyState(call, template)
+  const result: TemplatePublishResult = { ...plan, published: 0, failed: [], dryRun, legacyField }
 
   if (dryRun) return result
 
-  const legacyField = await writesLegacyState(call, template)
   for (const planned of plan.publish) {
     const update = buildPublishCall(template, planned, options.now ?? new Date(), legacyField)
     try {

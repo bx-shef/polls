@@ -129,9 +129,10 @@ describe('состояние шаблона: публикация решаетс
     expect(buildItemFieldsCall(TEMPLATE)).toEqual({ method: 'crm.item.fields', params: { entityTypeId: 1038, useOriginalUfNames: 'Y' } })
     expect(hasStateField({ result: { fields: { id: {}, UF_CRM_8_STATE: {} } } }, TEMPLATE)).toBe(true)
     expect(hasStateField({ result: { fields: { id: {}, UF_CRM_8_SCHEMA: {} } } }, TEMPLATE)).toBe(false)
-    // Ответ не прочитать — пишем и поле: лишнюю запись в несуществующее портал молча принимает,
-    // а недописанная в живое оставила бы анкету черновиком для приложения на старом поле.
-    expect(hasStateField({ error: 'QUERY_LIMIT_EXCEEDED' }, TEMPLATE)).toBe(true)
+    // Двухсотый ответ без списка полей — пишем и поле: лишнюю запись в несуществующее портал молча
+    // принимает, а недописанная в живое оставила бы анкету черновиком для приложения на старом поле.
+    // Отказ сюда не доходит: транспорт бросает, и команда падает до первой записи.
+    expect(hasStateField({ result: {} }, TEMPLATE)).toBe(true)
   })
 })
 
@@ -313,6 +314,19 @@ describe('неперенесённая анкета — пока перенос 
 
     expect(templateStateOf(TEMPLATE, legacy)).toBe('published')
     expect(isIssuable(TEMPLATE, legacy)).toBe(true)
+  })
+
+  it('ГЛАВНОЕ: с датой «Черновик» сужает и при старом поле — опубликованная командой из «Черновика» не выпускается', () => {
+    // ⚠ Команда пишет старое поле рядом со стадией, пока оно живо (`writesLegacyState`), и дата у её
+    // публикации есть всегда. Исключение по одному старому полю делало «Черновик» бессильным для такой
+    // версии — навсегда, если поле остаётся законно (неповторимый отказ переноса). Нашёл `/code-review`
+    // в закрывающем проходе панели PR #93, пробным запуском.
+    const byCommand = { ...commandStateFields(TEMPLATE, 'published', true), UF_CRM_8_PUBLISHED_AT: '2026-09-28' }
+    const dragged = { ...byCommand, stageId: 'DT1038_14:NEW' }
+
+    expect(isIssuable(TEMPLATE, byCommand)).toBe(true)
+    expect(templateStateOf(TEMPLATE, dragged)).toBe('published')
+    expect(isIssuable(TEMPLATE, dragged)).toBe(false)
   })
 
   it('неперенесённая, уведённая администратором в свою стадию, — опубликована, но не выпускается', () => {

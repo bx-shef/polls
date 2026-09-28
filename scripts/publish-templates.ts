@@ -79,6 +79,10 @@ async function main(): Promise<number> {
 
   console.info(`\n${result.dryRun ? '=== СУХОЙ ПРОГОН, ничего не изменено ===' : '=== ПУБЛИКАЦИЯ ==='}`)
   console.info(`  всего изменений : ${result.publish.length}${result.dryRun ? '' : ` (сделано ${result.published})`}`)
+  if (result.legacyField) {
+    // Приложение на этом портале может читать старое поле — разбор у `writesLegacyState`.
+    console.info('  старое поле     : «Состояние» ещё на портале — публикация пишет и его, рядом со стадией')
+  }
   if (fresh.length > 0) {
     console.info(`  опубликовать    : ${fresh.length}`)
     for (const p of fresh) console.info(`      ${p.code} v${p.version} — «${p.name}»`)

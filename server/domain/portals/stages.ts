@@ -186,7 +186,7 @@ export function templateStateOf(ref: SmartProcessRef, item: Record<string, unkno
     const state = asText(item[buildFieldName(ref.id, 'STATE')])
     return state === 'draft' || state === 'published' ? state : ''
   }
-  const published = asText(item[buildFieldName(ref.id, 'PUBLISHED_AT')]) !== '' || carriesLegacyPublished(ref, item)
+  const published = hasPublishedDate(ref, item) || carriesLegacyPublished(ref, item)
   if (!published) return 'draft'
   return stageCodeOf(ref, item.stageId) === TEMPLATE_STAGES.retired.code ? 'retired' : 'published'
 }
@@ -207,6 +207,11 @@ function carriesLegacyPublished(ref: SmartProcessRef, item: Record<string, unkno
   return asText(item[buildFieldName(ref.id, 'STATE')]) === 'published'
 }
 
+/** Whether the element has our «Дата публикации» — written only by our publication, after the schema check. */
+function hasPublishedDate(ref: SmartProcessRef, item: Record<string, unknown>): boolean {
+  return asText(item[buildFieldName(ref.id, 'PUBLISHED_AT')]) !== ''
+}
+
 export { isFrozen } from '../../../shared/template-state'
 
 /**
@@ -215,8 +220,8 @@ export { isFrozen } from '../../../shared/template-state'
  * ⚠ Со стадиями — И публикация (дата или старое поле до переноса, `templateStateOf`), И стадия
  * «Опубликован». Версию, которую администратор перетащил в «Черновик», выпускать перестаём: он
  * увидел в канбане «не опубликована» и вправе ждать именно этого. Обратное — черновик, перетащенный
- * в «Опубликован», — выпускать нельзя: его схему никто не проверял. Исключение одно — анкета,
- * которую перенос ещё не перевёл (ниже).
+ * в «Опубликован», — выпускать нельзя: его схему никто не проверял. Исключение одно — анкета
+ * без даты, которую перенос ещё не перевёл (ниже).
  */
 export function isIssuable(ref: SmartProcessRef, item: Record<string, unknown>): boolean {
   if (templateStateOf(ref, item) !== 'published') return false
@@ -226,9 +231,17 @@ export function isIssuable(ref: SmartProcessRef, item: Record<string, unknown>):
   if (!isStaged(ref) || item.stageId === undefined) return true
   const code = stageCodeOf(ref, item.stageId)
   if (code === TEMPLATE_STAGES.published.code) return true
-  // Опубликованная полем и ещё не перенесённая стоит в первой стадии: перенос переведёт её
-  // в «Опубликован» и снимет старое поле. До тех пор выпуск по ней — как и до ревизии 5.
-  return code === TEMPLATE_STAGES.draft.code && carriesLegacyPublished(ref, item)
+  // Опубликованная старым полем без даты и ещё не перенесённая стоит в первой стадии: перенос
+  // переведёт её в «Опубликован», допишет дату и снимет поле. До тех пор выпуск по ней — как
+  // до ревизии 5.
+  // ⚠ ТОЛЬКО БЕЗ ДАТЫ. С датой решает стадия, как у любой анкеты: дату пишет наша публикация,
+  // в том числе операторская команда рядом со старым полем (`writesLegacyState`), и «Черновик»
+  // обязан сужать и такую. Исключение по одному старому полю делало «Черновик» бессильным для
+  // всего, что команда опубликовала при живом поле, — навсегда, если поле остаётся законно.
+  // Цена — секунды между переключением и переносом, когда датированная анкета, опубликованная
+  // до ревизии 5, стоит в «Черновике» и не выпускается: перенос переводит её тем же прогоном.
+  // Нашёл `/code-review` в закрывающем проходе панели PR #93.
+  return code === TEMPLATE_STAGES.draft.code && carriesLegacyPublished(ref, item) && !hasPublishedDate(ref, item)
 }
 
 /** The fields that put a template element into a stage — a stage, or the old field. */
@@ -262,16 +275,27 @@ export function buildItemFieldsCall(ref: SmartProcessRef): PortalCall {
 }
 
 /**
+ * Whether a field name is our old `STATE` field of this smart process, however the portal spells it.
+ *
+ * Одно правило на обустройство (`stateFieldIn`) и операторские команды (`hasStateField`): разойдись
+ * они, одно удалило бы поле, а другое продолжило бы в него писать.
+ */
+export function isStateFieldName(ref: SmartProcessRef, name: string): boolean {
+  return normalizeFieldName(name) === normalizeFieldName(buildFieldName(ref.id, 'STATE'))
+}
+
+/**
  * Whether a `crm.item.fields` answer still has our old `STATE` field.
  *
- * Ответ не прочитать — `true`: лишнюю запись в поле, которого нет, портал молча принимает (замерено
- * 28.09), а недописанная в живое оставила бы анкету черновиком для приложения на старом поле.
+ * Отказ портала сюда не доходит — транспорт бросает, и команда падает до первой записи, как
+ * на любом своём чтении. Здесь — двухсотый ответ без списка полей: тогда `true`, потому что
+ * лишнюю запись в поле, которого нет, портал молча принимает (замерено 28.09), а недописанная
+ * в живое оставила бы анкету черновиком для приложения на старом поле.
  */
 export function hasStateField(response: unknown, ref: SmartProcessRef): boolean {
   const fields = (response as { result?: { fields?: unknown } } | null)?.result?.fields
   if (fields === null || typeof fields !== 'object') return true
-  const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
-  return Object.keys(fields).some(key => normalizeFieldName(key) === name)
+  return Object.keys(fields).some(key => isStateFieldName(ref, key))
 }
 
 /** Turns stages on for a smart process. */
@@ -396,7 +420,7 @@ export function buildCarryListCall(ref: StagedRef, kind: CarryKind, afterId: num
       // только из первой: куда её увёл администратор, там она и останется. Нашёл `/review`
       // во втором круге панели PR #93. Значения — из `CARRIED_VALUES`: одна копия на отбор и перевод.
       filter: kind === 'template'
-        ? { '>id': afterId, [state]: CARRIED_VALUES.template[0] }
+        ? { '>id': afterId, [`@${state}`]: [...CARRIED_VALUES.template] }
         : { 'stageId': stageId(ref, 'NEW'), '>id': afterId, [`@${state}`]: [...CARRIED_VALUES.survey] },
       order: { id: 'ASC' },
     },

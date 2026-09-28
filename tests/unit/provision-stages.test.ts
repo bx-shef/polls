@@ -569,9 +569,9 @@ describe('отчёт о непроверенных анкетах', () => {
     // в панели PR #93.
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const bare = JSON.stringify({ code: 'bare', sections: [{ key: 's', questions: [{ key: 'q', type: 'scale' }] }] })
-    const row = (id: number, state: string, code: string) => ({
+    const row = (id: number, state: string, code: string, stage = 'NEW') => ({
       id,
-      stageId: 'DT1038_14:NEW',
+      stageId: `DT1038_14:${stage}`,
       updatedTime: '2026-09-21T10:00:00+03:00',
       ufCrm8State: state,
       ufCrm8PublishedAt: '',
@@ -579,13 +579,20 @@ describe('отчёт о непроверенных анкетах', () => {
       ufCrm8Version: 2,
       ufCrm8Schema: bare,
     })
-    const p = portal({ 'crm.item.list': { result: { items: [row(4, 'published', 'brand'), row(5, 'Published', 'hand')] } } })
+    // Снятая и уведённая в свою стадию до переноса переводятся (получают дату), но не выпускаются:
+    // «выпуск по ним сохранён» о них — тоже неправда.
+    const p = portal({ 'crm.item.list': { result: { items: [
+      row(4, 'published', 'brand'),
+      row(5, 'Published', 'hand'),
+      row(6, 'published', 'retired', 'FAIL'),
+      row(7, 'published', 'parked', 'PREPARATION'),
+    ] } } })
 
     expect(await carryStates(p.call, STAGED_TEMPLATE, 'template', TEMPLATE_FIELD, { changes: 0, settled: true }, { deadline: Number.POSITIVE_INFINITY, now: Date.now })).toBe(true)
 
     const line = warn.mock.calls.find(([, message]) => String(message).includes('до проверки схемы'))
     expect(line?.[0]).toMatchObject({ unchecked: ['brand v2'] })
-    expect(p.of('crm.item.update').map(one => one.params.id)).toEqual([4])
+    expect(p.of('crm.item.update').map(one => one.params.id)).toEqual([4, 6, 7])
   })
 })
 
