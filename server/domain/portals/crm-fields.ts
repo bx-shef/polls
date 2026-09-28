@@ -1,6 +1,6 @@
-import { CONTACT_ENTITY_TYPE_ID, DEAL_ENTITY_TYPE_ID } from './smart-processes'
+import { CONTACT_ENTITY_TYPE_ID, DEAL_ENTITY_TYPE_ID, FIELD_LABEL_LANGUAGE } from './smart-processes'
 import type { PortalCall } from './smart-processes'
-import { ownerLabel } from './naming'
+import { ownerLabel } from '../../../shared/portal-names'
 
 /**
  * The two fields we put on the client's own CRM entities: last survey score and its date.
@@ -90,24 +90,17 @@ export const CONTACT_ENTITY: CrmEntity = {
 /** Сущности, на которых заводим поля. Компании здесь нет — см. шапку файла. */
 export const SCORED_ENTITIES: readonly CrmEntity[] = [DEAL_ENTITY, CONTACT_ENTITY]
 
-/** Перечислить пользовательские поля сущности. Страница за страницей — их бывает много. */
-export function buildListFieldsCall(entity: CrmEntity, start = 0): PortalCall {
-  return { method: entity.listMethod, params: start === 0 ? {} : { start } }
-}
-
 /**
- * Имена полей из ответа `crm.<entity>.userfield.list`.
+ * Lists one page of the entity's user fields, labels included.
  *
- * ⚠ Читаем `FIELD_NAME`, и он приходит УЖЕ С ПРЕФИКСОМ (`UF_CRM_…`) — так показано
- * в документации метода. Сравнивать его надо с `crmFieldName(code)`, а не с голым кодом.
+ * ⚠ С `LANG` — без него подписей в ответе нет, и миграция подписей переписывала бы наши поля
+ * при каждом прогоне (`FIELD_LABEL_LANGUAGE`, замер 28.09). Форма — из примеров документации.
  */
-export function readCrmFieldNames(response: unknown): string[] {
-  const result = (response as { result?: unknown } | null)?.result
-  if (!Array.isArray(result)) return []
-
-  return result
-    .map(row => (row as { FIELD_NAME?: unknown })?.FIELD_NAME)
-    .filter((name): name is string => typeof name === 'string' && name !== '')
+export function buildListFieldsCall(entity: CrmEntity, start = 0): PortalCall {
+  return {
+    method: entity.listMethod,
+    params: { filter: { LANG: FIELD_LABEL_LANGUAGE }, ...(start === 0 ? {} : { start }) },
+  }
 }
 
 /**
@@ -130,15 +123,27 @@ export function planMissingCrmFields(
     .map(field => buildCreateCrmFieldCall(entity, field))
 }
 
-/** Поле сущности, как его отдаёт `crm.<entity>.userfield.list`: для правки подписи. */
+/** An entity field as `crm.<entity>.userfield.list` returns it: enough to fix its label. */
 export interface ExistingCrmField {
   id: number
   name: string
-  /** Подпись в карточке — строка или по языкам; сравниваем русскую. */
+  /**
+   * Card label. With `LANG` the portal sends a plain string (measured 28.09); a map by
+   * language is read too, the Russian one.
+   */
   label: string
 }
 
-/** Поля сущности с идентификатором и подписью. Без имени или без идентификатора — пропускаются. */
+/**
+ * Entity fields with id and label. Ones without a name or an id are skipped.
+ *
+ * ⚠ `FIELD_NAME` приходит УЖЕ С ПРЕФИКСОМ (`UF_CRM_…`) — так показано в документации метода.
+ * Сравнивать его надо с `crmFieldName(code)`, а не с голым кодом.
+ *
+ * Прежде имена для плана создания читались отдельной функцией, а подписи — этой; с PR #87
+ * список читается один раз и служит обоим: второй раз листать поля сделки и контакта
+ * на критическом пути установки незачем.
+ */
 export function readCrmFields(response: unknown): ExistingCrmField[] {
   const result = (response as { result?: unknown } | null)?.result
   if (!Array.isArray(result)) return []

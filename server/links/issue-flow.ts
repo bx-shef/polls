@@ -1,7 +1,9 @@
+import { safeRefusal } from '../domain/answers/portal-errors'
 import { buildSurveyUrl, createInvitation } from '../domain/invitations/invitation'
 import {
   buildCreateSurveyItemCall,
   buildDealFactsBatch,
+  buildWithdrawSurveyItemCall,
   buildInvitationTitle,
   readCreatedItemId,
   readDealFacts,
@@ -36,9 +38,11 @@ import { logger } from '../utils/logger'
  *    истины — портал.
  * 3. Хеш токена пишется в наш кэш-индекс ПОСЛЕДНИМ, когда известен идентификатор элемента.
  *
- * Падение на третьем шаге оставляет на портале элемент без ссылки — это видно и чинится
- * перевыпуском. Обратный порядок оставил бы ссылку, ведущую в никуда, а её уже не отозвать:
- * она у человека в письме.
+ * Падение на третьем шаге оставило бы в элементе адрес анкеты, ведущий на «не найдено»: с 28.09
+ * адрес пишется в элемент вторым шагом. Поэтому элемент тогда отзывается — адрес стирается,
+ * состояние становится «отозвано» (`withdrawItem`), и это видно и чинится перевыпуском.
+ * Обратный порядок оставил бы ссылку, ведущую в никуда, а её уже не отозвать: она у человека
+ * в письме.
  */
 
 /** Что нужно знать, чтобы выпустить ссылку. Всё остальное функция добывает сама. */
@@ -115,23 +119,42 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
     assignedById: input.assignedById,
     link: url,
   })
-  const itemId = readCreatedItemId(await input.call(createCall.method, createCall.params))
+  // ⚠ В `try`, и отказ наружу уходит только нашей строкой (`safeRefusal`). С 28.09 в вызове
+  // лежит адрес анкеты С ТОКЕНОМ, а Битрикс24 цитирует присланное значение в тексте ошибки
+  // проверки поля. Необработанное исключение h3 и Nitro печатают целиком, в обход нашего
+  // журнала и его вырезания секретов, — токен уехал бы в журнал сырым текстом. Ответы клиента
+  // по той же причине защищены в `deliver.ts`. Нашла безопасность в панели ревью PR #87.
+  let created: unknown
+  try {
+    created = await input.call(createCall.method, createCall.params)
+  }
+  catch (error) {
+    logger.error({ domain: input.domain, reason: safeRefusal(error) }, 'выпуск ссылки: портал не создал элемент')
+    return { ok: false, reason: 'item-not-created' }
+  }
+  const itemId = readCreatedItemId(created)
   if (itemId === null) {
     logger.error({ domain: input.domain }, 'выпуск ссылки: портал не вернул идентификатор элемента')
     return { ok: false, reason: 'item-not-created' }
   }
 
-  await insertLink({
-    portalId: input.portalId,
-    tokenHash: invitation.tokenHash,
-    itemId,
-    surveyCode: input.template.code,
-    surveyVersion: input.template.version,
-    expiresAt: invitation.expiresAt,
-    // ⚠ Шапка кладётся СНИМКОМ и только здесь. Публичная страница в портал не ходит,
-    // значит другого способа показать респонденту компанию и проект у неё нет.
-    header,
-  })
+  try {
+    await insertLink({
+      portalId: input.portalId,
+      tokenHash: invitation.tokenHash,
+      itemId,
+      surveyCode: input.template.code,
+      surveyVersion: input.template.version,
+      expiresAt: invitation.expiresAt,
+      // ⚠ Шапка кладётся СНИМКОМ и только здесь. Публичная страница в портал не ходит,
+      // значит другого способа показать респонденту компанию и проект у неё нет.
+      header,
+    })
+  }
+  catch (error) {
+    await withdrawItem(input, itemId)
+    throw error
+  }
 
   // ⚠ В журнал уходит что угодно, кроме токена и его хеша. Ссылка живёт тридцать дней,
   // а журналы переживают инцидент и утекают вместе с ним.
@@ -147,4 +170,23 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
   )
 
   return { ok: true, url, expiresAt: invitation.expiresAt, itemId, header }
+}
+
+/**
+ * Отозвать элемент, чья ссылка не легла в наш индекс: стереть адрес, пометить «отозвано».
+ *
+ * Отказ портала здесь только пишется в журнал: исходную беду — упавшую запись в индекс —
+ * вызывающий бросает дальше сам, и прятать её за второй ошибкой нельзя.
+ */
+async function withdrawItem(input: IssueInput, itemId: number): Promise<void> {
+  const withdraw = buildWithdrawSurveyItemCall(input.survey, itemId)
+  try {
+    await input.call(withdraw.method, withdraw.params)
+  }
+  catch (error) {
+    logger.error(
+      { domain: input.domain, itemId, reason: safeRefusal(error) },
+      'выпуск ссылки: элемент с неработающей ссылкой не отозван — сотрите адрес в карточке руками',
+    )
+  }
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildBindDealTabCall,
+  buildBindTabCall,
   buildDealTabHandlerUrl,
-  buildUnbindDealTabCall,
+  buildUnbindTabCall,
   DEAL_TAB_PLACEMENT,
   isPlacementAlreadyBound,
   PLACEMENT_ALREADY_BOUND,
@@ -14,17 +14,20 @@ import {
  */
 
 describe('регистрация вкладки', () => {
-  it('собирает вызов с кодом точки и локализованным названием', () => {
-    const call = buildBindDealTabCall('https://polls.bx-shef.by/portal/deal-tab')
+  // ⚠ Названия вкладок здесь — просто строки. Что в бою уходят именно наши, с меткой, держит
+  // гвард на вызывающем (`provision-outcome.test.ts`, «английские названия вкладок»): прежний
+  // тест стоял на построителе, которого бой не вызывал, и был зелёным, пока портал получал
+  // непомеченное «Surveys». Нашли тестировщик, техдиректор и `/code-review` в панели PR #87.
+  it('собирает вызов с кодом точки и названиями на обоих языках', () => {
+    const call = buildBindTabCall(DEAL_TAB_PLACEMENT, 'https://polls.bx-shef.by/portal/deal-tab', 'Вкладка', 'Tab')
 
     expect(call).toEqual({
       method: 'placement.bind',
       params: {
         PLACEMENT: DEAL_TAB_PLACEMENT,
         HANDLER: 'https://polls.bx-shef.by/portal/deal-tab',
-        // Решение владельца 28.09 (issue #84, пункт 22): «Ссылки на опросы» с меткой `[sh]`.
-        TITLE: '[sh] Ссылки на опросы',
-        LANG_ALL: { ru: { TITLE: '[sh] Ссылки на опросы' }, en: { TITLE: '[sh] Survey links' } },
+        TITLE: 'Вкладка',
+        LANG_ALL: { ru: { TITLE: 'Вкладка' }, en: { TITLE: 'Tab' } },
       },
     })
   })
@@ -38,7 +41,7 @@ describe('регистрация вкладки', () => {
   ])('отказывается регистрировать негодный адрес (%#: %s)', (url) => {
     // Относительный адрес портал принял бы и открывал бы его от СВОЕГО домена: вкладка
     // выглядела бы работающей, но вела на страницу портала, а не на нашу.
-    expect(buildBindDealTabCall(url)).toBeNull()
+    expect(buildBindTabCall(DEAL_TAB_PLACEMENT, url, 'Вкладка', 'Tab')).toBeNull()
   })
 
   it('снимает регистрацию БЕЗ адреса обработчика', () => {
@@ -46,8 +49,8 @@ describe('регистрация вкладки', () => {
     // адрес, а снять надо ту, адреса которой мы не знаем, — старую. Первая версия передавала
     // сюда НОВЫЙ адрес: снятие вхолостую, `bind` следом падает с `ERROR_PLACEMENT_MAX_COUNT`,
     // портал остаётся на старом обработчике, а установка отчитывается успехом.
-    expect(buildUnbindDealTabCall().params).toEqual({ PLACEMENT: DEAL_TAB_PLACEMENT })
-    expect(buildUnbindDealTabCall().params).not.toHaveProperty('HANDLER')
+    expect(buildUnbindTabCall(DEAL_TAB_PLACEMENT).params).toEqual({ PLACEMENT: DEAL_TAB_PLACEMENT })
+    expect(buildUnbindTabCall(DEAL_TAB_PLACEMENT).params).not.toHaveProperty('HANDLER')
   })
 })
 

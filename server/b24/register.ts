@@ -166,8 +166,8 @@ async function provisionPortal(portal: {
     // копия записи — без compare-and-swap по прежней паре и без условия `status <> 'deleted'`,
     // то есть в обход обеих защит, которые ради этих же гонок и заводились. Комментарий
     // при этом обещал «не воскресит удалённый портал»: до появления стирания это было верно,
-    // а с ним стало неправдой. Обустройство — это 17–19 вызовов под бюджетом в 45 секунд,
-    // и продление посреди них вполне реально. Нашла панель ревью PR #34.
+    // а с ним стало неправдой. Обустройство — это около тридцати вызовов под бюджетом
+    // в 45 секунд, и продление посреди них вполне реально. Нашла панель ревью PR #34.
     async next => saveRefreshedTokens(portal.id, {
       accessToken: encryptSecret(next.accessToken),
       refreshToken: encryptSecret(next.refreshToken),
@@ -206,7 +206,9 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
       resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH),
       previousRevision: known.revision,
     })
-    await storeRefs(budgeted, { template: result.template, survey: result.survey })
+    // С прежней ревизией: запись без неё стирала отметку, и незаконченная миграция откатывала
+    // портал к ревизии 0 (разбор — у `storeRefs`).
+    await storeRefs(budgeted, { template: result.template, survey: result.survey }, known.revision)
 
     if (result.adoptedTemplate || result.adoptedSurvey) {
       // Взяли на портале смарт-процесс, которого не создавали. Обычно это наш же,
@@ -262,14 +264,20 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // его не принял бы. Без отметки фоновая донастройка вернётся к порталу после `installFinish`
     // и доделает шаг; с отметкой не вернулась бы никогда. Нашли `/review` и `/code-review`.
     //
-    // ⚠ И не ставится, если наши поля не закрылись от правки (ревизия 4): открытые поля позволяют
-    // подделать ответ клиента и опубликовать шаблон в обход проверок. Без отметки донастройка
-    // вернётся через час и закроет их.
-    const fieldsOpen = result.ownership?.fieldsLocked === false
-    if (fieldsOpen) {
-      logger.warn({ domain: portal.domain }, 'поля не закрыты от правки — ревизию не отмечаем, донастройка вернётся')
+    // ⚠ И не ставится, если миграция ревизии 4 не доделана. Прежде всего — если наши поля
+    // не закрылись от правки: открытые поля позволяют подделать ответ клиента и опубликовать
+    // шаблон в обход проверок. Громко, ошибкой: это безопасность, и такой портал будет
+    // возвращаться каждый час, пока поля не закроются. Без отметки донастройка вернётся
+    // через час и доделает; с отметкой не вернулась бы никогда.
+    const ownership = result.ownership
+    if (ownership?.fieldsLocked === false) {
+      logger.error({ domain: portal.domain }, 'наши поля не закрыты от правки — ревизию не отмечаем, донастройка вернётся')
     }
-    if (result.resultField !== 'deferred' && !fieldsOpen) {
+    else if (ownership?.settled === false) {
+      logger.warn({ domain: portal.domain }, 'метка владельца доставлена не везде — ревизию не отмечаем, донастройка вернётся')
+    }
+    const unfinished = ownership !== null && (!ownership.fieldsLocked || !ownership.settled)
+    if (result.resultField !== 'deferred' && !unfinished) {
       await storeProvisionRevision(budgeted, { template: result.template, survey: result.survey })
     }
 

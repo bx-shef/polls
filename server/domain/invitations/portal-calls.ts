@@ -27,6 +27,9 @@ export { DEAL_ENTITY_TYPE_ID } from '../portals/smart-processes'
 /** Состояние только что выпущенного приглашения. */
 export const SURVEY_STATE_SENT = 'sent'
 
+/** Состояние приглашения, по которому ответа не будет: отозвано или не состоялось. */
+export const SURVEY_STATE_REVOKED = 'revoked'
+
 /**
  * Прочитать список опубликованных шаблонов.
  *
@@ -130,6 +133,10 @@ export function buildCreateSurveyItemCall(
     /**
      * Адрес анкеты — в поле «Ссылка на анкету». Решение владельца 28.09 (issue #84, пункт 20):
      * «это не страшный секрет». У нас по-прежнему лежит только хеш токена.
+     *
+     * ⚠ Пока донастройка не завела поле на портале (до часа после выката), портал ключ молча
+     * отбрасывает и элемент всё равно создаёт — замерено 28.09. У элементов этого окна ссылки
+     * в карточке не будет; сама ссылка работает, её видит выпустивший во вкладке сделки.
      */
     link: string
   },
@@ -159,6 +166,30 @@ export function buildCreateSurveyItemCall(
         // но лучше отдать то, что он ждёт, чем полагаться на его снисходительность.
         [buildFieldName(survey.id, 'EXPIRES_AT')]: invitation.expiresAt.toISOString().slice(0, 10),
         [buildFieldName(survey.id, 'LINK')]: invitation.link,
+      },
+    },
+  }
+}
+
+/**
+ * Withdraw an invitation item whose link never made it into our index.
+ *
+ * ⚠ Адрес анкеты пишется в элемент при создании, то есть ДО того, как хеш токена ляжет в наш
+ * кэш-индекс. Упади запись в индекс — в карточке осталась бы рабочая на вид ссылка, ведущая
+ * на «не найдено», и менеджер отправил бы её клиенту. Поэтому адрес стирается, а приглашение
+ * помечается отозванным: виджет результата скажет «ответа по ней не будет». Пустая строка
+ * очищает поле типа `url` — замерено 28.09. Нашёл `/review` в PR #87.
+ */
+export function buildWithdrawSurveyItemCall(survey: SmartProcessRef, itemId: number): PortalCall {
+  return {
+    method: 'crm.item.update',
+    params: {
+      entityTypeId: survey.entityTypeId,
+      id: itemId,
+      useOriginalUfNames: 'Y',
+      fields: {
+        [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_REVOKED,
+        [buildFieldName(survey.id, 'LINK')]: '',
       },
     },
   }

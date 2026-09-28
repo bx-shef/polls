@@ -8,20 +8,24 @@ import {
   normalizeFieldName,
   planMissingFields,
   readCreatedRef,
-  readFieldNames,
   readNextOffset,
   readTypes,
   SURVEY_FIELDS,
   SURVEY_SP_TITLE,
   TEMPLATE_FIELDS,
   TEMPLATE_SP_TITLE,
-  LEGACY_SURVEY_SP_TITLES,
-  LEGACY_TEMPLATE_SP_TITLES,
+  SURVEY_SP_TITLES,
+  TEMPLATE_SP_TITLES,
   planFieldOwnership,
   readFields,
   buildRenameTypeCall,
   buildTemplateFeaturesCall,
   buildCardSections,
+  buildListSpFieldsCall,
+  confirmsFieldOwnership,
+  hasTemplateExtras,
+  readTypeTitle,
+  type ExistingField,
 } from '../../server/domain/portals/smart-processes'
 
 /**
@@ -91,8 +95,8 @@ describe('состав смарт-процессов', () => {
     // почистила `app.option`, а смарт-процесс остался со старым названием.
     const types = [{ id: 7, entityTypeId: 1044, title: 'Опрос' }]
 
-    expect(findTypeByTitle(types, [SURVEY_SP_TITLE, ...LEGACY_SURVEY_SP_TITLES])).toEqual({ entityTypeId: 1044, id: 7 })
-    expect(findTypeByTitle([{ id: 9, entityTypeId: 1048, title: 'Шаблон опроса' }], [TEMPLATE_SP_TITLE, ...LEGACY_TEMPLATE_SP_TITLES]))
+    expect(findTypeByTitle(types, SURVEY_SP_TITLES)).toEqual({ entityTypeId: 1044, id: 7 })
+    expect(findTypeByTitle([{ id: 9, entityTypeId: 1048, title: 'Шаблон опроса' }], TEMPLATE_SP_TITLES))
       .toEqual({ entityTypeId: 1048, id: 9 })
   })
 
@@ -103,7 +107,7 @@ describe('состав смарт-процессов', () => {
       { id: 8, entityTypeId: 1046, title: SURVEY_SP_TITLE },
     ]
 
-    expect(findTypeByTitle(types, [SURVEY_SP_TITLE, ...LEGACY_SURVEY_SP_TITLES])).toEqual({ entityTypeId: 1046, id: 8 })
+    expect(findTypeByTitle(types, SURVEY_SP_TITLES)).toEqual({ entityTypeId: 1046, id: 8 })
   })
 
   it('не передаёт entityTypeId: его назначает портал', () => {
@@ -222,7 +226,7 @@ describe('разбор ответов портала', () => {
   it('читает имена существующих полей', () => {
     const response = { result: { fields: [{ fieldName: 'UF_CRM_13_STATE' }, { noName: 1 }] } }
 
-    expect(readFieldNames(response)).toEqual(['UF_CRM_13_STATE'])
+    expect(readFields(response).map(field => field.name)).toEqual(['UF_CRM_13_STATE'])
   })
 
   it('читает смещение следующей страницы', () => {
@@ -236,7 +240,7 @@ describe('разбор ответов портала', () => {
   it('не падает на мусоре вместо списка', () => {
     expect(readTypes(null)).toEqual([])
     expect(readTypes({ result: { types: 'не массив' } })).toEqual([])
-    expect(readFieldNames({ result: {} })).toEqual([])
+    expect(readFields({ result: {} })).toEqual([])
   })
 })
 
@@ -246,30 +250,136 @@ describe('метка владельца и закрытые поля: разов
     { postfix: 'SCHEMA', label: 'Схема анкеты (JSON)' },
   ]
 
+  function field(overrides: Partial<ExistingField> & Pick<ExistingField, 'name'>): ExistingField {
+    return { id: 5, userTypeId: 'string', editInList: 'Y', label: '', ...overrides }
+  }
+
+  function update(id: number, label: string) {
+    return { method: 'userfieldconfig.update', params: { moduleId: 'crm', id, field: { editInList: 'N', editFormLabel: { ru: label } } } }
+  }
+
   it('закрывает и помечает только своё и только то, что ещё не так', () => {
     const existing = [
-      { id: 5, name: 'UF_CRM_8_CODE', userTypeId: 'string', editInList: 'Y', label: 'Код шаблона' },
-      { id: 6, name: 'UF_CRM_8_SCHEMA', userTypeId: 'string', editInList: 'N', label: '[sh] Схема анкеты (JSON)' },
+      field({ id: 5, name: 'UF_CRM_8_CODE', label: 'Код шаблона' }),
+      field({ id: 6, name: 'UF_CRM_8_SCHEMA', editInList: 'N', label: '[sh] Схема анкеты (JSON)' }),
       // Чужое поле клиента в нашем же смарт-процессе — его настройки не наши.
-      { id: 7, name: 'UF_CRM_8_CLIENT_NOTE', userTypeId: 'string', editInList: 'Y', label: 'Заметка' },
+      field({ id: 7, name: 'UF_CRM_8_CLIENT_NOTE', label: 'Заметка' }),
     ]
 
-    expect(planFieldOwnership(8, OURS, existing)).toEqual([{
-      method: 'userfieldconfig.update',
-      params: { moduleId: 'crm', id: 5, field: { editInList: 'N', editFormLabel: { ru: '[sh] Код шаблона' } } },
-    }])
+    expect(planFieldOwnership(8, OURS, existing)).toEqual({ calls: [update(5, '[sh] Код шаблона')], unaddressable: [] })
   })
 
-  it('поле без идентификатора настроек не трогает — править нечем', () => {
-    const existing = [{ id: 0, name: 'UF_CRM_8_CODE', userTypeId: 'string', editInList: 'Y', label: '' }]
+  it.each<[string, Partial<ExistingField>]>([
+    ['закрыто, но подпись старая', { editInList: 'N', label: 'Код шаблона' }],
+    ['подпись с меткой, но поле открыто', { editInList: 'Y', label: '[sh] Код шаблона' }],
+    ['портал не сказал про флаг', { editInList: '', label: '[sh] Код шаблона' }],
+  ])('правит поле, у которого сделана только половина (%s)', (_, half) => {
+    // Гвард из мутационного прогона панели PR #87: условие пропуска «закрыто И помечено»
+    // можно было заменить на «ИЛИ», и не краснело ничего — во всех фикстурах поле было либо
+    // готово целиком, либо не тронуто вовсе. С «ИЛИ» закрытое поле со старой подписью метку
+    // не получило бы никогда, а помеченное, но открытое осталось бы открытым.
+    const existing = [field({ id: 5, name: 'UF_CRM_8_CODE', ...half })]
 
-    expect(planFieldOwnership(8, OURS, existing)).toEqual([])
+    expect(planFieldOwnership(8, OURS, existing).calls).toEqual([update(5, '[sh] Код шаблона')])
+  })
+
+  it('узнаёт своё поле в чужом написании имени', () => {
+    // Гвард из мутационного прогона панели PR #87: без нормализации имени тесты оставались
+    // зелёными, потому что все фикстуры были в каноничной форме. А `userfieldconfig.list`
+    // отдаёт имя и слитно, и в camelCase — поле не нашлось бы и осталось открытым.
+    const existing = [
+      field({ id: 5, name: 'ufCrm8Code' }),
+      field({ id: 6, name: 'UF_CRM8_SCHEMA' }),
+    ]
+
+    expect(planFieldOwnership(8, OURS, existing).calls).toEqual([
+      update(5, '[sh] Код шаблона'),
+      update(6, '[sh] Схема анкеты (JSON)'),
+    ])
+  })
+
+  it('поле без идентификатора настроек называет — «не смогли» не выглядит как «нечего»', () => {
+    // Молча пропустив такое поле, миграция отчиталась бы «всё закрыто» с открытым полем,
+    // и ревизия отметилась бы навсегда. Нашли безопасность и `/review` в панели PR #87.
+    const existing = [field({ id: 0, name: 'UF_CRM_8_CODE' })]
+
+    expect(planFieldOwnership(8, OURS, existing)).toEqual({ calls: [], unaddressable: ['CODE'] })
+  })
+
+  it('готовое поле без идентификатора не считает незакрытым', () => {
+    const existing = [field({ id: 0, name: 'UF_CRM_8_CODE', editInList: 'N', label: '[sh] Код шаблона' })]
+
+    expect(planFieldOwnership(8, OURS, existing)).toEqual({ calls: [], unaddressable: [] })
   })
 
   it('читает из списка полей идентификатор, флаг правки и русскую подпись', () => {
     const response = { result: { fields: [{ id: '42', fieldName: 'UF_CRM_8_CODE', userTypeId: 'string', editInList: 'Y', editFormLabel: { ru: 'Код', en: 'Code' } }] } }
 
     expect(readFields(response)).toEqual([{ id: 42, name: 'UF_CRM_8_CODE', userTypeId: 'string', editInList: 'Y', label: 'Код' }])
+  })
+
+  it('без идентификатора настроек отдаёт ноль, а не NaN', () => {
+    // Гвард из мутационного прогона панели PR #87: без проверки `id` тесты молчали, а `NaN`
+    // не поймала бы защита `id === 0` в плане миграции — ушёл бы вызов на поле «NaN».
+    const response = { result: { fields: [{ fieldName: 'UF_CRM_8_CODE', editInList: 'maybe' }] } }
+
+    expect(readFields(response)).toEqual([{ id: 0, name: 'UF_CRM_8_CODE', userTypeId: '', editInList: '', label: '' }])
+  })
+
+  it('просит список полей с языком — без него подписей в ответе нет', () => {
+    // Замерено 28.09: без `select.language` портал отдаёт поля без подписей, и миграция
+    // переписывала бы каждое наше поле при каждом прогоне. Нашли `/review` и `/code-review`.
+    expect(buildListSpFieldsCall(8)).toEqual({
+      method: 'userfieldconfig.list',
+      params: { moduleId: 'crm', select: { 0: '*', language: 'ru' }, filter: { entityId: 'CRM_8' } },
+    })
+    expect(buildListSpFieldsCall(8, 50).params).toMatchObject({ start: 50 })
+  })
+
+  it('верит закрытию только по ответу портала', () => {
+    // Флаг методом не документирован: двухсотый ответ с открытым полем не должен считаться
+    // успехом. Портал возвращает поле целиком — замерено 28.09.
+    const sent = update(5, '[sh] Код шаблона')
+    const echo = (field: Record<string, unknown> | null) => ({ result: { field } })
+
+    expect(confirmsFieldOwnership(echo({ editInList: 'N', editFormLabel: { ru: '[sh] Код шаблона' } }), sent)).toBe(true)
+    expect(confirmsFieldOwnership(echo({ editInList: 'Y', editFormLabel: { ru: '[sh] Код шаблона' } }), sent)).toBe(false)
+    expect(confirmsFieldOwnership(echo({ editInList: 'N', editFormLabel: { ru: 'Код шаблона' } }), sent)).toBe(false)
+    expect(confirmsFieldOwnership(echo(null), sent)).toBe(false)
+    expect(confirmsFieldOwnership({ result: true }, sent)).toBe(false)
+  })
+
+  it('читает заголовок смарт-процесса по его id', () => {
+    const types = [{ id: 8, title: '[sh] Шаблон опроса' }, { id: '10', title: 'Опрос' }]
+
+    expect(readTypeTitle(types, 8)).toBe('[sh] Шаблон опроса')
+    expect(readTypeTitle(types, 10)).toBe('Опрос')
+    // Нет в списке — не «пустое название», а «не знаем»: переименовывать вслепую нельзя.
+    expect(readTypeTitle(types, 99)).toBeNull()
+  })
+
+  it.each<[string, Record<string, unknown>, boolean | null]>([
+    ['включён только клиент', { isClientEnabled: 'Y', isAutomationEnabled: 'N' }, true],
+    ['включены только роботы', { isClientEnabled: 'N', isAutomationEnabled: 'Y' }, true],
+    ['выключено оба', { isClientEnabled: 'N', isAutomationEnabled: 'N' }, false],
+    ['флаги логическими значениями', { isClientEnabled: true, isAutomationEnabled: false }, true],
+    ['флаг незнакомой формы', { isClientEnabled: 'N', isAutomationEnabled: 1 }, null],
+  ])('видит, включено ли у «Шаблона» лишнее (%s)', (_, flags, expected) => {
+    // Гвард из мутационного прогона панели PR #87: «ИЛИ» на «И» не краснило ничего — в фикстурах
+    // оба флага всегда шли вместе. А незнакомая форма — «не знаем», а не «выключено»: иначе
+    // включённые роботы остались бы включёнными молча.
+    expect(hasTemplateExtras([{ id: 8, ...flags }], 8)).toBe(expected)
+  })
+
+  it('смарт-процесса нет в списке — лишнее не определено', () => {
+    expect(hasTemplateExtras([{ id: 8, isClientEnabled: 'Y' }], 9)).toBeNull()
+  })
+
+  it('ищет по нынешнему названию первым, по прежнему — следом', () => {
+    // Готовыми списками: искать надо и при обустройстве, и в операторских командах переноса,
+    // и следующее переименование, дописанное в одно место, разошлось бы с другим.
+    expect(TEMPLATE_SP_TITLES).toEqual(['[sh] Шаблон опроса', 'Шаблон опроса'])
+    expect(SURVEY_SP_TITLES).toEqual(['[sh] Результат опросов', 'Опрос'])
   })
 
   it('переименование шлёт ТОЛЬКО название: связи, переданные в update, перезаписываются целиком', () => {

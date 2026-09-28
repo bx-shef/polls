@@ -8,8 +8,8 @@ import {
   LAST_SCORE_CODE,
   LAST_SURVEY_AT_CODE,
   planCrmFieldLabels,
+  buildListFieldsCall,
   planMissingCrmFields,
-  readCrmFieldNames,
   readCrmFields,
   SCORE_FIELDS,
   SCORED_ENTITIES,
@@ -89,7 +89,7 @@ describe('какие сущности трогаем', () => {
 
 describe('идемпотентность: существующее поле не создаётся второй раз', () => {
   it('узнаёт своё поле в ответе портала', () => {
-    const existing = readCrmFieldNames({ result: [{ FIELD_NAME: crmFieldName(LAST_SCORE_CODE) }] })
+    const existing = readCrmFields({ result: [{ ID: '11', FIELD_NAME: crmFieldName(LAST_SCORE_CODE) }] }).map(field => field.name)
 
     expect(planMissingCrmFields(DEAL_ENTITY, SCORE_FIELDS, existing))
       .toHaveLength(SCORE_FIELDS.length - 1)
@@ -109,9 +109,9 @@ describe('идемпотентность: существующее поле не
     expect(planMissingCrmFields(DEAL_ENTITY, SCORE_FIELDS, [])).toHaveLength(2)
   })
 
-  it('мусор в ответе портала не считает именами полей', () => {
-    expect(readCrmFieldNames({ result: [{ FIELD_NAME: '' }, {}, null, 'строка'] })).toEqual([])
-    expect(readCrmFieldNames(null)).toEqual([])
+  it('мусор в ответе портала не считает полями', () => {
+    expect(readCrmFields({ result: [{ ID: '1', FIELD_NAME: '' }, {}, null, 'строка'] })).toEqual([])
+    expect(readCrmFields(null)).toEqual([])
   })
 })
 
@@ -161,6 +161,21 @@ describe('подписи полей сделки и контакта: метка
       method: 'crm.deal.userfield.update',
       params: { id: 11, fields: { LIST_COLUMN_LABEL: '[sh] Оценка клиента', LIST_FILTER_LABEL: '[sh] Оценка клиента', EDIT_FORM_LABEL: '[sh] Оценка клиента' } },
     }])
+  })
+
+  it('просит список полей с языком — без него подписей в ответе нет', () => {
+    // Замерено 28.09: без `filter.LANG` портал отдаёт поля без подписей, и миграция переписывала
+    // бы наши поля при каждом прогоне. Нашли `/review` и `/code-review` в PR #87.
+    expect(buildListFieldsCall(DEAL_ENTITY)).toEqual({ method: 'crm.deal.userfield.list', params: { filter: { LANG: 'ru' } } })
+    expect(buildListFieldsCall(CONTACT_ENTITY, 50).params).toEqual({ filter: { LANG: 'ru' }, start: 50 })
+  })
+
+  it('узнаёт своё поле в чужом написании имени', () => {
+    // Гвард из мутационного прогона панели PR #87: без нормализации имени тесты молчали —
+    // все фикстуры были в каноничной форме.
+    const calls = planCrmFieldLabels(DEAL_ENTITY, SCORE_FIELDS, [{ id: 11, name: 'ufCrmShefSurveyScore', label: 'Оценка клиента' }])
+
+    expect(calls.map(call => call.params.id)).toEqual([11])
   })
 
   it('уже помеченное и чужое не трогает', () => {

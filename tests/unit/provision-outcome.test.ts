@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { provisionWithCall } from '../../server/b24/register'
+import { PortalError } from '../../server/domain/portals/portal-error'
 import { logger } from '../../server/utils/logger'
 
 /**
@@ -18,12 +19,12 @@ import { logger } from '../../server/utils/logger'
  */
 
 /** Подделка портала: отвечает по имени метода, помнит порядок вызовов. */
-function portal(answers: Record<string, unknown | (() => unknown)> = {}) {
+function portal(answers: Record<string, unknown | ((params: Record<string, unknown>) => unknown)> = {}) {
   const calls: string[] = []
-  const call = vi.fn(async (method: string, _params: Record<string, unknown> = {}) => {
+  const call = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
     calls.push(method)
     const answer = answers[method]
-    if (typeof answer === 'function') return (answer as () => unknown)()
+    if (typeof answer === 'function') return (answer as (p: Record<string, unknown>) => unknown)(params)
     if (answer !== undefined) return answer
 
     // Умолчания счастливого пути: администратор, смарт-процессы уже есть, поля на месте.
@@ -36,6 +37,9 @@ function portal(answers: Record<string, unknown | (() => unknown)> = {}) {
     }
     if (method === 'crm.type.list') return { result: { types: [] } }
     if (method === 'userfieldconfig.list') return { result: [] }
+    // Живой портал отвечает на правку поля самим полем (замерено 28.09): миграция ревизии 4
+    // верит закрытию только по этому ответу.
+    if (method === 'userfieldconfig.update') return { result: { field: { id: params.id, ...(params.field as object) } } }
     return { result: true }
   })
   return { call, calls }
@@ -82,6 +86,25 @@ describe('вкладки приложения', () => {
       .map(([, params]) => (params as Record<string, unknown>).PLACEMENT)
 
     expect(bound).toContain('CRM_DEAL_DETAIL_TAB')
+  })
+
+  it('ГЛАВНОЕ: обе вкладки получают метку и по-русски, и по-английски', async () => {
+    // Гвард на вызывающем, а не на построителе — под находку тестировщика, техдиректора
+    // и `/code-review` в PR #87: английские названия в бою оставались непомеченными
+    // «Surveys» и «Builder», а тест стоял на построителе, которого бой не вызывал.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal()
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    const titles = p.call.mock.calls
+      .filter(([method]) => method === 'placement.bind')
+      .map(([, params]) => (params as { LANG_ALL: unknown }).LANG_ALL)
+
+    expect(titles).toEqual([
+      { ru: { TITLE: '[sh] Ссылки на опросы' }, en: { TITLE: '[sh] Survey links' } },
+      { ru: { TITLE: '[sh] Конструктор' }, en: { TITLE: '[sh] Builder' } },
+    ])
   })
 })
 
@@ -199,33 +222,105 @@ describe('отметка ревизии', () => {
   /** Поле «Шаблона», оставшееся открытым с прошлой ревизии. */
   const OPEN_FIELD = { result: { fields: [{ id: 5, fieldName: 'UF_CRM_8_CODE', editInList: 'Y', editFormLabel: { ru: 'Код шаблона' } }] } }
 
-  it('ГЛАВНОЕ: НЕ ставится, пока наши поля не закрылись от правки', async () => {
+  /** Наши смарт-процессы в списке портала — под прежними названиями. */
+  const LEGACY_TYPES = {
+    result: {
+      types: [
+        { id: 8, entityTypeId: 1038, title: 'Шаблон опроса', isClientEnabled: 'N', isAutomationEnabled: 'N' },
+        { id: 10, entityTypeId: 1040, title: 'Опрос', isClientEnabled: 'Y', isAutomationEnabled: 'Y' },
+      ],
+    },
+  }
+
+  /** Что лежит в опции после прогона: последняя запись. */
+  function storedOption(p: ReturnType<typeof portal>): Record<string, unknown> {
+    const writes = p.call.mock.calls.filter(([method]) => method === 'app.option.set')
+    const options = (writes.at(-1)![1] as { options: Record<string, string> }).options
+    return JSON.parse(Object.values(options)[0]!) as Record<string, unknown>
+  }
+
+  it('ГЛАВНОЕ: НЕ ставится, пока наши поля не закрылись от правки — и это ошибка в журнале', async () => {
     // Открытые поля позволяют подделать ответ клиента и опубликовать шаблон в обход проверок
     // (issue #84, пункты 12 и 16). Отметь мы ревизию — донастройка не вернулась бы никогда.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
     const p = portal({
       'app.info': { result: { ID: 219, INSTALLED: true } },
       'userfieldconfig.list': OPEN_FIELD,
-      'userfieldconfig.update': () => { throw new Error('ACCESS_DENIED') },
+      'userfieldconfig.update': () => { throw new PortalError('ACCESS_DENIED', 'Доступ запрещён') },
     })
 
     expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
     expect(revisionStored(p)).toBe(false)
+    expect(error.mock.calls.some(([, message]) => String(message).includes('не закрыты от правки'))).toBe(true)
   })
 
-  it('ставится, когда не вышло только переименование', async () => {
-    // Отказ переименования чаще всего тарифный и повтором не лечится: придержи мы ревизию из-за
-    // него, донастройка переобустраивала бы портал каждый час вечно.
+  it('ГЛАВНОЕ: незакрывшиеся поля не стирают прежнюю ревизию', async () => {
+    // Гвард под находку `/code-review` в PR #87. Запись идентификаторов без ревизии стирала
+    // отметку: портал ревизии 3 следующим прогоном читался как ревизия 0, и разовая правка
+    // раскладки возвращала виджет в карточку клиента, который его убрал.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.option.get': { result: JSON.stringify({ template: { entityTypeId: 1038, id: 8 }, survey: { entityTypeId: 1040, id: 10 }, revision: 3 }) },
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+      'userfieldconfig.list': OPEN_FIELD,
+      'userfieldconfig.update': () => { throw new PortalError('ACCESS_DENIED', 'Доступ запрещён') },
+    })
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    expect(storedOption(p).revision).toBe(3)
+  })
+
+  it('ставится, когда переименование запретил тариф', async () => {
+    // Тарифный отказ повтором не лечится: придержи мы ревизию из-за него, донастройка
+    // переобустраивала бы портал каждый час вечно.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
     const p = portal({
       'app.info': { result: { ID: 219, INSTALLED: true } },
       'userfieldconfig.list': OPEN_FIELD,
-      'crm.type.list': { result: { types: [{ id: 10, entityTypeId: 1040, title: 'Опрос' }] } },
-      'crm.type.update': () => { throw new Error('UPDATE_DYNAMIC_TYPE_RESTRICTED') },
+      'crm.type.list': LEGACY_TYPES,
+      'crm.type.update': () => { throw new PortalError('UPDATE_DYNAMIC_TYPE_RESTRICTED', 'Тариф') },
     })
 
     await provisionWithCall(p.call, 'shef.bitrix24.ru')
 
     expect(revisionStored(p)).toBe(true)
+  })
+
+  it('НЕ ставится, когда переименование сорвал случайный отказ', async () => {
+    // Гвард под находку `/review` и `/code-review` в PR #87: любой отказ отпускал ревизию,
+    // и одно «слишком много запросов» навсегда отменяло переименование обоих смарт-процессов.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+      'userfieldconfig.list': OPEN_FIELD,
+      'crm.type.list': LEGACY_TYPES,
+      'crm.type.update': (params: Record<string, unknown>) => {
+        if ('title' in (params.fields as object)) throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        return { result: { type: { id: 10, relations: { parent: [{ entityTypeId: 2, isChildrenListEnabled: 'Y' }], child: [] } } } }
+      },
+    })
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    expect(revisionStored(p)).toBe(false)
+  })
+
+  it('ставится на портале, которому миграция уже не нужна', async () => {
+    // Гвард из мутационного прогона панели PR #87: во всех тестах этого блока ревизия
+    // в опции отсутствовала, и путь «миграции нет вовсе» не проверялся ни разу.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const p = portal({
+      'app.option.get': { result: JSON.stringify({ template: { entityTypeId: 1038, id: 8 }, survey: { entityTypeId: 1040, id: 10 }, revision: 4 }) },
+      'app.info': { result: { ID: 219, INSTALLED: true } },
+    })
+
+    await provisionWithCall(p.call, 'shef.bitrix24.ru')
+
+    // Отметка — отдельной записью ПОСЛЕ вкладок. Идентификаторы пишутся до них и прежнюю
+    // ревизию сохраняют сами, так что по одному значению в опции путь без отметки не отличить.
+    expect(p.calls.lastIndexOf('app.option.set')).toBeGreaterThan(p.calls.lastIndexOf('placement.bind'))
+    expect(storedOption(p).revision).toBe(4)
   })
 })
