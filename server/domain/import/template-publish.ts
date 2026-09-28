@@ -4,6 +4,8 @@ import { buildFieldName } from '../portals/smart-processes'
 import { versionKey } from './template-write'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { SurveyTemplate } from '../surveys/model'
+import { isStaged, stageId, SURVEY_STAGES, templateStateFields, templateStateOf } from '../portals/stages'
+import { isFrozen } from '../templates/portal-calls'
 
 /**
  * Publishing imported drafts: the name the employee typed on the portal goes INTO the schema,
@@ -128,7 +130,7 @@ export function readTemplateItems(response: unknown, template: SmartProcessRef):
       name: text(item.title).trim(),
       code: text(item[field('CODE')]),
       version: Number(item[field('VERSION')]),
-      state: text(item[field('STATE')]),
+      state: templateStateOf(template, item),
       publishedAt: text(item[field('PUBLISHED_AT')]),
       schema: parseTemplateSchema(item[field('SCHEMA')]),
     })
@@ -193,7 +195,8 @@ export function planTemplatePublish(
 
   for (const item of items) {
     const at = { code: item.code === '' ? `элемент ${item.id}` : item.code, version: item.version }
-    const published = item.state === 'published'
+    // Снятая с публикации — тоже опубликованная когда-то и неизменяемая (`isFrozen`).
+    const published = isFrozen(item.state)
 
     if (item.code === '' || !Number.isInteger(item.version) || item.version <= 0) {
       plan.skip.push({ ...at, kind: 'broken', reason: 'нет кода или номера версии' })
@@ -294,7 +297,7 @@ export function buildPublishCall(
       useOriginalUfNames: 'Y',
       fields: {
         title: planned.name,
-        [buildFieldName(template.id, 'STATE')]: 'published',
+        ...templateStateFields(template, 'published'),
         [buildFieldName(template.id, 'SCHEMA')]: JSON.stringify({ ...planned.schema, title: planned.name }),
         ...(planned.setPublishedAt
           ? { [buildFieldName(template.id, 'PUBLISHED_AT')]: publishedAt.toISOString().slice(0, 10) }
@@ -311,8 +314,13 @@ export function buildPublishCall(
  * а `select: ['*']` притащил бы их — то есть тексты, которые писал респондент, в память
  * скрипта, запускаемого с ноутбука оператора. Узкий перечень тут не про вес, а про то,
  * чего мы у себя не держим.
+ *
+ * ⚠ Со штатными стадиями — ДВА прохода. Стадия — системное поле, а с оригинальными именами
+ * портал отдаёт системные поля только при `select: ['*']` (замерено 28.09). Поэтому первый
+ * проход считает выпущенные узким перечнем, а второй (`completedOnly`) — пройденные, отбором
+ * по стадии «Пройдена»: отбор по стадии портал выполняет и с узким перечнем.
  */
-export function buildListSurveysCall(survey: SmartProcessRef, start = 0): PortalCall {
+export function buildListSurveysCall(survey: SmartProcessRef, start = 0, completedOnly = false): PortalCall {
   return {
     method: 'crm.item.list',
     params: {
@@ -321,18 +329,25 @@ export function buildListSurveysCall(survey: SmartProcessRef, start = 0): Portal
       select: [
         buildFieldName(survey.id, 'TEMPLATE_CODE'),
         buildFieldName(survey.id, 'TEMPLATE_VERSION'),
-        buildFieldName(survey.id, 'STATE'),
+        ...(isStaged(survey) ? [] : [buildFieldName(survey.id, 'STATE')]),
       ],
+      ...(completedOnly && isStaged(survey) ? { filter: { stageId: stageId(survey, SURVEY_STAGES.completed.code) } } : {}),
       ...(start === 0 ? {} : { start }),
     },
   }
 }
 
-/** Досчитать сводку использования по странице «Опросов». Копится по страницам. */
+/**
+ * Досчитать сводку использования по странице «Опросов». Копится по страницам.
+ *
+ * `pass` — какой проход листается: `issued` — все элементы (без стадий — ещё и пройденные, по полю);
+ * `completed` — второй проход со стадиями, уже отобранный стадией «Пройдена» (`buildListSurveysCall`).
+ */
 export function tallySurveyUsage(
   response: unknown,
   survey: SmartProcessRef,
   into: Map<string, VersionUsage> = new Map(),
+  pass: 'issued' | 'completed' = 'issued',
 ): Map<string, VersionUsage> {
   const items = (response as { result?: { items?: unknown } } | null)?.result?.items
   if (!Array.isArray(items)) return into
@@ -349,8 +364,11 @@ export function tallySurveyUsage(
 
     const key = usageKey(code, version)
     const seen = into.get(key) ?? { issued: 0, completed: 0 }
-    seen.issued += 1
-    if (text(item[stateField]) === SURVEY_STATE_COMPLETED) seen.completed += 1
+    if (pass === 'completed') seen.completed += 1
+    else {
+      seen.issued += 1
+      if (!isStaged(survey) && text(item[stateField]) === SURVEY_STATE_COMPLETED) seen.completed += 1
+    }
     into.set(key, seen)
   }
 

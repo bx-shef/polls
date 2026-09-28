@@ -10,6 +10,7 @@ import { cacheTemplate } from '../../links/issue'
 import { findTemplate } from '../../links/store'
 import { logger } from '../../utils/logger'
 import { openPortalSession, type PortalSession } from './-session'
+import { surveyStateOf } from '../../domain/portals/stages'
 
 /**
  * Reads one survey element and hands the card widget a readable result.
@@ -71,7 +72,7 @@ export default defineEventHandler(async (event) => {
   const answers = readAnswersField(field('ANSWERS'))
   // Ответов нет — приглашение ещё не прошли. Это не ошибка; состояние уходит наружу, чтобы
   // виджет не обещал ответа по истёкшей или отозванной ссылке, по которой его уже не будет.
-  if (answers === null) return { ok: true as const, completed: false as const, state: readState(field('STATE')) }
+  if (answers === null) return { ok: true as const, completed: false as const, state: readState(surveyStateOf(survey, access.item)) }
 
   const code = typeof field('TEMPLATE_CODE') === 'string' ? (field('TEMPLATE_CODE') as string).trim() : ''
   // ⚠ Строго положительное целое. `Number(null) === 0` и `Number('') === 0` проходят

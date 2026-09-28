@@ -1,6 +1,7 @@
 import { buildFieldName, type PortalCall, type SmartProcessRef } from '../portals/smart-processes'
 import { SURVEY_STATE_COMPLETED } from '../answers/portal-calls'
 import { SURVEY_STATE_SENT } from './portal-calls'
+import { surveyStateFields, surveyStateOf } from '../portals/stages'
 
 /**
  * The links already issued for a deal — read from the portal, not from our database.
@@ -15,9 +16,10 @@ import { SURVEY_STATE_SENT } from './portal-calls'
  * для публичной страницы и состояние доставки. Показывать список оттуда значило бы завести
  * второй источник истины ради удобства чтения.
  *
- * ⚠ Состояние ссылки СЧИТАЕТСЯ, а не хранится готовым. На портале лежит `STATE` (`sent`,
- * `completed`, `revoked`), а «просрочена» — это не состояние, а сравнение срока с сегодняшним
- * днём. Записывать просрочку полем значило бы завести задание, которое ходит по чужим порталам
+ * ⚠ Состояние ссылки СЧИТАЕТСЯ, а не хранится готовым. На портале лежит штатная стадия
+ * элемента — «Отправлена», «Пройдена», «Отозвана» (до ревизии 5 — поле `STATE`, разбор
+ * в `server/domain/portals/stages.ts`), а «просрочена» — это не состояние, а сравнение срока
+ * с сегодняшним днём. Записывать просрочку полем значило бы завести задание, которое ходит по чужим порталам
  * и переписывает элементы ради того, что вычисляется одной строкой.
  */
 
@@ -30,7 +32,7 @@ export interface IssuedLink {
   title: string
   code: string
   version: number
-  /** `STATE` элемента как есть: `sent`, `completed`, `revoked` или пусто у старых элементов. */
+  /** Состояние элемента по стадии или старому полю: `sent`, `completed`, `revoked` или пусто. */
   state: string
   /** Дата в форме, в какой её отдал портал; пусто — поле не заполнено. */
   expiresAt: string
@@ -99,7 +101,7 @@ export function readIssuedLinks(response: unknown, survey: SmartProcessRef): Iss
       title: text(item.title),
       code: text(item[field('TEMPLATE_CODE')]),
       version: asPositiveInt(item[field('TEMPLATE_VERSION')]) ?? 0,
-      state: text(item[field('STATE')]),
+      state: surveyStateOf(survey, item),
       expiresAt: text(item[field('EXPIRES_AT')]),
       completedAt: text(item[field('COMPLETED_AT')]),
       score: asScore(item[field('SCORE')]),
@@ -150,7 +152,8 @@ export function buildRevokeCall(survey: SmartProcessRef, itemId: number): Portal
       entityTypeId: survey.entityTypeId,
       id: itemId,
       useOriginalUfNames: 'Y',
-      fields: { [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_REVOKED },
+      // Стадией «Отозвана» — или прежним полем, пока портал не переведён на стадии.
+      fields: surveyStateFields(survey, 'revoked'),
     },
   }
 }

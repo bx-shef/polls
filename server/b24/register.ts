@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
+import { carryStatesToStages, ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
@@ -8,6 +8,7 @@ import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
 import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
+import { STAGES_REVISION } from '../domain/portals/smart-processes'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
@@ -218,6 +219,22 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     }
     await storeRefs(budgeted, refs, { revision: known.revision, adopted })
 
+    // ⚠ Перенос старого поля «Состояние» в стадии — ПОСЛЕ сохранения ссылок: только теперь
+    // приложение пишет состояние стадией, и перенос подберёт всё, что записано полем до того
+    // (разбор — у `carryStatesToStages`). Разово, при переходе на ревизию 5.
+    const carried = known.revision < STAGES_REVISION
+      ? await carryStatesToStages(budgeted, refs, { template: result.createdTemplate, survey: result.createdSurvey })
+      : null
+    const unstaged = [
+      ...(refs.template.categoryId === undefined ? ['template'] : []),
+      ...(refs.survey.categoryId === undefined ? ['survey'] : []),
+    ]
+    if (unstaged.length > 0 && known.revision < STAGES_REVISION) {
+      // Смарт-процесс остался на старом поле: усыновлённый, тариф или отказ портала. Приложение
+      // работает, но канбана и роботов на стадиях у клиента нет — узнать это надо из журнала.
+      logger.warn({ domain: portal.domain, unstaged }, 'штатные стадии не включены — состояние остаётся в поле «Состояние»')
+    }
+
     // ⚠ Только о НОВОМ усыновлении. Признак теперь переживает прогоны, и без этой проверки
     // предупреждение «найден по заголовку» писалось бы на каждой донастройке — дежурный принял бы
     // его за новую потерю идентификаторов. Нашёл `/review` во втором круге PR #87.
@@ -285,7 +302,10 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     else if (ownership?.settled === false) {
       logger.warn({ domain: portal.domain }, 'метка владельца доставлена не везде — ревизию не отмечаем, донастройка вернётся')
     }
-    const reached = reachedRevision(known.revision, result)
+    if (!result.stages.settled || carried?.settled === false) {
+      logger.warn({ domain: portal.domain }, 'стадии настроены не до конца — ревизию не отмечаем, донастройка вернётся')
+    }
+    const reached = reachedRevision(known.revision, result, carried)
     await storeProvisionRevision(budgeted, refs, reached, adopted)
 
     logger.info(
@@ -300,6 +320,8 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         dealLinked: result.dealLinked,
         cardConfigured: result.cardConfigured,
         ownership: result.ownership,
+        stages: result.stages,
+        carried,
       },
       'смарт-процессы обустроены',
     )

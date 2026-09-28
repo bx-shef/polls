@@ -2,6 +2,7 @@ import { buildFieldName } from '../portals/smart-processes'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import type { AnswerValue } from '../surveys/answer'
 import type { SurveyScore } from '../surveys/scoring'
+import { surveyStateFields } from '../portals/stages'
 
 /**
  * Portal calls that record a completed survey.
@@ -43,7 +44,8 @@ export function buildCompleteSurveyCall(
       id: itemId,
       useOriginalUfNames: 'Y',
       fields: {
-        [buildFieldName(survey.id, 'STATE')]: SURVEY_STATE_COMPLETED,
+        // Стадией «Пройдена» — или прежним полем, пока портал не переведён на стадии.
+        ...surveyStateFields(survey, 'completed'),
         [buildFieldName(survey.id, 'COMPLETED_AT')]: result.completedAt.toISOString(),
         // ⚠ `null` уезжает полем как есть, а не нулём: «не ответил» и «поставил ноль» —
         // разные вещи, и на портале они обязаны остаться разными.

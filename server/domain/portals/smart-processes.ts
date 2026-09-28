@@ -56,6 +56,14 @@ export type SmartProcessKind = 'template' | 'survey'
 export interface SmartProcessRef {
   entityTypeId: number
   id: number
+  /**
+   * The default funnel, once revision 5 has set up native stages; absent — the old `STATE` field.
+   *
+   * ⚠ Он и есть признак «стадии включены и настроены»: без стадий портал `stageId` молча
+   * отбрасывает (замерено 28.09), и писать его туда значило бы терять состояние. Разбор —
+   * в `server/domain/portals/stages.ts`.
+   */
+  categoryId?: number
 }
 
 /**
@@ -79,8 +87,17 @@ export interface SmartProcessRef {
  * | 2 | вкладка конструктора в карточке «Шаблона опроса» (PR #74) |
  * | 3 | поле своего типа «Результат опроса» на «Опросе» и виджет в раскладке его карточки |
  * | 4 | префикс `[sh]` в названиях и подписях, поля закрыты от правки, у «Шаблона» выключены «Клиент» и роботы, поле «Ссылка на анкету» |
+ * | 5 | штатные стадии у обоих смарт-процессов вместо своего поля «Состояние» (`server/domain/portals/stages.ts`) |
  */
-export const PROVISION_REVISION = 4
+export const PROVISION_REVISION = 5
+
+/**
+ * Ревизия, с которой смарт-процессы живут на штатных стадиях.
+ *
+ * Отдельной константой по той же причине, что `OWNERSHIP_REVISION`: включение стадий, перенос
+ * старого поля и его удаление — разовая миграция порталов, обустроенных до неё.
+ */
+export const STAGES_REVISION = 5
 
 /**
  * Ревизия, с которой в карточке «Опроса» стоит виджет результата.
@@ -111,6 +128,16 @@ export interface SmartProcessField {
   /** Подпись БЕЗ метки владельца: её ставит `ownerLabel` при создании и при миграции. */
   label: string
   settings?: Record<string, unknown>
+}
+
+/**
+ * Our fields of a smart process: without `STATE` once it lives on native stages.
+ *
+ * ⚠ Со стадиями поле «Состояние» не заводится и не держится: иначе обустройство создавало бы
+ * его заново после того, как миграция ревизии 5 его удалила (решение владельца «свои упраздни»).
+ */
+export function ourFields(fields: readonly SmartProcessField[], ref: SmartProcessRef): readonly SmartProcessField[] {
+  return ref.categoryId === undefined ? fields : fields.filter(field => field.postfix !== 'STATE')
 }
 
 /**
@@ -226,7 +253,9 @@ export function buildCreateSmartProcessCall(title: string, kind: SmartProcessKin
     params: {
       fields: {
         title,
-        isStagesEnabled: false,
+        // ⚠ Стадии — сразу, с ревизии 5: состояние элемента живёт в штатной стадии, а не в своём
+        // поле (issue #84, п. 21). Воронка при этом одна: своих воронок нам не нужно.
+        isStagesEnabled: true,
         isCategoriesEnabled: false,
         // ⚠ Даёт Контакт и Компанию, и ТОЛЬКО их. Прежний комментарий здесь обещал, что
         // этим же включается привязка к сделке, — это была неправда, и она стоила всей
@@ -773,8 +802,10 @@ function toRelationParams(relation: TypeRelation): Record<string, unknown> {
  * ⚠ Клиент раскладывается на `CONTACT_ID` и `COMPANY_ID`: отдельного поля «Клиент»
  * в `crm.item.fields` нет, хотя интерфейс показывает его одной строкой.
  */
-export function buildCardSections(spTypeId: number, resultField: boolean): Record<string, unknown>[] {
+export function buildCardSections(spTypeId: number, resultField: boolean, staged = false): Record<string, unknown>[] {
   const own = (postfix: string) => ({ name: buildFieldName(spTypeId, postfix) })
+  // Со стадиями состояние видно полосой стадий над карточкой, а своего поля у элемента нет вовсе.
+  const form = staged ? ['TEMPLATE_CODE', 'TEMPLATE_VERSION', 'EXPIRES_AT', 'LINK'] : ['TEMPLATE_CODE', 'TEMPLATE_VERSION', 'STATE', 'EXPIRES_AT', 'LINK']
 
   return [
     {
@@ -796,7 +827,7 @@ export function buildCardSections(spTypeId: number, resultField: boolean): Recor
       name: 'survey_form',
       title: 'Анкета',
       type: 'section',
-      elements: [own('TEMPLATE_CODE'), own('TEMPLATE_VERSION'), own('STATE'), own('EXPIRES_AT'), own('LINK')],
+      elements: form.map(own),
     },
     {
       name: CARD_RESULT_SECTION,

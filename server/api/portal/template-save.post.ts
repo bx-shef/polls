@@ -5,7 +5,7 @@ import { readUpdatedItemId } from '../../domain/answers/portal-calls'
 import { validateTemplate } from '../../domain/surveys/validate'
 import { assignMissingKeys, readIncomingSchema } from '../../domain/templates/schema-input'
 import {
-  TEMPLATE_STATE_PUBLISHED,
+  isFrozen,
   buildGetTemplateItemCall,
   buildSaveSchemaCall,
   readTemplateItem,
@@ -75,7 +75,9 @@ export default defineEventHandler(async (event) => {
   const get = buildGetTemplateItemCall(refs.template, itemId)
   const current = readTemplateItem(await session.call(get.method, get.params), refs.template)
   if (current === null) return { ok: false as const, reason: 'no-item' as const }
-  if (current.state === TEMPLATE_STATE_PUBLISHED) {
+  // Опубликованная и снятая с публикации — неизменяемы. Со штатными стадиями «опубликована»
+  // решает дата публикации, а не стадия: версию, которую перетащили в «Черновик», не поправить.
+  if (isFrozen(current.state)) {
     return { ok: false as const, reason: 'published' as const }
   }
 

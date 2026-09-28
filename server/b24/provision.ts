@@ -76,11 +76,29 @@ import {
   normalizeFieldName,
   PROVISION_REVISION,
   RESULT_FIELD_REVISION,
+  STAGES_REVISION,
+  ourFields,
   type ExistingField,
   type PortalCall,
   type SmartProcessField,
   type SmartProcessRef,
 } from '../domain/portals/smart-processes'
+import {
+  SURVEY_STAGES,
+  TEMPLATE_STAGES,
+  buildEnableStagesCall,
+  buildListCategoriesCall,
+  buildListStagesCall,
+  isStaged,
+  planStageMoves,
+  planStages,
+  readDefaultCategoryId,
+  readStages,
+  surveyMoveOf,
+  templateMoveOf,
+  type StageSpec,
+  type StagedRef,
+} from '../domain/portals/stages'
 
 /**
  * Creates the two smart processes and their fields in a portal, idempotently.
@@ -264,6 +282,26 @@ export interface ProvisionResult extends SmartProcessRefs {
    * в этой миграции — закрыть поля, и «не закрыли» не должно выглядеть как «нечего было закрывать».
    */
   ownership: OwnershipOutcome | null
+  /**
+   * Настройка штатных стадий (ревизия 5): включены ли, какая воронка, названия стадий.
+   *
+   * ⚠ `settled: false` — был отказ, который лечится повтором: ревизию не отмечаем, донастройка
+   * вернётся. Перенос элементов со старого поля — отдельный шаг (`carryStatesToStages`), и идёт
+   * он ПОСЛЕ сохранения идентификаторов: почему — у него.
+   */
+  stages: StagesOutcome
+}
+
+/** Итог настройки стадий и переноса на них старого поля «Состояние» (ревизия 5). */
+export interface StagesOutcome {
+  /** Сколько изменяющих вызовов сделано. Ноль — всё уже было на месте. */
+  changes: number
+  /**
+   * Всё доделано. `false` — отказ, который лечится повтором (`isRetryableRefusal`). Отказ, который
+   * повтор не вылечит, — тариф не даёт включить стадии, — сюда не считается: такой смарт-процесс
+   * остаётся на старом поле, и возвращаться к нему каждый час незачем.
+   */
+  settled: boolean
 }
 
 /** Итог разовой миграции ревизии 4. */
@@ -399,18 +437,28 @@ export async function storeProvisionRevision(
  * который его убрал. Первая редакция считала это у вызывающего особым случаем; `/review`
  * во втором круге PR #87 заметил, что следующая миграция добавила бы туда второй — поэтому здесь.
  */
-export function reachedRevision(previous: number, result: Pick<ProvisionResult, 'resultField' | 'ownership'>): number {
+export function reachedRevision(
+  previous: number,
+  result: Pick<ProvisionResult, 'resultField' | 'ownership' | 'stages'>,
+  carried: StagesOutcome | null = null,
+): number {
   if (result.resultField === 'deferred') return previous
   const ownership = result.ownership
-  const unfinished = ownership !== null && (!ownership.fieldsLocked || !ownership.settled)
-  return unfinished ? Math.max(previous, OWNERSHIP_REVISION - 1) : PROVISION_REVISION
+  if (ownership !== null && (!ownership.fieldsLocked || !ownership.settled)) return Math.max(previous, OWNERSHIP_REVISION - 1)
+  // Стадии не доделаны — портал на ревизии до них: всё прежнее на месте, донастройка вернётся.
+  if (!result.stages.settled || carried?.settled === false) return Math.max(previous, STAGES_REVISION - 1)
+  return PROVISION_REVISION
 }
 
 function validRef(ref: SmartProcessRef | undefined): SmartProcessRef | undefined {
   if (ref === undefined) return undefined
   const ok = Number.isInteger(ref.entityTypeId) && ref.entityTypeId > 0
     && Number.isInteger(ref.id) && ref.id > 0
-  return ok ? ref : undefined
+  if (!ok) return undefined
+  // ⚠ Воронка — только настоящая. Испорченная отметка включила бы режим стадий с кодами,
+  // которых на портале нет, а неизвестную стадию портал молча отбрасывает (замерено 28.09).
+  const staged = Number.isInteger(ref.categoryId) && (ref.categoryId as number) > 0
+  return { entityTypeId: ref.entityTypeId, id: ref.id, ...(staged ? { categoryId: ref.categoryId } : {}) }
 }
 
 /** Все смарт-процессы портала, со всех страниц. */
@@ -667,7 +715,7 @@ async function ensureCardConfig(
   const current = await call(read.method, read.params)
 
   const sections = !hasCardConfig(current)
-    ? buildCardSections(ref.id, resultField)
+    ? buildCardSections(ref.id, resultField, isStaged(ref))
     : resultField && upgradeToResultField ? planResultFieldInCard(current, ref.id) : null
   if (sections === null) return false
 
@@ -693,8 +741,17 @@ export async function provisionSmartProcesses(
   const template = await ensureSmartProcess(call, known.template, types, TEMPLATE_SP_TITLES, 'template', known.adopted?.template === true)
   const survey = await ensureSmartProcess(call, known.survey, types, SURVEY_SP_TITLES, 'survey', known.adopted?.survey === true)
 
-  const templateFields = await ensureFields(call, template.ref, TEMPLATE_FIELDS)
-  const surveyFields = await ensureFields(call, survey.ref, SURVEY_FIELDS)
+  // ⚠ Стадии — СРАЗУ после поиска и ДО полей: от них зависит, нужно ли своё поле «Состояние»
+  // вообще (`ourFields`). Разово, при переходе на ревизию 5, и на свежей установке — там смарт-
+  // процессы только что созданы со стадиями, и остаётся настроить воронку.
+  const stages: StagesOutcome = { changes: 0, settled: true }
+  if ((options.previousRevision ?? 0) < STAGES_REVISION) {
+    template.ref = await setUpStages(call, template, Object.values(TEMPLATE_STAGES), stages)
+    survey.ref = await setUpStages(call, survey, Object.values(SURVEY_STAGES), stages)
+  }
+
+  const templateFields = await ensureFields(call, template.ref, ourFields(TEMPLATE_FIELDS, template.ref))
+  const surveyFields = await ensureFields(call, survey.ref, ourFields(SURVEY_FIELDS, survey.ref))
 
   // ⚠ Только «Опросу»: «Шаблон опроса» ни к какой сделке не относится — он про анкету,
   // а не про её прохождение.
@@ -784,6 +841,7 @@ export async function provisionSmartProcesses(
     resultField,
     crmFields,
     ownership,
+    stages,
   }
 }
 
@@ -993,6 +1051,200 @@ function refuse(outcome: OwnershipOutcome, step: string, error: unknown): void {
     return
   }
   logger.warn({ step, reason: safeRefusal(error) }, 'метка владельца: портал отказал, повтор не поможет')
+}
+
+/**
+ * Turns native stages on for one of our smart processes and sets up its funnel; returns the ref.
+ *
+ * Возвращённая ссылка несёт `categoryId`, только если стадии включены и воронка прочитана: он и есть
+ * признак «элементы живут на стадиях» (`server/domain/portals/stages.ts`). Не вышло — ссылка без
+ * него, и смарт-процесс остаётся на старом поле «Состояние», как до ревизии 5.
+ *
+ * ⚠ УСЫНОВЛЁННЫЙ НЕ ТРОГАЕМ. Найденный по названию может оказаться чужим (разбор у
+ * `settleSmartProcesses`): включив ему стадии и переименовав их, мы переделали бы клиенту его
+ * процесс. Он остаётся на старом поле — это видно в журнале по признаку усыновления.
+ *
+ * ⚠ Тариф может не дать включить стадии (`UPDATE_DYNAMIC_TYPE_RESTRICTED`). Это не повод
+ * возвращаться каждый час: смарт-процесс работает и на старом поле. Громко, ошибкой — чтобы
+ * «канбана нет» узнавалось из журнала, а не от клиента.
+ */
+async function setUpStages(
+  call: RestCall,
+  sp: EnsuredSmartProcess,
+  specs: readonly StageSpec[],
+  outcome: StagesOutcome,
+): Promise<SmartProcessRef> {
+  if (sp.adopted) return sp.ref
+  let ref: SmartProcessRef = sp.ref
+
+  if (!isStaged(ref)) {
+    // Созданный этим запуском уже со стадиями (`buildCreateSmartProcessCall`); включать незачем.
+    if (!sp.created) {
+      const enable = buildEnableStagesCall(ref)
+      try {
+        await call(enable.method, enable.params)
+        outcome.changes++
+      }
+      catch (error) {
+        refuseStages(outcome, 'включение стадий', error, ref)
+        return ref
+      }
+    }
+    try {
+      const list = buildListCategoriesCall(ref)
+      const categoryId = readDefaultCategoryId(await call(list.method, list.params))
+      if (categoryId === null) {
+        // Воронка по умолчанию есть всегда (замерено 28.09); ответ без неё — не той формы.
+        // Повтор, скорее всего, не поможет, но и режим стадий без воронки не включить.
+        logger.warn({ typeId: ref.id }, 'стадии: воронка по умолчанию не найдена в ответе')
+        return ref
+      }
+      ref = { ...ref, categoryId }
+    }
+    catch (error) {
+      refuseStages(outcome, 'воронка', error, ref)
+      return ref
+    }
+  }
+
+  // Названия и лишние стадии. Отказ здесь режим стадий не отменяет: стадии включены, и элементы
+  // уже живут на них — не доехали только наши названия, и донастройка их довезёт.
+  const staged = ref as StagedRef
+  try {
+    const list = buildListStagesCall(staged)
+    const existing = readStages(await call(list.method, list.params), staged)
+    for (const update of existing === null ? [] : planStages(specs, existing)) {
+      try {
+        await call(update.method, update.params)
+        outcome.changes++
+      }
+      catch (error) {
+        refuseStages(outcome, 'стадии', error, ref)
+      }
+    }
+  }
+  catch (error) {
+    refuseStages(outcome, 'стадии', error, ref)
+  }
+  return ref
+}
+
+/**
+ * Carries the old `STATE` field over to native stages, then drops the field. Revision 5, once.
+ *
+ * ⚠ ОТДЕЛЬНЫМ ШАГОМ И ПОСЛЕ СОХРАНЕНИЯ ИДЕНТИФИКАТОРОВ — а не внутри обустройства. Признак «на
+ * стадиях» (`categoryId`) живёт в сохранённой ссылке, и пока он не сохранён, приложение пишет
+ * состояние по-старому, в поле. Перенеси мы элементы раньше, опрос, пройденный между переносом
+ * и сохранением, остался бы в «Отправлена» навсегда: поле ему обновили, а стадию — нет, и перенос
+ * к нему уже не вернётся. После сохранения всё новое пишется стадией, а перенос подбирает
+ * записанное в поле до того.
+ *
+ * ⚠ ПОЛЕ «СОСТОЯНИЕ» УДАЛЯЕТСЯ ТОЛЬКО ПОСЛЕ ЧИСТОГО ПЕРЕНОСА — решение владельца «свои упраздни».
+ * Удаление необратимо: не переведя хоть один элемент, мы потеряли бы его состояние вместе с полем.
+ * Поэтому любой отказ оставляет поле на месте, а повторимый — ещё и возвращает донастройку.
+ * Код, прочитавший ссылку до сохранения признака, запишет в удалённое поле — портал это молча
+ * отбросит (замерено 28.09), и ничего не упадёт.
+ *
+ * `fresh` — смарт-процессы, созданные этим запуском: у них ни элементов, ни поля.
+ */
+export async function carryStatesToStages(
+  call: RestCall,
+  refs: SmartProcessRefs,
+  fresh: { template: boolean, survey: boolean },
+): Promise<StagesOutcome> {
+  const outcome: StagesOutcome = { changes: 0, settled: true }
+  const ours = [
+    { ref: refs.template, created: fresh.template, moveOf: templateMoveOf },
+    { ref: refs.survey, created: fresh.survey, moveOf: surveyMoveOf },
+  ]
+  for (const { ref, created, moveOf } of ours) {
+    if (!isStaged(ref) || created) continue
+    if (await carryOne(call, ref, moveOf(ref), outcome)) await dropStateField(call, ref, outcome)
+  }
+  return outcome
+}
+
+/**
+ * Moves every element of one smart process off the first stage by its old `STATE`. `true` — cleanly.
+ *
+ * Листаем ВСЕ элементы, а не отбор по полю: с оригинальными именами полей портал отдаёт системные
+ * поля — а `stageId` среди них — только при `select: ['*']` (замерено 28.09), а какие элементы
+ * переводить, решает `planStageMoves`. Порядок по `id` держит страницы на месте, пока мы их правим.
+ */
+async function carryOne(
+  call: RestCall,
+  ref: StagedRef,
+  moveOf: (item: Record<string, unknown>) => Record<string, unknown> | null,
+  outcome: StagesOutcome,
+): Promise<boolean> {
+  let clean = true
+  let start: number | null = 0
+  for (let page = 0; start !== null && page < MAX_PAGES; page++) {
+    let response: unknown
+    try {
+      response = await call('crm.item.list', {
+        entityTypeId: ref.entityTypeId,
+        useOriginalUfNames: 'Y',
+        select: ['*'],
+        order: { id: 'ASC' },
+        ...(start === 0 ? {} : { start }),
+      })
+    }
+    catch (error) {
+      refuseStages(outcome, 'перенос состояния', error, ref)
+      return false
+    }
+    const items = (response as { result?: { items?: unknown } } | null)?.result?.items
+    const rows = Array.isArray(items) ? items as Record<string, unknown>[] : []
+    for (const move of planStageMoves(ref, rows, moveOf)) {
+      try {
+        await call(move.method, move.params)
+        outcome.changes++
+      }
+      catch (error) {
+        clean = false
+        refuseStages(outcome, 'перенос состояния', error, ref)
+      }
+    }
+    start = readNextOffset(response)
+  }
+  // Упёрлись в предел страниц — перенесли не всё, и поле удалять нельзя.
+  return clean && start === null
+}
+
+/** Deletes our `STATE` field of a smart process now living on stages. No field — nothing to do. */
+async function dropStateField(call: RestCall, ref: StagedRef, outcome: StagesOutcome): Promise<void> {
+  try {
+    const name = normalizeFieldName(buildFieldName(ref.id, 'STATE'))
+    const field = (await listAllFields(call, ref.id)).find(one => normalizeFieldName(one.name) === name)
+    if (field === undefined) return
+    if (field.id === 0) {
+      // Удалять нечем: портал не назвал идентификатор настроек. Поле остаётся, и это видно.
+      logger.warn({ typeId: ref.id }, 'стадии: поле «Состояние» не удалено — портал не назвал его идентификатор')
+      return
+    }
+    await call('userfieldconfig.delete', { moduleId: 'crm', id: field.id })
+    outcome.changes++
+  }
+  catch (error) {
+    refuseStages(outcome, 'удаление поля «Состояние»', error, ref)
+  }
+}
+
+/**
+ * Sorts a refusal of a stages step: worth a retry — revision 5 stays unfinished; not — let it go, loudly.
+ *
+ * Тот же размен, что у `refuse` ревизии 4: держим ревизию только на отказе, который лечится повтором.
+ * Остальное — тариф, права — ошибкой в журнал: смарт-процесс работает и на старом поле, но клиент
+ * не получит канбана, и знать об этом надо из журнала. Слова портала в журнал не попадают.
+ */
+function refuseStages(outcome: StagesOutcome, step: string, error: unknown, ref: SmartProcessRef): void {
+  if (isRetryableRefusal(error)) {
+    outcome.settled = false
+    logger.warn({ step, typeId: ref.id, reason: safeRefusal(error) }, 'стадии: шаг не удался, донастройка вернётся')
+    return
+  }
+  logger.error({ step, typeId: ref.id, reason: safeRefusal(error) }, 'стадии: портал отказал, повтор не поможет')
 }
 
 /**

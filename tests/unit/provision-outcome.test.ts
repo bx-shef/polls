@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { provisionWithCall } from '../../server/b24/register'
 import { PortalError } from '../../server/domain/portals/portal-error'
+import { PROVISION_REVISION } from '../../server/domain/portals/smart-processes'
 import { logger } from '../../server/utils/logger'
 
 /**
@@ -109,19 +110,30 @@ describe('вкладки приложения', () => {
 })
 
 describe('цена холодной установки', () => {
-  it('холодная установка: ровно 41 вызов портала, миграция ревизии 4 — ни одного', async () => {
+  it('холодная установка: ровно 53 вызова портала, миграции 4 и 5 — ни одного лишнего', async () => {
     // ⚠ Число держится намеренно, целой последовательностью. Установка — синхронный путь под
     // общим пределом 45 секунд (`PROVISION_BUDGET_MS`), и каждый новый шаг на нём должен быть
     // виден в ревью, а не проявиться таймаутом у клиента. Комментарии проекта называли холодную
     // установку «17–19 вызовов» — это цена донастройки готового портала, а холодная давно втрое
     // дороже: числа не держал ни один тест. Поднял программист в панели PR #87, что ссылки
     // на гвард нет — `/code-review` во втором круге.
+    //
+    // Ревизия 5 (штатные стадии) добавила по семь вызовов на смарт-процесс — воронка, стадии, три
+    // переименования и два удаления — и сняла по полю «Состояние»: 41 − 2 + 14 = 53. Переноса
+    // старого поля на свежей установке нет вовсе: элементов ещё нет, и поля — тоже.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
     const p = portal({
       'app.option.get': { result: '' },
       'crm.type.add': (params: Record<string, unknown>) => {
         const title = (params.fields as { title: string }).title
         return { result: { type: title.includes('Шаблон') ? { id: 8, entityTypeId: 1038 } : { id: 10, entityTypeId: 1040 } } }
+      },
+      'crm.category.list': (params: Record<string, unknown>) => ({ result: { categories: [{ id: params.entityTypeId === 1038 ? 14 : 16, isDefault: 'Y' }] } }),
+      'crm.status.list': (params: Record<string, unknown>) => {
+        const entity = String((params.filter as { ENTITY_ID: string }).ENTITY_ID)
+        const [, e, , c] = entity.split('_')
+        const fresh = [['NEW', 'Начало'], ['PREPARATION', 'Подготовка'], ['CLIENT', 'Согласование'], ['SUCCESS', 'Успех'], ['FAIL', 'Провал']]
+        return { result: fresh.map(([code, name], index) => ({ ID: String(300 + index), STATUS_ID: `DT${e}_${c}:${code}`, NAME: name })) }
       },
       'userfieldconfig.list': { result: { fields: [] } },
       'app.info': { result: { ID: 219, INSTALLED: true } },
@@ -130,10 +142,12 @@ describe('цена холодной установки', () => {
 
     expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
 
+    const funnel = ['crm.category.list', 'crm.status.list', ...Array(3).fill('crm.status.update'), ...Array(2).fill('crm.status.delete')]
     expect(p.calls).toEqual([
       'user.admin', 'app.option.get', 'crm.type.list', 'crm.type.add', 'crm.type.add',
-      'userfieldconfig.list', ...Array(5).fill('userfieldconfig.add'),
-      'userfieldconfig.list', ...Array(9).fill('userfieldconfig.add'),
+      ...funnel, ...funnel,
+      'userfieldconfig.list', ...Array(4).fill('userfieldconfig.add'),
+      'userfieldconfig.list', ...Array(8).fill('userfieldconfig.add'),
       'crm.type.get', 'crm.type.update',
       'app.info', 'userfieldtype.list', 'userfieldtype.add', 'userfieldconfig.add',
       'crm.item.details.configuration.get', 'crm.item.details.configuration.set',
@@ -231,11 +245,11 @@ describe('что уходит в журнал', () => {
  * ни у одного клиента, поставившего приложение из Маркета.
  */
 describe('отметка ревизии', () => {
-  /** Записали ли в `app.option` отметку текущей ревизии, 4. */
+  /** Записали ли в `app.option` отметку текущей ревизии. */
   function revisionStored(p: ReturnType<typeof portal>): boolean {
     return p.call.mock.calls
       .filter(([method]) => method === 'app.option.set')
-      .some(([, params]) => JSON.stringify(params).includes('\\"revision\\":4'))
+      .some(([, params]) => JSON.stringify(params).includes(`\\"revision\\":${PROVISION_REVISION}`))
   }
 
   it('НЕ ставится, пока установка не завершена', async () => {
@@ -402,7 +416,11 @@ describe('отметка ревизии', () => {
     // в опции отсутствовала, и путь «миграции нет вовсе» не проверялся ни разу.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
     const p = portal({
-      'app.option.get': { result: JSON.stringify({ template: { entityTypeId: 1038, id: 8 }, survey: { entityTypeId: 1040, id: 10 }, revision: 4 }) },
+      'app.option.get': { result: JSON.stringify({
+        template: { entityTypeId: 1038, id: 8, categoryId: 14 },
+        survey: { entityTypeId: 1040, id: 10, categoryId: 16 },
+        revision: PROVISION_REVISION,
+      }) },
       'app.info': { result: { ID: 219, INSTALLED: true } },
     })
 
@@ -411,6 +429,10 @@ describe('отметка ревизии', () => {
     // Отметка — отдельной записью ПОСЛЕ вкладок. Идентификаторы пишутся до них и прежнюю
     // ревизию сохраняют сами, так что по одному значению в опции путь без отметки не отличить.
     expect(p.calls.lastIndexOf('app.option.set')).toBeGreaterThan(p.calls.lastIndexOf('placement.bind'))
-    expect(storedOption(p).revision).toBe(4)
+    expect(storedOption(p).revision).toBe(PROVISION_REVISION)
+    // Миграции стадий тоже нет: ни воронки, ни стадий, ни листания элементов.
+    expect(p.calls.filter(method => /^crm\.(category|status)\.|^crm\.item\.(list|update)$|^userfieldconfig\.delete$/.test(method))).toEqual([])
+    // И воронки из опции переживают прогон: без них портал откатился бы на старое поле.
+    expect(storedOption(p).survey).toEqual({ entityTypeId: 1040, id: 10, categoryId: 16 })
   })
 })

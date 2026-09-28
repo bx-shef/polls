@@ -13,6 +13,7 @@ import type { SurveyTemplate } from '../domain/surveys/model'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
 import { listAllTypes, readStoredRefs, type RestCall, type SmartProcessRefs } from './provision'
+import { buildListCategoriesCall, readDefaultCategoryId } from '../domain/portals/stages'
 import { logger } from '../utils/logger'
 
 /**
@@ -162,7 +163,28 @@ export async function findProcesses(call: RestCall): Promise<Partial<SmartProces
 
   const types = await listAllTypes(call)
   return {
-    template: findTypeByTitle(types, TEMPLATE_SP_TITLES) ?? undefined,
-    survey: findTypeByTitle(types, SURVEY_SP_TITLES) ?? undefined,
+    template: await withFunnel(call, types, findTypeByTitle(types, TEMPLATE_SP_TITLES)),
+    survey: await withFunnel(call, types, findTypeByTitle(types, SURVEY_SP_TITLES)),
   }
+}
+
+/**
+ * Adds the default funnel to a found smart process whose native stages are on.
+ *
+ * ⚠ Вебхуку сохранённые ссылки недоступны, а с ними и признак «на стадиях» (`categoryId`), который
+ * ставит миграция ревизии 5. Поэтому здесь он выводится из самого типа: стадии включены — пишем
+ * и читаем стадией. Иначе команда переноса записала бы состояние в поле, которого после миграции
+ * нет, — портал молча отбросил бы его, и анкета осталась бы «Черновиком».
+ */
+async function withFunnel(
+  call: RestCall,
+  types: readonly Record<string, unknown>[],
+  ref: SmartProcessRef | null,
+): Promise<SmartProcessRef | undefined> {
+  if (ref === null) return undefined
+  const type = types.find(one => Number(one.id) === ref.id)
+  if (type?.isStagesEnabled !== 'Y') return ref
+  const list = buildListCategoriesCall(ref)
+  const categoryId = readDefaultCategoryId(await call(list.method, list.params))
+  return categoryId === null ? ref : { ...ref, categoryId }
 }

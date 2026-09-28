@@ -147,8 +147,16 @@ const gate = computed(() => portalGate({
   preview: isPreview(route.query.preview),
 }))
 
-/** Опубликованная версия неизменяема — это инвариант проекта, и он виден человеку сразу. */
-const published = computed(() => template.value?.state === 'published')
+/**
+ * Версию править нельзя: она опубликована — или была опубликована и снята с публикации.
+ *
+ * Инвариант проекта, и он виден человеку сразу. Снятая — тоже неизменяема: по ней уже выпускали
+ * ссылки и собирали ответы, а «снял, поправил, вернул» склеило бы две анкеты под одним номером.
+ */
+const frozen = computed(() => template.value?.state === 'published' || template.value?.state === 'retired')
+
+/** Снята с публикации — стадией «Снят с публикации» в канбане: ссылки по ней больше не выпускают. */
+const retired = computed(() => template.value?.state === 'retired')
 
 /** Что показываем: правимый черновик или сохранённое. Второе — у опубликованной версии. */
 const shown = computed(() => draft.value ?? template.value?.schema ?? null)
@@ -523,9 +531,9 @@ async function save(): Promise<void> {
               placeholder="код: латиницей"
             />
             <B24Badge
-              v-if="published"
-              color="air-primary-success"
-              label="Опубликована"
+              v-if="frozen"
+              :color="retired ? 'air-secondary' : 'air-primary-success'"
+              :label="retired ? 'Снята с публикации' : 'Опубликована'"
             />
             <B24Badge
               v-else
@@ -548,7 +556,7 @@ async function save(): Promise<void> {
                предлагать действие, которое заведомо не сработает, — это способ потратить
                чужое время. Настоящий запрет при этом на сервере, здесь только честный вид. -->
           <div
-            v-if="!published"
+            v-if="!frozen"
             class="mt-3 flex flex-wrap items-center gap-2"
           >
             <B24Button
@@ -628,14 +636,16 @@ async function save(): Promise<void> {
                открывший опубликованную анкету, должен узнать правило до того, как потратит
                двадцать минут на правки. -->
           <B24Alert
-            v-if="published"
+            v-if="frozen"
             class="mt-3"
             color="air-secondary-accent"
-            description="Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию."
+            :description="retired
+              ? 'Эту версию сняли с публикации: ссылки по ней больше не выпускаются. Править её нельзя — по ней уже собирали ответы. Чтобы изменить анкету, создайте новую версию.'
+              : 'Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию.'"
           >
             <template #title>
               <span class="inline-flex items-center gap-1">
-                Эта версия уже опубликована
+                {{ retired ? 'Эта версия снята с публикации' : 'Эта версия уже опубликована' }}
                 <HelpLink
                   anchor="edit-survey"
                   label="Как устроены версии?"
