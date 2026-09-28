@@ -91,10 +91,20 @@ const REFRESH_FAILURE = 'Не удалось перечитать анкеты �
 
 const PLURAL = new Intl.PluralRules('ru-RU')
 
-/** Число со словом в нужной форме: «1 раздел», «3 раздела», «5 разделов». */
+/**
+ * Неразрывный пробел — кодом символа, а не самим символом: в исходнике он неотличим от обычного,
+ * и следующая правка заменила бы его пробелом молча (линтер такие символы вдобавок не пропускает).
+ */
+const NBSP = String.fromCharCode(0xA0)
+
+/**
+ * Число со словом в нужной форме: «1 раздел», «3 раздела», «5 разделов».
+ *
+ * Между числом и словом — неразрывный пробел: строка переносится по « · », а не между «3» и «раздела».
+ */
 function counted(value: number, one: string, few: string, many: string): string {
   const form = PLURAL.select(value)
-  return `${value} ${form === 'one' ? one : form === 'few' ? few : many}`
+  return `${value}${NBSP}${form === 'one' ? one : form === 'few' ? few : many}`
 }
 
 /** Ключ анкеты в выборе. Код и версия вместе: две версии одной анкеты бывают опубликованы разом. */
@@ -163,6 +173,8 @@ const issued = ref<{ url: string, expiresAt: string, title: string } | null>(nul
 const copied = ref(false)
 /** Скопировать не вышло ни одним путём: адрес выделен, и человеку сказано, какие клавиши нажать. */
 const copyFailed = ref(false)
+/** Имя кнопки копирования — для подсказки и экранного диктора: сама кнопка — значок. */
+const copyLabel = computed(() => copied.value ? 'Скопировано' : 'Скопировать ссылку')
 const urlInput = useTemplateRef('urlInput')
 
 const issuing = ref(false)
@@ -520,7 +532,7 @@ const surveyCards = computed(() => surveys.value.map(survey => ({
   value: surveyKey(survey),
   label: survey.title,
   description: [
-    `версия ${survey.version}`,
+    `версия${NBSP}${survey.version}`,
     counted(survey.sections, 'раздел', 'раздела', 'разделов'),
     counted(survey.questions, 'вопрос', 'вопроса', 'вопросов'),
   ].join(' · '),
@@ -550,14 +562,18 @@ const issuedNote = computed(() => {
           <B24Button
             v-if="canRefresh"
             :icon="RefreshIcon"
-            label="Обновить"
+            aria-label="Обновить"
             color="air-tertiary"
             size="sm"
             :loading="refreshing"
             :disabled="busy"
             data-testid="refresh"
             @click="refresh"
-          />
+          >
+            <!-- На узком экране — одним значком: имя вкладки в шапке длинное, и подпись кнопки
+                 обрезала его на полуслове (видно на скриншоте шириной 375 px). -->
+            <span class="hidden sm:inline">Обновить</span>
+          </B24Button>
         </template>
       </B24DashboardNavbar>
     </template>
@@ -567,9 +583,10 @@ const issuedNote = computed(() => {
         ⚠ Ширина содержимого ограничена (issue #84, п. 3). Вкладка в карточке сделки бывает шириной
         полторы тысячи пикселей, и строка «состояние · анкета · дата», растянутая на всю, читается
         хуже, чем та же строка в колонке: глаз теряет её конец. Слева, а не по центру — под заголовком
-        вкладки, как и прочее содержимое карточки портала.
+        вкладки, как и прочее содержимое карточки портала. `4xl`, а не `3xl`: в трёх колонках уже
+        строчка «версия · разделы · вопросы» под названием анкеты переносилась на середине.
       -->
-      <div class="flex max-w-3xl flex-col gap-5">
+      <div class="flex max-w-4xl flex-col gap-5">
         <!-- ⚠ ПЕРВЫМ, раньше скелета: снаружи портала нет ни сделки, ни прав на неё, и любой
              другой текст здесь был бы разговором не о том. Порядок тот же, что у `/install`,
              и по той же причине — там ветка ниже скелета показывала бесконечную загрузку. -->
@@ -768,16 +785,29 @@ const issuedNote = computed(() => {
               стало не по чему (анкету сняли с публикации), не должна смахнуть с экрана адрес,
               который больше не покажется никогда.
             -->
+            <!--
+              ⚠ Карточка нейтральная, успех — значком у первой строки. Вариант `outline-success`
+              красил зелёным ВЕСЬ текст, и подсказка «браузер не дал скопировать» читалась как
+              успех, а длинный текст зелёным на белом — хуже, чем тёмным (видно на скриншоте).
+            -->
             <B24Card
               v-if="issued !== null"
-              variant="outline-success"
               data-testid="issued"
             >
               <div class="flex flex-col gap-3">
-                <p>
-                  <span class="font-semibold">Ссылка выпущена:</span>
-                  {{ issuedNote }}
+                <p class="flex items-start gap-2">
+                  <CircleCheckIcon class="size-5 shrink-0 text-(--ui-color-accent-main-success)" />
+                  <span>
+                    <span class="font-semibold">Ссылка выпущена:</span>
+                    {{ issuedNote }}
+                  </span>
                 </p>
+                <!--
+                  ⚠ Кнопка копирования — значком, ровно как в примере «With copy button» у `B24Input`.
+                  С подписью она не помещалась в место, которое поле держит под значок: хвост адреса
+                  уходил ПОД кнопку и просвечивал сквозь неё. Подпись живёт в подсказке и `aria-label`,
+                  а что вышло — словами в строке ниже.
+                -->
                 <B24Input
                   ref="urlInput"
                   :model-value="issued.url"
@@ -787,23 +817,31 @@ const issuedNote = computed(() => {
                   :b24ui="{ trailing: 'pe-0.5' }"
                 >
                   <template #trailing>
-                    <B24Button
-                      :icon="copied ? CircleCheckIcon : CopyIcon"
-                      :label="copied ? 'Скопировано' : 'Скопировать'"
-                      color="air-tertiary-no-accent"
-                      size="sm"
-                      data-testid="copy"
-                      @click="copyLink"
-                    />
+                    <B24Tooltip
+                      :text="copyLabel"
+                      :content="{ side: 'right' }"
+                    >
+                      <B24Button
+                        :icon="copied ? CircleCheckIcon : CopyIcon"
+                        :aria-label="copyLabel"
+                        :b24ui="{ leadingIcon: copied ? 'text-(--ui-color-accent-main-success)' : 'text-(--ui-btn-color)' }"
+                        color="air-tertiary-no-accent"
+                        size="sm"
+                        data-testid="copy"
+                        @click="copyLink"
+                      />
+                    </B24Tooltip>
                   </template>
                 </B24Input>
                 <p
-                  v-if="copyFailed"
+                  v-if="copied || copyFailed"
                   class="text-sm"
                   role="status"
-                  data-testid="copy-hint"
+                  data-testid="copy-status"
                 >
-                  Браузер не дал скопировать сам. Адрес выделен — нажмите Ctrl+C (на Mac — Cmd+C).
+                  {{ copied
+                    ? 'Скопировано — вставьте ссылку в письмо или сообщение клиенту.'
+                    : 'Браузер не дал скопировать сам. Адрес выделен — нажмите Ctrl+C (на Mac — Cmd+C).' }}
                 </p>
                 <div v-if="surveys.length > 0">
                   <B24Button

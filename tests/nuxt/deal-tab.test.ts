@@ -51,6 +51,8 @@ vi.mock('@bitrix24/b24jssdk', () => ({
 const SURVEYS = [{ code: 'default', version: 3, title: 'Оценка работы по проекту', sections: 2, questions: 5 }]
 /** Ключ карточки — `код:версия`, как его строит вкладка. */
 const SURVEY_KEY = 'default:3'
+/** Неразрывный пробел — кодом символа, как и во вкладке: в исходнике сам символ не виден. */
+const NBSP = String.fromCharCode(0xA0)
 const URL = 'https://опрос.рф/s/' + 'a'.repeat(43)
 
 /** Чем отвечает выпуск ссылки. Меняется сценарием, считается число обращений. */
@@ -291,7 +293,8 @@ describe('выбор анкеты — карточками, выпуск — к�
     const page = await openTab()
     await settle()
 
-    expect(page.text()).toContain('версия 3 · 2 раздела · 5 вопросов')
+    // Между числом и словом неразрывный пробел: переносится строка только по « · ».
+    expect(page.text()).toContain(`версия${NBSP}3 · 2${NBSP}раздела · 5${NBSP}вопросов`)
   })
 
   it('следующую ссылку выбирают заново, прежний выбор не остаётся', async () => {
@@ -588,11 +591,12 @@ describe('копирование адреса во фрейме портала (
 
   it('ГЛАВНОЕ: буфер закрыт, а адрес всё равно скопирован — и сказано «Скопировано»', async () => {
     // ⚠ Прежняя кнопка звала `navigator.clipboard` напрямую и глотала отказ: внутри портала
-    // нажатие не давало ничего.
+    // нажатие не давало ничего. Кнопка — значок, поэтому «Скопировано» проверяется там, где его
+    // узнаёт человек: строкой под полем и именем кнопки для диктора.
     const page = await issueAndCopy()
 
-    expect(page.find('[data-testid="copy"]').text()).toBe('Скопировано')
-    expect(page.find('[data-testid="copy-hint"]').exists()).toBe(false)
+    expect(page.find('[data-testid="copy-status"]').text()).toContain('Скопировано')
+    expect(page.find('[data-testid="copy"]').attributes('aria-label')).toBe('Скопировано')
   })
 
   it('не копируется никак — адрес выделен, и сказано нажать Ctrl+C', async () => {
@@ -601,8 +605,8 @@ describe('копирование адреса во фрейме портала (
     const page = await issueAndCopy()
 
     const input = page.find('[data-testid="issued"] input').element as HTMLInputElement
-    expect(page.find('[data-testid="copy-hint"]').text()).toContain('Ctrl+C')
-    expect(page.find('[data-testid="copy"]').text()).toBe('Скопировать')
+    expect(page.find('[data-testid="copy-status"]').text()).toContain('Ctrl+C')
+    expect(page.find('[data-testid="copy"]').attributes('aria-label')).toBe('Скопировать ссылку')
     expect([input.selectionStart, input.selectionEnd]).toEqual([0, URL.length])
   })
 })

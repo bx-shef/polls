@@ -84,6 +84,8 @@ async function openInSlider(): Promise<boolean> {
     серый значок набора на оранжевом не читался бы. У голой иконки из примера документации цвет
     ровно такой же — `currentColor` у самого SVG. Переменная, а не класс цвета: ею же набор красит
     кнопку при наведении и нажатии, и значок не перекрашивается обратно в серый под курсором.
+    Размер значка — `size-5`, как в том же примере: у кнопки `xs` свой значок мельче, и на скриншоте
+    он читался точкой, а не вопросом.
   -->
   <B24Tooltip
     :text="label"
@@ -93,6 +95,7 @@ async function openInSlider(): Promise<boolean> {
     <B24Button
       :icon="HelpIcon"
       :aria-label="label"
+      :b24ui="{ leadingIcon: 'size-5' }"
       color="air-tertiary-no-accent"
       size="xs"
       rounded
