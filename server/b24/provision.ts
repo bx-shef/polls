@@ -1,5 +1,5 @@
 import { safeRefusal } from '../domain/answers/portal-errors'
-import { refusalCode } from '../domain/portals/portal-error'
+import { isRetryableRefusal } from '../domain/portals/portal-error'
 import { logger } from '../utils/logger'
 import {
   buildListFieldsCall,
@@ -53,6 +53,8 @@ import {
   buildTemplateFeaturesCall,
   planFieldOwnership,
   readTypeTitle,
+  LEGACY_SURVEY_SP_TITLES,
+  LEGACY_TEMPLATE_SP_TITLES,
   OWNERSHIP_REVISION,
   type SmartProcessKind,
   planDealRelation,
@@ -273,9 +275,9 @@ export interface OwnershipOutcome {
   /**
    * Остальное доделано: названия, возможности «Шаблона», подписи на сделке и контакте.
    *
-   * `false` — был отказ, который стоит повторить: предел запросов, сбой связи. Тарифный отказ
-   * переименования (`UPDATE_DYNAMIC_TYPE_RESTRICTED`) повтором не лечится и сюда не считается —
-   * иначе такой портал переобустраивался бы каждый час вечно.
+   * `false` — был отказ, который стоит повторить: предел запросов, сбой связи (`isRetryableRefusal`).
+   * Отказ, который повтором не лечится, — тариф (`UPDATE_DYNAMIC_TYPE_RESTRICTED`), права, проверка
+   * значения, — сюда не считается: иначе такой портал переобустраивался бы каждый час вечно.
    */
   settled: boolean
 }
@@ -353,9 +355,11 @@ function storedOption(refs: SmartProcessRefs, revision: number, adopted: Adopted
 export async function storeRefs(
   call: RestCall,
   refs: SmartProcessRefs,
-  keep: { revision?: number, adopted?: AdoptedKinds } = {},
+  // ⚠ Обязательны, без умолчаний: вызов без них молча стёр бы ревизию и признак усыновления —
+  // ровно те два дефекта, что чинили в панели PR #87. Нашёл `/review` во втором круге.
+  keep: { revision: number, adopted: AdoptedKinds },
 ): Promise<void> {
-  await call('app.option.set', { options: { [SP_REFS_OPTION]: storedOption(refs, keep.revision ?? 0, keep.adopted ?? {}) } })
+  await call('app.option.set', { options: { [SP_REFS_OPTION]: storedOption(refs, keep.revision, keep.adopted) } })
 }
 
 /**
@@ -372,15 +376,34 @@ export async function storeRefs(
  * каждый час — без единого шанса что-то изменить. Эти отказы и без того пишутся в журнал
  * громко, ошибкой.
  *
- * `revision` меньше текущей — когда доделано всё, кроме разовой миграции (`register.ts`).
+ * `revision` — та, до которой дошёл этот прогон (`reachedRevision`); меньше текущей, когда
+ * доделано всё, кроме разовой миграции. Параметры обязательны по той же причине, что у `storeRefs`.
  */
 export async function storeProvisionRevision(
   call: RestCall,
   refs: SmartProcessRefs,
-  revision: number = PROVISION_REVISION,
-  adopted: AdoptedKinds = {},
+  revision: number,
+  adopted: AdoptedKinds,
 ): Promise<void> {
   await call('app.option.set', { options: { [SP_REFS_OPTION]: storedOption(refs, revision, adopted) } })
+}
+
+/**
+ * The revision this run brought the portal to.
+ *
+ * ⚠ Здесь, а не у вызывающего: какие разовые шаги прошли, знает обустройство. Ревизия — наименьшая
+ * из достигнутых: поле виджета отложено (`deferred`) — портал остаётся на прежней, потому что
+ * установка не завершена и донастройка обязана вернуться; не доделана только миграция 4 — портал
+ * на ревизии до неё, ведь всё прежнее на месте. Иначе портал ревизии 2 оставался бы на ней,
+ * и разовая правка раскладки ревизии 3 повторялась бы каждый час, возвращая виджет клиенту,
+ * который его убрал. Первая редакция считала это у вызывающего особым случаем; `/review`
+ * во втором круге PR #87 заметил, что следующая миграция добавила бы туда второй — поэтому здесь.
+ */
+export function reachedRevision(previous: number, result: Pick<ProvisionResult, 'resultField' | 'ownership'>): number {
+  if (result.resultField === 'deferred') return previous
+  const ownership = result.ownership
+  const unfinished = ownership !== null && (!ownership.fieldsLocked || !ownership.settled)
+  return unfinished ? Math.max(previous, OWNERSHIP_REVISION - 1) : PROVISION_REVISION
 }
 
 function validRef(ref: SmartProcessRef | undefined): SmartProcessRef | undefined {
@@ -776,9 +799,6 @@ interface OwnershipInput {
   crm: ReadonlyMap<CrmEntity, readonly ExistingCrmField[]>
 }
 
-/** Тарифный отказ `crm.type.update`: повтором не лечится (документация метода). */
-const TYPE_UPDATE_RESTRICTED = 'UPDATE_DYNAMIC_TYPE_RESTRICTED'
-
 /**
  * Разовая миграция портала, обустроенного до ревизии 4: метка владельца `[sh]` в названиях
  * и подписях, наши поля закрыты от правки, у «Шаблона» выключены «Клиент» и роботы
@@ -825,11 +845,15 @@ async function ensureOwnership(call: RestCall, input: OwnershipInput): Promise<O
  *
  * Смарт-процесс, которого нет в списке портала, не трогаем: «переименовать» его было бы
  * вслепую — по идентификатору, который мог уйти в корзину.
+ *
+ * ⚠ Переименовываем только из НАШЕГО прежнего названия. Смарт-процесс, который администратор
+ * назвал по-своему, остаётся с его названием: иначе повтор незавершённой миграции спорил бы
+ * с ним каждый час — ровно то, от чего миграция и сделана разовой. Нашёл `/review` во втором круге.
  */
 async function settleSmartProcesses(call: RestCall, input: OwnershipInput, outcome: OwnershipOutcome): Promise<void> {
   const ours = [
-    { sp: input.template, title: TEMPLATE_SP_TITLE, template: true },
-    { sp: input.survey, title: SURVEY_SP_TITLE, template: false },
+    { sp: input.template, title: TEMPLATE_SP_TITLE, legacy: LEGACY_TEMPLATE_SP_TITLES, template: true },
+    { sp: input.survey, title: SURVEY_SP_TITLE, legacy: LEGACY_SURVEY_SP_TITLES, template: false },
   ].filter(one => !one.sp.created && !one.sp.adopted)
   if (ours.length === 0) return
 
@@ -839,15 +863,15 @@ async function settleSmartProcesses(call: RestCall, input: OwnershipInput, outco
       types = await listAllTypes(call)
     }
     catch (error) {
-      unsettle(outcome, 'список смарт-процессов', error)
+      refuse(outcome, 'список смарт-процессов', error)
       return
     }
   }
 
-  for (const { sp, title, template } of ours) {
+  for (const { sp, title, legacy, template } of ours) {
     const current = readTypeTitle(types, sp.ref.id)
     if (current === null) continue
-    if (current !== title) await updateType(call, buildRenameTypeCall(sp.ref, title), outcome)
+    if (legacy.includes(current.trim())) await updateType(call, buildRenameTypeCall(sp.ref, title), outcome)
     // ⚠ Не «включено ли», а «не выключено ли наверняка»: при флаге непонятной формы выключение
     // шлётся всё равно — оно идемпотентно, а промолчав, мы оставили бы роботов включёнными
     // навсегда и молча. Нашёл `/code-review` во втором круге PR #87.
@@ -858,13 +882,11 @@ async function settleSmartProcesses(call: RestCall, input: OwnershipInput, outco
 }
 
 /**
- * Один изменяющий вызов `crm.type.update`; отказ разбирается по коду.
+ * Один изменяющий вызов `crm.type.update`; отказ разбирается по коду (`refuse`).
  *
- * ⚠ Тарифный `UPDATE_DYNAMIC_TYPE_RESTRICTED` принимаем: повтор его не вылечит. Любой другой —
- * предел запросов, сбой связи — оставляет миграцию незавершённой, и ревизия не отмечается.
- * Прежде любой отказ отпускал ревизию, а первый упавший вызов обрывал остальные: одно случайное
- * «слишком много запросов» навсегда отменяло переименование обоих смарт-процессов и выключение
- * роботов у «Шаблона». Нашли `/review` и `/code-review` в PR #87.
+ * ⚠ Каждый — в своём `try`. Прежде первый упавший вызов обрывал остальные, а любой отказ отпускал
+ * ревизию: одно случайное «слишком много запросов» навсегда отменяло переименование обоих
+ * смарт-процессов и выключение роботов у «Шаблона». Нашли `/review` и `/code-review` в PR #87.
  */
 async function updateType(call: RestCall, update: PortalCall, outcome: OwnershipOutcome): Promise<void> {
   try {
@@ -872,11 +894,7 @@ async function updateType(call: RestCall, update: PortalCall, outcome: Ownership
     outcome.changes++
   }
   catch (error) {
-    if (refusalCode(error) === TYPE_UPDATE_RESTRICTED) {
-      logger.warn({ step: 'названия и возможности' }, 'метка владельца: тариф запрещает править смарт-процессы')
-      return
-    }
-    unsettle(outcome, 'названия и возможности', error)
+    refuse(outcome, 'названия и возможности', error)
   }
 }
 
@@ -942,7 +960,7 @@ async function labelCrmFields(
         existing = await listAllCrmFields(call, entity)
       }
       catch (error) {
-        unsettle(outcome, step, error)
+        refuse(outcome, step, error)
         continue
       }
     }
@@ -953,16 +971,28 @@ async function labelCrmFields(
         outcome.changes++
       }
       catch (error) {
-        unsettle(outcome, step, error)
+        refuse(outcome, step, error)
       }
     }
   }
 }
 
-/** Mark the migration unfinished and say why — the portal's own words stay out (`safeRefusal`). */
-function unsettle(outcome: OwnershipOutcome, step: string, error: unknown): void {
-  outcome.settled = false
-  logger.warn({ step, reason: safeRefusal(error) }, 'метка владельца: шаг не удался, донастройка вернётся')
+/**
+ * Sort a refusal of a cosmetic step: worth a retry — the migration stays unfinished; not — let it go.
+ *
+ * ⚠ Держим миграцию незавершённой ТОЛЬКО на отказе, который лечится повтором (`isRetryableRefusal`).
+ * Первая редакция держала её на любом нетарифном отказе, и стабильное «доступ запрещён» на подписи
+ * контакта оставляло бы портал на ревизии 3 навсегда: каждый час полное переобустройство без
+ * единого шанса что-то изменить. Нашёл `/review` во втором круге PR #87. Слова портала в журнал
+ * не попадают (`safeRefusal`).
+ */
+function refuse(outcome: OwnershipOutcome, step: string, error: unknown): void {
+  if (isRetryableRefusal(error)) {
+    outcome.settled = false
+    logger.warn({ step, reason: safeRefusal(error) }, 'метка владельца: шаг не удался, донастройка вернётся')
+    return
+  }
+  logger.warn({ step, reason: safeRefusal(error) }, 'метка владельца: портал отказал, повтор не поможет')
 }
 
 /**

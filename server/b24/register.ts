@@ -1,12 +1,11 @@
 import { sql } from 'drizzle-orm'
 import { makePortalCall } from './client'
-import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
+import { ensureDealTabPlacement, ensureTemplateTabPlacement, isPortalAdmin, reachedRevision, storeProvisionRevision, provisionSmartProcesses, readStoredRefs, storeRefs, withDeadline } from './provision'
 import type { RestCall } from './provision'
 import { getDb, schema } from '../db/client'
 import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
-import { OWNERSHIP_REVISION, PROVISION_REVISION } from '../domain/portals/smart-processes'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
 import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
@@ -219,7 +218,12 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     }
     await storeRefs(budgeted, refs, { revision: known.revision, adopted })
 
-    if (result.adoptedTemplate || result.adoptedSurvey) {
+    // ⚠ Только о НОВОМ усыновлении. Признак теперь переживает прогоны, и без этой проверки
+    // предупреждение «найден по заголовку» писалось бы на каждой донастройке — дежурный принял бы
+    // его за новую потерю идентификаторов. Нашёл `/review` во втором круге PR #87.
+    const newlyAdopted = (result.adoptedTemplate && known.adopted.template !== true)
+      || (result.adoptedSurvey && known.adopted.survey !== true)
+    if (newlyAdopted) {
       // Взяли на портале смарт-процесс, которого не создавали. Обычно это наш же,
       // переживший переустановку, — но отличить его от чужого одноимённого нечем,
       // а поля мы теперь пишем в него. Пусть след останется.
@@ -269,15 +273,11 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // портал настроенным до того, как настроили: следующая фоновая проверка сочла бы его
     // свежим и вкладку регистрировать не стала бы. Issue #75.
     //
-    // ⚠ И НЕ ставится вовсе, если поле виджета отложено: установка ещё не завершена, и портал
-    // его не принял бы. Без отметки фоновая донастройка вернётся к порталу после `installFinish`
-    // и доделает шаг; с отметкой не вернулась бы никогда. Нашли `/review` и `/code-review`.
-    //
-    // ⚠ И не ставится, если миграция ревизии 4 не доделана. Прежде всего — если наши поля
-    // не закрылись от правки: открытые поля позволяют подделать ответ клиента и опубликовать
-    // шаблон в обход проверок. Громко, ошибкой: это безопасность, и такой портал будет
-    // возвращаться каждый час, пока поля не закроются. Без отметки донастройка вернётся
-    // через час и доделает; с отметкой не вернулась бы никогда.
+    // ⚠ Какую ревизию ставить, решает `reachedRevision`: поле виджета отложено — прежнюю (установка
+    // не завершена, донастройка обязана вернуться; нашли `/review` и `/code-review` в PR #80);
+    // миграция 4 не доделана — ревизию до неё. Прежде всего это касается наших полей: открытые,
+    // они позволяют подделать ответ клиента и опубликовать шаблон в обход проверок. Громко,
+    // ошибкой: это безопасность, и такой портал будет возвращаться каждый час, пока поля не закроются.
     const ownership = result.ownership
     if (ownership?.fieldsLocked === false) {
       logger.error({ domain: portal.domain }, 'наши поля не закрыты от правки — ревизию не отмечаем, донастройка вернётся')
@@ -285,17 +285,8 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     else if (ownership?.settled === false) {
       logger.warn({ domain: portal.domain }, 'метка владельца доставлена не везде — ревизию не отмечаем, донастройка вернётся')
     }
-    const unfinished = ownership !== null && (!ownership.fieldsLocked || !ownership.settled)
-    // ⚠ Не доделана только миграция 4 — отмечаем ревизию до неё: всё прежнее на месте. Иначе
-    // портал ревизии 2 оставался бы на ней, и разовая правка раскладки ревизии 3 повторялась бы
-    // каждый час, возвращая виджет клиенту, который его убрал. Нашёл `/code-review` во втором
-    // круге PR #87.
-    const reached = result.resultField === 'deferred'
-      ? known.revision
-      : unfinished ? Math.max(known.revision, OWNERSHIP_REVISION - 1) : PROVISION_REVISION
-    if (result.resultField !== 'deferred') {
-      await storeProvisionRevision(budgeted, refs, reached, adopted)
-    }
+    const reached = reachedRevision(known.revision, result)
+    await storeProvisionRevision(budgeted, refs, reached, adopted)
 
     logger.info(
       {

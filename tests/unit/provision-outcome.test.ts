@@ -380,14 +380,21 @@ describe('отметка ревизии', () => {
     })
     const first = portal(shared(false))
     const second = portal(shared(true))
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const adoptionWarnings = () => warn.mock.calls.filter(([, message]) => String(message).includes('найден по заголовку')).length
 
     await provisionWithCall(first.call, 'shef.bitrix24.ru')
+    const afterFirst = adoptionWarnings()
     await provisionWithCall(second.call, 'shef.bitrix24.ru')
 
     const touched = [...first.call.mock.calls, ...second.call.mock.calls]
       .filter(([method, params]) => method === 'crm.type.update' && (params as { id?: number }).id === 8)
     expect(touched).toEqual([])
     expect(JSON.parse(option).adopted).toEqual({ template: true })
+    // О находке по заголовку — один раз, когда она случилась, а не на каждой донастройке
+    // (`/review`, второй круг): иначе дежурный принимал бы её за новую потерю идентификаторов.
+    expect(afterFirst).toBe(1)
+    expect(adoptionWarnings()).toBe(1)
   })
 
   it('ставится на портале, которому миграция уже не нужна', async () => {

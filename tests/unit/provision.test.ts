@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
+import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, reachedRevision, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
@@ -768,7 +768,7 @@ describe('идентификаторы на портале', () => {
   it('пишет одним ключом', async () => {
     const p = portal()
 
-    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY })
+    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { revision: 0, adopted: {} })
 
     const written = p.of('app.option.set')[0]!.params.options as Record<string, string>
     expect(JSON.parse(written[SP_REFS_OPTION]!)).toEqual({ template: TEMPLATE, survey: SURVEY })
@@ -781,7 +781,7 @@ describe('идентификаторы на портале', () => {
     // клиента, который его убрал.
     const p = portal()
 
-    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { revision: 3 })
+    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { revision: 3, adopted: {} })
 
     const written = p.of('app.option.set')[0]!.params.options as Record<string, string>
     expect(JSON.parse(written[SP_REFS_OPTION]!)).toEqual({ template: TEMPLATE, survey: SURVEY, revision: 3 })
@@ -792,12 +792,24 @@ describe('идентификаторы на портале', () => {
     // прогон считал усыновлённый смарт-процесс своим и переименовывал его.
     const p = portal()
 
-    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { adopted: { template: true } })
+    await storeRefs(p.call, { template: TEMPLATE, survey: SURVEY }, { revision: 0, adopted: { template: true } })
 
     const written = (p.of('app.option.set')[0]!.params.options as Record<string, string>)[SP_REFS_OPTION]!
     expect(JSON.parse(written)).toEqual({ template: TEMPLATE, survey: SURVEY, adopted: { template: true } })
     const back = portal({ 'app.option.get': { result: written } })
     expect((await readStoredRefs(back.call)).adopted).toEqual({ template: true })
+  })
+
+  it.each<[string, number, Parameters<typeof reachedRevision>[1], number]>([
+    ['поле виджета отложено — ревизия прежняя', 2, { resultField: 'deferred', ownership: null }, 2],
+    ['миграция 4 не доделана — ревизия до неё', 2, { resultField: 'ok', ownership: { changes: 1, fieldsLocked: false, settled: true } }, 3],
+    ['не доделана, а портал уже выше — не опускаем', 3, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: true, settled: false } }, 3],
+    ['всё доделано', 2, { resultField: 'ok', ownership: { changes: 5, fieldsLocked: true, settled: true } }, 4],
+    ['миграция не требовалась', 4, { resultField: 'failed', ownership: null }, 4],
+  ])('достигнутая ревизия: %s', (_, previous, result, expected) => {
+    // Гвард под находки `/code-review` и `/review` во втором круге PR #87: ревизия откатывалась
+    // к нулю, не поднималась до уже сделанного и считалась у вызывающего особым случаем.
+    expect(reachedRevision(previous, result)).toBe(expected)
   })
 
   it('признак усыновления читается только явным true', async () => {
@@ -1046,6 +1058,44 @@ describe('ревизия 4: метка владельца и закрытые п
 
     expect(typeUpdates(p)).toEqual([{ title: '[sh] Результат опросов' }])
     expect(result.ownership?.settled).toBe(true)
+  })
+
+  it('название, данное администратором, не трогается — переименовываем только наше прежнее', async () => {
+    // Гвард под находку `/review` во втором круге PR #87: повтор незавершённой миграции иначе
+    // спорил бы с администратором каждый час.
+    const custom = { ...LEGACY_TYPES.result.types[0], title: 'Анкеты отдела' }
+    const p = legacyPortal({ 'crm.type.list': { result: { types: [custom, LEGACY_TYPES.result.types[1]] } } })
+
+    await migrate(p)
+
+    expect(typeUpdates(p)).not.toContainEqual({ title: '[sh] Шаблон опроса' })
+    expect(typeUpdates(p)).toContainEqual({ title: '[sh] Результат опросов' })
+  })
+
+  it('отказ, который повтор не вылечит, миграцию не держит', async () => {
+    // Гвард под находку `/review` во втором круге PR #87: стабильное «доступ запрещён» на подписи
+    // контакта держало бы портал на ревизии 3 навсегда — полное переобустройство каждый час.
+    const p = legacyPortal({
+      'crm.deal.userfield.update': () => {
+        throw new PortalError('ACCESS_DENIED', 'Доступ запрещён')
+      },
+    })
+
+    const result = await migrate(p)
+
+    expect(result.ownership).toMatchObject({ fieldsLocked: true, settled: true })
+  })
+
+  it('сбой связи без кода портала миграцию держит — его лечит повтор', async () => {
+    const p = legacyPortal({
+      'crm.deal.userfield.update': () => {
+        throw new Error('ECONNRESET')
+      },
+    })
+
+    const result = await migrate(p)
+
+    expect(result.ownership?.settled).toBe(false)
   })
 
   it('флаг «Шаблона» непонятной формы — выключение шлётся всё равно', async () => {
