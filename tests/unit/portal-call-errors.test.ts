@@ -232,7 +232,7 @@ describe('отказ портала доезжает до нас с машинн
     // здесь — что статус вложенной ошибки решения не меняет. SDK держим как `^2.2.0`, и сдвиг
     // статуса в минорной версии иначе молча превратил бы `invalid_grant` в беду связи
     // (безопасность в панели PR #106). Классы — настоящие. Ответ 2xx с `invalid_grant` сюда
-    // не доезжает вовсе: SDK прячет его сам (issue #108).
+    // не доезжает вовсе: SDK прячет его сам (issue #111).
     const inner = new RefreshTokenError({
       code: 'invalid_grant',
       description: 'Переданы некорректные авторизационные данные',
@@ -272,6 +272,14 @@ describe('отказ портала доезжает до нас с машинн
     } as never)
 
     expect(refusalCode(asPortalError(wrapped))).toBe('ACCESS_DENIED')
+  })
+
+  it('ошибка axios с `response: null` — ответа нет, а не исключение из разборщика', () => {
+    // Настоящий axios такого не ставит, но разборщик — граница, и чужая структура читается защитно (`/review`).
+    const axiosLike = Object.assign(new Error('x'), { isAxiosError: true, code: 'ECONNRESET', response: null })
+    const wrapped = new AjaxError({ code: 'ECONNRESET', description: 'x', status: 0, originalError: axiosLike, requestInfo: { method: 'crm.item.update' } } as never)
+
+    expect(refusalCode(asPortalError(wrapped))).toBe('SHEF_UNREACHABLE')
   })
 
   it('системная ошибка Node с кодом — не код портала', () => {
@@ -535,6 +543,23 @@ describe('портал отказал без кода — SHEF_REJECTED, не п
     expect(isRetryableRefusal(error)).toBe(true)
   })
 
+  it('незнакомый код при временном статусе: код стёрт, но статус — в журнале, а сам код — нет', async () => {
+    // Иначе при выкладке не было бы видно, что повтор идёт из-за ответа портала (`/review` в закрывающем круге).
+    // Незнакомого кода в журнале нет: он не из нашего списка.
+    reply = { status: 502, body: { error: 'gateway_timeout', error_description: 'описание' } }
+    const warn = vi.spyOn(logger, 'warn')
+
+    try {
+      await callRefusal()
+
+      expect(warn).toHaveBeenCalledWith({ status: 502 }, 'портал ответил незнакомым кодом при временном статусе — повторим')
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('gateway_timeout')
+    }
+    finally {
+      warn.mockRestore()
+    }
+  })
+
   it('ГЛАВНОЕ: invalid_grant в ответе на вызов — не мёртвый грант: его признаёт только продление', async () => {
     // Иначе любой, кто держит тело ответа, — шлюз, прокси, — запускал бы отсчёт до стирания токенов
     // (безопасность в закрывающем круге панели PR #106).
@@ -685,20 +710,37 @@ describe('продление токена', () => {
     expect(isDeadGrant(error)).toBe(false)
   })
 
-  it('код сервера авторизации уходит в журнал: наша пара ключей не выглядит бедой связи', async () => {
+  it.each<[string, string, string]>([
+    ['наша пара ключей', 'invalid_client', 'invalid_client'],
+    ['управляющая последовательность', '\u001B[2J текст', 'не код'],
+    ['64 шестнадцатеричных знака', 'deadbeef'.repeat(8), 'не код'],
+  ])('в журнал продления уходит код только из нашего списка: %s', async (_name, code, logged) => {
     // `invalid_client` на всём флоте — это наша настройка, а наружу он уходит `SHEF_UNREACHABLE`. Без строки
-    // в журнале оператор искал бы сеть (программист и технический директор в закрывающем круге).
-    authReply = { status: 401, body: { error: 'invalid_client', error_description: 'Invalid client' } }
+    // в журнале оператор искал бы сеть (программист и технический директор в закрывающем круге). Но журнал
+    // ВЫБИРАЕТ из своего списка, а не фильтрует чужую строку формой (`/code-review` там же).
+    authReply = { status: 401, body: { error: code, error_description: 'x' } }
     const warn = vi.spyOn(logger, 'warn')
 
     try {
       await refreshRefusal()
 
-      expect(warn).toHaveBeenCalledWith({ code: 'invalid_client' }, 'продление токена не удалось — вызов до портала не дошёл')
+      expect(warn).toHaveBeenCalledWith({ code: logged }, 'продление токена не удалось — вызов до портала не дошёл')
     }
     finally {
       warn.mockRestore()
     }
+  })
+
+  it('ответ 2xx сервера авторизации с invalid_grant SDK прячет — грант не признаётся (issue #111)', async () => {
+    // ⚠ Тест держит ИЗВЕСТНУЮ ДЫРУ, а не желаемое поведение: SDK 2.2.0 бросает на такой ответ свой `SdkError`,
+    // и код остаётся только в тексте. Упадёт он, когда SDK начнёт отдавать код, — тогда пересмотреть #111.
+    // Держит обещание `PROCESS.md` «каждое место SDK закреплено сквозным тестом» (`/code-review`).
+    authReply = { status: 200, body: { error: 'invalid_grant', error_description: 'Invalid grant' } }
+
+    const error = await refreshRefusal()
+
+    expect(refusalCode(error)).toBe('')
+    expect(isDeadGrant(error)).toBe(false)
   })
 
   it('наше собственное исключение при записи продлённых токенов — не код портала', async () => {
@@ -819,7 +861,7 @@ describe('пакетный вызов', () => {
   it('ГЛАВНОЕ: команда с пустым кодом отказа — не «пустые данные»: ключа нет, запись в журнале есть', async () => {
     // ⚠ `"error": ""` в `result_error` — документированная форма отказа, а SDK считает такую команду успехом
     // и отдаёт её ключ с `undefined`. Нарушалось обещание «нет ключа — отказ», и отказ не писался никуда
-    // (issue #108, п. 2; `/review` и технический директор в закрывающем круге панели PR #106).
+    // (было issue #108, п. 2; `/review` и технический директор в закрывающем круге панели PR #106).
     reply = envelope({ deal: { item: { id: 2, title: 'Test' } } }, { company: { error: '', error_description: 'Not found' } })
     const warn = vi.spyOn(logger, 'warn')
 

@@ -62,14 +62,17 @@ export function hookCall(base: string): RestCall {
       body: JSON.stringify(params),
     })
 
-    // ⚠ HTTP 400 с телом `{error, error_description}` — отказ ПОРТАЛА, а не беда связи.
-    // Так ответили `crm.activity.layout.blocks.set` вебхуком (`ERROR_WRONG_CONTEXT`) и
-    // `crm.activity.todo.update` по закрытому делу — замерено 29.09. Поднимаем его с кодом, как
-    // двухсотый: иначе `safeRefusal` его не назвал бы, и проверка рапортовала бы беду связи.
-    // Остальные не-2xx — беда ДО портала: прокси, опечатка в адресе, погашенный вебхук; тела
-    // у неё может не быть вовсе, а может быть страница, и подсказка ниже полезнее кода.
+    // ⚠ Не-2xx с телом портала (`refusalCodeIn`) — отказ ПОРТАЛА, а не беда связи. Ошибки метода,
+    // по документации, приходят «с 400 или 403»: так ответили `crm.activity.layout.blocks.set`
+    // вебхуком (400, `ERROR_WRONG_CONTEXT`), `crm.activity.todo.update` по закрытому делу (400)
+    // и `app.option.get` вебхуком (403, `ACCESS_DENIED`) — замерено 29.09. Поднимаем его с кодом,
+    // как двухсотый: иначе `safeRefusal` его не назвал бы, и проверка рапортовала бы беду связи.
+    // Прежде отказом считался только 400, и 403 отправлял оператора проверять адрес вебхука
+    // (`/review` в закрывающем круге панели PR #106). Кроме 401: это отказ в авторизации самого
+    // вебхука (`NO_AUTH_FOUND`, `INVALID_CREDENTIALS`), и подсказка ниже полезнее кода. Остальное —
+    // страница, пустое тело — беда ДО портала: прокси, опечатка в адресе, погашенный вебхук.
     if (!response.ok) {
-      const refusal = response.status === 400 ? refusalIn(await response.json().catch(() => null)) : null
+      const refusal = response.status !== 401 ? refusalIn(await response.json().catch(() => null)) : null
       if (refusal !== null) throw refusal
       // ⚠ `Stop`, а не голый `Error`: текст здесь НАШ, и `report` печатает его как есть.
       // Пройдя через `safeRefusal`, понятное «портал ответил 502» схлопнулось бы
@@ -147,7 +150,7 @@ export function hookBatch(base: string): RestBatch {
     }
 
     // Только имена наших команд: ключи `result_error` приходят из тела, и печатать их как есть нельзя.
-    const failed = Object.keys(answer.result?.result_error ?? {}).filter(name => name in calls)
+    const failed = Object.keys(answer.result?.result_error ?? {}).filter(name => Object.hasOwn(calls, name))
     if (failed.length > 0) console.warn(`  · команды пакета не отработали: ${failed.join(', ')}`)
 
     return answer.result?.result ?? {}

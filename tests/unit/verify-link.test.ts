@@ -154,7 +154,7 @@ describe('пакет через входящий вебхук', () => {
     portal({
       result: {
         result: { deal: { item: { id: 2 } } },
-        result_error: { 'company': { error: 'NOT_FOUND', error_description: 'x' }, '\u001B[2Jчужое': { error: 'X', error_description: 'y' } },
+        result_error: { 'company': { error: 'NOT_FOUND', error_description: 'x' }, '\u001B[2Jчужое': { error: 'X', error_description: 'y' }, 'constructor': { error: 'X', error_description: 'y' } },
       },
     })
     const lines: string[] = []
@@ -167,6 +167,8 @@ describe('пакет через входящий вебхук', () => {
 
     expect(lines.join('\n')).toContain('company')
     expect(lines.join('\n')).not.toContain('\u001B')
+    // Имя с прототипа объекта — тоже не наше (`/review` в закрывающем круге).
+    expect(lines.join('\n')).not.toContain('constructor')
   })
 
   it('подстановку `$result[…]` не ломает', async () => {
@@ -349,6 +351,21 @@ describe('как вебхук читает ответ портала', () => {
 
     expect(failure).toBeInstanceOf(PortalError)
     expect((failure as PortalError).code).toBe('SHEF_UNREACHABLE')
+  })
+
+  it.each<[number, string]>([
+    [403, 'ACCESS_DENIED'],
+    [503, 'QUERY_LIMIT_EXCEEDED'],
+  ])('HTTP %s с телом портала — отказ портала с кодом, а не «проверьте вебхук»', async (status, code) => {
+    // Ошибки метода, по документации, приходят «с 400 или 403»; `app.option.get` вебхуком 29.09 ответил 403
+    // `ACCESS_DENIED`. Прежде отказом считался только 400, и оператора отправляли проверять адрес вебхука
+    // (`/review` в закрывающем круге панели PR #106).
+    answer(status, JSON.stringify({ error: code, error_description: 'описание' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.get').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe(code)
   })
 
   it('не-2xx без тела портала — по-прежнему подсказка оператору', async () => {

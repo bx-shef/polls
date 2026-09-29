@@ -90,11 +90,16 @@ export function refusalCode(error: unknown): string {
 }
 
 /**
- * Whether a code is one a portal can name: the documented shape, and not a code of the SDK, axios or ours.
+ * Whether a code is one a portal can name: the documented shape, without the prefixes of the SDK, axios or ours.
  *
  * Форма — из документации: код «состоит из цифр, латинских букв и знака подчеркивания» («Коды ошибок»).
  * Своих кодов портал назвать не может: `SHEF_*` в теле — чужая строка, а не наш диагноз; `JSSDK_*`
  * и `ERR_*` — коды SDK и axios (безопасность в панели PR #106).
+ *
+ * ⚠ Код сети (`ECONNRESET`) и два кода SDK без префикса (`NETWORK_ERROR`, `REQUEST_TIMEOUT`) форму
+ * проходят. Решать по ним здесь нельзя, и не приходится: SDK создаёт их только вместе с ошибкой axios
+ * за спиной, а такую разбирают по телу ответа (`fromAnswer` в `server/b24/client.ts`), до этой проверки
+ * не доходя (`/review` в закрывающем круге панели PR #106).
  */
 export function isPortalCode(code: string): boolean {
   return /^\w+$/.test(code) && !/^(?:JSSDK|ERR|SHEF)_/.test(code)
@@ -160,7 +165,7 @@ const RETRYABLE_CODES: readonly string[] = [
  * (`UNREACHABLE_CODE`), повторяемый. А отказ с кодом, которого нет в списке, повтором не лечится:
  * держать ради него незавершённую работу значило бы ходить к порталу каждый час вечно. Нашёл `/review`
  * во втором круге панели PR #87. Обратная сторона — повтор без счётчика попыток: беда связи, которая
- * не проходит, повторяется раз в час без конца; это принятый риск (`docs/PROCESS.md`, issue #108, п. 5).
+ * не проходит, повторяется раз в час без конца; это принятый риск (`docs/PROCESS.md`, issue #112, п. 4).
  *
  * ⚠ Правило держится на том, что код СТАВЯТ ЧЕСТНО: ответа портала нет — `UNREACHABLE_CODE`, отказ
  * портала без кода — `REJECTED_CODE`. Это делает `asPortalError` по источнику ошибки и телу ответа;

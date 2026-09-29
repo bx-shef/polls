@@ -114,6 +114,16 @@ describe('конструктор клиента', () => {
     expect(probe.last!.auth.serverEndpoint).toBe('https://oauth.bitrix.info/rest/')
   })
 
+  it('чужой адрес сервера авторизации не принимается: туда ушли бы `client_secret` и `refresh_token`', async () => {
+    // Кроме боевой константы — только свой компьютер: тесты. Граница держится кодом, а не абзацем в шапке
+    // (безопасность и `/review` в закрывающем круге панели PR #106).
+    withCredentials()
+    const { makePortalCall } = await import('../../server/b24/client')
+
+    expect(() => makePortalCall(AUTH, undefined, 'https://oauth.evil.example/rest/')).toThrow()
+    expect(() => makePortalCall(AUTH, undefined, 'https://127.0.0.1:8443/rest/')).not.toThrow()
+  })
+
   it('пара приложения уходит отдельным аргументом, а не в токенах', async () => {
     // `client_secret` не должен смешиваться с данными портала: это наш секрет,
     // а не его.

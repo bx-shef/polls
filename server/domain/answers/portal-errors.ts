@@ -69,6 +69,15 @@ const KNOWN_CODES = [
   'FIELD_IS_REDUNDANT',
   'WRONG_FIELD_VALUE',
   'ENUM_FIELD',
+  // С PR #106 — системные коды «Коды ошибок» и коды сервера авторизации: мёртвый грант при доставке
+  // ответа иначе назывался в `inbox.last_error` «код не распознан» (`/code-review` в закрывающем круге).
+  'ERROR_METHOD_NOT_FOUND',
+  'ERROR_BATCH_LENGTH_EXCEEDED',
+  'invalid_grant',
+  'invalid_request',
+  'invalid_client',
+  'invalid_scope',
+  'PAYMENT_REQUIRED',
 ] as const
 
 /**

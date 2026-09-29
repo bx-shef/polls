@@ -52,12 +52,33 @@ const CALL_TIMEOUT_MS = 20_000
 /**
  * What the log says about a batch command the SDK counted a success without a result.
  *
- * Фиксированная строка: кода у такой команды нет — SDK его не признал (`"error": ""`, issue #108, п. 2).
+ * Фиксированная строка: кода у такой команды нет — SDK его не признал (`"error": ""`; было issue #108, п. 2).
  */
 const EMPTY_COMMAND = 'портал не вернул результата команды'
 
 /** The SDK's own code for a portal body whose `error` is `"0"` (`AjaxResult`, `parse-error-payload.mjs`). */
 const CODELESS_IN_BODY = 'JSSDK_RESPONSE_ERROR'
+
+/**
+ * Codes of the authorization server we may write to the log as they are.
+ *
+ * ⚠ Список, а не форма: журнал ВЫБИРАЕТ из своего набора, а не фильтрует чужую строку (шапка
+ * `server/domain/answers/portal-errors.ts`). Коды — из документации сервера авторизации («Коды
+ * ошибок», «Автоматическое продление токенов OAuth 2.0»); `wrong_client` сервер прислал 29.09
+ * на пустую пару ключей. `/code-review` в закрывающем круге панели PR #106.
+ */
+const AUTH_CODES: readonly string[] = [
+  'invalid_request',
+  'invalid_client',
+  'wrong_client',
+  'invalid_scope',
+  'insufficient_scope',
+  'invalid_grant',
+  'PAYMENT_REQUIRED',
+]
+
+/** A Node or axios transport code: `ECONNRESET`, `ETIMEDOUT`, `ERR_BAD_RESPONSE` — ours, not the server's text. */
+const TRANSPORT_CODE = /^(?:E[A-Z0-9_]{2,31}|ERR_[A-Z_]{2,40})$/
 
 export interface PortalAuth {
   memberId: string
@@ -90,6 +111,11 @@ export function makePortalCall(
   onRefresh?: (next: { accessToken: string, refreshToken: string, expiresIn: number }) => Promise<void>,
   serverEndpoint = SERVER_ENDPOINT,
 ): PortalCaller {
+  // ⚠ Туда уходят `client_secret` и `refresh_token`: кроме константы — только свой компьютер, тесты.
+  // Граница держится кодом, а не абзацем в шапке (безопасность и `/review` в закрывающем круге).
+  if (serverEndpoint !== SERVER_ENDPOINT && !/^https:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/rest\/$/.test(serverEndpoint)) {
+    throw new Error('makePortalCall: адрес сервера авторизации — только боевой или локальный')
+  }
   const client = new B24OAuth(
     {
       applicationToken: auth.applicationToken,
@@ -182,7 +208,7 @@ export function makePortalCall(
    * пришёл результат. Отсутствие ключа — единственный признак отказа, на который вызывающий
    * может опереться, и он же самый честный: «данных нет» вместо подделки пустым объектом.
    * Одну дыру SDK оставляет — команду с пустым кодом отказа (`"error": ""`) он считает успехом
-   * и отдаёт её ключ с `undefined`. Такой ключ выбрасываем сами и пишем в журнал (issue #108,
+   * и отдаёт её ключ с `undefined`. Такой ключ выбрасываем сами и пишем в журнал (было issue #108,
    * п. 2; `/review` и технический директор в закрывающем круге панели PR #106).
    *
    * ⚠ Отказ отдельной команды пишется в журнал ЗДЕСЬ, а не у вызывающего. Иначе он
@@ -196,7 +222,8 @@ export function makePortalCall(
    * SDK его и бросает, а результатом отдаёт в тех же двух случаях, что у `call`: мягкий код и ответ
    * 2xx с ошибкой в теле. Такой отказ SDK кладёт в набор под своим ключом (`base-error`), а не под
    * именем команды — по этому его и узнаём: ключа, которого нет среди наших команд, у отказа команды
-   * не бывает. Решаем по нашим именам, а не по литералу SDK (безопасность в закрывающем круге).
+   * не бывает. Решаем по нашим именам, а не по литералу SDK (безопасность в закрывающем круге);
+   * поэтому имя команды `base-error` занимать нельзя.
    * Прежде такой отказ писался в журнал «командой» `base-error`, а наружу уходил пустой пакет:
    * выпуск ссылки выдавал отказ портала за «у сделки ничего не заполнено». Нашёл `/review`
    * в панели PR #106.
@@ -219,7 +246,7 @@ export function makePortalCall(
       // Разбор тот же, что у одиночного вызова: отказ команды SDK отдаёт ошибкой, разобранной
       // из её записи в `result_error`, — с кодом портала и без ошибки axios за спиной.
       const refusals = response.getErrorsByKey()
-      const whole = Object.keys(refusals).find(key => !(key in calls))
+      const whole = Object.keys(refusals).find(key => !Object.hasOwn(calls, key))
       if (whole !== undefined) throw asPortalError(refusals[whole])
       for (const [name, error] of Object.entries(refusals)) {
         logger.warn({ command: name, reason: safeRefusal(asPortalError(error)) }, 'команда пакета не отработала')
@@ -305,11 +332,15 @@ export function asPortalError(error: unknown): PortalError {
  */
 function fromAnswer(failure: AxiosLike, message: string): PortalError {
   const response = failure.response
-  const named = response === undefined ? null : refusalCodeIn(response.data)
-  if (response === undefined || named === null || isDeadGrantCode(named)) return new PortalError(UNREACHABLE_CODE, message)
+  const named = response == null ? null : refusalCodeIn(response.data)
+  if (response == null || named === null || isDeadGrantCode(named)) return new PortalError(UNREACHABLE_CODE, message)
   const final = typeof response.status === 'number' && isFinalRefusalStatus(response.status)
   if (named === '') return new PortalError(final ? REJECTED_CODE : '', message)
-  return new PortalError(final || isRetryableCode(named) ? named : '', message)
+  if (final || isRetryableCode(named)) return new PortalError(named, message)
+  // Код портала стираем, но статус — в журнал: иначе при выкладке было бы не видно, что повтор идёт
+  // из-за ответа портала. Самого незнакомого кода в журнале нет — он не из нашего списка (`/review`).
+  logger.warn({ status: response.status }, 'портал ответил незнакомым кодом при временном статусе — повторим')
+  return new PortalError('', message)
 }
 
 /**
@@ -319,7 +350,7 @@ function fromAnswer(failure: AxiosLike, message: string): PortalError {
  * мёртвого гранта — единственный способ узнать об уходе клиента: сдвинь SDK статус в новой версии
  * (`^2.2.0`), и правило по статусу молча спрятало бы его (безопасность в панели PR #106). Ответ 2xx
  * с `invalid_grant` сюда не доезжает: его SDK бросает своим `SdkError` без `RefreshTokenError`,
- * и код остаётся только в тексте (issue #108).
+ * и код остаётся только в тексте (issue #111).
  *
  * ⚠ ВСЁ ПРОЧЕЕ — `UNREACHABLE_CODE`: токена нет, до портала вызов не дошёл, и вердикта о самом вызове
  * никто не выносил. Тот же принцип у нашего обмена токена (`server/b24/oauth.ts`): всё, чего нет
@@ -332,11 +363,11 @@ function fromAnswer(failure: AxiosLike, message: string): PortalError {
  *
  * Код сервера авторизации при этом уходит в журнал: иначе наша пара ключей на всём флоте
  * (`invalid_client`) выглядела бы бедой связи (программист и технический директор в закрывающем
- * круге). Только по форме кода — проза сервера не наша, и форма её не пропустит.
+ * круге). Только из своего списка (`AUTH_CODES`) или код транспорта — прочее пишется «не код».
  */
 function fromTokenRefresh(code: string, message: string): PortalError {
   if (isDeadGrantCode(code)) return new PortalError(code, message)
-  logger.warn({ code: /^\w{1,64}$/.test(code) ? code : 'не код' }, 'продление токена не удалось — вызов до портала не дошёл')
+  logger.warn({ code: AUTH_CODES.includes(code) || TRANSPORT_CODE.test(code) ? code : 'не код' }, 'продление токена не удалось — вызов до портала не дошёл')
   return new PortalError(UNREACHABLE_CODE, message)
 }
 
@@ -358,7 +389,7 @@ function fromResult(error: Error): PortalError {
 
 /** An axios error as far as we read it: the response, with its status and body. */
 interface AxiosLike {
-  response?: { status?: unknown, data?: unknown }
+  response?: { status?: unknown, data?: unknown } | null
 }
 
 /** Whether a value is an axios error — what the SDK keeps in `originalError` when a call went over the network. */

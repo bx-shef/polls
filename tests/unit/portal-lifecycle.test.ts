@@ -109,6 +109,13 @@ describe('безопасный текст отказа', () => {
     expect(safeRefusal(new Error('что-то наше'))).toBe(UNKNOWN_REFUSAL)
   })
 
+  it('мёртвый грант и коды сервера авторизации называет, а не схлопывает в «код не распознан»', () => {
+    // Мёртвый грант при доставке ответа иначе назывался бы в `inbox.last_error` «код не распознан»
+    // (`/code-review` в закрывающем круге панели PR #106).
+    expect(safeRefusal(refusal('invalid_grant', 'Invalid grant'))).toBe('invalid_grant')
+    expect(safeRefusal(refusal('PAYMENT_REQUIRED', 'Payment required'))).toBe('PAYMENT_REQUIRED')
+  })
+
   it('узнаёт наш собственный таймаут', () => {
     expect(safeRefusal(new Error('портал не ответил за 20 000 мс на crm.item.add'))).toBe('портал не ответил вовремя')
   })
