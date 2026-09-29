@@ -46,6 +46,8 @@ function portal(answers: Record<string, Answer> = {}) {
     if (method === 'crm.type.get') return { result: { type: { relations: { parent: [{ entityTypeId: 2, isChildrenListEnabled: 'Y' }], child: [] } } } }
     if (method === 'app.info') return { result: { ID: 219, INSTALLED: true } }
     if (method === 'userfieldtype.list') return { result: [] }
+    // Своей раскладки у карточки нет — так её отдаёт живой портал (замерено 28.09).
+    if (method === 'crm.item.details.configuration.get') return { result: null }
     return { result: true }
   })
   const of = (method: string) => calls.filter(one => one.method === method)
@@ -507,9 +509,10 @@ describe('перенос старого поля «Состояние»', () => 
   it('имя удалённого поля уходит и из сохранённой раскладки карточки, остальное — как было', async () => {
     // Раскладка хранит поля по имени (замерено 28.09): без этого в карточке каждого старого
     // портала осталось бы имя без поля. Нашёл `/review` в панели PR #93.
+    // Разделы — как их отдаёт портал: с `type`, `name` и `title` (замерено 28.09).
     const layout = [
-      { name: 'survey_form', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_STATE' }, { name: 'UF_CRM_10_LINK' }] },
-      { name: 'client_own', elements: [{ name: 'UF_CRM_10_STATE' }] },
+      { type: 'section', name: 'survey_form', title: 'Анкета', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_STATE' }, { name: 'UF_CRM_10_LINK' }] },
+      { type: 'section', name: 'client_own', title: 'Своё', elements: [{ name: 'UF_CRM_10_STATE' }] },
     ]
     const p = portal({ 'crm.item.details.configuration.get': { result: layout } })
 
@@ -517,25 +520,37 @@ describe('перенос старого поля «Состояние»', () => 
 
     const [set] = p.of('crm.item.details.configuration.set')
     expect(set!.params.data).toEqual([
-      { name: 'survey_form', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_LINK' }] },
-      { name: 'client_own', elements: [] },
+      { type: 'section', name: 'survey_form', title: 'Анкета', elements: [{ name: 'UF_CRM_10_TEMPLATE_CODE' }, { name: 'UF_CRM_10_LINK' }] },
+      { type: 'section', name: 'client_own', title: 'Своё', elements: [] },
     ])
   })
 
-  it('ГЛАВНОЕ: раскладку без нашего поля или непонятную — не переписывает вовсе', async () => {
+  it('ГЛАВНОЕ: раскладку без нашего поля или непонятную — не переписывает вовсе, а о непонятной говорит', async () => {
     // ⚠ `set` перезаписывает раскладку целиком и на всех: записав пустое вместо непонятного, мы
-    // стёрли бы клиенту его карточку. Нашёл тестировщик во втором круге панели PR #93.
-    for (const answer of [
-      { result: [{ name: 'survey_form', elements: [{ name: 'UF_CRM_10_LINK' }] }] },
-      { result: [] },
-      { result: null },
-      { result: [{ name: 'survey_form', elements: 'не массив' }] },
-    ]) {
+    // стёрли бы клиенту его карточку. Нашёл тестировщик во втором круге панели PR #93. А молча
+    // пропущенная непонятная оставила бы в карточке имя без поля, и узнать это было бы неоткуда:
+    // нашли `/review` и `/code-review` в панели PR #98.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const section = { type: 'section', name: 'survey_form', title: 'Анкета' }
+    for (const [answer, unreadable] of [
+      [{ result: [{ ...section, elements: [{ name: 'UF_CRM_10_LINK' }] }] }, false],
+      [{ result: [] }, false],
+      [{ result: null }, false],
+      // Разделы, которые не принял бы сам `set`: без названия и со списком не того вида.
+      [{ result: [{ type: 'section', name: 'survey_form', elements: [{ name: 'UF_CRM_10_STATE' }] }] }, true],
+      [{ result: [{ ...section, elements: 'не массив' }] }, true],
+      // Объектом, а не списком: так PHP отдаёт список с дырой. Это не «пусто» (`/code-review`
+      // во втором круге панели PR #98).
+      [{ result: { 0: { ...section, elements: [{ name: 'UF_CRM_10_STATE' }] } } }, true],
+    ] as const) {
+      warn.mockClear()
       const p = portal({ 'crm.item.details.configuration.get': answer })
 
       await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, fresh(), clock())
 
       expect(p.of('crm.item.details.configuration.set')).toEqual([])
+      const line = warn.mock.calls.find(([, message]) => String(message).includes('непонятной формы'))
+      expect(line?.[0]).toEqual(unreadable ? { domain: 'shef.bitrix24.ru', typeId: 10 } : undefined)
     }
   })
 
@@ -708,6 +723,26 @@ describe('порядок миграции целиком', () => {
     const messages = warn.mock.calls.map(([, message]) => String(message))
     expect(messages).toContain('штатные стадии не включены — состояние остаётся в поле «Состояние»')
     expect(messages).toContain('стадии настроены не до конца — ревизию не отмечаем, донастройка вернётся')
+  })
+
+  it('карточка не доделана — в журнал с доменом, и ревизия 6 не отмечается', async () => {
+    // Без этой строки портал, который донастройка берёт каждый час, в журнале было бы не узнать:
+    // у миграции 4 и стадий такая строка есть. Нашли программист, `/review` и `/code-review`
+    // в панели PR #98.
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({
+      'crm.item.details.configuration.set': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const line = warn.mock.calls.find(([, message]) => String(message).includes('ревизию 6 не отмечаем'))
+    expect(line?.[0]).toEqual({ domain: 'shef.bitrix24.ru' })
+    const stored = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!).revision)
+    expect(stored.at(-1)).toBe(5)
   })
 })
 

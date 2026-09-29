@@ -41,6 +41,8 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     // Живой портал отвечает на правку поля самим полем (замерено 28.09): миграция ревизии 4
     // верит закрытию только по этому ответу.
     if (method === 'userfieldconfig.update') return { result: { field: { id: params.id, ...(params.field as object) } } }
+    // Своей раскладки у карточки нет — так её отдаёт живой портал (замерено 28.09).
+    if (method === 'crm.item.details.configuration.get') return { result: null }
     return { result: true }
   })
   return { call, calls }
@@ -167,6 +169,20 @@ describe('исход обустройства', () => {
 
     expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('not-admin')
     expect(p.calls).toEqual(['user.admin'])
+  })
+
+  it('исход карточки — в итоговой строке журнала, рядом с доменом', async () => {
+    // Строки самой раскладки несут только номер типа, а он портала не называет: непонятную или чужую
+    // раскладку к порталу привязывает только эта строка. Нашёл `/code-review` в третьем круге
+    // панели PR #98.
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({ 'crm.item.details.configuration.get': { result: { 0: 'не список' } } })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const line = info.mock.calls.find(([, message]) => message === 'смарт-процессы обустроены')
+    expect(line?.[0]).toMatchObject({ domain: 'shef.bitrix24.ru', card: 'unreadable' })
   })
 
   it('на счастливом пути — `ok`', async () => {

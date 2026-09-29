@@ -37,7 +37,6 @@ import {
   readAppInfo,
 } from '../domain/portals/userfield-type'
 import {
-  buildCardSections,
   buildCreateFieldCall,
   buildListSpFieldsCall,
   confirmsFieldOwnership,
@@ -46,7 +45,6 @@ import {
   buildReadTypeCall,
   buildSetCardConfigCall,
   buildUpdateRelationsCall,
-  hasCardConfig,
   hasTemplateExtras,
   findTypeByTitle,
   buildRenameTypeCall,
@@ -59,7 +57,7 @@ import {
   type SmartProcessKind,
   planDealRelation,
   planDropFieldFromCard,
-  planResultFieldInCard,
+  planSurveyCard,
   readTypeRelations,
   planMissingFields,
   readCreatedRef,
@@ -77,13 +75,14 @@ import {
   buildFieldName,
   normalizeFieldName,
   PROVISION_REVISION,
-  RESULT_FIELD_REVISION,
+  CARD_REVISION,
   STAGES_REVISION,
   ourFields,
   type ExistingField,
   type PortalCall,
   type SmartProcessField,
   type SmartProcessRef,
+  type SurveyCardInput,
 } from '../domain/portals/smart-processes'
 import {
   SURVEY_STAGES,
@@ -212,6 +211,16 @@ export interface ProvisionOptions {
   previousRevision?: number
 }
 
+/**
+ * What became of the survey card layout in one provisioning run:
+ * - `written` — written: ours from scratch, or our fields placed into or taken out of the standing one;
+ * - `kept` — nothing to write: everything stood, or the one-time fix is not due;
+ * - `unreadable` — the standing layout came in a shape we do not understand, and nothing was written;
+ * - `foreign` — an adopted smart process whose layout is not ours to change;
+ * - `failed` — the portal refused.
+ */
+export type CardOutcome = 'written' | 'kept' | 'unreadable' | 'foreign' | 'failed'
+
 /** Which of our smart processes were once found by title instead of being created or remembered. */
 export type AdoptedKinds = Partial<Record<SmartProcessKind, true>>
 
@@ -240,7 +249,10 @@ export interface ProvisionResult extends SmartProcessRefs {
    * Вызывающий обязан это залогировать и сохранить: заголовки «Опрос» и «Шаблон опроса» —
    * обычные слова, и совпасть может чужой смарт-процесс, заведённый клиентом руками. Отличить
    * его от нашего, потерявшего идентификатор, нечем — а дальше мы допишем в него свои поля.
-   * Переименовывать и перенастраивать усыновлённый мы не станем никогда (`settleSmartProcesses`).
+   * Переименовывать и перенастраивать усыновлённый мы не станем (`settleSmartProcesses`). Что мы
+   * в нём всё-таки делаем — каждое осознанно: дописываем свои поля и поле виджета, ставим связь
+   * со сделкой, снимаем своё поле «Состояние» ревизией 5 (`dropStateField`, там же — почему)
+   * и доводим раскладку карточки, где уже стоят наши поля (`planSurveyCard`).
    */
   adoptedTemplate: boolean
   adoptedSurvey: boolean
@@ -256,10 +268,19 @@ export interface ProvisionResult extends SmartProcessRefs {
    */
   dealLinked: boolean
   /**
-   * Записали ли мы раскладку карточки «Опроса» — с нуля или поставив виджет в свой раздел.
-   * `false` — там уже всё стояло, раскладка чужая либо не вышло.
+   * What became of the survey card layout (`CardOutcome`).
+   *
+   * ⚠ Исход, а не «записали или нет»: из пяти исходов строка журнала с доменом пишется только
+   * в `register.ts`, и «чужая», «непонятная» и «всё стояло» должны различаться в ней, а не сливаться
+   * в `false`. Нашёл `/code-review` во втором круге панели PR #98.
    */
-  cardConfigured: boolean
+  card: CardOutcome
+  /**
+   * Доделана ли разовая правка карточки ревизии 6. `false` — отказ, который лечится повтором, у самой
+   * правки или у шага поля виджета: вызывающий НЕ отмечает ревизию 6, и донастройка вернётся
+   * (`reachedRevision`). Только ниже шестой ревизии (`cardDue`).
+   */
+  cardSettled: boolean
   /**
    * Что с полем своего типа «Результат опроса».
    *
@@ -490,13 +511,13 @@ export async function storeProvisionRevision(
  * из достигнутых: поле виджета отложено (`deferred`) — портал остаётся на прежней, потому что
  * установка не завершена и донастройка обязана вернуться; не доделана только миграция 4 — портал
  * на ревизии до неё, ведь всё прежнее на месте. Иначе портал ревизии 2 оставался бы на ней,
- * и разовая правка раскладки ревизии 3 повторялась бы каждый час, возвращая виджет клиенту,
- * который его убрал. Первая редакция считала это у вызывающего особым случаем; `/review`
- * во втором круге PR #87 заметил, что следующая миграция добавила бы туда второй — поэтому здесь.
+ * и разовые шаги повторялись бы каждый час, возвращая клиенту то, что он убрал сам. Первая
+ * редакция считала это у вызывающего особым случаем; `/review` во втором круге PR #87 заметил,
+ * что следующая миграция добавила бы туда второй — поэтому здесь.
  */
 export function reachedRevision(
   previous: number,
-  result: Pick<ProvisionResult, 'resultField' | 'ownership' | 'stages'>,
+  result: Pick<ProvisionResult, 'resultField' | 'ownership' | 'stages' | 'cardSettled'>,
   carried: StagesOutcome | null = null,
 ): number {
   if (result.resultField === 'deferred') return previous
@@ -505,9 +526,17 @@ export function reachedRevision(
   // Стадии не доделаны — портал на ревизии до них: всё прежнее на месте, донастройка вернётся.
   // ⚠ Без `Math.max`, в отличие от строки выше: портал, уже отмеченный пятой, тоже опускается
   // до четвёртой. Иначе смарт-процесс, пересозданный на нём, с неудавшейся воронкой не вернулся
-  // бы к донастройке никогда: `max(5, 4)` — снова пять. Все разовые шаги ниже пятой ревизии
-  // закрыты воротами «меньше», так что повтор их не тронет. Нашёл `/code-review` в панели PR #93.
+  // бы к донастройке никогда: `max(5, 4)` — снова пять. Нашёл `/code-review` в панели PR #93.
+  // ⚠ Разовые шаги ниже пятой ревизии закрыты воротами «меньше», и повтор их не тронет, а правку
+  // карточки ревизии 6 портал ниже шестой получит снова. На уже поправленной раскладке она ничего
+  // не пишет, но то, что клиент поменял в карточке после неё, вернёт. Размен принят: опуститься
+  // ниже шестой портал может, только если его смарт-процесс пересоздали и воронка не прочиталась
+  // (разбор — `docs/PROCESS.md`, раздел 9). Нашли `/review` и `/code-review` в панели PR #98.
   if (!result.stages.settled || carried?.settled === false) return STAGES_REVISION - 1
+  // Карточка не доделана — портал на ревизии до неё: стадии и всё прежнее на месте. `cardSettled`
+  // бывает `false` только ниже шестой — правку держит гейт `cardDue`, — так что `Math.max` здесь
+  // ничего бы не изменил.
+  if (!result.cardSettled) return CARD_REVISION - 1
   return PROVISION_REVISION
 }
 
@@ -746,7 +775,9 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 }
 
 /**
- * Разложить карточку «Опроса» так, чтобы в ней было видно главное.
+ * Puts the survey card layout in order (`planSurveyCard`) and tells what became of it.
+ *
+ * Разложить карточку «Результата опросов» так, чтобы в ней было видно главное.
  *
  * ⚠ Целиком — только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает
  * раскладку целиком и сразу для всех пользователей — это настройка клиента, а не наша.
@@ -754,35 +785,40 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
  * натворили бы со связями, если бы не сливали их. Поэтому сначала читаем, и ставим, только
  * если пусто.
  *
- * ⚠ Если раскладка уже стоит — единственная правка, которую мы себе позволяем: поставить
- * виджет в СВОЙ раздел (`planResultFieldInCard`, там же — почему это не посягательство
- * на чужую раскладку). Иначе порталы, установленные раньше, не увидели бы виджета никогда.
- * И только при переходе на ревизию с виджетом (`upgradeToResultField`): повторяясь при каждом
- * обустройстве, правка возвращала бы виджет клиенту, который убрал его сам.
+ * ⚠ Если раскладка уже стоит — правим в ней только свои поля (`planSurveyCard`, там же —
+ * почему и где), и только при переходе на ревизию 6 (`due`): повторяясь при каждом обустройстве,
+ * правка возвращала бы клиенту поля, которые он убрал сам.
  *
- * `resultField` — заведено ли поле виджета. Без него раскладка остаётся при JSON: ставить
- * в карточку поле, которого на элементе нет, значит показать пустое место вместо ответов.
+ * `widget` — заведено ли поле виджета. Без него раскладка остаётся при JSON: ставить в карточку
+ * поле, которого на элементе нет, значит показать пустое место вместо ответов.
  *
- * Возвращает, записали ли мы раскладку. `false` здесь — и «не поставили», и «там уже своя»:
- * различать их незачем, действие одно и то же — не трогать.
+ * ⚠ У УСЫНОВЛЁННОГО (`adopted`) раскладку с нуля не ставим, а стоящую правим, только если она уже
+ * знает хоть одно наше поле (`planSurveyCard`, там же — почему). Найденный по названию может оказаться
+ * собственным «Опросом» клиента, и наша раскладка целиком легла бы в его карточку у всех. Нашли
+ * `/review` и `/code-review` в панели PR #98.
  */
 async function ensureCardConfig(
   call: RestCall,
   ref: SmartProcessRef,
-  resultField: boolean,
-  upgradeToResultField: boolean,
-): Promise<boolean> {
+  card: Omit<SurveyCardInput, 'staged'>,
+): Promise<Exclude<CardOutcome, 'failed'>> {
   const read = buildReadCardConfigCall(ref.entityTypeId)
-  const current = await call(read.method, read.params)
+  const plan = planSurveyCard(await call(read.method, read.params), ref.id, { ...card, staged: isStaged(ref) })
+  if (plan.kind === 'unreadable') {
+    // Не разобрав, не пишем — но и молчать нельзя: виджета и ссылки в карточке не будет, а JSON
+    // останется, и узнать это надо из журнала, а не от клиента.
+    logger.warn({ typeId: ref.id }, 'раскладка карточки «Результата опросов» непонятной формы — виджет и ссылка не поставлены, JSON не убран')
+    return 'unreadable'
+  }
+  if (plan.kind === 'foreign') {
+    logger.info({ typeId: ref.id }, 'усыновлённый смарт-процесс: раскладка карточки не наша — не трогаем и нашу не ставим')
+    return 'foreign'
+  }
+  if (plan.kind === 'keep') return 'kept'
 
-  const sections = !hasCardConfig(current)
-    ? buildCardSections(ref.id, resultField, isStaged(ref))
-    : resultField && upgradeToResultField ? planResultFieldInCard(current, ref.id) : null
-  if (sections === null) return false
-
-  const set = buildSetCardConfigCall(ref.entityTypeId, sections)
+  const set = buildSetCardConfigCall(ref.entityTypeId, plan.sections)
   await call(set.method, set.params)
-  return true
+  return 'written'
 }
 
 /**
@@ -835,12 +871,14 @@ export async function provisionSmartProcesses(
   // на то, как портал поведёт себя с несуществующим именем, — а это нигде не описано.
   // Неудача установку не роняет: данные на месте, раскладка просто остаётся при JSON.
   let resultField: ResultFieldOutcome = 'failed'
+  let widgetRefusal: unknown = null
   const resultHandlerUrl = options.resultHandlerUrl ?? null
   if (resultHandlerUrl !== null) {
     try {
       resultField = await ensureSurveyResultField(call, resultHandlerUrl, survey.ref, surveyFields.existing)
     }
     catch (error) {
+      widgetRefusal = error
       logger.warn({ reason: safeRefusal(error) }, 'поле «Результат опроса» не заведено')
     }
   }
@@ -848,18 +886,28 @@ export async function provisionSmartProcesses(
   // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
   // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
   // мы поменяли бы местами главное и второстепенное.
-  let cardConfigured = false
+  let cardSettled = true
+  let card: CardOutcome = 'failed'
+  // ⚠ «Разово» держит гейт `cardDue`: правка положена только порталу ниже шестой ревизии.
+  const cardDue = (options.previousRevision ?? 0) < CARD_REVISION
   try {
-    cardConfigured = await ensureCardConfig(
-      call,
-      survey.ref,
-      resultField === 'ok',
-      (options.previousRevision ?? 0) < RESULT_FIELD_REVISION,
-    )
+    card = await ensureCardConfig(call, survey.ref, { widget: resultField === 'ok', due: cardDue, adopted: survey.adopted })
   }
   catch (error) {
-    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Опроса» не настроена')
+    // ⚠ Разовая правка ревизии 6 на отказе, который лечится повтором, держит ревизию: отметив её,
+    // мы не вернулись бы к карточке никогда, и на старых порталах виджет со ссылкой так и не встали
+    // бы, а JSON остался бы. Отказ, который повтор не вылечит, — как прежде, только журнал.
+    if (cardDue && isRetryableRefusal(error)) cardSettled = false
+    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Результата опросов» не настроена')
   }
+  // ⚠ Повторимый отказ шага поля виджета держит разовую правку так же, как её собственный: без поля
+  // правка поставила бы одну ссылку, JSON остался бы, ревизия 6 отметилась бы — и к карточке мы не
+  // вернулись бы никогда (`/review` и `/code-review` в панели PR #98). Держит при ЛЮБОМ исходе
+  // карточки: повтор — ещё и единственная попытка завести само поле, а ждать приходится, только пока
+  // шаг падает. Второй круг снимал удержание ради чужой и непонятной раскладки — и поле виджета
+  // после сбоя связи не заводилось больше никогда: донастройка не берёт порталы шестой ревизии.
+  // Вернул `/code-review` в третьем круге; разбор — `docs/PROCESS.md`, раздел 9.
+  if (cardDue && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
 
   // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
   // в карточке «Опроса», а он дочерняя сущность: ни фильтр в списке сделок, ни робот
@@ -899,7 +947,8 @@ export async function provisionSmartProcesses(
     adoptedSurvey: survey.adopted,
     addedFields: templateFields.added + surveyFields.added,
     dealLinked,
-    cardConfigured,
+    card,
+    cardSettled,
     resultField,
     crmFields,
     ownership,
@@ -1360,9 +1409,11 @@ export async function dropStateField(
   // Раскладка карточки — удобство: её отказ перенос не держит, поле уже удалено.
   try {
     const read = buildReadCardConfigCall(ref.entityTypeId)
-    const sections = planDropFieldFromCard(await call(read.method, read.params), ref.id, 'STATE')
-    if (sections === null) return
-    const set = buildSetCardConfigCall(ref.entityTypeId, sections)
+    const plan = planDropFieldFromCard(await call(read.method, read.params), ref.id, 'STATE')
+    // Не разобрав, не пишем — но и молчать нельзя: имя без поля в карточке останется.
+    if (plan.kind === 'unreadable') logger.warn({ domain: run.domain, typeId: ref.id }, 'стадии: раскладка карточки непонятной формы — имя поля «Состояние» в ней осталось')
+    if (plan.kind !== 'write') return
+    const set = buildSetCardConfigCall(ref.entityTypeId, plan.sections)
     await call(set.method, set.params)
     outcome.changes++
   }
@@ -1538,7 +1589,7 @@ async function ensureTabPlacement(
 }
 
 /**
- * Завести на «Опросе» поле своего типа — с нашим виджетом над простынёй JSON.
+ * Завести на «Результате опросов» поле своего типа — виджет, который показывает ответы словами вместо простыни JSON.
  *
  * ⚠ ПОРЯДОК ОБЯЗАТЕЛЕН: сведения о приложении → регистрация типа → поле.
  * - `app.info` ПЕРВЫМ: до `installFinish()` поле своего типа портал не примет, а мастер
