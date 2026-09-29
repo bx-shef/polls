@@ -17,7 +17,8 @@ import {
   linkActivityOriginId,
   ownerOf,
   readBindingKeys,
-  readCreatedActivityId,
+  readActivityId,
+  readBindApplied,
   readFoundActivity,
   readFoundActivityId,
   readMarkApplied,
@@ -76,6 +77,7 @@ import { logger } from '../utils/logger'
 export async function tryIssueActivity(
   call: RestCall,
   input: {
+    survey: SmartProcessRef
     itemId: number
     dealId: number
     surveyTitle: string
@@ -95,13 +97,13 @@ export async function tryIssueActivity(
       deadline: activityDeadline(new Date()),
       ...(input.responsibleId > 0 ? { responsibleId: input.responsibleId } : {}),
     })
-    const activityId = readCreatedActivityId(await call(add.method, add.params))
+    const activityId = readActivityId(await call(add.method, add.params))
     if (activityId === null) {
       logger.warn({}, 'дело выпуска не записано: портал не вернул идентификатор; ссылка работает')
       return false
     }
 
-    if (!(await markActivity(call, activityId, linkActivityOriginId(input.itemId)))) {
+    if (!(await markActivity(call, activityId, linkActivityOriginId(input.survey.entityTypeId, input.itemId)))) {
       // Дело в ленте есть, но доставка его не найдёт: итог придёт новым делом рядом,
       // а это останется с адресом. Видно и чинится закрытием руками.
       logger.error({}, 'дело выпуска записано БЕЗ ключа: итог придёт новым делом рядом')
@@ -143,7 +145,7 @@ export interface ResultActivityPlan {
 export async function writeResultActivity(call: RestCall, plan: ResultActivityPlan): Promise<boolean> {
   // ⚠ Инвариант проекта: перед созданием — поиск существующего. Источник правды о том,
   // писали мы уже или нет, — сам портал, а не таблица у нас.
-  const written = await findActivity(call, activityOriginId(plan.itemId))
+  const written = await findActivity(call, activityOriginId(plan.survey.entityTypeId, plan.itemId))
   if (written !== null) {
     logger.info({}, 'итог уже записан делом, второго не создаём')
     // ⚠ Привязку досылаем И ЗДЕСЬ: у дел, записанных до issue #44, её нет вовсе,
@@ -152,7 +154,7 @@ export async function writeResultActivity(call: RestCall, plan: ResultActivityPl
     return true
   }
 
-  const issued = await findActivity(call, linkActivityOriginId(plan.itemId))
+  const issued = await findActivity(call, linkActivityOriginId(plan.survey.entityTypeId, plan.itemId))
   if (issued !== null && !issued.completed && await overwriteWithResult(call, issued, plan)) return true
   if (issued !== null && issued.completed) {
     logger.info({}, 'дело выпуска закрыто менеджером — итог пишем новым делом рядом')
@@ -184,26 +186,47 @@ async function overwriteWithResult(call: RestCall, found: FoundActivity, plan: R
     color: plan.color,
   })
   try {
-    if (readCreatedActivityId(await call(update.method, update.params)) === null) {
-      logger.warn({}, 'дело выпуска не перезаписано: портал не подтвердил — итог пойдёт новым делом')
+    if (readActivityId(await call(update.method, update.params)) === null && !(await overwriteLanded(call, plan))) {
+      logger.warn({}, 'дело выпуска не перезаписано: портал не подтвердил перезапись — итог пойдёт новым делом')
       return false
     }
   }
   catch (error) {
-    // ⚠ Закрытое дело отсюда не приходит — оно отсеяно по `COMPLETED` до вызова. Сюда попадает
-    // гонка «закрыли, пока мы читали» и любой другой отказ; различить их по коду нельзя
-    // (закрытое портал отвергает кодом `"0"`, замер 29.09) — и не нужно: исход один.
-    logger.warn({ reason: safeRefusal(error) }, 'дело выпуска не перезаписано — итог пойдёт новым делом')
-    return false
+    // ⚠ Закрытое дело отсюда почти не приходит — оно отсеяно по `COMPLETED` до вызова. Сюда попадает
+    // гонка «закрыли, пока мы читали», отказ портала — и наш таймаут или обрыв связи, когда портал
+    // запрос уже применил. Последнее различимо только переспросом (`overwriteLanded`); без него
+    // одна перезапись без ответа давала бы второе дело итога рядом (`/code-review`, PR #102).
+    if (!(await overwriteLanded(call, plan))) {
+      logger.warn({ reason: safeRefusal(error) }, 'дело выпуска не перезаписано: портал отказал — итог пойдёт новым делом')
+      return false
+    }
   }
 
-  if (!(await markActivity(call, found.id, activityOriginId(plan.itemId)))) {
+  if (!(await markActivity(call, found.id, activityOriginId(plan.survey.entityTypeId, plan.itemId)))) {
     logger.error({}, 'дело перезаписано итогом, но ключ итога не лёг: повтор доставки перезапишет его ещё раз')
   }
   await trySetBlocks(call, found.id, owner, plan.blocks)
   await tryBindToSurveyItem(call, found.id, plan.survey, plan.itemId)
   logger.info({}, 'дело выпуска перезаписано итогом опроса')
   return true
+}
+
+/**
+ * Легла ли перезапись, на которую портал не ответил как надо.
+ *
+ * ⚠ ТОТ ЖЕ ПРИЁМ, ЧТО У МЕТКИ (`markActivity`): исключение означает «мы не дождались ответа», а не
+ * «портал ничего не сделал». Дело выпуска перезаписано, если оно по-прежнему открыто и носит
+ * заголовок итога — наш заголовок, другого у дела выпуска быть не может. Не смогли даже спросить —
+ * «нет»: худшее, что тогда случится, — дубль итога рядом, а не потеря.
+ */
+async function overwriteLanded(call: RestCall, plan: ResultActivityPlan): Promise<boolean> {
+  try {
+    const again = await findActivity(call, linkActivityOriginId(plan.survey.entityTypeId, plan.itemId))
+    return again !== null && !again.completed && again.subject === plan.title
+  }
+  catch {
+    return false
+  }
 }
 
 /**
@@ -227,15 +250,15 @@ async function createResultActivity(call: RestCall, plan: ResultActivityPlan): P
     description: plan.description,
     deadline: activityDeadline(new Date()),
     color: plan.color,
-    ...(plan.responsibleId ? { responsibleId: plan.responsibleId } : {}),
+    ...(plan.responsibleId > 0 ? { responsibleId: plan.responsibleId } : {}),
   })
-  const activityId = readCreatedActivityId(await call(add.method, add.params))
+  const activityId = readActivityId(await call(add.method, add.params))
   if (activityId === null) {
     logger.warn({}, 'итог не записан: портал не вернул идентификатор дела')
     return false
   }
 
-  if (await markActivity(call, activityId, activityOriginId(plan.itemId))) {
+  if (await markActivity(call, activityId, activityOriginId(plan.survey.entityTypeId, plan.itemId))) {
     logger.info({}, 'итог опроса записан делом в таймлайн сделки')
   }
   else {
@@ -269,9 +292,9 @@ async function createResultActivity(call: RestCall, plan: ResultActivityPlan): P
  * Открытое — закрываем. Закрытое менеджером не трогаем: он его уже закрыл, а старый адрес
  * в нём отозван и не открывается. Дела нет — ссылка выпущена до п. 14, закрывать нечего.
  */
-export async function tryRevokeActivity(call: RestCall, itemId: number): Promise<void> {
+export async function tryRevokeActivity(call: RestCall, survey: SmartProcessRef, itemId: number): Promise<void> {
   try {
-    const found = await findActivity(call, linkActivityOriginId(itemId))
+    const found = await findActivity(call, linkActivityOriginId(survey.entityTypeId, itemId))
     if (found === null || found.completed) return
 
     const close = buildRevokedActivityCall(found, DEAL_TAB_TITLE)
@@ -343,8 +366,12 @@ async function tryBindToSurveyItem(
     if (already.has(bindingKey(survey.entityTypeId, itemId))) return
 
     const bind = buildBindActivityCall(activityId, survey.entityTypeId, itemId)
-    await call(bind.method, bind.params)
-    logger.info({}, 'дело привязано к элементу «Опроса»')
+    if (readBindApplied(await call(bind.method, bind.params))) {
+      logger.info({}, 'дело привязано к элементу «Опроса»')
+    }
+    else {
+      logger.warn({}, 'дело не привязано к элементу «Опроса»: портал ответил «нет»; в сделке оно есть')
+    }
   }
   catch (error) {
     // Дело в ленте сделки на месте — потеряна только вторая лента.

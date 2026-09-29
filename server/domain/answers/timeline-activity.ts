@@ -4,7 +4,11 @@ import type { SurveyScore } from '../surveys/scoring'
 import { DEAL_ENTITY_TYPE_ID, type PortalCall } from '../portals/smart-processes'
 
 /**
- * The timeline activity that carries a finished survey back into the deal.
+ * The survey's activity in the deal timeline: sent with the link, overwritten by the result, closed on revoke.
+ *
+ * С issue #84 (п. 14) у ссылки одно дело на всю её жизнь: при выпуске — «Отправить опрос клиенту»
+ * с адресом анкеты, после ответа — итог, при отзыве — «Ссылка отозвана». Здесь чистые построители
+ * вызовов и разбор ответов; кто, когда и в каком порядке их зовёт — `server/b24/survey-activity.ts`.
  *
  * ⚠ ЗАМЕНЯЕТ СОБОЙ КОММЕНТАРИЙ, и ради одного свойства: `crm.timeline.comment.add`
  * НЕ ИДЕМПОТЕНТЕН — второй вызов добавляет второй комментарий, а не обновляет первый.
@@ -41,13 +45,21 @@ export const ACTIVITY_LIST_METHOD = 'crm.activity.list'
 export const ACTIVITY_ORIGINATOR_ID = 'SHEF_SURVEY'
 
 /**
- * Ключ дедупликации — элемент «Опрос», к которому относится ответ.
+ * Ключ дедупликации итога — элемент «Результата опросов», к которому относится ответ.
  *
  * Приглашение проходится ровно один раз (ссылка одноразовая, статус `completed` закрывает
  * её транзакцией), поэтому «один элемент — одно дело» и есть правильная единица.
+ *
+ * ⚠ С ТИПОМ СМАРТ-ПРОЦЕССА, а не одним номером элемента (панель PR #102, `/code-review`).
+ * У пересозданного смарт-процесса номера элементов считаются заново, а дела живут в сделках
+ * и переживают и элементы, и сам тип. Без типа новый элемент 12 нашёл бы дело старого элемента 12
+ * из другой сделки — итог «уже записан», и не записался бы вовсе. Тип у пересозданного
+ * смарт-процесса новый, поэтому пара «тип + номер» уникальна. Дела, записанные раньше, остаются
+ * с прежним ключом `survey-<номер>`: второй раз их не ищут — ссылка одноразовая, а доставленный
+ * ответ из буфера удаляется.
  */
-export function activityOriginId(itemId: number): string {
-  return `survey-${itemId}`
+export function activityOriginId(entityTypeId: number, itemId: number): string {
+  return `survey-${entityTypeId}-${itemId}`
 }
 
 /**
@@ -60,11 +72,11 @@ export function activityOriginId(itemId: number): string {
  * получает ключ итога, и дальше его ищут как итог.
  *
  * ⚠ Фильтр `ORIGIN_ID` у `crm.activity.list` — точное совпадение, а не поиск подстроки.
- * Замерено 29.09: поиск по началу ключа не нашёл ничего. Иначе ключ `survey-7` находил бы
- * и дела элемента 78.
+ * Замерено 29.09: поиск по началу ключа не нашёл ничего. Иначе ключ элемента 7 находил бы
+ * и дела элемента 78. Тип смарт-процесса в ключе — по той же причине, что у итога.
  */
-export function linkActivityOriginId(itemId: number): string {
-  return `survey-link-${itemId}`
+export function linkActivityOriginId(entityTypeId: number, itemId: number): string {
+  return `survey-link-${entityTypeId}-${itemId}`
 }
 
 /**
@@ -365,7 +377,7 @@ export interface TodoActivityParams {
 }
 
 /**
- * Собрать дело по завершённому опросу.
+ * Собрать дело в ленте сделки — дело выпуска ссылки или новое дело итога.
  *
  * ⚠ Дело создаётся ОТКРЫТЫМ и закрытым не становится. `todo.add` открытое по умолчанию,
  * то есть это решение НЕ добавлять признак завершения — записанное здесь потому, что его
@@ -373,8 +385,8 @@ export interface TodoActivityParams {
  * закрытое дело читается как «сделано, смотреть нечего», и его никто не откроет.
  * Решение владельца, 21.09.
  *
- * ⚠ Описание — целиком тот же текст, что собирал комментарий (`buildAnswerComment`).
- * Второй сборщик того же самого разошёлся бы с первым с первой правки.
+ * ⚠ Текст описания собирают не здесь: у итога — `buildResultDescription` (`comment.ts`),
+ * у дела выпуска — `buildIssueActivityDescription`. Один сборщик на одно содержимое.
  */
 export function buildTodoActivityCall(params: {
   dealEntityTypeId: number
@@ -412,13 +424,15 @@ export function buildTodoActivityCall(params: {
 }
 
 /**
- * Идентификатор созданного дела.
+ * Идентификатор дела из ответа `crm.activity.todo.add` или `crm.activity.todo.update`.
+ *
+ * У обоих методов ответ один: `{result:{id}}` (документация; у `todo.update` замерено 29.09).
  *
  * ⚠ Две формы ответа принимаются намеренно: документация обещает `{result:{id}}`, но у соседа
  * часть порталов отвечала `{result: id}`. Ошибиться здесь молча: `null` читается как
  * «ничего не записано», метка не наносится, и следующая доставка пишет дело заново.
  */
-export function readCreatedActivityId(response: unknown): string | null {
+export function readActivityId(response: unknown): string | null {
   const result = (response as { result?: unknown } | null)?.result
   if (result === undefined || result === null) return null
   return asActivityId(typeof result === 'object' ? (result as Record<string, unknown>).id : result)
@@ -469,6 +483,18 @@ export function buildActivityMarkerCall(activityId: string, originId: string): P
  */
 export function readMarkApplied(response: unknown): boolean {
   return (response as { result?: unknown } | null)?.result === true
+}
+
+/**
+ * Приняла ли привязка.
+ *
+ * ⚠ `crm.activity.binding.add` тоже документирован как возвращающий булево, и `false` двухсотым
+ * ответом — задокументированный путь отказа. Не проверив его, журнал говорил бы «привязано»,
+ * когда привязки нет. Нашёл программист в панели PR #102: у метки и блоков проверка уже стояла.
+ * Обратное не доказывает ничего — к НЕСУЩЕСТВУЮЩЕЙ сущности портал отвечает `true` (замер соседа).
+ */
+export function readBindApplied(response: unknown): boolean {
+  return readMarkApplied(response)
 }
 
 /** Начало заголовка дела выпуска. По нему отзыв узнаёт наш заголовок (`buildRevokedTitle`). */

@@ -181,6 +181,7 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
   // тот же адрес, и до записи индекса он вёл бы в «не найдено». Отказ выпуск не отменяет —
   // ссылка уже работает (`tryIssueActivity` сам пишет строку в журнал).
   await tryIssueActivity(input.call, {
+    survey: input.survey,
     itemId,
     dealId: input.dealId,
     surveyTitle: input.template.title,

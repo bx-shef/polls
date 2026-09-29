@@ -14,11 +14,21 @@ import type { SmartProcessRef } from '../domain/portals/smart-processes'
  * сюда. Сюда приходят, только когда ссылка уже не открывается.
  *
  * Порядок: стадия «Отозвана», потом дело выпуска. Стадия — отражение, на которое смотрят роботы
- * клиента, и её отказ поднимается наверх: повторное нажатие дописывает её
+ * клиента, и её отказ поднимается наверх: её дописывают повторное нажатие и открытие вкладки
  * (`needsRevokeRepair`). Дело — оформление ленты: его отказ пишется в журнал и только.
+ *
+ * ⚠ ДЕЛО ЗАКРЫВАЕТСЯ И ТОГДА, КОГДА СТАДИЯ НЕ ЛЕГЛА (`finally`). Дело к элементу не привязано
+ * и от стадии не зависит, а стадию портал может отвергать и при каждом дописывании — например,
+ * у «Отозвана» обязательное поле. Закрывай мы дело только после стадии, в таком случае открытым
+ * с мёртвым адресом оно осталось бы навсегда: кнопки «Отозвать» у ссылки больше нет
+ * (`/code-review`, PR #102). Отказ стадии при этом по-прежнему уходит наверх.
  */
 export async function reflectRevocation(call: RestCall, survey: SmartProcessRef, itemId: number): Promise<void> {
   const revoke = buildRevokeCall(survey, itemId)
-  await call(revoke.method, revoke.params)
-  await tryRevokeActivity(call, itemId)
+  try {
+    await call(revoke.method, revoke.params)
+  }
+  finally {
+    await tryRevokeActivity(call, survey, itemId)
+  }
 }

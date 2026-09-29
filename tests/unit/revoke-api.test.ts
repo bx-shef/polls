@@ -19,6 +19,7 @@ const ITEM = 54
 interface Probe {
   portalCalls: { method: string, params: Record<string, unknown> }[]
   revoked: number[]
+  warned: string[]
 }
 
 let probe: Probe
@@ -29,9 +30,11 @@ let revokedRows: number
 let activities: Record<string, unknown>[]
 /** Как портал отвечает на закрытие дела. */
 let closeActivity: () => unknown
+/** Как портал отвечает на запись стадии. */
+let writeStage: () => unknown
 
 async function loadHandler() {
-  probe = { portalCalls: [], revoked: [] }
+  probe = { portalCalls: [], revoked: [], warned: [] }
 
   vi.doMock('../../server/api/portal/-session', () => ({
     openPortalSession: async () => ({
@@ -43,6 +46,7 @@ async function loadHandler() {
         if (method === 'crm.item.list') return { result: { items: [item] } }
         if (method === 'crm.activity.list') return { result: activities }
         if (method === 'crm.activity.update') return closeActivity()
+        if (method === 'crm.item.update') return writeStage()
         return { result: { item: { id: ITEM } } }
       },
     }),
@@ -57,7 +61,9 @@ async function loadHandler() {
       return revokedRows
     },
   }))
-  vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
+  vi.doMock('../../server/utils/logger', () => ({
+    logger: { info: () => {}, warn: (_fields: unknown, message: string) => void probe.warned.push(message), error: () => {} },
+  }))
   vi.doMock('h3', async () => {
     const actual = await vi.importActual<typeof import('h3')>('h3')
     return { ...actual, readBody: async () => ({ dealId: DEAL, itemId: ITEM }) }
@@ -83,6 +89,7 @@ beforeEach(() => {
   revokedRows = 1
   activities = []
   closeActivity = () => ({ result: true })
+  writeStage = () => ({ result: { item: { id: ITEM } } })
 })
 
 afterEach(() => {
@@ -192,7 +199,31 @@ describe('дело выпуска при отзыве (issue #84, п. 14)', () =
     await handler({})
 
     const find = probe.portalCalls.find(one => one.method === 'crm.activity.list')!
-    expect(find.params.filter).toEqual({ ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: `survey-link-${ITEM}` })
+    expect(find.params.filter).toEqual({ ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: `survey-link-${SURVEY.entityTypeId}-${ITEM}` })
+  })
+
+  it('дела выпуска нет — ссылка выпущена до п. 14: закрывать нечего, отзыв в порядке', async () => {
+    // Нашёл тестировщик в панели PR #102: этот случай исполнялся только мимоходом, в старых тестах.
+    activities = []
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(activityCloses()).toEqual([])
+    // И без сбоя внутри: «дела нет» — штатный случай, а не отказ, пойманный перехватом.
+    expect(probe.warned).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: стадия не легла — дело выпуска всё равно закрыто, а отказ стадии уходит наверх', async () => {
+    // ⚠ Прежде дело закрывалось только после стадии: отказ стадии оставлял его открытым с мёртвым
+    // адресом, а дописывание стадии дела не трогало (`/code-review`, PR #102).
+    activities = [OPEN]
+    writeStage = () => {
+      throw new Error('портал не ответил за 20 с на crm.item.update')
+    }
+    const handler = await loadHandler()
+
+    await expect(handler({})).rejects.toThrow()
+    expect(activityCloses()).toHaveLength(1)
   })
 
   it('закрытое менеджером дело не трогает', async () => {

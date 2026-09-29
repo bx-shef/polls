@@ -123,7 +123,19 @@ describe('дело выпуска в ленте сделки (issue #84, п. 14)
     await issueLink(request)
 
     const mark = request.call.mock.calls.find(([method]) => method === 'crm.activity.update')![1]!
-    expect(mark).toMatchObject({ id: 9100, fields: { ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: 'survey-link-501' } })
+    expect(mark).toMatchObject({ id: 9100, fields: { ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: `survey-link-${SURVEY.entityTypeId}-501` } })
+  })
+
+  it('портал ответил без номера дела — ключ не ставим, выпуск в порядке', async () => {
+    // Двухсотый ответ без `id` — не подтверждение: метка «в пустоту» спрятала бы поломку.
+    // Нашёл тестировщик в панели PR #102.
+    const request = input((method, params) => (method === 'crm.activity.todo.add' ? { result: {} } : healthy(method, params)))
+
+    const issued = await issueLink(request)
+
+    expect(issued.ok).toBe(true)
+    expect(steps).not.toContain('crm.activity.update')
+    expect(JSON.stringify(warn.mock.calls)).toContain('не вернул идентификатор')
   })
 
   it('ГЛАВНОЕ: к элементу «Результата опросов» дело выпуска НЕ привязывается', async () => {

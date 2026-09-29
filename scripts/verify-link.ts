@@ -250,7 +250,7 @@ async function main(): Promise<number> {
   step('Дело «Отправить опрос клиенту» — в ленте сделки, с адресом анкеты')
   // ⚠ Issue #84, п. 14: дело заводится при выпуске, и в нём адрес — второй путь скопировать
   // ссылку. Сверяем ИМЕННО выпущенный адрес, но сам его не печатаем: в нём токен.
-  const sent = await findOwn(call, linkActivityOriginId(issued.itemId))
+  const sent = await findOwn(call, linkActivityOriginId(surveySp.entityTypeId, issued.itemId))
   expect(sent.count === 1, `дел выпуска с нашей меткой: ${sent.count}`)
   expect(sent.found.subject.startsWith(ISSUE_TITLE_PREFIX), `заголовок дела: «${sent.found.subject}»`)
   expect((await readActivityText(call, sent.found.id)).includes(issued.url), 'в деле лежит выпущенный адрес анкеты')
@@ -345,13 +345,13 @@ async function main(): Promise<number> {
   else expect(parsed[dated] === VERIFY_DATE, `дата «${dated}» записана записью провода ${VERIFY_DATE}`)
 
   step('Итог — в том же деле, а не в новом рядом')
-  const result = await findOwn(call, activityOriginId(issued.itemId))
+  const result = await findOwn(call, activityOriginId(surveySp.entityTypeId, issued.itemId))
   expect(result.count === 1, `дел итога с нашей меткой: ${result.count}`)
   const activityId = result.found.id
   // ⚠ ТО ЖЕ САМОЕ дело: п. 14 — итог перезаписывает дело выпуска. Два дела в ленте на одну
   // ссылку — ровно то, от чего пункт и заведён.
   expect(activityId === sent.found.id, `итог записан в дело выпуска (${activityId})`)
-  expect((await findOwn(call, linkActivityOriginId(issued.itemId))).count === 0, 'ключ выпуска сменился ключом итога')
+  expect((await findOwn(call, linkActivityOriginId(surveySp.entityTypeId, issued.itemId))).count === 0, 'ключ выпуска сменился ключом итога')
   expect(result.found.subject.startsWith('Опрос пройден'), `заголовок дела: «${result.found.subject}»`)
   // ⚠ Дело итога — ОТКРЫТОЕ: опрос — повод поговорить с клиентом, а не отчёт (решение владельца 21.09).
   // Живьём, потому что закрыть его может сам портал: финальная стадия элемента закрывает привязанные
@@ -399,7 +399,7 @@ async function main(): Promise<number> {
   // при любом обрыве после записи.
   const again = await writeToPortal(call, surveySp, issued.itemId, chosen.schema, bufferedAnswers!)
   expect(again.ok, `повторная запись прошла${again.ok ? '' : `: ${again.reason}`}`)
-  const afterRepeat = (await findOwn(call, activityOriginId(issued.itemId))).count
+  const afterRepeat = (await findOwn(call, activityOriginId(surveySp.entityTypeId, issued.itemId))).count
   expect(afterRepeat === 1, `дел с нашей меткой после повтора: ${afterRepeat}`)
 
   step('Отзыв закрывает дело выпуска — тем же путём, что кнопка «Отозвать»')
@@ -410,7 +410,7 @@ async function main(): Promise<number> {
   // чем это видно на портале. Дальше — общий с обработчиком путь (`reflectRevocation`).
   expect(await revokeLink(issueInput.portalId, spare.itemId) === 1, 'строка ссылки погашена')
   await reflectRevocation(call, surveySp, spare.itemId)
-  const closed = await findOwn(call, linkActivityOriginId(spare.itemId))
+  const closed = await findOwn(call, linkActivityOriginId(surveySp.entityTypeId, spare.itemId))
   expect(closed.count === 1 && closed.found.completed, 'дело выпуска закрыто')
   expect(closed.found.subject.startsWith(REVOKED_TITLE_PREFIX), `заголовок дела: «${closed.found.subject}»`)
   expect(!(await readActivityText(call, closed.found.id)).includes(spare.url), 'адреса в закрытом деле нет')

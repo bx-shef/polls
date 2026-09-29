@@ -20,7 +20,8 @@ import {
   linkActivityOriginId,
   MAX_TITLE_BYTES,
   ownerOf,
-  readCreatedActivityId,
+  readActivityId,
+  readBindApplied,
   readFoundActivity,
   readFoundActivityId,
   REVOKED_TITLE_PREFIX,
@@ -234,15 +235,21 @@ describe('заголовок дела', () => {
 describe('разбор ответов портала', () => {
   it('принимает обе формы идентификатора созданного дела', () => {
     // ⚠ Документация обещает `{result:{id}}`, у соседа часть порталов отвечала `{result: id}`.
-    expect(readCreatedActivityId({ result: { id: 999 } })).toBe('999')
-    expect(readCreatedActivityId({ result: 999 })).toBe('999')
+    expect(readActivityId({ result: { id: 999 } })).toBe('999')
+    expect(readActivityId({ result: 999 })).toBe('999')
   })
 
   it('не принимает за идентификатор то, что им не является', () => {
     // Приняв мусор, мы нанесли бы метку в пустоту и спрятали поломку за успешным вызовом.
-    expect(readCreatedActivityId({ result: { id: 'abc' } })).toBeNull()
-    expect(readCreatedActivityId({ result: null })).toBeNull()
-    expect(readCreatedActivityId(null)).toBeNull()
+    expect(readActivityId({ result: { id: 'abc' } })).toBeNull()
+    expect(readActivityId({ result: null })).toBeNull()
+    expect(readActivityId(null)).toBeNull()
+  })
+
+  it('привязку принятой считает только `true`: `false` — задокументированный отказ двухсотым', () => {
+    expect(readBindApplied({ result: true })).toBe(true)
+    expect(readBindApplied({ result: false })).toBe(false)
+    expect(readBindApplied(null)).toBe(false)
   })
 
   it('пустой поиск — это «ещё не писали», а не ошибка', () => {
@@ -259,10 +266,20 @@ describe('дело выпуска: «Отправить опрос клиент�
   it('ГЛАВНОЕ: ключ выпуска свой и не находится ключом итога — ни целиком, ни началом', () => {
     // ⚠ С общим ключом повтор доставки нашёл бы закрытое менеджером дело выпуска и решил бы,
     // что итог уже записан. Фильтр портала — точное совпадение (замер 29.09), но и сами строки
-    // не должны быть началом друг друга: `survey-7` не должен быть началом ключа элемента 78.
-    expect(linkActivityOriginId(78)).not.toBe(activityOriginId(78))
-    expect(linkActivityOriginId(78).startsWith(activityOriginId(7))).toBe(false)
-    expect(linkActivityOriginId(78).startsWith(activityOriginId(78))).toBe(false)
+    // не должны быть началом друг друга: ключ элемента 7 не должен быть началом ключа элемента 78.
+    expect(linkActivityOriginId(1040, 78)).not.toBe(activityOriginId(1040, 78))
+    expect(linkActivityOriginId(1040, 78).startsWith(activityOriginId(1040, 7))).toBe(false)
+    expect(linkActivityOriginId(1040, 78).startsWith(activityOriginId(1040, 78))).toBe(false)
+  })
+
+  it('ГЛАВНОЕ: ключи несут тип смарт-процесса — пересозданный не находит дел прежнего', () => {
+    // ⚠ У пересозданного смарт-процесса номера элементов считаются заново, а дела живут в сделках.
+    // Без типа новый элемент 12 нашёл бы дело старого элемента 12 из другой сделки — итог «уже
+    // записан» и не записался бы вовсе (`/code-review`, PR #102).
+    expect(activityOriginId(1040, 12)).not.toBe(activityOriginId(1052, 12))
+    expect(linkActivityOriginId(1040, 12)).not.toBe(linkActivityOriginId(1052, 12))
+    expect(activityOriginId(1040, 12)).toBe('survey-1040-12')
+    expect(linkActivityOriginId(1040, 12)).toBe('survey-link-1040-12')
   })
 
   it('в описании — выпущенный адрес и день окончания', () => {
@@ -295,6 +312,14 @@ describe('дело выпуска: «Отправить опрос клиент�
 describe('найденное дело', () => {
   it('поиск просит закрыто ли дело, чьё оно и как называется', () => {
     expect(buildFindActivityCall('survey-link-78').params.select).toEqual(['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT'])
+  })
+
+  it('без владельца и заголовка — нули и пустая строка, а не падение', () => {
+    // ⚠ Заголовок дальше режут `startsWith` (`buildRevokedTitle`): не строкой он уронил бы отзыв
+    // изнутри, и в журнале стоял бы посторонний диагноз. Нашёл тестировщик в панели PR #102.
+    expect(readFoundActivity({ result: [{ ID: '1', COMPLETED: 'N' }] }))
+      .toEqual({ id: '1', completed: false, ownerTypeId: 0, ownerId: 0, subject: '' })
+    expect(readFoundActivity({ result: [{ ID: '1', SUBJECT: 42 }] })?.subject).toBe('')
   })
 
   it('читает закрытость, владельца и заголовок так, как отдаёт портал — строками', () => {

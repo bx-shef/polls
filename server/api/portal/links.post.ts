@@ -1,8 +1,9 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildListIssuedCall, buildRevokeCall, issuedState, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { buildListIssuedCall, issuedState, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
 import { readLinkStatuses } from '../../links/issue'
+import { reflectRevocation } from '../../links/revoke-flow'
 import { safeRefusal } from '../../domain/answers/portal-errors'
 import { isRetryableRefusal } from '../../domain/portals/portal-error'
 import { logger } from '../../utils/logger'
@@ -87,8 +88,9 @@ export default defineEventHandler(async (event) => {
     .slice(0, MAX_REPAIRS_PER_VIEW)
   await Promise.allSettled(lost.map(async (link) => {
     try {
-      const repair = buildRevokeCall(survey, link.itemId)
-      await session.call(repair.method, repair.params)
+      // Стадия и дело выпуска — тем же путём, что у кнопки «Отозвать» (`reflectRevocation`):
+      // дописанный здесь отзыв закрывает и дело с адресом (`/code-review`, PR #102).
+      await reflectRevocation(session.call, survey, link.itemId)
       logger.info({ domain: session.portal.domain, itemId: link.itemId }, 'отзыв ссылки дописан на портал')
     }
     catch (error) {

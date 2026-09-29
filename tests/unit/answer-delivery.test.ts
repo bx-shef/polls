@@ -258,7 +258,7 @@ describe('дело пишется один раз', () => {
 
     const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
     expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
-    expect(filter.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(filter.ORIGIN_ID).toBe(activityOriginId(SURVEY.entityTypeId, 777))
   })
 
   it('метка наносится вторым вызовом — иначе дело не найдётся никогда', async () => {
@@ -269,7 +269,7 @@ describe('дело пишется один раз', () => {
     await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const fields = p.of('crm.activity.update')[0]!.params.fields as Record<string, unknown>
-    expect(fields.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(fields.ORIGIN_ID).toBe(activityOriginId(SURVEY.entityTypeId, 777))
     // ⚠ ДВОЙКА ЗДЕСЬ НЕСУЩАЯ, и с 25.09 больше, чем была. `2` — bbCode по
     // `crm.enum.contenttype` с живого портала (`3` там HTML). Замер ленты показал, что при
     // двойке она рисует `<b>` и `<a href>` буквально, тегами, — и ровно на этом стоит решение
@@ -335,7 +335,7 @@ describe('дело пишется один раз', () => {
       // переспрос после неудачной пометки, и вот тут портал говорит, что метка легла. Дела
       // выпуска у этой ссылки нет (выпущена до issue #84, п. 14): его ключ не находит ничего.
       'crm.activity.list': (params: Record<string, unknown>) => {
-        if ((params.filter as Record<string, string>).ORIGIN_ID !== activityOriginId(777)) return { result: [] }
+        if ((params.filter as Record<string, string>).ORIGIN_ID !== activityOriginId(SURVEY.entityTypeId, 777)) return { result: [] }
         searches += 1
         return searches === 1 ? { result: [] } : { result: [{ ID: '9001' }] }
       },
@@ -699,7 +699,7 @@ describe('дело привязывается и к элементу «Опро�
 
     const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
     expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
-    expect(filter.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(filter.ORIGIN_ID).toBe(activityOriginId(SURVEY.entityTypeId, 777))
   })
 })
 
@@ -721,7 +721,7 @@ describe('дело выпуска перезаписывается итогом'
   /** Портал, у которого по ключу выпуска находится `row`, а по ключу итога — ничего. */
   function issued(row: Record<string, unknown>, extra: Parameters<typeof portal>[0] = {}) {
     return portal({
-      'crm.activity.list': (params: Record<string, unknown>) => ((params.filter as Record<string, string>).ORIGIN_ID === linkActivityOriginId(777) ? { result: [row] } : { result: [] }),
+      'crm.activity.list': (params: Record<string, unknown>) => ((params.filter as Record<string, string>).ORIGIN_ID === linkActivityOriginId(SURVEY.entityTypeId, 777) ? { result: [row] } : { result: [] }),
       'crm.activity.todo.update': { result: { id: 308 } },
       'crm.activity.layout.blocks.set': { result: { success: true } },
       ...extra,
@@ -761,7 +761,7 @@ describe('дело выпуска перезаписывается итогом'
     await run(p)
 
     const mark = p.of('crm.activity.update')[0]!.params
-    expect(mark).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(777), ORIGINATOR_ID: ACTIVITY_ORIGINATOR_ID } })
+    expect(mark).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(SURVEY.entityTypeId, 777), ORIGINATOR_ID: ACTIVITY_ORIGINATOR_ID } })
   })
 
   it('порядок: содержимое, потом ключ итога, потом блоки', async () => {
@@ -799,9 +799,51 @@ describe('дело выпуска перезаписывается итогом'
     expect(await run(p)).toBe(true)
 
     expect(p.of('crm.activity.todo.add')).toHaveLength(1)
-    expect(JSON.stringify(warn.mock.calls)).toContain('не перезаписано')
+    expect(JSON.stringify(warn.mock.calls)).toContain('не перезаписано: портал отказал')
     // Проза портала в журнал не уходит — только наш код.
     expect(JSON.stringify(warn.mock.calls)).not.toContain('Операции с файлами')
+  })
+
+  it('портал ответил на перезапись без номера дела — итог новым делом, если перезапись не легла', async () => {
+    // Двухсотый ответ без `id` — не подтверждение. Нашёл тестировщик в панели PR #102.
+    const p = issued(ISSUED, { 'crm.activity.todo.update': { result: {} } })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.of('crm.activity.todo.add')).toHaveLength(1)
+  })
+
+  it('ГЛАВНОЕ: перезапись легла, но ответ не дошёл — переспрашиваем портал, второго дела не пишем', async () => {
+    // ⚠ Таймаут и обрыв связи выглядят как отказ, хотя портал запрос уже применил. Без переспроса
+    // одна такая перезапись давала второе дело итога рядом (`/code-review`, PR #102).
+    let searches = 0
+    const p = issued(ISSUED, {
+      'crm.activity.todo.update': () => {
+        throw new Error('портал не ответил за 20000 мс: crm.activity.todo.update')
+      },
+      'crm.activity.list': (params: Record<string, unknown>) => {
+        if ((params.filter as Record<string, string>).ORIGIN_ID !== linkActivityOriginId(SURVEY.entityTypeId, 777)) return { result: [] }
+        searches += 1
+        // Первый поиск — до записи: дело выпуска. Второй — переспрос: уже с заголовком итога.
+        return { result: [searches === 1 ? ISSUED : { ...ISSUED, SUBJECT: 'Опрос пройден: Оценка работы — 9' }] }
+      },
+    })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
+    expect(p.of('crm.activity.update')[0]!.params).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(SURVEY.entityTypeId, 777) } })
+  })
+
+  it('привязка, отвергнутая двухсотым «нет», в журнале не выдаётся за удачу', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => logger)
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = portal({ 'crm.activity.binding.add': { result: false } })
+
+    await run(p)
+
+    expect(JSON.stringify(info.mock.calls)).not.toContain('дело привязано')
+    expect(JSON.stringify(warn.mock.calls)).toContain('не привязано')
   })
 
   it('итог уже записан — дело выпуска даже не ищем', async () => {

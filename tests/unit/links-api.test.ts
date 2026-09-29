@@ -17,6 +17,10 @@ const SURVEY = { entityTypeId: 1040, id: 10, categoryId: 16 }
 
 let items: Record<string, unknown>[]
 let statuses: Map<number, string>
+/** Дела выпуска, которые находит поиск по ключу; пусто — ссылки выпущены до issue #84, п. 14. */
+let activities: Record<string, unknown>[]
+/** Закрытия дел выпуска — `crm.activity.update`. */
+let closes: Record<string, unknown>[]
 let writes: { method: string, params: Record<string, unknown> }[]
 let attempts: number[]
 let failWrites: boolean
@@ -34,6 +38,7 @@ let Refusal: typeof PortalError
 async function loadHandler() {
   writes = []
   attempts = []
+  closes = []
   vi.doMock('../../server/api/portal/-session', () => ({
     openPortalSession: async () => ({
       portal: { id: 'портал', domain: 'shef.bitrix24.ru' },
@@ -41,6 +46,11 @@ async function loadHandler() {
       authId: 'фреймовый-токен',
       call: async (method: string, params: Record<string, unknown> = {}) => {
         if (method === 'crm.item.list') return { result: { items } }
+        if (method === 'crm.activity.list') return { result: activities }
+        if (method === 'crm.activity.update') {
+          closes.push(params)
+          return { result: true }
+        }
         attempts.push(params.id as number)
         if (refuseFor.has(params.id as number)) throw new Refusal('ACCESS_DENIED', 'поле обязательно на стадии')
         if (failWrites) throw new Error('портал не ответил за 10 с на crm.item.update')
@@ -75,6 +85,7 @@ const element = (id: number, stage: string, completedAt = '') => ({
 beforeEach(() => {
   failWrites = false
   refuseFor = new Set()
+  activities = []
 })
 
 afterEach(() => {
@@ -142,6 +153,35 @@ describe('список ссылок сделки', () => {
     expect(firstTry).toEqual([58, 57, 56])
     expect(attempts).toEqual([55, 54])
     expect(writes.map(one => one.params.id)).toEqual([55, 54])
+  })
+
+  it('ГЛАВНОЕ: дописанный отзыв закрывает и дело выпуска с адресом', async () => {
+    // ⚠ Прежде здесь писалась одна стадия: отзыв, чья стадия не легла, оставлял дело «Отправить опрос
+    // клиенту» открытым с мёртвым адресом навсегда — кнопки «Отозвать» у ссылки больше нет
+    // (`/code-review`, PR #102). Теперь дописывание идёт тем же путём, что кнопка.
+    items = [element(54, 'NEW')]
+    statuses = new Map([[54, 'revoked']])
+    activities = [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '2', OWNER_ID: '2', SUBJECT: 'Отправить опрос клиенту: brand' }]
+    const handler = await loadHandler()
+
+    await handler({})
+
+    expect(closes).toHaveLength(1)
+    expect(closes[0]).toMatchObject({ id: 308, fields: { SUBJECT: 'Ссылка отозвана: brand', COMPLETED: 'Y' } })
+  })
+
+  it('ГЛАВНОЕ: стадию портал отвергает навсегда — дело выпуска всё равно закрыто', async () => {
+    // Обязательное поле на стадии «Отозвана»: дописывание не пройдёт никогда, а дело от стадии не зависит.
+    items = [element(54, 'NEW')]
+    statuses = new Map([[54, 'revoked']])
+    refuseFor = new Set([54])
+    activities = [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '2', OWNER_ID: '2', SUBJECT: 'Отправить опрос клиенту: brand' }]
+    const handler = await loadHandler()
+
+    await handler({})
+
+    expect(writes).toEqual([])
+    expect(closes).toHaveLength(1)
   })
 
   it('неудача дописывания список не роняет — починит следующее открытие', async () => {
