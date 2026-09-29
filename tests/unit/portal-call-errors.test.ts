@@ -4,12 +4,12 @@ import { createServer, type Server } from 'node:https'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { AjaxError, RefreshTokenError } from '@bitrix24/b24jssdk'
 import { asPortalError, makePortalCall } from '../../server/b24/client'
 import { safeRefusal } from '../../server/domain/answers/portal-errors'
 import { isDeadGrant } from '../../server/domain/portals/lifecycle'
-import { refusalCode } from '../../server/domain/portals/portal-error'
+import { isRetryableRefusal, refusalCode } from '../../server/domain/portals/portal-error'
 
 /**
  * The boundary where the SDK's error becomes ours — driven against a real SDK and a real socket.
@@ -32,6 +32,8 @@ import { refusalCode } from '../../server/domain/portals/portal-error'
 
 /** Что отвечает «портал» на следующий вызов. Меняется сценарием. */
 let reply: { status: number, body: unknown } = { status: 200, body: { result: true } }
+/** Оборвать соединение вместо ответа — так выглядит беда связи для клиента. */
+let dropConnection = false
 /** Что отвечает «сервер авторизации» на продление. */
 let authReply: { status: number, body: unknown } = { status: 200, body: { result: true } }
 
@@ -59,6 +61,10 @@ beforeAll(async () => {
     req.on('data', chunk => (raw += chunk))
     req.on('end', () => {
       const isAuth = (req.url ?? '').includes('token') || (req.url ?? '').includes('oauth')
+      if (dropConnection && !isAuth) {
+        req.socket.destroy()
+        return
+      }
       const { status, body } = isAuth ? authReply : reply
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(body))
@@ -190,6 +196,109 @@ describe('отказ портала доезжает до нас с машинн
  * представление о ней, а не её саму. Тела ответов ниже — дословные по форме с живого
  * портала (проверено 23.09 вебхуком на `crm.item.get`).
  */
+/**
+ * Беда связи и отказ без кода — по статусу ответа, а не по имени кода (issue #99).
+ *
+ * ⚠ Обе ошибки прежде путались в обратную сторону. Сетевой код SDK (`ECONNRESET`) доезжал до
+ * `PortalError.code`, и разрыв связи на разовом шаге обустройства отмечал ревизию навсегда.
+ * А отказ проверки с пустым кодом SDK сводит к `ERR_BAD_REQUEST`, и он считался повторимым:
+ * портал проходил обустройство целиком каждый час вечно. Нашёл `/review` в панели PR #98.
+ * Формы ошибок сняты зондом против SDK 2.2.0 и этого же сервера (29.09).
+ */
+describe('беда связи и отказ без кода', () => {
+  afterEach(() => {
+    dropConnection = false
+  })
+
+  it('ГЛАВНОЕ: связь оборвалась — отказ без кода, и его повторяют', async () => {
+    dropConnection = true
+
+    const error = await refusalOf(callTo())
+
+    expect(refusalCode(error)).toBe('')
+    expect(isRetryableRefusal(error)).toBe(true)
+    expect(isDeadGrant(error)).toBe(false)
+  })
+
+  it.each<[string, number, unknown]>([
+    ['пустой код', 400, { error: '', error_description: 'Section at index 0 does not have title.' }],
+    ['код «0»', 400, { error: '0', error_description: 'Нельзя изменить закрытое дело' }],
+    ['«Not found» без кода', 404, { error: '', error_description: 'Not found' }],
+  ])('ГЛАВНОЕ: портал отказал без кода (%s) — SHEF_REJECTED, и его не повторяют', async (_name, status, body) => {
+    reply = { status, body }
+
+    const error = await refusalOf(callTo())
+
+    expect(refusalCode(error)).toBe('SHEF_REJECTED')
+    expect(isRetryableRefusal(error)).toBe(false)
+    // Код свой, и `safeRefusal` его называет — в журнал уходит он, а не проза портала.
+    expect(safeRefusal(error)).toBe('SHEF_REJECTED')
+  })
+
+  it('429 без тела — повторимый: его лечит время, а не правка запроса', async () => {
+    reply = { status: 429, body: 'не json' }
+
+    const error = await refusalOf(callTo())
+
+    expect(refusalCode(error)).toBe('')
+    expect(isRetryableRefusal(error)).toBe(true)
+  })
+
+  it('предел с кодом портала — код сохраняется, и его повторяют', async () => {
+    reply = { status: 429, body: { error: 'OPERATION_TIME_LIMIT', error_description: 'Method is blocked due to operation time limit' } }
+
+    const error = await refusalOf(callTo())
+
+    expect(refusalCode(error)).toBe('OPERATION_TIME_LIMIT')
+    expect(isRetryableRefusal(error)).toBe(true)
+  })
+
+  it('ГЛАВНОЕ: сеть оборвалась при продлении токена — беда связи, а не мёртвый грант', () => {
+    // Продление SDK заворачивает сетевой сбой в `RefreshTokenError` с кодом axios и статусом 0,
+    // а тот — в `JSSDK_UNKNOWN_ERROR` (`dist/esm/oauth/auth.mjs`). Классы — настоящие, как у мёртвого гранта.
+    const inner = new RefreshTokenError({ code: 'ECONNRESET', description: 'socket hang up', status: 0 } as never)
+    const wrapped = new AjaxError({
+      code: 'JSSDK_UNKNOWN_ERROR',
+      description: 'socket hang up',
+      status: 0,
+      originalError: inner,
+      requestInfo: { method: 'crm.item.update' },
+    } as never)
+
+    const error = asPortalError(wrapped)
+
+    expect(refusalCode(error)).toBe('')
+    expect(isRetryableRefusal(error)).toBe(true)
+    expect(isDeadGrant(error)).toBe(false)
+  })
+
+  it('ГЛАВНОЕ: мёртвый грант со статусом ответа сервера авторизации — по-прежнему мёртвый', () => {
+    // Сервер авторизации ОТВЕТИЛ, и статус у вложенной ошибки настоящий. Статус 0 — только у беды связи.
+    const inner = new RefreshTokenError({ code: 'invalid_grant', description: 'Переданы некорректные авторизационные данные', status: 400 } as never)
+    const wrapped = new AjaxError({
+      code: 'JSSDK_UNKNOWN_ERROR',
+      description: 'Переданы некорректные авторизационные данные',
+      status: 0,
+      originalError: inner,
+      requestInfo: { method: 'crm.item.update' },
+    } as never)
+
+    expect(isDeadGrant(asPortalError(wrapped))).toBe(true)
+  })
+
+  it('таймаут самого SDK — беда связи', () => {
+    const timedOut = new AjaxError({
+      code: 'REQUEST_TIMEOUT',
+      description: 'Request timeout exceeded',
+      status: 408,
+      requestInfo: { method: 'crm.item.update' },
+    } as never)
+
+    expect(refusalCode(asPortalError(timedOut))).toBe('')
+    expect(isRetryableRefusal(asPortalError(timedOut))).toBe(true)
+  })
+})
+
 describe('пакетный вызов', () => {
   /** Конверт v2 в том виде, в каком его отдаёт портал. */
   function envelope(result: Record<string, unknown>, resultError: Record<string, unknown> = {}) {

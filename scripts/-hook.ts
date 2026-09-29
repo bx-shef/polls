@@ -8,7 +8,7 @@
  *
  * Имя с дефисом впереди — соглашение проекта: файл рядом с обработчиками, но сам не команда.
  */
-import { PortalError } from '../server/domain/portals/portal-error'
+import { PortalError, REJECTED_CODE } from '../server/domain/portals/portal-error'
 import { safeRefusal } from '../server/domain/answers/portal-errors'
 import type { RestBatch, RestCall } from '../server/b24/provision'
 import type { PortalCall } from '../server/domain/portals/smart-processes'
@@ -91,8 +91,11 @@ async function portalRefusal(response: Response): Promise<PortalError | null> {
   try {
     const body = await response.json() as { error?: unknown, error_description?: unknown }
     // Пустой код — тоже отказ портала: у `crm.activity.update` документирован и такой (`"error": ""`).
+    // И `"0"` — так портал 29.09 ответил на правку закрытого дела. Оба без имени, и оба — окончательный
+    // отказ, а не беда связи: тот же код, что ставит разборщик ошибок SDK (`REJECTED_CODE`, issue #99).
     if (typeof body.error !== 'string') return null
-    return new PortalError(body.error, typeof body.error_description === 'string' ? body.error_description : '')
+    const code = body.error === '' || body.error === '0' ? REJECTED_CODE : body.error
+    return new PortalError(code, typeof body.error_description === 'string' ? body.error_description : '')
   }
   catch {
     return null

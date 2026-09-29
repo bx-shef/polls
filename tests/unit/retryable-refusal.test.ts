@@ -23,6 +23,12 @@ describe('отказ, который лечится повтором', () => {
     expect(isRetryableRefusal(new PortalError(code, 'описание портала'))).toBe(false)
   })
 
+  it('отказ портала без кода (`SHEF_REJECTED`) — не повторять: повтор не переубедит портал', () => {
+    // Так `asPortalError` называет HTTP 4xx с `"error": ""` или `"0"` (issue #99). Пустота здесь
+    // значила бы «ответа не было», и портал вечно ходил бы по кругу обустройства.
+    expect(isRetryableRefusal(new PortalError('SHEF_REJECTED', 'Section at index 0 does not have title.'))).toBe(false)
+  })
+
   it('код берётся только из `PortalError`, а не из чего угодно с полем `code`', () => {
     // Иначе системная ошибка Node или чужой объект выбирали бы решение за нас.
     expect(isRetryableRefusal({ code: 'ACCESS_DENIED' })).toBe(true)

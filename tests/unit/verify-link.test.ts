@@ -258,13 +258,15 @@ describe('отказ портала не двухсотым', () => {
     expect((failure as PortalError).code).toBe('ERROR_WRONG_CONTEXT')
   })
 
-  it('HTTP 400 с пустым кодом — тоже отказ портала, а не беда связи', async () => {
-    // У `crm.activity.update` документирован и такой отказ: `"error": ""` (`/review`, PR #102).
-    answer(400, JSON.stringify({ error: '', error_description: 'Access denied.' }))
+  it.each(['', '0'])('HTTP 400 с кодом «%s» — отказ портала SHEF_REJECTED, а не беда связи', async (code) => {
+    // У `crm.activity.update` документирован и такой отказ: `"error": ""` (`/review`, PR #102), а `"0"`
+    // портал прислал 29.09 на правку закрытого дела. Код — тот же, что ставит разборщик SDK (issue #99).
+    answer(400, JSON.stringify({ error: code, error_description: 'Access denied.' }))
 
     const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.update').catch((error: unknown) => error)
 
     expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('SHEF_REJECTED')
   })
 
   it('не-2xx без тела портала — по-прежнему подсказка оператору', async () => {

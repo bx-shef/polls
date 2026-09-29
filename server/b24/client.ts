@@ -1,7 +1,7 @@
 import { B24OAuth } from '@bitrix24/b24jssdk'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
 import type { PortalCaller, RestCall } from './provision'
-import { PortalError } from '../domain/portals/portal-error'
+import { PortalError, REJECTED_CODE } from '../domain/portals/portal-error'
 import { logger } from '../utils/logger'
 
 /**
@@ -200,6 +200,29 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
  * портала; возьмёшь внешний всегда — потеряешь мёртвый грант, ради которого всё писалось.
  * Оба факта проверены зондом против настоящего SDK 2.2.0 и закреплены тестом.
  *
+ * ⚠ КОД ТРАНСПОРТА И ОТКАЗ БЕЗ КОДА РАЗБИРАЮТСЯ ПО СТАТУСУ ОТВЕТА, а не угадываются по имени
+ * (issue #99; снято зондом против SDK 2.2.0 и локального сервера, 29.09):
+ *
+ * | Что случилось | Код от SDK | `.status` | Наш код | Повторять |
+ * |---|---|---|---|---|
+ * | Связь оборвалась, адрес не найден | `ECONNRESET`, `NETWORK_ERROR`… | 0 | пусто | да |
+ * | Сеть оборвалась при продлении токена | `JSSDK_UNKNOWN_ERROR` → `ECONNRESET` | 0 у вложенной | пусто | да |
+ * | Таймаут самого SDK | `REQUEST_TIMEOUT` | 408 | пусто | да |
+ * | Портал отказал без кода (`"error": ""` или `"0"`) | `ERR_BAD_REQUEST` | 400–499 | `SHEF_REJECTED` | нет |
+ * | Предел запросов без тела | `ERR_BAD_REQUEST` | 429 | пусто | да |
+ * | Прокси отдал страницу вместо ответа | `ERR_BAD_RESPONSE` | 5xx | пусто | да |
+ *
+ * Прежде всё это решалось по префиксу кода, и в две стороны неверно. Сетевой код SDK (`ECONNRESET`)
+ * доезжал до `PortalError.code`, и `isRetryableRefusal` отвечал «не повторять»: разрыв связи
+ * на разовом шаге обустройства отмечал ревизию, и к шагу больше не возвращались. А отказ проверки
+ * с пустым кодом — так отвечает, например, `crm.item.details.configuration.set` на раздел без
+ * заголовка — SDK сводит к `ERR_BAD_REQUEST`, и он считался повторимым: портал проходил
+ * обустройство целиком каждый час вечно. Нашёл `/review` в панели PR #98.
+ *
+ * Статус 0 значит, что ответа HTTP не было вовсе: портал отказывает только ответом. Смотрится он
+ * у той ошибки, что несёт код, — вложенной, если снаружи обёртка SDK: так сеть при продлении
+ * токена не путается с мёртвым грантом, у которого статус настоящего ответа сервера авторизации.
+ *
  * ⚠ Наш собственный таймаут (`withTimeout`) сюда тоже попадает. У него кода нет, и это
  * правильно: он не отказ портала, а наше решение не ждать дольше.
  */
@@ -208,9 +231,18 @@ export function asPortalError(error: unknown): Error {
 
   const outer = codeOf(error)
   // `JSSDK_*` — код самого SDK, а не портала: разворачиваем на слой глубже.
-  const code = outer === '' || outer.startsWith('JSSDK_') ? codeOf((error as { originalError?: unknown }).originalError) : outer
+  const carrier = outer === '' || outer.startsWith('JSSDK_') ? (error as { originalError?: unknown }).originalError : error
+  const code = codeOf(carrier)
+  const status = statusOf(carrier)
 
-  // Код транспорта (`ERR_*`, `ECONNRESET`) — не отказ портала. Наружу его выдавать нельзя:
+  // Ответа не было — сеть, TLS, адрес; и таймаут самого SDK. Это не отказ портала, а беда связи,
+  // и повтор её лечит чаще всего.
+  if ((code !== '' && status === 0) || code === 'REQUEST_TIMEOUT') return new PortalError('', error.message)
+  // Портал ответил отказом, но без кода: отказ проверки или «не найдено». Повтор его не вылечит.
+  if (code === 'ERR_BAD_REQUEST' && status !== null && isCodelessRefusalStatus(status)) {
+    return new PortalError(REJECTED_CODE, error.message)
+  }
+  // Код транспорта (`ERR_*`) — не отказ портала. Наружу его выдавать нельзя:
   // по нему ни объяснить человеку беду, ни принять решение о стирании токенов.
   if (code === '' || code.startsWith('JSSDK_') || code.startsWith('ERR_')) return new PortalError('', error.message)
   return new PortalError(code, error.message)
@@ -220,6 +252,23 @@ export function asPortalError(error: unknown): Error {
 function codeOf(error: unknown): string {
   const code = (error as { code?: unknown } | null | undefined)?.code
   return typeof code === 'string' ? code : ''
+}
+
+/** HTTP-статус ошибки SDK (`SdkError.status`); `null` — его нет вовсе. */
+function statusOf(error: unknown): number | null {
+  const status = (error as { status?: unknown } | null | undefined)?.status
+  return typeof status === 'number' ? status : null
+}
+
+/**
+ * Статус, при котором ответ без кода портала — окончательный отказ.
+ *
+ * 4xx, кроме 408 и 429: это «портал недождался» и «притормозите», а их лечит время. Предел
+ * запросов с телом приходит со своим кодом (`OPERATION_TIME_LIMIT`), но прокси может вернуть 429
+ * и без тела.
+ */
+function isCodelessRefusalStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408 && status !== 429
 }
 
 /** Ограничить ожидание одного вызова. Таймер снимается, чтобы не держать процесс живым. */
