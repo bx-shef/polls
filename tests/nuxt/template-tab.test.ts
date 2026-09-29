@@ -261,6 +261,15 @@ describe('вкладка конструктора', () => {
     expect(text).not.toContain('Анкета не определена')
   })
 
+  it('портал недоступен при открытии — «не удалось прочитать», а не «анкета не определена»', async () => {
+    reply = UNREACHABLE
+
+    const text = await open()
+
+    expect(text).toContain('Не удалось прочитать анкету с портала')
+    expect(text).not.toContain('Анкета не определена')
+  })
+
   it('анкету меняли ровно во время чтения — «обновите страницу», а не «нет доступа»', async () => {
     reply = { ok: false, reason: 'stale' }
 
@@ -513,7 +522,7 @@ describe('публикация и новая версия', () => {
     await button(mounted, 'Опубликовать')!.trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(mounted.text()).toContain('проверьте её, прежде чем публиковать')
+    expect(mounted.text()).toContain('Обновите страницу и проверьте её')
     expect(mounted.text()).not.toContain('не затереть чужую работу')
   })
 

@@ -2,7 +2,7 @@ import { buildFieldName } from '../portals/smart-processes'
 import type { PortalCall, SmartProcessRef } from '../portals/smart-processes'
 import { parseTemplateSchema } from '../invitations/portal-calls'
 import type { SurveyTemplate } from '../surveys/model'
-import { templateStateFields, templateStateOf } from '../portals/stages'
+import { isStaged, templateStateFields, templateStateOf } from '../portals/stages'
 
 /**
  * Portal calls for the survey builder: reading one template element for editing.
@@ -111,10 +111,18 @@ function asText(raw: unknown): string {
 }
 
 /**
- * Поля, которые конструктор ПИШЕТ: код и схема. Их сотрудник обязан видеть даже пустыми —
- * иначе запись пошла бы в поле, которого портал ему не показывает.
+ * Поля, которые сотрудник обязан видеть даже пустыми: их пишет конструктор, и запись в поле,
+ * которого портал ему не показывает, шла бы мимо портала.
+ *
+ * Код и схему пишет сохранение, дату публикации — публикация, и со стадиями именно она решает,
+ * опубликована ли версия. Черновик без даты у обоих взглядов одинаков по смыслу, поэтому закрытую
+ * дату у него ловит только ключ; иначе сотрудник опубликовал бы версию, которую потом видит черновиком
+ * (третий замыкающий `/review` в PR #104). Номер версии тоже пишет публикация, но закрытый он прячет
+ * лишь значок «Версия N» — его не требуем.
  */
-const WRITTEN_FIELDS = ['CODE', 'SCHEMA'] as const
+function writtenFields(template: SmartProcessRef): readonly string[] {
+  return isStaged(template) ? ['CODE', 'SCHEMA', 'PUBLISHED_AT'] : ['CODE', 'SCHEMA']
+}
 
 /**
  * Прячет ли портал от сотрудника что-то из анкеты, что видит приложение.
@@ -133,9 +141,9 @@ const WRITTEN_FIELDS = ['CODE', 'SCHEMA'] as const
  * «версии нет», а старое «Состояние» на портале со стадиями решает что-то, только пока у опубликованной
  * анкеты нет даты (`templateStateOf`), — закрыть их значит не спрятать ничего. Номер версии не сверяется
  * вовсе: закрытый, он прячет лишь значок «Версия N», а номер выдаёт сервер по взгляду приложения.
- * Поля, которые конструктор пишет, сотрудник обязан видеть и пустыми: нет ключа — поле ему не отдано
- * (замер 29.09: пустые поля `crm.item.get` отдаёт ключами со значением `null`). Чужие поля клиента
- * на этом смарт-процессе не смотрим: закрыть их от кого-то — его право.
+ * Поля, которые конструктор пишет (`writtenFields`), сотрудник обязан видеть и пустыми: нет ключа —
+ * поле ему не отдано (замер 29.09: пустые поля `crm.item.get` отдаёт ключами со значением `null`).
+ * Чужие поля клиента на этом смарт-процессе не смотрим: закрыть их от кого-то — его право.
  *
  * ⚠ Взгляды сравнимы, только если элемент между двумя чтениями не менялся: поле, заполненное
  * в промежутке, выглядело бы спрятанным. Это проверяет вызывающий — отметкой изменения (`openTemplate`).
@@ -149,7 +157,7 @@ export function isHiddenFromUser(
   seenByApp: Record<string, unknown>,
   template: SmartProcessRef,
 ): boolean {
-  const withheld = WRITTEN_FIELDS.some((postfix) => {
+  const withheld = writtenFields(template).some((postfix) => {
     const key = buildFieldName(template.id, postfix)
     return key in seenByApp && !(key in seenByUser)
   })
@@ -187,7 +195,9 @@ export function isSameStamp(one: string, other: string): boolean {
  * Одна проверка на сохранение и публикацию: две копии разошлись бы с первой правки.
  */
 export function isStale(seen: string, now: string): boolean {
-  return seen !== '' && now !== '' && seen !== now
+  // Мгновение, а не строка: у вкладки, открытой до выката PR #104, отметка ещё глазами приложения.
+  // Одна отметка — одно правило сравнения (`isSameStamp`); третий замыкающий `/review`.
+  return seen !== '' && now !== '' && !isSameStamp(seen, now)
 }
 
 /**
