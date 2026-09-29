@@ -89,8 +89,9 @@ export interface SmartProcessRef {
  * | 4 | префикс `[sh]` в названиях и подписях, поля закрыты от правки, у «Шаблона» выключены «Клиент» и роботы, поле «Ссылка на анкету» |
  * | 5 | штатные стадии у обоих смарт-процессов вместо своего поля «Состояние» (`server/domain/portals/stages.ts`) |
  * | 6 | карточка «Результата опросов»: виджет и «Ссылка на анкету» в любой раскладке, JSON-поля уходят из неё (`planSurveyCard`) |
+ * | 7 | поле своего типа «Анкета» у «Шаблона опроса» и раскладка его карточки: анкета словами вместо схемы-JSON (`planTemplateCard`) |
  */
-export const PROVISION_REVISION = 6
+export const PROVISION_REVISION = 7
 
 /**
  * Ревизия, с которой смарт-процессы живут на штатных стадиях.
@@ -111,6 +112,16 @@ export const STAGES_REVISION = 5
  * портал ниже третьей получает всё сразу (`planSurveyCard`).
  */
 export const CARD_REVISION = 6
+
+/**
+ * Ревизия, с которой карточка «Шаблона опроса» показывает анкету полем «Анкета», а не схемой-JSON (#84, п. 18).
+ *
+ * Отдельной константой по той же причине, что `CARD_REVISION`: правка стоящей раскладки — разовая
+ * миграция порталов, обустроенных до неё. До ревизии 7 раскладку «Шаблона» мы не ставили вовсе,
+ * и на большинстве порталов там умолчание портала: её обустройство заменит нашей с нуля
+ * (`planTemplateCard`).
+ */
+export const TEMPLATE_CARD_REVISION = 7
 
 /**
  * Ревизия, с которой наше на портале помечено префиксом `[sh]` и закрыто от правки.
@@ -200,6 +211,14 @@ export const SURVEY_FIELDS: readonly SmartProcessField[] = [
  * Значения у поля нет: виджет читает `ANSWERS` и `SCORES` того же элемента.
  */
 export const SURVEY_RESULT_FIELD = 'RESULT'
+
+/**
+ * Постфикс поля «Анкета» у «Шаблона опроса» — поля нашего типа, как `SURVEY_RESULT_FIELD` (#84, п. 18).
+ *
+ * Не в `TEMPLATE_FIELDS` по той же причине: тип свой, полный код известен только после регистрации
+ * типа. Значения у поля нет — виджет читает `SCHEMA` того же элемента.
+ */
+export const TEMPLATE_FORM_FIELD = 'FORM'
 
 /**
  * `entityId`, под которым создаётся поле смарт-процесса: `CRM_<id СП>`.
@@ -874,6 +893,40 @@ export function buildCardSections(spTypeId: number, resultField: boolean, staged
 export const CARD_RESULT_SECTION = 'survey_result'
 
 /**
+ * Our layout of the template card, from scratch: what the template is, and the survey itself in words.
+ *
+ * ⚠ «Код», «Номер версии» и «Дата публикации» — на виду, но закрыты от правки, как все наши поля
+ * (#84, п. 12 и 18). Анкета — полем «Анкета» с «показывать всегда»: значения у поля нет никогда,
+ * а пустое поле карточка прячет. Не завелось поле — вместо него схема-JSON: без неё в карточке
+ * не было бы анкеты вовсе. Состояние со стадиями видно полосой стадий, своего поля нет.
+ *
+ * ⚠ До ревизии 7 раскладку «Шаблона» мы не ставили вовсе, и портал прятал схему в «Скрытых полях»
+ * или показывал её простынёй в одну строку. Решение владельца (#84, п. 18).
+ */
+export function buildTemplateCardSections(spTypeId: number, formField: boolean, staged = false): Record<string, unknown>[] {
+  const own = (postfix: string) => ({ name: buildFieldName(spTypeId, postfix) })
+  const about = staged ? ['CODE', 'VERSION', 'PUBLISHED_AT'] : ['CODE', 'VERSION', 'STATE', 'PUBLISHED_AT']
+
+  return [
+    {
+      name: 'template_about',
+      title: 'Об анкете',
+      type: 'section',
+      elements: [{ name: 'TITLE', optionFlags: 1 }, ...about.map(own), { name: 'ASSIGNED_BY_ID' }],
+    },
+    {
+      name: TEMPLATE_FORM_SECTION,
+      title: 'Анкета',
+      type: 'section',
+      elements: formField ? [{ ...own(TEMPLATE_FORM_FIELD), optionFlags: 1 }] : [own('SCHEMA')],
+    },
+  ]
+}
+
+/** Имя нашего раздела с анкетой в раскладке «Шаблона», которую мы ставим с нуля (`buildTemplateCardSections`). */
+export const TEMPLATE_FORM_SECTION = 'template_form'
+
+/**
  * What an edit of a card layout that is already on the portal comes to:
  * - `write` — write these sections: something of ours was placed or taken out;
  * - `keep` — nothing to change: everything of ours already stands as it should;
@@ -887,30 +940,81 @@ export const CARD_RESULT_SECTION = 'survey_result'
 export type CardPlan = { kind: 'write', sections: Record<string, unknown>[] } | { kind: 'keep' } | { kind: 'unreadable' }
 
 /**
- * What provisioning does to the survey card layout (`planSurveyCard`): a `CardPlan`, whose `write` may also be our
- * layout from scratch, or `foreign` — an adopted smart process whose layout is not ours to change.
+ * What provisioning does to one of our card layouts (`planSurveyCard`, `planTemplateCard`): a `CardPlan`, whose
+ * `write` may also be our layout from scratch, or `foreign` — an adopted smart process whose layout is not ours to change.
  */
-export type SurveyCardPlan = CardPlan | { kind: 'foreign' }
+export type OwnCardPlan = CardPlan | { kind: 'foreign' }
 
-/** What `planSurveyCard` needs to know besides the layout itself. */
-export interface SurveyCardInput {
+/** What a card planner needs to know besides the layout itself. */
+export interface CardInput {
   /** The widget field is on the portal, and it is of our type. */
   widget: boolean
   /** The smart process was found by title rather than created or remembered by id. */
   adopted: boolean
-  /** The one-time revision 6 fix is due: the portal stands below `CARD_REVISION`. */
+  /** The one-time fix of a standing layout is due: the portal stands below the card's revision (`CARD_REVISION`, `TEMPLATE_CARD_REVISION`). */
   due: boolean
   /** The smart process runs on native stages, so there is no state field to show. */
   staged: boolean
 }
 
-/** Our JSON fields that the widget shows in words; the card keeps them only while there is no widget. */
-const CARD_JSON_FIELDS: readonly string[] = ['SCORES', 'ANSWERS']
-
 /** Where to put one of our fields: before or after the first field of `postfixes` found in the layout. */
 interface CardAnchor {
   postfixes: readonly string[]
   after: boolean
+}
+
+/** How one of our cards is laid out: from scratch, and which of our fields the one-time fix places or takes out. */
+interface CardSpec {
+  /** Our layout from scratch. */
+  fresh: (spTypeId: number, widget: boolean, staged: boolean) => Record<string, unknown>[]
+  /** Our fields of standard types: any of them in an adopted layout makes the layout ours. */
+  own: readonly string[]
+  /** The widget field, and where it goes when it stands nowhere; the end of the first section is the last resort. */
+  widget: { postfix: string, anchors: readonly CardAnchor[] }
+  /** JSON fields the widget shows in words: they leave the card once the widget field is on the portal. */
+  json: readonly string[]
+  /** Our other fields that must stand in the card, each with where it goes. */
+  extras: readonly { postfix: string, anchors: readonly CardAnchor[] }[]
+}
+
+/** The survey card: the result widget in place of the answers, and the survey link. */
+const SURVEY_CARD: CardSpec = {
+  fresh: buildCardSections,
+  own: SURVEY_FIELDS.map(field => field.postfix),
+  widget: {
+    postfix: SURVEY_RESULT_FIELD,
+    anchors: [
+      { postfixes: ['SCORES', 'ANSWERS'], after: false },
+      { postfixes: ['COMPLETED_AT'], after: true },
+      { postfixes: ['SCORE'], after: true },
+    ],
+  },
+  json: ['SCORES', 'ANSWERS'],
+  extras: [{
+    postfix: 'LINK',
+    anchors: [
+      { postfixes: ['EXPIRES_AT'], after: true },
+      { postfixes: ['TEMPLATE_VERSION'], after: true },
+      { postfixes: ['TEMPLATE_CODE'], after: true },
+    ],
+  }],
+}
+
+/** The template card: the form widget in place of the schema JSON. */
+const TEMPLATE_CARD: CardSpec = {
+  fresh: buildTemplateCardSections,
+  own: TEMPLATE_FIELDS.map(field => field.postfix),
+  widget: {
+    postfix: TEMPLATE_FORM_FIELD,
+    anchors: [
+      { postfixes: ['SCHEMA'], after: false },
+      { postfixes: ['PUBLISHED_AT'], after: true },
+      { postfixes: ['VERSION'], after: true },
+      { postfixes: ['CODE'], after: true },
+    ],
+  },
+  json: ['SCHEMA'],
+  extras: [],
 }
 
 /**
@@ -940,12 +1044,30 @@ interface CardAnchor {
  * ⚠ Разово, при переходе на ревизию 6 (`CARD_REVISION`): повторяясь при каждом обустройстве, правка
  * возвращала бы клиенту поля, которые он убрал сам.
  */
-export function planSurveyCard(current: unknown, spTypeId: number, card: SurveyCardInput): SurveyCardPlan {
+export function planSurveyCard(current: unknown, spTypeId: number, card: CardInput): OwnCardPlan {
+  return planCard(current, spTypeId, card, SURVEY_CARD)
+}
+
+/**
+ * Plans the template card layout: ours from scratch where the portal holds none, and the one-time revision 7 fix of a standing one — the form widget in, the schema JSON out.
+ *
+ * Те же правила, что у карточки «Результата опросов» (`planSurveyCard`, там же — почему), решение
+ * владельца (#84, п. 18): виджет «Анкета» встаёт на место схемы-JSON, иначе после даты публикации,
+ * номера версии или кода, а их нет — в конец первого раздела; схема уходит из любого раздела, только
+ * когда поле виджета на портале есть; всё чужое уходит обратно как пришло. Разово, при переходе
+ * на ревизию 7 (`TEMPLATE_CARD_REVISION`).
+ */
+export function planTemplateCard(current: unknown, spTypeId: number, card: CardInput): OwnCardPlan {
+  return planCard(current, spTypeId, card, TEMPLATE_CARD)
+}
+
+/** The planner both cards share: from scratch, or the one-time fix of a standing layout by `spec`. */
+function planCard(current: unknown, spTypeId: number, card: CardInput, spec: CardSpec): OwnCardPlan {
   const layout = readCardLayout(current)
   // ⚠ Своей раскладки нет — ставим нашу целиком, но не усыновлённому: найденный по названию может
   // оказаться «Опросом» клиента, и наши разделы легли бы в его карточку у всех. Нашли `/review`
   // и `/code-review` в панели PR #98.
-  if (layout.kind === 'empty') return card.adopted ? { kind: 'foreign' } : { kind: 'write', sections: buildCardSections(spTypeId, card.widget, card.staged) }
+  if (layout.kind === 'empty') return card.adopted ? { kind: 'foreign' } : { kind: 'write', sections: spec.fresh(spTypeId, card.widget, card.staged) }
   if (!card.due) return { kind: 'keep' }
   if (layout.kind === 'unreadable') return { kind: 'unreadable' }
   const { sections } = layout
@@ -980,18 +1102,13 @@ export function planSurveyCard(current: unknown, spTypeId: number, card: SurveyC
   // имени, мы поставили бы ссылку в карточку клиента (`/code-review` во втором круге). Шаг поля не
   // прошёл вовсе — свой виджет в этом прогоне тоже не засчитан, но повторимый отказ держит ревизию
   // (`provisionSmartProcesses`), и засчитает его следующий прогон (`/code-review` в третьем круге).
-  const own = SURVEY_FIELDS.map(field => field.postfix)
-  if (card.adopted && find(card.widget ? [...own, SURVEY_RESULT_FIELD] : own) === null) return { kind: 'foreign' }
+  if (card.adopted && find(card.widget ? [...spec.own, spec.widget.postfix] : spec.own) === null) return { kind: 'foreign' }
 
   const { widget } = card
   let changed = false
-  const standing = find([SURVEY_RESULT_FIELD])
+  const standing = find([spec.widget.postfix])
   if (widget && standing === null) {
-    place({ name: buildFieldName(spTypeId, SURVEY_RESULT_FIELD), optionFlags: 1 }, [
-      { postfixes: CARD_JSON_FIELDS, after: false },
-      { postfixes: ['COMPLETED_AT'], after: true },
-      { postfixes: ['SCORE'], after: true },
-    ])
+    place({ name: buildFieldName(spTypeId, spec.widget.postfix), optionFlags: 1 }, spec.widget.anchors)
     changed = true
   }
   else if (widget && standing !== null) {
@@ -1008,7 +1125,7 @@ export function planSurveyCard(current: unknown, spTypeId: number, card: SurveyC
     }
   }
   if (widget) {
-    const isJson = CARD_JSON_FIELDS.map(postfix => isOurField(spTypeId, postfix))
+    const isJson = spec.json.map(postfix => isOurField(spTypeId, postfix))
     for (const section of sections) {
       const kept = section.elements.filter(element => !isJson.some(is => is(element)))
       if (kept.length === section.elements.length) continue
@@ -1016,12 +1133,9 @@ export function planSurveyCard(current: unknown, spTypeId: number, card: SurveyC
       changed = true
     }
   }
-  if (find(['LINK']) === null) {
-    place({ name: buildFieldName(spTypeId, 'LINK') }, [
-      { postfixes: ['EXPIRES_AT'], after: true },
-      { postfixes: ['TEMPLATE_VERSION'], after: true },
-      { postfixes: ['TEMPLATE_CODE'], after: true },
-    ])
+  for (const extra of spec.extras) {
+    if (find([extra.postfix]) !== null) continue
+    place({ name: buildFieldName(spTypeId, extra.postfix) }, extra.anchors)
     changed = true
   }
   return changed ? { kind: 'write', sections } : { kind: 'keep' }
