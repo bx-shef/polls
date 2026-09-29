@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, reachedRevision, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, OWNERSHIP_REVISION, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
+import { SCORE_FIELDS } from '../../server/domain/portals/crm-fields'
 import { PortalError, UNREACHABLE_CODE } from '../../server/domain/portals/portal-error'
 import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 import { logger } from '../../server/utils/logger'
@@ -1129,7 +1130,7 @@ describe('постраничные списки', () => {
     // До #110 листание вставало после первой страницы, и предел в сто страниц был недостижим; теперь его
     // достигает кривой `next`. По неполному списку поиск перед созданием не нашёл бы наш смарт-процесс
     // и завёл второй — при лимите 150 на весь портал (`/review` во втором круге PR #113).
-    const p = portal({ 'crm.type.list': () => ({ result: { types: [] }, next: 50 }) })
+    const p = portal({ 'crm.type.list': (params: Record<string, unknown>) => ({ result: { types: [] }, next: Number(params.start ?? 0) + 50 }) })
 
     await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
     expect(p.of('crm.type.list')).toHaveLength(100)
@@ -1137,21 +1138,56 @@ describe('постраничные списки', () => {
   })
 
   it('список полей смарт-процесса не кончился за предел — отказ, а не поле вторым', async () => {
-    const p = portal({ 'userfieldconfig.list': () => ({ result: { fields: [] }, next: 50 }) })
+    const p = portal({ 'userfieldconfig.list': (params: Record<string, unknown>) => ({ result: { fields: [] }, next: Number(params.start ?? 0) + 50 }) })
 
     await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
     expect(p.of('userfieldconfig.add')).toEqual([])
   })
 
-  it('список полей сделки не кончился за предел — поля оценки не заводятся, установка идёт дальше', async () => {
-    // Поля на сделке — не критический путь: их отказ установку не роняет (`ensureCrmScoreFields`), но и
-    // по неполному списку ничего не пишет.
-    const p = portal({ 'crm.deal.userfield.list': () => ({ result: [], next: 50 }) })
+  it('ГЛАВНОЕ: список полей сделки не кончился за предел — поля сделки не заводятся, а поля контакта заводятся', async () => {
+    // Поля оценки — не критический путь: их отказ установку не роняет (`ensureCrmScoreFields`), по неполному
+    // списку ничего не пишет и полям соседней сущности не мешает (`/review` в третьем круге PR #113).
+    const p = portal({ 'crm.deal.userfield.list': (params: Record<string, unknown>) => ({ result: [], next: Number(params.start ?? 0) + 50 }) })
 
     const result = await provisionSmartProcesses(p.call)
 
     expect(result.crmFields).toBeNull()
     expect(p.of('crm.deal.userfield.add')).toEqual([])
+    expect(p.of('crm.contact.userfield.add')).toHaveLength(SCORE_FIELDS.length)
+    // Миграция подписей тот же список заново не листает: сто вызовов, а не двести, внутри общего бюджета.
+    expect(p.of('crm.deal.userfield.list')).toHaveLength(100)
+    // ⚠ И не держит ревизию: отказ не лечится повтором, и полное переобустройство каждый час ничего бы
+    // не изменило. С пустым кодом вместо своего миграция осталась бы незавершённой навсегда (`/code-review`
+    // в третьем круге PR #113).
+    expect(result.ownership?.settled).toBe(true)
+  })
+
+  it('ГЛАВНОЕ: список типов не продвигается — отказ за две страницы, а не сто', async () => {
+    // Так выглядел бы метод, не понявший `start`: одна и та же первая страница и одно и то же смещение. До
+    // предела это сто вызовов — дольше всего бюджета установки (`/review` в третьем круге PR #113).
+    const p = portal({ 'crm.type.list': () => ({ result: { types: [] }, next: 50 }) })
+
+    await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(p.of('crm.type.list')).toHaveLength(2)
+    expect(p.of('crm.type.add')).toEqual([])
+  })
+
+  it('список полей смарт-процесса не продвигается — отказ за две страницы', async () => {
+    const p = portal({ 'userfieldconfig.list': () => ({ result: { fields: [] }, next: 50 }) })
+
+    await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(p.of('userfieldconfig.list')).toHaveLength(2)
+  })
+
+  it('список полей сделки не продвигается — отказ за две страницы, поля контакта заводятся', async () => {
+    // Листание `crm.deal.userfield.list` документация не описывает — ровно этот метод и мог бы не понять `start`.
+    const p = portal({ 'crm.deal.userfield.list': () => ({ result: [], next: 50 }) })
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.crmFields).toBeNull()
+    expect(p.of('crm.deal.userfield.list')).toHaveLength(2)
+    expect(p.of('crm.contact.userfield.add')).toHaveLength(SCORE_FIELDS.length)
   })
 })
 

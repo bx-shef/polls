@@ -202,11 +202,28 @@ export const SP_REFS_OPTION = 'shef_survey_sp'
  * Не ожидаемый размер, а страховка от бесконечного цикла, если портал вернёт кривой `next`.
  * Сто страниц по пятьдесят — это пять тысяч смарт-процессов при лимите тарифа в тысячу.
  *
- * ⚠ Упёрлись — отказ (`LIST_TRUNCATED_CODE`), а не неполный список: здесь по спискам ищут перед
- * созданием, и неполный значит второй смарт-процесс. До #110 предел был недостижим — листание вставало
+ * ⚠ Поиск перед созданием, упёршись, отказывает (`LIST_TRUNCATED_CODE`), а не отдаёт неполный список:
+ * неполный значит второй смарт-процесс. Перенос состояния на том же пределе возвращает незаконченный
+ * исход — разбор у `carryStates`. На пути через SDK до #110 предел был недостижим — листание вставало
  * после первой страницы, — а с ним его достигает кривой `next` (`/review` во втором круге PR #113).
  */
 const MAX_PAGES = 100
+
+/**
+ * The offset of the next page, or `null` when the list has ended; refuses when the offset does not move.
+ *
+ * ⚠ Портал говорит «есть ещё», а смещение не растёт — дальше не прочитать, и это не «всё». Так выглядел бы
+ * метод, который не понял `start` и отдаёт одну и ту же первую страницу: листание `crm.deal.userfield.list`
+ * документация не описывает (параметра `start` у неё нет, хотя пример его передаёт). Без проверки такой
+ * список листался бы до предела — сто вызовов, а на троттлинге SDK это дольше всего бюджета установки
+ * (`PROVISION_BUDGET_MS`), и установка срывалась бы по общему пределу. Отказ приходит за два вызова. Тот же
+ * приём, что у переноса состояния; `/review` в третьем круге PR #113.
+ */
+function nextStart(response: unknown, start: number, method: string): number | null {
+  const next = readNextOffset(response)
+  if (next !== null && next <= start) throw new PortalError(LIST_TRUNCATED_CODE, `${method}: листание не продвигается`)
+  return next
+}
 
 export interface SmartProcessRefs {
   template: SmartProcessRef
@@ -596,7 +613,7 @@ export async function listAllTypes(call: RestCall): Promise<Record<string, unkno
   for (let page = 0; page < MAX_PAGES && start !== null; page++) {
     const response = await call('crm.type.list', start === 0 ? {} : { start })
     all.push(...readTypes(response))
-    start = readNextOffset(response)
+    start = nextStart(response, start, 'crm.type.list')
   }
   // ⚠ По неполному списку `ensureSmartProcess` не нашёл бы наш смарт-процесс и завёл бы второй.
   if (start !== null) throw new PortalError(LIST_TRUNCATED_CODE, `crm.type.list: список не дочитан за ${MAX_PAGES} страниц`)
@@ -611,12 +628,22 @@ async function listAllFields(call: RestCall, spTypeId: number): Promise<Existing
     const list = buildListSpFieldsCall(spTypeId, start)
     const response = await call(list.method, list.params)
     fields.push(...readFields(response))
-    start = readNextOffset(response)
+    start = nextStart(response, start, list.method)
   }
-  // По неполному списку поле с непрочитанной страницы запланировалось бы к созданию вторым.
+  // По неполному списку поле с непрочитанной страницы запланировалось бы заново и упало бы на дубликате —
+  // чужой ошибкой создания вместо честного «список не дочитан» (`/code-review` в третьем круге PR #113).
   if (start !== null) throw new PortalError(LIST_TRUNCATED_CODE, `userfieldconfig.list: список не дочитан за ${MAX_PAGES} страниц`)
   return fields
 }
+
+/**
+ * What the score-field step learnt of an entity's fields: the fields, or a refusal no repeat would cure.
+ *
+ * Отказ кладём, чтобы миграция подписей не листала тот же список заново: недочитанный список — до ста
+ * вызовов внутри общего бюджета установки (`/review` и `/code-review` в третьем круге PR #113). Повторимый
+ * отказ не кладём: беде связи миграция даёт второй шанс.
+ */
+type SeenCrmFields = readonly ExistingCrmField[] | { refused: unknown }
 
 /**
  * Завести на сделке и контакте клиента поля «оценка» и «дата опроса».
@@ -629,20 +656,30 @@ async function listAllFields(call: RestCall, spTypeId: number): Promise<Existing
  *
  * ⚠ Одно упавшее поле НЕ обрывает остальные — тот же приём и та же причина, что у полей
  * смарт-процесса: у соседа цикл падал на первой ошибке, и поля ниже по списку не создавались
- * никогда.
+ * никогда. Так же и список: недочитанный список сделки не мешает полям контакта (`/review`
+ * в третьем круге PR #113).
  *
  * Возвращает число созданных. Ноль — всё уже было: повторная установка ничего не портит.
  *
  * `seen` получает поля каждой сущности такими, какими они были ДО создания недостающих, —
- * даже если создание потом упало. Их разбирает миграция подписей ревизии 4, и второй раз
- * листать те же списки на критическом пути установки незачем (панель ревью PR #87).
+ * даже если создание потом упало, — а недочитанный список — отказом, если повтор его
+ * не вылечит. Их разбирает миграция подписей ревизии 4, и второй раз листать те же списки
+ * на критическом пути установки незачем (панель ревью PR #87).
  */
-async function ensureCrmScoreFields(call: RestCall, seen: Map<CrmEntity, readonly ExistingCrmField[]>): Promise<number> {
+async function ensureCrmScoreFields(call: RestCall, seen: Map<CrmEntity, SeenCrmFields>): Promise<number> {
   let added = 0
   const failures: string[] = []
 
   for (const entity of SCORED_ENTITIES) {
-    const existing = await listAllCrmFields(call, entity)
+    let existing: readonly ExistingCrmField[]
+    try {
+      existing = await listAllCrmFields(call, entity)
+    }
+    catch (error) {
+      failures.push(`${entity.title}: ${safeRefusal(error)}`)
+      if (!isRetryableRefusal(error)) seen.set(entity, { refused: error })
+      continue
+    }
     seen.set(entity, existing)
     for (const plan of planMissingCrmFields(entity, SCORE_FIELDS, existing.map(field => field.name))) {
       try {
@@ -669,10 +706,10 @@ async function listAllCrmFields(call: RestCall, entity: CrmEntity): Promise<Exis
     const list = buildListFieldsCall(entity, start)
     const response = await call(list.method, list.params)
     fields.push(...readCrmFields(response))
-    start = readNextOffset(response)
+    start = nextStart(response, start, list.method)
   }
 
-  // Та же причина, что у полей смарт-процесса: поле с непрочитанной страницы завелось бы вторым.
+  // Та же причина, что у полей смарт-процесса: честный диагноз вместо чужой ошибки на дубликате.
   if (start !== null) throw new PortalError(LIST_TRUNCATED_CODE, `${entity.listMethod}: список не дочитан за ${MAX_PAGES} страниц`)
   return fields
 }
@@ -988,7 +1025,7 @@ export async function provisionSmartProcesses(
   // без этих полей работает целиком, просто обещание «отфильтровать сделки с плохой оценкой»
   // остаётся невыполненным, и это видно в журнале.
   let crmFields: number | null = null
-  const crmSeen = new Map<CrmEntity, readonly ExistingCrmField[]>()
+  const crmSeen = new Map<CrmEntity, SeenCrmFields>()
   try {
     crmFields = await ensureCrmScoreFields(call, crmSeen)
   }
@@ -1046,8 +1083,8 @@ interface OwnershipInput {
   types: readonly Record<string, unknown>[]
   /** Our smart processes' fields as they were before this run created the missing ones. */
   fields: { template: readonly ExistingField[], survey: readonly ExistingField[] }
-  /** Deal and contact fields as `ensureCrmScoreFields` found them. A missing entity is listed anew. */
-  crm: ReadonlyMap<CrmEntity, readonly ExistingCrmField[]>
+  /** Deal and contact fields as `ensureCrmScoreFields` found them, or the refusal no repeat would cure. A missing entity is listed anew. */
+  crm: ReadonlyMap<CrmEntity, SeenCrmFields>
 }
 
 /**
@@ -1200,12 +1237,18 @@ async function lockFields(
  */
 async function labelCrmFields(
   call: RestCall,
-  seen: ReadonlyMap<CrmEntity, readonly ExistingCrmField[]>,
+  seen: ReadonlyMap<CrmEntity, SeenCrmFields>,
   outcome: OwnershipOutcome,
 ): Promise<void> {
   const step = 'подписи полей сделки и контакта'
   for (const entity of SCORED_ENTITIES) {
-    let existing = seen.get(entity)
+    const known = seen.get(entity)
+    // Список уже отказал так, что повтор не поможет: отказ тот же, листать заново незачем.
+    if (known !== undefined && 'refused' in known) {
+      refuse(outcome, step, known.refused)
+      continue
+    }
+    let existing = known
     if (existing === undefined) {
       try {
         existing = await listAllCrmFields(call, entity)

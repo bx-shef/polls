@@ -351,6 +351,7 @@ describe('как вебхук читает ответ портала', () => {
     const body = await hookCall('https://portal.example/rest/1/key/')('crm.deal.list')
 
     expect(body).toEqual({ result: [{ ID: '1' }], time: { start: 1 }, next: 50 })
+    expect(Object.isFrozen(body)).toBe(true)
   })
 
   it('ГЛАВНОЕ: двухсотый ответ не JSON — ответа портала нет, а не «беда на нашей стороне»', async () => {

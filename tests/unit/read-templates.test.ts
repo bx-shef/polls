@@ -53,14 +53,18 @@ describe('опубликованные шаблоны со стадиями', ()
     // С #110 листание заработало, и предел в двадцать страниц стал достижим: без строки в журнале анкеты
     // за ним пропадали бы из выпуска молча (`/review` и `/code-review` в PR #113).
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-    const call = vi.fn(async () => ({ result: { items: [version({ stageId: 'DT1038_14:SUCCESS' })] }, next: 50 }))
+    // Своя версия на каждой странице, и список не кончается: так видно, что прочитано каждое из двадцати.
+    const call = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      const start = Number(params?.start ?? 0)
+      return { result: { items: [version({ id: 100 + start, UF_CRM_8_VERSION: start / 50 + 1, stageId: 'DT1038_14:SUCCESS' })] }, next: start + 50 }
+    })
 
     const found = await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
     await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
 
     // Дочитано ровно до предела — по двадцать страниц на каждое из двух чтений, — и прочитанное отдано.
     expect(call).toHaveBeenCalledTimes(40)
-    expect(found).toHaveLength(20)
+    expect(found.map(one => one.version)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1))
     expect(truncated(warn).map(([context]) => context)).toEqual([{ domain: 'fifth.bitrix24.ru', typeId: 8, pages: 20 }])
   })
 

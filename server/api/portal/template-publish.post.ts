@@ -140,15 +140,15 @@ const MAX_PAGES = 20
  * Refuses a release whose template list did not end within the page cap, naming the portal in the log.
  *
  * ⚠ Ответ вкладке, а не исключение. Исключение уходило пятисотым, вкладка звала его обрывом связи —
- * «проверьте и попробуйте ещё раз», хотя повтор не поможет, пока список длиннее предела, — и строки
- * в журнале не оставалось. Нашли `/review` и `/code-review` во втором круге PR #113.
+ * «проверьте и попробуйте ещё раз», хотя повтор не поможет, пока список длиннее предела, — а своей
+ * строки с порталом в журнале не было. Нашли `/review` и `/code-review` во втором круге PR #113.
  */
 function listTruncated(domain: string, action: 'publish' | 'new-version') {
   logger.warn({ domain, action, pages: MAX_PAGES }, 'список шаблонов не дочитан до конца — выпуск остановлен')
   return { ok: false as const, reason: 'list-truncated' as const }
 }
 
-/** Все номера версий этого кода, со всех страниц; `'truncated'` — список не кончился за предел. */
+/** Every version number of this code across all pages; `'truncated'` when the list did not end within the cap. */
 async function readAllVersions(
   call: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
   template: { entityTypeId: number, id: number },
@@ -172,7 +172,11 @@ async function readAllVersions(
   return found
 }
 
-/** Черновик этого кода, если он уже есть; `'truncated'` — список не кончился за предел. Ищем постранично: он может быть где угодно. */
+/**
+ * This code's draft if there is one, `null` if none; `'truncated'` when the list did not end within the cap.
+ *
+ * Ищем постранично: черновик может лежать где угодно.
+ */
 async function findExistingDraft(
   call: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
   template: { entityTypeId: number, id: number },

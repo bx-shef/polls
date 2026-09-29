@@ -102,8 +102,9 @@ export function hookCall(base: string): RestCall {
     // ⚠ Наружу — та же форма, что у `makePortalCall`: `result`, `time` и `next` списков. Вебхук отдавал
     // тело целиком, и в этом расхождении прожил #110 — живые проверки видели `next`, а бой нет. Кто
     // однажды прочтёт `total`, должен упасть уже в проверке, а не в бою (`/code-review` в PR #113).
+    // Заморожен, как и ответ SDK: и в этом двум путям расходиться незачем (третий круг там же).
     const { result, time, next } = answer as { result?: unknown, time?: unknown, next?: unknown }
-    return next === undefined ? { result, time } : { result, time, next }
+    return Object.freeze(next === undefined ? { result, time } : { result, time, next })
   }
 }
 

@@ -42,6 +42,8 @@ let listNext: number | undefined
 let listPages: Record<number, { items: Record<string, unknown>[], next?: number }> | null
 /** Что роут написал в журнал предупреждением. */
 let warned: unknown[][]
+/** Сколько страниц списка шаблонов роут прочитал. */
+let listed: number
 
 async function load(route: 'template-save' | 'template-publish') {
   writes = []
@@ -52,6 +54,7 @@ async function load(route: 'template-save' | 'template-publish') {
       authId: 'фреймовый-токен',
       call: async (method: string, params: Record<string, unknown> = {}) => {
         if (method === 'crm.item.get') return { result: { item } }
+        if (method === 'crm.item.list') listed += 1
         if (method === 'crm.item.list' && listPages !== null) {
           const page = listPages[Number(params.start ?? 0)] ?? { items: [] }
           return { result: { items: page.items }, ...(page.next === undefined ? {} : { next: page.next }) }
@@ -87,6 +90,7 @@ beforeEach(() => {
   listNext = undefined
   listPages = null
   warned = []
+  listed = 0
   userItem = null
   userItemLater = null
   accessChecks = 0
@@ -314,10 +318,12 @@ describe('публикация со стадиями', () => {
     const publish = await load('template-publish')
 
     // ⚠ Отказ ответом, а не исключением: исключение уходило пятисотым, и вкладка звала его обрывом связи,
-    // хотя повтор не поможет; строки в журнале не было вовсе (оба во втором круге PR #113).
+    // хотя повтор не поможет; своей строки с порталом в журнале не было (оба во втором круге PR #113).
     expect(await publish({})).toEqual({ ok: false, reason: 'list-truncated' })
     expect(writes).toEqual([])
     expect(warned).toEqual([[{ domain: 'shef.bitrix24.ru', action: 'publish', pages: 20 }, expect.stringContaining('не дочитан')]])
+    // Прочитано ровно столько, сколько журнал называет (`/code-review` в третьем круге PR #113).
+    expect(listed).toBe(20)
   })
 
   it('список не дочитан — новая версия не заводится: черновик мог лежать за пределом', async () => {
@@ -328,6 +334,7 @@ describe('публикация со стадиями', () => {
     expect(await publish({})).toEqual({ ok: false, reason: 'list-truncated' })
     expect(writes).toEqual([])
     expect(warned).toEqual([[{ domain: 'shef.bitrix24.ru', action: 'new-version', pages: 20 }, expect.stringContaining('не дочитан')]])
+    expect(listed).toBe(20)
   })
 
   it('ГЛАВНОЕ: версия со второй страницы учтена — номер следующий за ней, а не занятый', async () => {
@@ -341,6 +348,30 @@ describe('публикация со стадиями', () => {
     const publish = await load('template-publish')
 
     expect(await publish({})).toEqual({ ok: true, action: 'publish', version: 3 })
+  })
+
+  it('версии обеих страниц учтены — номер следующий за наибольшей, где бы она ни лежала', async () => {
+    // Наибольшая на первой странице: прочитав только вторую, роут выдал бы занятый номер (`/code-review`
+    // в третьем круге PR #113 — прежний тест держал лишь одну сторону).
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_VERSION: '', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:05:00+03:00' }
+    const published = (id: number, version: number) => ({ id, stageId: 'DT1038_14:SUCCESS', UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: version, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00' })
+    listPages = { 0: { items: [item, published(3, 2)], next: 50 }, 50: { items: [published(5, 1)] } }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: true, action: 'publish', version: 3 })
+  })
+
+  it('ГЛАВНОЕ: черновик с первой страницы найден — новая версия его не дублирует', async () => {
+    // Самый частый случай инварианта «перед созданием — поиск существующего»; на уровне роута его не держал
+    // ни один тест (`/code-review` в третьем круге PR #113).
+    body = { itemId: 4, action: 'new-version' }
+    const draft = { id: 9, stageId: 'DT1038_14:NEW', UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: '', UF_CRM_8_PUBLISHED_AT: '' }
+    listPages = { 0: { items: [item, draft] } }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: true, action: 'new-version', itemId: 9, entityTypeId: 1038, reused: true })
+    expect(writes).toEqual([])
   })
 
   it('ГЛАВНОЕ: черновик со второй страницы найден — новая версия его не дублирует', async () => {
