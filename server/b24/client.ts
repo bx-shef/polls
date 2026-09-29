@@ -1,6 +1,7 @@
 import { AjaxError, B24OAuth, RefreshTokenError } from '@bitrix24/b24jssdk'
 import { b24ClientId, b24ClientSecret } from '../utils/env'
 import type { PortalCaller, RestCall } from './provision'
+import { safeRefusal } from '../domain/answers/portal-errors'
 import { isDeadGrantCode } from '../domain/portals/lifecycle'
 import { PortalError, REJECTED_CODE, UNREACHABLE_CODE } from '../domain/portals/portal-error'
 import { logger } from '../utils/logger'
@@ -43,6 +44,16 @@ const SERVER_ENDPOINT = 'https://oauth.bitrix.info/rest/'
  */
 const CALL_TIMEOUT_MS = 20_000
 
+/**
+ * Key under which the SDK files a refusal of the whole request in a result (`AjaxResult`).
+ *
+ * У пакета под ним — отказ всего конверта, а не команды: имена команд даём мы, и такого среди них нет.
+ */
+const WHOLE_BATCH_KEY = 'base-error'
+
+/** The SDK's own code for a portal body whose `error` is `"0"` (`AjaxResult`, `parse-error-payload.mjs`). */
+const CODELESS_IN_BODY = 'JSSDK_RESPONSE_ERROR'
+
 export interface PortalAuth {
   memberId: string
   domain: string
@@ -64,8 +75,16 @@ export interface PortalAuth {
  * ⚠ Оба вызова возвращаются ОДНИМ объектом поверх ОДНОГО клиента. Второй клиент ради
  * пакета означал бы второй `RestrictionManager` на тот же портал — два троттлинга,
  * каждый со своей половиной картины лимитов, и оба неверные.
+ *
+ * `serverEndpoint` подменяют только тесты: продление токена идёт на их локальный сервер, а не наружу.
+ * Прежде тесты продления собирали клиент SDK руками — и проверяли не нашу обвязку, а свою копию
+ * её настроек (тестировщик во втором круге панели PR #106).
  */
-export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToken: string, refreshToken: string, expiresIn: number }) => Promise<void>): PortalCaller {
+export function makePortalCall(
+  auth: PortalAuth,
+  onRefresh?: (next: { accessToken: string, refreshToken: string, expiresIn: number }) => Promise<void>,
+  serverEndpoint = SERVER_ENDPOINT,
+): PortalCaller {
   const client = new B24OAuth(
     {
       applicationToken: auth.applicationToken,
@@ -81,7 +100,7 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
       scope: auth.scope.join(','),
       domain: auth.domain,
       clientEndpoint: `https://${auth.domain}/rest/`,
-      serverEndpoint: SERVER_ENDPOINT,
+      serverEndpoint,
       // Тариф портала. Ни вызовы, ни троттлинг, ни лицензия его не читают — при первом
       // обновлении токена SDK перезапишет значение настоящим, пришедшим с портала.
       // Ставим `'L'` (local), а не `'F'` (free): заявлять чужой тариф, которого может
@@ -117,8 +136,9 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
     // `AjaxError`, и ветка `!response.isSuccess` не достигается вовсе. Первая редакция строила
     // `PortalError` только в этой ветке — то есть почти никогда, и весь разбор кодов снова
     // работал вслепую. Нашла повторная панель ревью PR #34; первая нашла предыдущий слой
-    // той же ошибки. Мягким результатом SDK отдаёт лишь десяток «встроенных» кодов,
-    // остальное летит исключением.
+    // той же ошибки. Результатом SDK отдаёт отказ в двух случаях: код из его списка «мягких»
+    // (`ERROR_ENTITY_NOT_FOUND` и коды REST v3) и ответ 2xx с ошибкой в теле. Остальное летит
+    // исключением.
     let response
     try {
       response = await withTimeout(client.actions.v2.call.make({ method, params }), method)
@@ -127,11 +147,19 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
       throw asPortalError(error)
     }
     if (!response.isSuccess) {
-      // Мягкий отказ: тот самый десяток кодов, которые SDK не бросает. Форма ответа
-      // другая, код достаётся из набора ошибок результата (`softRefusal`).
-      throw softRefusal(response.getErrors(), response.getErrorMessages().join('; '))
+      // Отказ результатом, а не исключением. Разбор тот же (`asPortalError`): мягкий код с ответа
+      // 4xx несёт за спиной ошибку axios, ошибка из тела 2xx — нет. Ошибка в наборе есть всегда:
+      // `isSuccess` у SDK — ровно «набор ошибок пуст».
+      const [refusal] = response.getErrors()
+      throw asPortalError(refusal)
     }
-    return response.getData()
+    const data = response.getData()
+    // ⚠ Успех — это ответ С `result` («Коды ошибок»: «Есть поле `result` — вызов выполнен»). SDK
+    // считает успехом и ответ 2xx без него — страницу с полем `time`, пустой `"error": ""` рядом
+    // с `time`, — и отдаёт `{ result: undefined }`. Вызывающий прочитал бы это как «ничего нет»:
+    // пустой список типов перед созданием — второй смарт-процесс. Программист в панели PR #106.
+    if (data?.result === undefined) throw new PortalError(UNREACHABLE_CODE, `${method}: в ответе портала нет результата`)
+    return data
   }
 
   /**
@@ -151,7 +179,16 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
    * ⚠ Отказ отдельной команды пишется в журнал ЗДЕСЬ, а не у вызывающего. Иначе он
    * не пишется нигде: вызывающий видит просто отсутствующий ключ и не отличает
    * «у сделки нет компании» от «портал отказал в правах». В журнал уходит имя команды
-   * и код отказа — ни параметров, ни данных клиента.
+   * и отказ через `safeRefusal` — ни параметров, ни данных клиента. Код команды приходит
+   * из тела портала, и мимо `safeRefusal` в журнал уезжала бы любая строка, какую туда
+   * положат (безопасность в панели PR #106).
+   *
+   * ⚠ Отказ ВСЕГО пакета — не отказ команды, и он бросается, как у одиночного вызова. Исключением
+   * SDK его и бросает, а результатом отдаёт в двух случаях, что и `call`: мягкий код и ответ 2xx
+   * с ошибкой в теле. Такой отказ лежит в наборе под ключом `base-error` — тем же, под которым
+   * ошибку тела кладёт сам SDK (`AjaxResult`). Прежде он писался в журнал «командой»
+   * `base-error`, а наружу уходил пустой пакет: выпуск ссылки выдавал отказ портала за «у сделки
+   * ничего не заполнено». Нашёл `/review` в панели PR #106.
    */
   const batch: PortalCaller['batch'] = async (calls) => {
     let response
@@ -168,10 +205,13 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
     if (!response.isSuccess) {
       // ⚠ `getErrorsByKey`, а не `getErrors`: второй выбрасывает ключи, и в журнале осталось бы
       // «что-то не отработало» без ответа на вопрос ЧТО. Ключ — имя команды, как мы её назвали.
-      // Код проводится через тот же разбор, что и одиночный вызов: SDK заворачивает отказ
-      // команды в свой `JSSDK_BATCH_SUB_ERROR`, пряча настоящий код внутрь.
-      for (const [name, error] of Object.entries(response.getErrorsByKey())) {
-        logger.warn({ command: name, code: asPortalError(error).code }, 'команда пакета не отработала')
+      // Разбор тот же, что у одиночного вызова: отказ команды SDK отдаёт ошибкой, разобранной
+      // из её записи в `result_error`, — с кодом портала и без ошибки axios за спиной.
+      const refusals = response.getErrorsByKey()
+      const whole = refusals[WHOLE_BATCH_KEY]
+      if (whole !== undefined) throw asPortalError(whole)
+      for (const [name, error] of Object.entries(refusals)) {
+        logger.warn({ command: name, reason: safeRefusal(asPortalError(error)) }, 'команда пакета не отработала')
       }
     }
 
@@ -182,19 +222,7 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
 }
 
 /**
- * Привести брошенное SDK к `PortalError` с машинным кодом.
- *
- * ⚠ Порядок предпочтения кодов НЕ произвольный, и обратный порядок я уже написал —
- * его поймал `tests/unit/portal-call-errors.test.ts` в первом же прогоне. Два случая:
- *
- * | Что случилось | `.code` | `.originalError.code` | Что верно |
- * |---|---|---|---|
- * | Портал отказал методу | `ACCESS_DENIED` | `ERR_BAD_REQUEST` (axios) | внешний |
- * | Грант мёртв | `JSSDK_UNKNOWN_ERROR` | `invalid_grant` | внутренний |
- *
- * То есть внешний код верен ВСЕГДА, кроме случая, когда SDK подставил свой обобщённый:
- * отказ сервера авторизации он заворачивает в `JSSDK_UNKNOWN_ERROR`, пряча настоящий код
- * в `originalError`. Оба факта проверены зондом против настоящего SDK 2.2.0 и закреплены тестом.
+ * Turn what the SDK threw — or returned in a result — into a `PortalError` with a machine code.
  *
  * ⚠ РЕШАЕТ ИСТОЧНИК ОШИБКИ И ТЕЛО ОТВЕТА, а не имя кода и не статус (issue #99). Документация
  * велит распознавать ошибку «по составу полей в теле ответа, а не по HTTP-статусу» («Коды ошибок»).
@@ -202,10 +230,13 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
  *
  * | Источник | Как узнать | Правило |
  * |---|---|---|
- * | Ответ на вызов | `originalError` — ошибка axios | `fromAnswer`: тело ответа |
- * | Продление токена | `originalError` — `RefreshTokenError` | `fromTokenRefresh` |
- * | Отказ команды пакета | `originalError` — `AjaxError` команды | её код, как прежде |
- * | Наше исключение, код SDK | всё прочее | пусто: это не отказ портала |
+ * | Ответ на вызов | `originalError` — ошибка axios | `fromAnswer`: тело, затем код и статус |
+ * | Продление токена | `originalError` — `RefreshTokenError` | `fromTokenRefresh`: мёртвый грант или ответа нет |
+ * | Ошибка из тела без сети за спиной | `AjaxError` без ошибки axios: тело 2xx, команда пакета | `fromResult`: код портала |
+ * | Наше исключение, код SDK | всё прочее | `fromResult`: пусто, это не вердикт портала |
+ *
+ * Мягкий код с ответа 4xx (`ERROR_ENTITY_NOT_FOUND`) SDK отдаёт результатом, а не исключением, но это
+ * та же ошибка с axios за спиной — первая строка таблицы.
  *
  * Прежде всё решалось по префиксу кода — и в обе стороны неверно. Сетевой код SDK (`ECONNRESET`)
  * доезжал до `PortalError.code` как код портала, и разрыв связи на разовом шаге обустройства отмечал
@@ -215,112 +246,131 @@ export function makePortalCall(auth: PortalAuth, onRefresh?: (next: { accessToke
  * признак: страница прокси с 403 выходила «отказом портала», а обрыв посреди сжатого тела приходит
  * уже с настоящим статусом и снова становился кодом портала.
  *
+ * ⚠ Внешний и внутренний код не взаимозаменяемы — обратный порядок я однажды уже написал, и его
+ * поймал `tests/unit/portal-call-errors.test.ts` в первом же прогоне. У отказа метода снаружи код
+ * портала (`ACCESS_DENIED`), а внутри код axios (`ERR_BAD_REQUEST`); у мёртвого гранта снаружи код
+ * SDK (`JSSDK_UNKNOWN_ERROR`), а настоящий внутри, в `RefreshTokenError`. Код читается там, где его
+ * положил источник.
+ *
  * ⚠ Наш собственный таймаут (`withTimeout`) сюда тоже попадает. У него кода нет, и это
- * правильно: он не отказ портала, а наше решение не ждать дольше.
+ * правильно: он не отказ портала, а наше решение не ждать дольше. Повторяется, а в журнале
+ * называется своими словами (`safeRefusal`).
  */
 export function asPortalError(error: unknown): PortalError {
-  if (error instanceof PortalError) return error
   if (!(error instanceof Error)) return new PortalError('', String(error))
-
   const original = (error as { originalError?: unknown }).originalError
   if (isAxiosError(original)) return fromAnswer(codeOf(error), original, error.message)
-  if (original instanceof RefreshTokenError) return fromTokenRefresh(original, error.message)
-  // Отказ команды пакета (`JSSDK_BATCH_SUB_ERROR`): внутри — ошибка команды с кодом портала.
-  if (original instanceof AjaxError) return asPortalError(original)
-
-  // Ошибка без ответа за спиной. Код портала она несёт, только если это ошибка результата SDK
-  // (команда пакета, мягкий результат) с названным кодом. Всё прочее — код SDK или наше исключение
-  // (запись продлённых токенов в базу): код системы или базы здесь не код портала.
-  const code = codeOf(error)
-  return new PortalError(error instanceof AjaxError && isPortalName(code) ? code : '', error.message)
+  if (original instanceof RefreshTokenError) return fromTokenRefresh(codeOf(original), error.message)
+  return fromResult(error)
 }
 
 /**
- * Refusal of a call the portal answered — or did not: decided by the response body.
+ * Classify a call that went over the network: by the response body, then by the code and the status.
  *
- * - ответа нет, или в теле нет ключа `error` (страница прокси или WAF, тело оборвалось посреди
- *   передачи) — `UNREACHABLE_CODE`: портал не отказывал, повтор лечит;
- * - портал назвал код — он и решает. SDK берёт код из тела, а когда там пусто или `"0"`,
- *   подставляет код axios `ERR_*` (`parse-error-payload.mjs`: `error !== "0" ? error : fallbackCode`),
- *   поэтому «назвал» — это любой код, кроме кодов SDK и axios;
+ * - ответа нет, или тело — не отказ портала (страница прокси или WAF, тело оборвалось посреди
+ *   передачи, чужой JSON) — `UNREACHABLE_CODE`: портал не отказывал, повтор лечит;
+ * - портал назвал код — он и решает;
  * - портал отказал без кода — `REJECTED_CODE` на 4xx, кроме 408 и 429; 5xx, 408 и 429 без кода
  *   лечит время.
+ *
+ * Код берётся у ошибки SDK: из тела его достаёт SDK, а когда там пусто или `"0"`, подставляет код
+ * axios `ERR_*`. Пустую строку разбор тела (`parse-error-payload.mjs`) ошибкой не признаёт, и код
+ * подставляет `??` в `_convertAxiosErrorToAjaxError`; `"0"` разбор заменяет сам.
  */
-function fromAnswer(code: string, answer: AxiosLike, message: string): PortalError {
-  const response = answer.response
-  if (response === undefined || response === null || !hasErrorKey(response.data)) {
+function fromAnswer(code: string, failure: AxiosLike, message: string): PortalError {
+  const response = failure.response
+  if (response === undefined || response === null || !isPortalRefusal(response.data)) {
     return new PortalError(UNREACHABLE_CODE, message)
   }
-  if (isPortalName(code)) return new PortalError(code, message)
+  if (isPortalCode(code)) return new PortalError(code, message)
   return new PortalError(typeof response.status === 'number' && isCodelessRefusalStatus(response.status) ? REJECTED_CODE : '', message)
 }
 
 /**
- * Refusal of a token refresh: decided by whether the authorization server answered.
+ * Classify a failed token refresh: a dead grant, or no portal answer at all.
  *
- * ⚠ МЁРТВЫЙ ГРАНТ — ВСЕГДА, при любом статусе. Сетью `invalid_grant` не получить, а признание мёртвого
- * гранта — единственный способ узнать об уходе клиента: сдвинь SDK статус в новой версии (`^2.2.0`), и
- * правило по статусу молча спрятало бы его (безопасность в панели PR #106).
+ * ⚠ МЁРТВЫЙ ГРАНТ — при любом статусе ответа с ошибкой. Сетью `invalid_grant` не получить, а признание
+ * мёртвого гранта — единственный способ узнать об уходе клиента: сдвинь SDK статус в новой версии
+ * (`^2.2.0`), и правило по статусу молча спрятало бы его (безопасность в панели PR #106). Ответ 2xx
+ * с `invalid_grant` сюда не доезжает: его SDK бросает своим `SdkError` без `RefreshTokenError`,
+ * и код остаётся только в тексте (issue #108).
  *
- * Прочее: сервер авторизации ответил (статус настоящий) и назвал код — он и решает; нет — ответа
- * не было (статус 0, `status: error.response?.status || 0` в `dist/esm/oauth/auth.mjs`) или это
- * страница шлюза (код axios): `UNREACHABLE_CODE`. Тела здесь не видно — SDK его не сохраняет, — так что
- * обрыв посреди ответа сервера авторизации (статус настоящий, код сети) остаётся кодом. Ответы там
- * крошечные, и случай принят.
+ * ⚠ ВСЁ ПРОЧЕЕ — `UNREACHABLE_CODE`: токена нет, до портала вызов не дошёл, и вердикта о самом вызове
+ * никто не выносил. Так же решает наш обмен токена (`REJECTION_CODES` в `server/b24/oauth.ts`):
+ * неперечисленное — «сейчас не выяснить», в сторону повтора. Первая редакция пропускала название, если
+ * у ошибки был настоящий статус, — и пропускала лишнее: код сети при оборванном теле (`ECONNRESET`
+ * со статусом 200), `"0"`, `server_error` с 503 и `invalid_client` — нашу собственную пару ключей,
+ * которую чинит исправленная настройка, а не отметка шага навсегда. Нашли `/review`, программист,
+ * безопасность и `/code-review` во втором круге панели PR #106.
  */
-function fromTokenRefresh(refusal: RefreshTokenError, message: string): PortalError {
-  const code = codeOf(refusal)
-  if (isDeadGrantCode(code)) return new PortalError(code, message)
-  const status = statusOf(refusal)
-  return new PortalError(status !== null && status > 0 && isPortalName(code) ? code : UNREACHABLE_CODE, message)
+function fromTokenRefresh(code: string, message: string): PortalError {
+  return new PortalError(isDeadGrantCode(code) ? code : UNREACHABLE_CODE, message)
 }
 
 /**
- * Soft refusal: the codes SDK returns in a result instead of throwing.
+ * Classify an error with no network error behind it: one the SDK parsed out of a portal body, or ours.
  *
- * `JSSDK_RESPONSE_ERROR` SDK ставит, когда портал ответил ошибкой с кодом `"0"` (`ajax-result.mjs`):
- * портал отказал, но кода не назвал. Прочие коды SDK наружу как коды портала не выдаются.
+ * Из тела без сети за спиной приходят ошибка ответа 2xx (`AjaxResult`, ключ `base-error`) и отказ команды
+ * пакета — ошибка, разобранная из её записи в `result_error`. У обоих код взят из тела портала;
+ * `"0"` SDK заменяет своим `JSSDK_RESPONSE_ERROR`, и это отказ портала без кода. Всё прочее — наше
+ * исключение (запись продлённых токенов в базу, свой таймаут) или код SDK: не вердикт портала.
  */
-function softRefusal(errors: Iterable<Error>, message: string): PortalError {
-  const code = firstCode(errors)
-  if (code === 'JSSDK_RESPONSE_ERROR') return new PortalError(REJECTED_CODE, message)
-  return new PortalError(isPortalName(code) ? code : '', message)
+function fromResult(error: Error): PortalError {
+  if (!(error instanceof AjaxError)) return new PortalError('', error.message)
+  const code = codeOf(error)
+  if (code === CODELESS_IN_BODY) return new PortalError(REJECTED_CODE, error.message)
+  return new PortalError(isPortalCode(code) ? code : '', error.message)
 }
 
-/** Ошибка axios в той мере, в какой её читаем: ответ — статус и тело. */
+/** An axios error as far as we read it: the response, with its status and body. */
 interface AxiosLike {
   response?: { status?: unknown, data?: unknown } | null
 }
 
-/** Ошибка axios: SDK кладёт её в `originalError`, когда вызов ушёл по сети. */
+/** Whether a value is an axios error — what the SDK keeps in `originalError` when a call went over the network. */
 function isAxiosError(value: unknown): value is AxiosLike {
   return value !== null && typeof value === 'object' && (value as { isAxiosError?: unknown }).isAxiosError === true
 }
 
-/** Ответ портала — ошибка: в теле ключ `error` («Коды ошибок»: проверять наличие ключа, а не значение). */
-function hasErrorKey(body: unknown): boolean {
-  return body !== null && typeof body === 'object' && 'error' in body
+/**
+ * Whether a response body is a portal refusal: `error` is a string, the empty one included, or a REST v3 object with `code`.
+ *
+ * ⚠ Та же граница, что у SDK (`parse-error-payload.mjs`), и шире ровно на пустую строку: её SDK
+ * ошибкой не признаёт, а документация признаёт — «проверяйте наличие ключа `error`, а не его
+ * значение», и `400 {"error": "", "error_description": "Not found"}` — её же пример. Прочее с ключом
+ * `error` — `true`, `null`, объект без `code` — не тело портала: так отвечают шлюзы и WAF, и выдать
+ * их за окончательный отказ значило бы отпустить шаг навсегда (безопасность в панели PR #106).
+ */
+function isPortalRefusal(body: unknown): boolean {
+  if (body === null || typeof body !== 'object' || !('error' in body)) return false
+  const error = (body as { error: unknown }).error
+  return typeof error === 'string' || (error !== null && typeof error === 'object' && 'code' in error)
 }
 
-/** Код, который назвал портал, а не SDK и не axios. */
-function isPortalName(code: string): boolean {
-  return code !== '' && !code.startsWith('JSSDK_') && !code.startsWith('ERR_')
+/**
+ * Whether a code is one the portal named: the documented shape, and not a code of the SDK, axios or ours.
+ *
+ * Форма — из документации: код «состоит из цифр, латинских букв и знака подчеркивания» («Коды
+ * ошибок»). Прозу шлюза в поле `error` (`502 {"error": "Bad gateway"}`) форма отсекает, и такой
+ * ответ повторяется, а не отмечает шаг навсегда (программист в панели PR #106). Своих кодов портал
+ * назвать не может: `SHEF_*` в теле — чужая строка, а не наш диагноз (безопасность там же).
+ *
+ * ⚠ Решает только ЗА ВОРОТАМИ источника (`fromAnswer`, `fromResult`). Код сети (`ECONNRESET`)
+ * и два кода SDK без префикса (`NETWORK_ERROR`, `REQUEST_TIMEOUT`) форму проходят, но сюда
+ * не доезжают: тела портала у них нет.
+ */
+function isPortalCode(code: string): boolean {
+  return /^\w+$/.test(code) && !/^(?:JSSDK|ERR|SHEF)_/.test(code)
 }
 
-/** Машинный код объекта ошибки, если он строкой. Чужая структура — читаем защитно. */
+/** The machine code of an error object, when it is a string. A foreign structure — read defensively. */
 function codeOf(error: unknown): string {
   const code = (error as { code?: unknown } | null | undefined)?.code
   return typeof code === 'string' ? code : ''
 }
 
-/** HTTP-статус ошибки SDK (`SdkError.status`); `null` — его нет вовсе. */
-function statusOf(error: unknown): number | null {
-  const status = (error as { status?: unknown } | null | undefined)?.status
-  return typeof status === 'number' ? status : null
-}
-
 /**
- * Статус, при котором отказ портала без кода — окончательный.
+ * Whether a codeless portal refusal with this status is final.
  *
  * 4xx, кроме 408 и 429: «портал не дождался запроса» и «притормозите» лечит время. Предел запросов
  * приходит со своим кодом (`OPERATION_TIME_LIMIT`, `QUERY_LIMIT_EXCEEDED`), но без кода — тоже время.
@@ -330,7 +380,7 @@ function isCodelessRefusalStatus(status: number): boolean {
   return status >= 400 && status < 500 && status !== 408 && status !== 429
 }
 
-/** Ограничить ожидание одного вызова. Таймер снимается, чтобы не держать процесс живым. */
+/** Limit the wait for one call. The timer is cleared so it does not keep the process alive. */
 async function withTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -344,23 +394,4 @@ async function withTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
   finally {
     if (timer !== undefined) clearTimeout(timer)
   }
-}
-
-/**
- * Первый непустой машинный код из набора ошибок ответа.
- *
- * ⚠ Набор, а не одна ошибка, — потому что такова форма `Result`, а не потому что мы ждём
- * нескольких: пакетных вызовов в проекте нет ни одного, и на этом пути их быть не может.
- * Первая редакция объясняла цикл батчем — это описывало сценарий, которого в кодовой базе
- * не существует, и отправляло бы читателя искать несуществующий вызов. Нашла повторная
- * панель ревью PR #34.
- *
- * Поле читается защитно: это чужая структура, и обещания «там всегда строка» у нас нет.
- */
-function firstCode(errors: Iterable<Error>): string {
-  for (const error of errors) {
-    const code = (error as { code?: unknown }).code
-    if (typeof code === 'string' && code !== '') return code
-  }
-  return ''
 }

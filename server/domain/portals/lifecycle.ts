@@ -79,9 +79,10 @@ export function isDeadGrant(error: unknown): boolean {
 /**
  * Whether a refusal code means the portal's grant is dead.
  *
- * Нужна разборщику ошибок SDK (`asPortalError`): мёртвый грант он пропускает всегда, при любом
- * статусе ответа, — сетью такой код не получить, а сдвиг статуса в новой версии SDK не должен его
- * спрятать (безопасность в панели PR #106).
+ * Нужна разборщику ошибок SDK (`asPortalError`): продление, отвергнутое с этим кодом, он признаёт
+ * мёртвым грантом при любом статусе ответа с ошибкой, а всё прочее — бедой связи. Сетью такой код
+ * не получить, а сдвиг статуса в новой версии SDK не должен его спрятать (безопасность в панели
+ * PR #106). Ответ 2xx с этим кодом SDK прячет сам — issue #108.
  */
 export function isDeadGrantCode(code: string): boolean {
   return DEAD_GRANT_CODES.includes(code)

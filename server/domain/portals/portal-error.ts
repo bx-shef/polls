@@ -25,9 +25,11 @@
  */
 export class PortalError extends Error {
   /**
-   * Машинный код из поля `error` ответа портала — или наш: `REJECTED_CODE` (портал отказал, но кода
-   * не назвал), `UNREACHABLE_CODE` (ответа портала нет). Пусто — это не отказ портала: наше исключение,
-   * код SDK, портал ответил 5xx без кода.
+   * The machine code: the portal's own from its `error` field, or ours — `REJECTED_CODE` (the portal
+   * refused without naming a code), `UNREACHABLE_CODE` (no portal answer).
+   *
+   * Пусто — не вердикт портала, а то, что лечит повтор: наше исключение, наш таймаут, код SDK,
+   * ответ портала без кода с 5xx, 408 или 429.
    */
   readonly code: string
 
@@ -39,7 +41,8 @@ export class PortalError extends Error {
 }
 
 /**
- * Code for a refusal the portal sent without a code of its own: a 4xx body with `"error": ""` or `"0"`.
+ * Code for a refusal the portal sent without naming a code: `"error": ""` or `"0"` in a 4xx answer other
+ * than 408 and 429, or `"0"` in a 2xx one.
  *
  * ⚠ Свой код, а не пустота: пустота повторяется (`isRetryableRefusal`), а портал, ответивший отказом,
  * повтором не переубедишь. Так приходят отказы проверки («Section at index 0 does not have title.»
@@ -47,22 +50,28 @@ export class PortalError extends Error {
  * "Not found"}`, пример из «Коды ошибок» документации. Сведи их к пустоте — и портал вечно ходит
  * по кругу обустройства (issue #99, `/review` в панели PR #98).
  *
- * ⚠ Только когда ОТВЕТИЛ ПОРТАЛ: в теле есть ключ `error` — так документация и велит распознавать
- * ошибку, «по составу полей в теле ответа, а не по HTTP-статусу». Страница прокси или WAF с тем же
- * 403 — не отказ портала, а `UNREACHABLE_CODE` (безопасность в панели PR #106).
+ * ⚠ Только когда ОТВЕТИЛ ПОРТАЛ: в теле ключ `error` строкой, пустой в том числе, — так документация
+ * и велит распознавать ошибку, «по составу полей в теле ответа, а не по HTTP-статусу». Страница прокси
+ * или WAF с тем же 403 и чужой JSON вроде `{"error": true}` — не отказ портала, а `UNREACHABLE_CODE`
+ * (безопасность в панели PR #106).
  *
- * Ставят его разборщик ошибок SDK (`asPortalError`) и вебхук операторских команд (`scripts/-hook.ts`).
+ * Ставят его разборщик ошибок SDK (`asPortalError` — и для брошенного, и для отданного результатом)
+ * и вебхук операторских команд (`scripts/-hook.ts`).
  */
 export const REJECTED_CODE = 'SHEF_REJECTED'
 
 /**
- * Code for a call the portal never answered: no response, a truncated body, or a page that is not the portal's.
+ * Code for a call that got no portal answer: no response, a truncated body, a page that is not the portal's,
+ * a 2xx answer without `result`, or no fresh token — a refresh refused for any reason but a dead grant.
  *
  * ⚠ Свой код, а не пустота, ради того, кто читает журнал: `safeRefusal` называет его, и беда связи
  * не выглядит «портал отказал, код не распознан». Повторяется (`isRetryableRefusal`): сеть, прокси
  * при выкладке, обрыв посреди ответа лечит время. Прежде сетевой код SDK (`ECONNRESET`) доезжал
  * до `PortalError.code` как код портала, и разрыв связи отмечал разовый шаг обустройства навсегда
  * (issue #99). Программист и `/review` в панели PR #106 — за свой код вместо пустоты.
+ *
+ * Наш собственный таймаут (`withTimeout` в `server/b24/client.ts`) этим кодом не помечается: кода у него
+ * нет, повторяется он так же, а в журнале называется своими словами — «портал не ответил вовремя».
  */
 export const UNREACHABLE_CODE = 'SHEF_UNREACHABLE'
 
@@ -93,13 +102,14 @@ const RETRYABLE_CODES: readonly string[] = [
 ]
 
 /**
- * Whether a refusal is worth retrying later: a known transient code, or no portal code at all.
+ * Whether a refusal is worth retrying later: a known transient code, no portal answer (`UNREACHABLE_CODE`),
+ * or no code at all.
  *
  * ⚠ Ошибка без кода — это не портал сказал «нет», а наше собственное исключение или таймаут;
  * такое повтор лечит чаще всего. Не путать с отказом портала без кода: у того свой код
- * (`REJECTED_CODE`), и его не повторяют; у беды связи — тоже свой (`UNREACHABLE_CODE`), повторяемый. А отказ с кодом, которого нет в списке, повтором
- * не лечится: держать ради него незавершённую работу значило бы ходить к порталу каждый час
- * вечно. Нашёл `/review` во втором круге панели PR #87.
+ * (`REJECTED_CODE`), и его не повторяют; у беды связи — тоже свой (`UNREACHABLE_CODE`), повторяемый.
+ * А отказ с кодом, которого нет в списке, повтором не лечится: держать ради него незавершённую
+ * работу значило бы ходить к порталу каждый час вечно. Нашёл `/review` во втором круге панели PR #87.
  *
  * ⚠ Правило держится на том, что код СТАВЯТ ЧЕСТНО: ответа портала нет — `UNREACHABLE_CODE`, отказ
  * портала без кода — `REJECTED_CODE`. Это делает `asPortalError` по источнику ошибки и телу ответа;

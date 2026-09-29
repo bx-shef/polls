@@ -14,9 +14,10 @@ describe('отказ, который лечится повтором', () => {
     expect(isRetryableRefusal(new PortalError(code, 'описание портала'))).toBe(true)
   })
 
-  it('без кода портала — сеть, таймаут, наше исключение — повторять', () => {
-    expect(isRetryableRefusal(new Error('ECONNRESET'))).toBe(true)
-    expect(isRetryableRefusal('портал не ответил за 20 с')).toBe(true)
+  it('без кода — наше исключение и наш таймаут — повторять', () => {
+    // Беда связи сюда больше не относится: у неё свой код (`SHEF_UNREACHABLE`, ниже), issue #99.
+    expect(isRetryableRefusal(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }))).toBe(true)
+    expect(isRetryableRefusal(new Error('crm.item.update: портал не ответил за 20000 мс'))).toBe(true)
   })
 
   it.each(['UPDATE_DYNAMIC_TYPE_RESTRICTED', 'ACCESS_DENIED', 'INVALID_ARG_VALUE', 'insufficient_scope'])('%s — не повторять: повтор не вылечит', (code) => {

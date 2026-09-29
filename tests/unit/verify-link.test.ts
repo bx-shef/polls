@@ -239,7 +239,7 @@ describe('диагноз, который видит оператор', () => {
   })
 })
 
-describe('отказ портала не двухсотым', () => {
+describe('как вебхук читает ответ с отказом', () => {
   afterEach(() => vi.restoreAllMocks())
 
   function answer(status: number, body: string) {
@@ -275,6 +275,21 @@ describe('отказ портала не двухсотым', () => {
     const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.update').catch((error: unknown) => error)
 
     expect((failure as PortalError).code).toBe('SHEF_REJECTED')
+  })
+
+  it.each<[string, unknown]>([
+    ['пустой `error`', { error: '', error_description: 'Some error' }],
+    ['одно поле `time`', { time: { start: 1, finish: 2 } }],
+    ['не объект', null],
+  ])('ГЛАВНОЕ: двухсотый ответ без `result` (%s) — не успех, а SHEF_UNREACHABLE', async (_name, body) => {
+    // ⚠ Прежде такой ответ уезжал к переносу успехом, и пустое чтение значило бы «шаблонов нет» — перенос
+    // записал бы второй. Тот же предохранитель, что у `makePortalCall` (`/review` в панели PR #106).
+    answer(200, JSON.stringify(body))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.list').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('SHEF_UNREACHABLE')
   })
 
   it('не-2xx без тела портала — по-прежнему подсказка оператору', async () => {

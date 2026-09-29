@@ -8,7 +8,7 @@
  *
  * Имя с дефисом впереди — соглашение проекта: файл рядом с обработчиками, но сам не команда.
  */
-import { PortalError, REJECTED_CODE } from '../server/domain/portals/portal-error'
+import { PortalError, REJECTED_CODE, UNREACHABLE_CODE } from '../server/domain/portals/portal-error'
 import { safeRefusal } from '../server/domain/answers/portal-errors'
 import type { RestBatch, RestCall } from '../server/b24/provision'
 import type { PortalCall } from '../server/domain/portals/smart-processes'
@@ -78,32 +78,45 @@ export function hookCall(base: string): RestCall {
       throw new Stop(`\nПортал ответил ${response.status} на ${method}. Проверьте адрес вебхука и то, что он ещё жив.`, 1)
     }
 
-    const body = await response.json() as { error?: string, error_description?: string }
-    if (typeof body.error === 'string' && body.error !== '') {
-      // `"0"` — отказ без кода и при двухсотом ответе: тот же код, что ставит разборщик SDK (issue #99).
-      throw new PortalError(body.error === '0' ? REJECTED_CODE : body.error, body.error_description ?? '')
+    const body: unknown = await response.json()
+    const answer = (body !== null && typeof body === 'object' ? body : {}) as { error?: unknown, error_description?: unknown }
+    // Пустой `error` при 2xx отказом не считаем, как не считает и SDK: такой ответ без `result` ловит
+    // проверка ниже. Двум путям к порталу расходиться нельзя (см. `hookBatch`).
+    if (typeof answer.error === 'string' && answer.error !== '') {
+      throw new PortalError(refusalCodeOf(answer.error), typeof answer.error_description === 'string' ? answer.error_description : '')
     }
+    // ⚠ Успех — это ответ С `result` («Коды ошибок»), тот же предохранитель, что у `makePortalCall`.
+    // Без него ответ 2xx без результата — страница, пустой `"error": ""` — уезжал к переносу успехом,
+    // и пустое чтение значило бы «шаблонов нет»: записал бы второй. `/review` в панели PR #106.
+    if (!('result' in answer)) throw new PortalError(UNREACHABLE_CODE, `${method}: в ответе портала нет результата`)
     return body
   }
 }
 
 /**
- * A portal refusal in an HTTP 400 answer: the usual `{error, error_description}` body, with `""` and `"0"`
- * mapped to `REJECTED_CODE`; `null` — not one.
+ * A portal refusal in an HTTP 400 answer: the usual `{error, error_description}` body; `null` — not one.
  */
 async function portalRefusal(response: Response): Promise<PortalError | null> {
   try {
     const body = await response.json() as { error?: unknown, error_description?: unknown }
-    // Пустой код — тоже отказ портала: у `crm.activity.update` документирован и такой (`"error": ""`).
-    // И `"0"` — так портал 29.09 ответил на правку закрытого дела. Оба без имени, и оба — окончательный
-    // отказ, а не беда связи: тот же код, что ставит разборщик ошибок SDK (`REJECTED_CODE`, issue #99).
     if (typeof body.error !== 'string') return null
-    const code = body.error === '' || body.error === '0' ? REJECTED_CODE : body.error
-    return new PortalError(code, typeof body.error_description === 'string' ? body.error_description : '')
+    return new PortalError(refusalCodeOf(body.error), typeof body.error_description === 'string' ? body.error_description : '')
   }
   catch {
     return null
   }
+}
+
+/**
+ * The code a refusal is known by: the portal's own, or `REJECTED_CODE` for `""` and `"0"`.
+ *
+ * Пустой код — тоже отказ портала: у `crm.activity.update` документирован и такой (`"error": ""`).
+ * И `"0"` — так портал 29.09 ответил на правку закрытого дела (HTTP 400); при 2xx SDK читает `"0"` так же.
+ * Оба без имени, и оба — окончательный отказ, а не беда связи: тот же код, что ставит разборщик ошибок SDK
+ * (issue #99).
+ */
+function refusalCodeOf(error: string): string {
+  return error === '' || error === '0' ? REJECTED_CODE : error
 }
 
 /**
