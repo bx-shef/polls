@@ -1,4 +1,4 @@
-import { PortalError, REJECTED_CODE, UNREACHABLE_CODE, refusalCode } from '../portals/portal-error'
+import { LIST_TRUNCATED_CODE, PortalError, REJECTED_CODE, UNREACHABLE_CODE, refusalCode } from '../portals/portal-error'
 
 /**
  * Turns a portal refusal into something safe to write down.
@@ -96,7 +96,7 @@ const OWN_CODES = [
   /** Портал принял `crm.item.update` и ничего не изменил. */
   'SHEF_UPDATED_NOTHING',
   /** Списочный метод не дочитан до конца: продолжать на неполных данных нельзя. */
-  'SHEF_LIST_TRUNCATED',
+  LIST_TRUNCATED_CODE,
   /** Портал отказал без кода (`"error": ""` или `"0"`), повтор не лечит. */
   REJECTED_CODE,
   /** Ответа портала нет — сеть, обрыв посреди ответа, не тело портала, ответ без `result`, токен не продлён. */

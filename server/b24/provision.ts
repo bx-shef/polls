@@ -1,5 +1,5 @@
 import { safeRefusal } from '../domain/answers/portal-errors'
-import { isRetryableRefusal } from '../domain/portals/portal-error'
+import { isRetryableRefusal, LIST_TRUNCATED_CODE, PortalError } from '../domain/portals/portal-error'
 import { logger } from '../utils/logger'
 import {
   buildListFieldsCall,
@@ -201,6 +201,10 @@ export const SP_REFS_OPTION = 'shef_survey_sp'
  *
  * Не ожидаемый размер, а страховка от бесконечного цикла, если портал вернёт кривой `next`.
  * Сто страниц по пятьдесят — это пять тысяч смарт-процессов при лимите тарифа в тысячу.
+ *
+ * ⚠ Упёрлись — отказ (`LIST_TRUNCATED_CODE`), а не неполный список: здесь по спискам ищут перед
+ * созданием, и неполный значит второй смарт-процесс. До #110 предел был недостижим — листание вставало
+ * после первой страницы, — а с ним его достигает кривой `next` (`/review` во втором круге PR #113).
  */
 const MAX_PAGES = 100
 
@@ -594,6 +598,8 @@ export async function listAllTypes(call: RestCall): Promise<Record<string, unkno
     all.push(...readTypes(response))
     start = readNextOffset(response)
   }
+  // ⚠ По неполному списку `ensureSmartProcess` не нашёл бы наш смарт-процесс и завёл бы второй.
+  if (start !== null) throw new PortalError(LIST_TRUNCATED_CODE, `crm.type.list: список не дочитан за ${MAX_PAGES} страниц`)
   return all
 }
 
@@ -607,6 +613,8 @@ async function listAllFields(call: RestCall, spTypeId: number): Promise<Existing
     fields.push(...readFields(response))
     start = readNextOffset(response)
   }
+  // По неполному списку поле с непрочитанной страницы запланировалось бы к созданию вторым.
+  if (start !== null) throw new PortalError(LIST_TRUNCATED_CODE, `userfieldconfig.list: список не дочитан за ${MAX_PAGES} страниц`)
   return fields
 }
 
@@ -664,6 +672,8 @@ async function listAllCrmFields(call: RestCall, entity: CrmEntity): Promise<Exis
     start = readNextOffset(response)
   }
 
+  // Та же причина, что у полей смарт-процесса: поле с непрочитанной страницы завелось бы вторым.
+  if (start !== null) throw new PortalError(LIST_TRUNCATED_CODE, `${entity.listMethod}: список не дочитан за ${MAX_PAGES} страниц`)
   return fields
 }
 

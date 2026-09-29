@@ -79,6 +79,20 @@ export const REJECTED_CODE = 'SHEF_REJECTED'
 export const UNREACHABLE_CODE = 'SHEF_UNREACHABLE'
 
 /**
+ * Code for a list that did not end within our page cap: whatever was read is not the whole list.
+ *
+ * ⚠ Отказ, а не неполный список: по неполному поиск перед созданием завёл бы второй смарт-процесс,
+ * номер версии мог оказаться занятым, перенос написал бы дубль. Предел — страховка от кривого `next`,
+ * а не ожидаемый размер, и с #110 он достижим: прежде листание вставало после первой страницы.
+ * Не повторяется (`isRetryableRefusal`): сам список не укоротится, а кривой `next` — не беда связи.
+ *
+ * Ставят его листающие циклы операторских команд (`server/b24/write-templates.ts`, `publish-templates.ts`)
+ * и обустройства (`provision.ts`). Константа здесь, рядом с соседями, а не у тех, кто бросает: её называет
+ * `safeRefusal`, а домену импортировать `server/b24` нельзя (`/review` во втором круге PR #113).
+ */
+export const LIST_TRUNCATED_CODE = 'SHEF_LIST_TRUNCATED'
+
+/**
  * Достать машинный код отказа, если он есть.
  *
  * ⚠ Только из `PortalError`. Выковыривать `.code` из произвольного объекта нельзя:

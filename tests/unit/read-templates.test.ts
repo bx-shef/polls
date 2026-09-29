@@ -18,6 +18,7 @@ const TEMPLATE = { entityTypeId: 1038, id: 8, categoryId: 14 }
 const SCHEMA = JSON.stringify({ code: 'brand', title: 'Бренд', sections: [{ key: 's', title: 'Раздел', scored: false, bands: [], questions: [{ key: 'q', sourceKey: 'q', title: 'Вопрос', type: 'text', weight: 0, scored: false }] }] })
 const version = (over: Record<string, unknown>) => ({ id: 4, UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: 1, UF_CRM_8_SCHEMA: SCHEMA, UF_CRM_8_PUBLISHED_AT: '2026-09-20', ...over })
 const stageless = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter(([, message]) => String(message).includes('выключены стадии'))
+const truncated = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter(([, message]) => String(message).includes('не дочитан'))
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -57,9 +58,21 @@ describe('опубликованные шаблоны со стадиями', ()
     const found = await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
     await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
 
-    expect(found.length).toBeGreaterThan(0)
-    const truncated = warn.mock.calls.filter(([, message]) => String(message).includes('не дочитан'))
-    expect(truncated.map(([context]) => context)).toEqual([{ domain: 'fifth.bitrix24.ru', typeId: 8, pages: 20 }])
+    // Дочитано ровно до предела — по двадцать страниц на каждое из двух чтений, — и прочитанное отдано.
+    expect(call).toHaveBeenCalledTimes(40)
+    expect(found).toHaveLength(20)
+    expect(truncated(warn).map(([context]) => context)).toEqual([{ domain: 'fifth.bitrix24.ru', typeId: 8, pages: 20 }])
+  })
+
+  it('стадии выключены и список не дочитан — обе строки: у каждого предупреждения своя память', async () => {
+    // Общая память проглотила бы второе предупреждение за первым (`/code-review` во втором круге PR #113).
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const call = vi.fn(async () => ({ result: { items: [version({})] }, next: 50 }))
+
+    await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'sixth.bitrix24.ru')
+
+    expect(stageless(warn)).toHaveLength(1)
+    expect(truncated(warn)).toHaveLength(1)
   })
 
   it('стадии на месте — молчит', async () => {

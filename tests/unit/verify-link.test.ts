@@ -345,6 +345,7 @@ describe('как вебхук читает ответ портала', () => {
   it('ГЛАВНОЕ: ответ вебхука — той же формы, что у SDK-пути: `result`, `time` и `next`, без `total`', async () => {
     // Вебхук отдавал тело целиком, а SDK-путь терял `next`: в этом расхождении прожил #110 — живые проверки
     // видели листание, бой нет. Кто однажды прочтёт `total`, должен упасть в проверке (`/code-review` в PR #113).
+    // Сторону SDK держит тот же образец в `portal-call-errors.test.ts`, блок «листание списков».
     answer(200, JSON.stringify({ result: [{ ID: '1' }], total: 61, next: 50, time: { start: 1 } }))
 
     const body = await hookCall('https://portal.example/rest/1/key/')('crm.deal.list')

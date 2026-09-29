@@ -361,8 +361,9 @@ describe('отказ портала доезжает до нас с машинн
  * Листание — через настоящий SDK: `next` списочного метода доезжает до вызывающего (issue #110).
  *
  * ⚠ SDK отдаёт в `getData()` только `{ result, time }`, и до #110 `readNextOffset` на боевом пути видел
- * `null` всегда. Подделки портала в прочих тестах кладут `next` сами, а живые проверки ходят вебхуком,
- * который отдаёт тело целиком, — поэтому форму SDK держит только этот блок.
+ * `null` всегда. Подделки портала в прочих тестах кладут `next` сами, а живые проверки ходили вебхуком,
+ * который отдавал тело целиком, — поэтому форму SDK держит только этот блок. С PR #113 вебхук отдаёт
+ * ту же форму (`result`, `time`, `next`), и это держит `verify-link.test.ts`.
  */
 describe('листание списков', () => {
   const time = { start: 1, finish: 2, duration: 1 }
@@ -370,13 +371,30 @@ describe('листание списков', () => {
   it('ГЛАВНОЕ: смещение следующей страницы доезжает до вызывающего', async () => {
     reply = { status: 200, body: { result: { types: [] }, next: 50, total: 61, time } }
 
-    expect(readNextOffset(await portalTo().call('crm.type.list', {}))).toBe(50)
+    const page = await portalTo().call('crm.type.list', {})
+
+    expect(readNextOffset(page)).toBe(50)
+    // Та же форма, что у вебхука операторских команд (`verify-link.test.ts`): `result`, `time` и `next`, без
+    // `total`. В расхождении двух путей и прожил #110 (`/code-review` во втором круге PR #113).
+    expect(page).toEqual({ result: { types: [] }, time: expect.anything(), next: 50 })
   })
 
   it('последняя страница — без смещения: листание кончается', async () => {
     reply = { status: 200, body: { result: { types: [] }, total: 11, time } }
 
     expect(readNextOffset(await portalTo().call('crm.type.list', { start: 50 }))).toBeNull()
+  })
+
+  it('страница со смещением так же неизменяема, как ответ без него', async () => {
+    // `getData()` SDK отдаёт замороженный ответ; копия с `next` не должна отличаться от него ничем, кроме
+    // смещения (`/code-review` во втором круге PR #113: без проверки заморозку снимали бесследно).
+    reply = { status: 200, body: { result: { types: [] }, next: 50, total: 61, time } }
+    const page = await portalTo().call('crm.type.list', {})
+    reply = { status: 200, body: { result: { types: [] }, total: 11, time } }
+    const last = await portalTo().call('crm.type.list', { start: 50 })
+
+    expect(Object.isFrozen(page)).toBe(true)
+    expect(Object.isFrozen(last)).toBe(true)
   })
 
   it('ГЛАВНОЕ: поиск перед созданием видит смарт-процесс со второй страницы', async () => {

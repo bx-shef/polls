@@ -38,6 +38,10 @@ let body: Record<string, unknown>
 let writes: { method: string, params: Record<string, unknown> }[]
 /** Смещение следующей страницы в ответе списка шаблонов; `undefined` — страница последняя. */
 let listNext: number | undefined
+/** Страницы списка шаблонов по смещению `start`; `null` — одна страница с открытым элементом и `listNext`. */
+let listPages: Record<number, { items: Record<string, unknown>[], next?: number }> | null
+/** Что роут написал в журнал предупреждением. */
+let warned: unknown[][]
 
 async function load(route: 'template-save' | 'template-publish') {
   writes = []
@@ -48,6 +52,10 @@ async function load(route: 'template-save' | 'template-publish') {
       authId: 'фреймовый-токен',
       call: async (method: string, params: Record<string, unknown> = {}) => {
         if (method === 'crm.item.get') return { result: { item } }
+        if (method === 'crm.item.list' && listPages !== null) {
+          const page = listPages[Number(params.start ?? 0)] ?? { items: [] }
+          return { result: { items: page.items }, ...(page.next === undefined ? {} : { next: page.next }) }
+        }
         if (method === 'crm.item.list') return { result: { items: [item] }, ...(listNext === undefined ? {} : { next: listNext }) }
         writes.push({ method, params })
         return { result: { item: { id: 4 } } }
@@ -61,7 +69,7 @@ async function load(route: 'template-save' | 'template-publish') {
       return { ok: true, item: accessChecks > 1 && userItemLater !== null ? userItemLater : (userItem ?? item) }
     },
   }))
-  vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
+  vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: (...args: unknown[]) => warned.push(args), error: () => {} } }))
   vi.doMock('h3', async () => {
     const actual = await vi.importActual<typeof import('h3')>('h3')
     return { ...actual, readBody: async () => body }
@@ -77,6 +85,8 @@ async function load(route: 'template-save' | 'template-publish') {
 
 beforeEach(() => {
   listNext = undefined
+  listPages = null
+  warned = []
   userItem = null
   userItemLater = null
   accessChecks = 0
@@ -303,8 +313,11 @@ describe('публикация со стадиями', () => {
     listNext = 50
     const publish = await load('template-publish')
 
-    await expect(publish({})).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    // ⚠ Отказ ответом, а не исключением: исключение уходило пятисотым, и вкладка звала его обрывом связи,
+    // хотя повтор не поможет; строки в журнале не было вовсе (оба во втором круге PR #113).
+    expect(await publish({})).toEqual({ ok: false, reason: 'list-truncated' })
     expect(writes).toEqual([])
+    expect(warned).toEqual([[{ domain: 'shef.bitrix24.ru', action: 'publish', pages: 20 }, expect.stringContaining('не дочитан')]])
   })
 
   it('список не дочитан — новая версия не заводится: черновик мог лежать за пределом', async () => {
@@ -312,7 +325,31 @@ describe('публикация со стадиями', () => {
     listNext = 50
     const publish = await load('template-publish')
 
-    await expect(publish({})).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(await publish({})).toEqual({ ok: false, reason: 'list-truncated' })
+    expect(writes).toEqual([])
+    expect(warned).toEqual([[{ domain: 'shef.bitrix24.ru', action: 'new-version', pages: 20 }, expect.stringContaining('не дочитан')]])
+  })
+
+  it('ГЛАВНОЕ: версия со второй страницы учтена — номер следующий за ней, а не занятый', async () => {
+    // Ради этого листание и заведено: отбор по коду идёт после ответа, и на пятьдесят первом шаблоне версии
+    // уезжают на вторую страницу. Прежняя подделка отдавала одну и ту же страницу на любое смещение, и
+    // положительного многостраничного случая здесь не было (`/code-review` во втором круге PR #113).
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_VERSION: '', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:05:00+03:00' }
+    const published = (id: number, version: number) => ({ id, stageId: 'DT1038_14:SUCCESS', UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: version, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00' })
+    listPages = { 0: { items: [item, published(3, 1)], next: 50 }, 50: { items: [published(5, 2)] } }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: true, action: 'publish', version: 3 })
+  })
+
+  it('ГЛАВНОЕ: черновик со второй страницы найден — новая версия его не дублирует', async () => {
+    body = { itemId: 4, action: 'new-version' }
+    const draft = { id: 9, stageId: 'DT1038_14:NEW', UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: '', UF_CRM_8_PUBLISHED_AT: '' }
+    listPages = { 0: { items: [item], next: 50 }, 50: { items: [draft] } }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: true, action: 'new-version', itemId: 9, entityTypeId: 1038, reused: true })
     expect(writes).toEqual([])
   })
 

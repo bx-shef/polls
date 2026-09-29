@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { logger } from '../../server/utils/logger'
 
 /**
  * Стык с SDK: `server/b24/client.ts` (issue #13).
@@ -63,6 +64,7 @@ function withCredentials() {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
   probe.last = undefined
   answer = { isSuccess: true, getData: () => ({ result: true }), isMore: () => false }
 })
@@ -73,12 +75,16 @@ describe('листание: сторожок на дрейф SDK', () => {
     // SDK поле — и без сторожка листание снова тихо видело бы одну страницу, а перенос удалил бы поле
     // «Состояние» (#110; `/review` и `/code-review` в PR #113).
     withCredentials()
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
     answer = { isSuccess: true, getData: () => ({ result: { types: [] }, time: {} }), isMore: () => true }
     const { makePortalCall } = await import('../../server/b24/client')
 
     const failure = await makePortalCall(AUTH).call('crm.type.list').catch((error: unknown) => error)
 
     expect(failure).toMatchObject({ name: 'PortalError', code: '' })
+    // Громкий — своей строкой с методом: пустой код `safeRefusal` зовёт «ошибкой без кода портала», и в журнале
+    // обустройства дрейф выглядел бы бедой связи (`/review` и `/code-review` во втором круге PR #113).
+    expect(error).toHaveBeenCalledWith({ method: 'crm.type.list' }, expect.stringContaining('SDK не отдал смещение'))
   })
 })
 

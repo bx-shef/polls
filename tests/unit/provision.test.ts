@@ -1124,6 +1124,35 @@ describe('постраничные списки', () => {
 
     expect(result.addedFields).toBe(TEMPLATE_FIELDS.length + SURVEY_FIELDS.length - 2)
   })
+
+  it('ГЛАВНОЕ: список типов не кончился за предел — отказ, а не второй смарт-процесс', async () => {
+    // До #110 листание вставало после первой страницы, и предел в сто страниц был недостижим; теперь его
+    // достигает кривой `next`. По неполному списку поиск перед созданием не нашёл бы наш смарт-процесс
+    // и завёл второй — при лимите 150 на весь портал (`/review` во втором круге PR #113).
+    const p = portal({ 'crm.type.list': () => ({ result: { types: [] }, next: 50 }) })
+
+    await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(p.of('crm.type.list')).toHaveLength(100)
+    expect(p.of('crm.type.add')).toEqual([])
+  })
+
+  it('список полей смарт-процесса не кончился за предел — отказ, а не поле вторым', async () => {
+    const p = portal({ 'userfieldconfig.list': () => ({ result: { fields: [] }, next: 50 }) })
+
+    await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(p.of('userfieldconfig.add')).toEqual([])
+  })
+
+  it('список полей сделки не кончился за предел — поля оценки не заводятся, установка идёт дальше', async () => {
+    // Поля на сделке — не критический путь: их отказ установку не роняет (`ensureCrmScoreFields`), но и
+    // по неполному списку ничего не пишет.
+    const p = portal({ 'crm.deal.userfield.list': () => ({ result: [], next: 50 }) })
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(result.crmFields).toBeNull()
+    expect(p.of('crm.deal.userfield.add')).toEqual([])
+  })
 })
 
 describe('отказ при создании поля', () => {
