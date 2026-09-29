@@ -302,7 +302,7 @@ describe('связь «Опроса» со сделкой', () => {
 /**
  * Гвард под пробел, найденный панелью: раскладка карточки не была покрыта НИ ОДНИМ тестом.
  *
- * ⚠ Проверяющий сломал `hasCardConfig` (всегда «настройки нет») — и все 549 тестов остались
+ * ⚠ Проверяющий сломал проверку «настройки нет» (тогда `hasCardConfig`, теперь `readCardLayout`) — и все 549 тестов остались
  * зелёными. То есть код, который на каждой переустановке переписывал бы клиенту раскладку
  * карточки для ВСЕХ пользователей, прошёл бы гейт незамеченным. Ровно тот класс отказа,
  * про который в проекте написано «все тесты зелёные при живой регрессии».
@@ -702,9 +702,10 @@ describe('поле «Результат опроса»', () => {
       expect(info.mock.calls.some(([, message]) => String(message).includes('раскладка карточки не наша'))).toBe(true)
     })
 
-    it('отказ шага поля виджета ради чужой раскладки ревизию не держит — её не тронем и потом', async () => {
-      // Держа ревизию, портал обустраивался бы каждый час ради раскладки, которую мы не правим. И так —
-      // при любой чужой: без наших полей и вовсе без своей (второе нашёл `/code-review` мутацией).
+    it('отказ шага поля виджета держит ревизию и при чужой раскладке — повтор заводит само поле', async () => {
+      // ⚠ Второй круг снимал удержание ради чужой раскладки, и поле виджета после сбоя связи
+      // не заводилось больше никогда: донастройка не берёт порталы шестой ревизии. Ждать приходится,
+      // только пока шаг падает. Нашёл `/code-review` в третьем круге панели PR #98.
       for (const layout of [CLIENT_LAYOUT, null]) {
         const p = portal({
           'app.info': () => {
@@ -715,8 +716,31 @@ describe('поле «Результат опроса»', () => {
 
         const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
 
-        expect([result.resultField, result.card, result.cardSettled]).toEqual(['failed', 'foreign', true])
+        expect([result.resultField, result.card, result.cardSettled, reachedRevision(5, result)]).toEqual(['failed', 'foreign', false, 5])
       }
+    })
+
+    it('ГЛАВНОЕ: сбой шага виджета не замораживает наш процесс, где из наших полей остался один виджет', async () => {
+      // ⚠ Пока шаг не прошёл, свой виджет не засчитан, и раскладка выглядит чужой. Не держи сбой
+      // ревизию, портал отметился бы шестой, и ни ссылка, ни флаг виджета не встали бы никогда.
+      // Нашли `/review` и `/code-review` в третьем круге панели PR #98.
+      const layout = [{ type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: FIELD }] }]
+      const failing = portal({
+        'app.info': () => {
+          throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        },
+        'crm.item.details.configuration.get': { result: layout },
+      })
+      const first = await provisionSmartProcesses(failing.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
+      expect([first.card, reachedRevision(5, first)]).toEqual(['foreign', 5])
+
+      const healed = portal({ ...withField(OUR_TYPE), 'crm.item.details.configuration.get': { result: layout } })
+      const second = await provisionSmartProcesses(healed.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
+
+      expect([second.card, reachedRevision(5, second)]).toEqual(['written', 6])
+      expect(healed.of('crm.item.details.configuration.set')[0]!.params.data).toEqual([
+        { type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: FIELD, optionFlags: 1 }, { name: `UF_CRM_${SURVEY.id}_LINK` }] },
+      ])
     })
   })
 
@@ -734,9 +758,9 @@ describe('поле «Результат опроса»', () => {
     expect(warn.mock.calls.some(([, message]) => String(message).includes('непонятной формы'))).toBe(true)
   })
 
-  it('отказ шага поля виджета ради непонятной раскладки ревизию не держит — повтор её не изменит', async () => {
-    // Портал обустраивался бы каждый час ради карточки, которую не тронет и следующий прогон.
-    // Нашёл `/code-review` во втором круге панели PR #98.
+  it('отказ шага поля виджета держит ревизию и при непонятной раскладке — повтор заводит само поле', async () => {
+    // ⚠ Второй круг снимал удержание ради непонятной раскладки, и поле виджета после сбоя связи
+    // не заводилось больше никогда. Нашёл `/code-review` в третьем круге панели PR #98.
     const p = portal({
       'app.info': () => {
         throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
@@ -746,7 +770,7 @@ describe('поле «Результат опроса»', () => {
 
     const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
 
-    expect([result.resultField, result.card, result.cardSettled]).toEqual(['failed', 'unreadable', true])
+    expect([result.resultField, result.card, result.cardSettled]).toEqual(['failed', 'unreadable', false])
   })
 })
 

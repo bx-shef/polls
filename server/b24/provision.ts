@@ -82,6 +82,7 @@ import {
   type PortalCall,
   type SmartProcessField,
   type SmartProcessRef,
+  type SurveyCardInput,
 } from '../domain/portals/smart-processes'
 import {
   SURVEY_STAGES,
@@ -248,9 +249,10 @@ export interface ProvisionResult extends SmartProcessRefs {
    * Вызывающий обязан это залогировать и сохранить: заголовки «Опрос» и «Шаблон опроса» —
    * обычные слова, и совпасть может чужой смарт-процесс, заведённый клиентом руками. Отличить
    * его от нашего, потерявшего идентификатор, нечем — а дальше мы допишем в него свои поля.
-   * Переименовывать и перенастраивать усыновлённый мы не станем никогда (`settleSmartProcesses`).
-   * Исключение одно — раскладка карточки, где уже стоят наши поля: её доводит разовая правка
-   * ревизии 6 (`planSurveyCard`, там же — почему).
+   * Переименовывать и перенастраивать усыновлённый мы не станем (`settleSmartProcesses`). Что мы
+   * в нём всё-таки делаем — каждое осознанно: дописываем свои поля и поле виджета, ставим связь
+   * со сделкой, снимаем своё поле «Состояние» ревизией 5 (`dropStateField`, там же — почему)
+   * и доводим раскладку карточки, где уже стоят наши поля (`planSurveyCard`).
    */
   adoptedTemplate: boolean
   adoptedSurvey: boolean
@@ -276,8 +278,7 @@ export interface ProvisionResult extends SmartProcessRefs {
   /**
    * Доделана ли разовая правка карточки ревизии 6. `false` — отказ, который лечится повтором, у самой
    * правки или у шага поля виджета: вызывающий НЕ отмечает ревизию 6, и донастройка вернётся
-   * (`reachedRevision`). Только ниже шестой ревизии (`cardDue`) и только если правка вообще будет:
-   * чужую (`foreign`) и непонятную (`unreadable`) раскладку повтор не изменит.
+   * (`reachedRevision`). Только ниже шестой ревизии (`cardDue`).
    */
   cardSettled: boolean
   /**
@@ -799,7 +800,7 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 async function ensureCardConfig(
   call: RestCall,
   ref: SmartProcessRef,
-  card: { widget: boolean, due: boolean, adopted: boolean },
+  card: Omit<SurveyCardInput, 'staged'>,
 ): Promise<Exclude<CardOutcome, 'failed'>> {
   const read = buildReadCardConfigCall(ref.entityTypeId)
   const plan = planSurveyCard(await call(read.method, read.params), ref.id, { ...card, staged: isStaged(ref) })
@@ -901,10 +902,12 @@ export async function provisionSmartProcesses(
   }
   // ⚠ Повторимый отказ шага поля виджета держит разовую правку так же, как её собственный: без поля
   // правка поставила бы одну ссылку, JSON остался бы, ревизия 6 отметилась бы — и к карточке мы не
-  // вернулись бы никогда. Но не ради чужой и не ради непонятной раскладки: их мы не тронем и потом,
-  // и держать ради них портал значило бы обустраивать его каждый час впустую. Нашли `/review`
-  // и `/code-review` в панели PR #98, непонятную — `/code-review` во втором круге.
-  if (cardDue && card !== 'foreign' && card !== 'unreadable' && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
+  // вернулись бы никогда (`/review` и `/code-review` в панели PR #98). Держит при ЛЮБОМ исходе
+  // карточки: повтор — ещё и единственная попытка завести само поле, а ждать приходится, только пока
+  // шаг падает. Второй круг снимал удержание ради чужой и непонятной раскладки — и поле виджета
+  // после сбоя связи не заводилось больше никогда: донастройка не берёт порталы шестой ревизии.
+  // Вернул `/code-review` в третьем круге; разбор — `docs/PROCESS.md`, раздел 9.
+  if (cardDue && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
 
   // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
   // в карточке «Опроса», а он дочерняя сущность: ни фильтр в списке сделок, ни робот

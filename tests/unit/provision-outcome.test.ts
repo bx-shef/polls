@@ -171,6 +171,20 @@ describe('исход обустройства', () => {
     expect(p.calls).toEqual(['user.admin'])
   })
 
+  it('исход карточки — в итоговой строке журнала, рядом с доменом', async () => {
+    // Строки самой раскладки несут только номер типа, а он портала не называет: непонятную или чужую
+    // раскладку к порталу привязывает только эта строка. Нашёл `/code-review` в третьем круге
+    // панели PR #98.
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({ 'crm.item.details.configuration.get': { result: { 0: 'не список' } } })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const line = info.mock.calls.find(([, message]) => message === 'смарт-процессы обустроены')
+    expect(line?.[0]).toMatchObject({ domain: 'shef.bitrix24.ru', card: 'unreadable' })
+  })
+
   it('на счастливом пути — `ok`', async () => {
     const p = portal()
 
