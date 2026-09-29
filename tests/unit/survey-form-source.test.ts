@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest'
  */
 
 const SOURCE = readFileSync(new URL('../../app/pages/uf/survey-form.vue', import.meta.url), 'utf8')
+/** Каркас фрейма, общий у обоих полей своего типа: связь с порталом живёт в нём (PR #100). */
+const PLUMBING = readFileSync(new URL('../../app/composables/useFieldWidget.ts', import.meta.url), 'utf8')
 
 describe('исходник поля «Анкета»', () => {
   it('не строит разметку из данных', () => {
@@ -20,7 +22,9 @@ describe('исходник поля «Анкета»', () => {
 
   it('не пишет значение в поле', () => {
     // ⚠ Нередактируемость поля держится на том, что `setValue` не зовётся нигде.
-    expect(SOURCE).not.toMatch(/\.setValue\s*\(/)
-    expect(SOURCE).not.toMatch(/placement\.call\s*\(/)
+    for (const source of [SOURCE, PLUMBING]) {
+      expect(source).not.toMatch(/\.setValue\s*\(/)
+      expect(source).not.toMatch(/placement\.call\s*\(/)
+    }
   })
 })

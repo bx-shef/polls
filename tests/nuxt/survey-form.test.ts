@@ -138,6 +138,40 @@ describe('поле «Анкета»', () => {
     expect(page.text()).toContain('«[sh] Конструктор»')
   })
 
+  it('снятую с публикации версию так и называет — стадию двигают, а состояние наше', async () => {
+    // Без этого снятая версия читалась бы как действующая: состояние приходило, а страница его
+    // не показывала. Нашли программист, `/review` и `/code-review` в панели PR #100.
+    reply = { ok: true, form: { ...PUBLISHED.form, state: 'retired' } }
+
+    const page = await mountSuspended(await SurveyForm())
+    await settle()
+
+    expect(page.text()).toContain('версия 3 · снята с публикации')
+  })
+
+  it('одинаковые диапазоны черновика — оба на виду, каждый своим текстом', async () => {
+    // Черновик законно хранит и такие: проверка диапазонов идёт при публикации. Ключ строки у них —
+    // с номером (`/code-review` в панели PR #100); повторённый ключ этот тест не поймал бы: список
+    // рисуется один раз, а повтор Vue замечает только при перерисовке. Держим то, что видно человеку.
+    const section = { ...PUBLISHED.form.sections[0]!, bands: [{ from: 0, to: 10, text: 'Первый' }, { from: 0, to: 10, text: 'Второй' }] }
+    reply = { ok: true, form: { ...PUBLISHED.form, state: 'draft', version: 0, sections: [section] } }
+
+    const page = await mountSuspended(await SurveyForm())
+    await settle()
+
+    expect(page.text()).toContain('0–10: Первый')
+    expect(page.text()).toContain('0–10: Второй')
+  })
+
+  it('без доступа говорит честно: или нет прав, или анкету удалили', async () => {
+    reply = { ok: false, reason: 'denied' }
+
+    const page = await mountSuspended(await SurveyForm())
+    await settle()
+
+    expect(page.text()).toContain('У вас нет доступа к этой анкете — или её удалили.')
+  })
+
   it('отдаёт серверу номер элемента и оба признака карточки', async () => {
     placementOptions = { MODE: 'view', ENTITY_ID: 'CRM_7', ENTITY_VALUE_ID: '26', ENTITY_DATA: { entityTypeId: 1044, entityId: 26 } }
 

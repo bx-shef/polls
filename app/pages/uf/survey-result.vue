@@ -1,9 +1,6 @@
 <script setup lang="ts">
-import { MessageCommands, initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { DEAL_TAB_TITLE, SURVEY_SP_TITLE } from '#shared/portal-names'
-import { framePass } from '~/utils/frame-auth'
-import { isPreview, portalGate } from '~/utils/in-portal'
-import { fieldContext } from '~/utils/placement'
+import { useFieldWidget } from '~/composables/useFieldWidget'
 
 /**
  * The survey-result field in the survey card (`SURVEY_SP_TITLE`): the survey result, in words.
@@ -13,12 +10,13 @@ import { fieldContext } from '~/utils/placement'
  * не мог. Данные лежат в тех же JSON-полях элемента; страница их только показывает.
  *
  * ⚠ ТОЛЬКО ПОКАЗЫВАЕТ. Значение полю своего типа задаёт единственный вызов — `setValue`
- * из его же фрейма, — и здесь его нет. Поэтому поле нередактируемо по построению, в том числе
- * в режиме правки карточки. Сверх того с ревизии 4 поле закрыто и флагом `editInList: 'N'`,
- * как все наши поля (разбор — в `server/domain/portals/userfield-type.ts`).
+ * из его же фрейма, — и его нет ни здесь, ни в общем каркасе (`useFieldWidget`). Поэтому поле
+ * нередактируемо по построению, в том числе в режиме правки карточки. Сверх того с ревизии 4
+ * поле закрыто и флагом `editInList: 'N'`, как все наши поля (`server/domain/portals/userfield-type.ts`).
  *
- * ⚠ ВЫСОТУ ПОЛЯ СТРАНИЦА ЗАДАЁТ САМА. Регистрация типа знает только начальную высоту, а число
- * вопросов у анкет разное: одна константа дала бы либо обрезанный результат, либо пустое место.
+ * ⚠ ВЫСОТУ ПОЛЯ СТРАНИЦА ЗАДАЁТ САМА (`useFieldWidget`). Регистрация типа знает только начальную
+ * высоту, а число вопросов у анкет разное: одна константа дала бы либо обрезанный результат,
+ * либо пустое место.
  *
  * С ревизии 6 поле стоит в карточке ВМЕСТО JSON-полей — второй шаг #81, после того как владелец
  * 28.09 живьём увидел, что пустое поле своего типа портал рисует. Разбор — `docs/PROCESS.md`, раздел 9.
@@ -76,143 +74,20 @@ const WAITING: Record<string, string> = {
 }
 const WAITING_DEFAULT = 'Клиент ещё не прошёл опрос. Результат появится здесь сразу после ответа.'
 
-/**
- * Ниже этого поле не сжимается, пикселей.
- *
- * Строка «клиент ещё не ответил» короче начальной высоты вчетверо; без нижней границы поле
- * схлопнулось бы до полоски, и соседние поля карточки прыгали бы при каждом открытии.
- */
-const MIN_HEIGHT = 60
-
 definePageMeta({ layout: 'portal' })
-
-const route = useRoute()
-
-const resolved = ref(false)
-const inPortal = ref(false)
-const loading = ref(true)
-const failure = ref('')
-const editing = ref(false)
-const unsaved = ref(false)
-const result = ref<SurveyResultReply | null>(null)
-
-/** Корень содержимого — по нему меряется высота, см. `fit`. */
-const root = ref<HTMLElement | null>(null)
-
-const gate = computed(() => portalGate({
-  resolved: resolved.value,
-  inPortal: inPortal.value,
-  preview: isPreview(route.query.preview),
-}))
-
-/** Связь с порталом. `undefined` — не внутри портала либо ещё не установлена. */
-let frame: B24Frame | undefined
 
 useHead({ title: 'Результат опроса' })
 
-onMounted(async () => {
-  try {
-    frame = await initializeB24Frame()
-    inPortal.value = true
-  }
-  catch {
-    // Не внутри портала. Это не ошибка — это единственный способ узнать, где мы.
-    inPortal.value = false
-  }
-  finally {
-    resolved.value = true
-  }
-
-  if (frame === undefined) {
-    loading.value = false
-    return
-  }
-
-  const context = fieldContext(frame.placement.options)
-  editing.value = context.editing
-
-  try {
-    if (context.itemId === null) {
-      // ⚠ Новая карточка бывает только в режиме правки: там элемента ещё нет, и это не ошибка.
-      // В режиме просмотра номер элемента обязан быть — его отсутствие значит, что портал
-      // прислал контекст не в той форме, и «клиент ещё не прошёл опрос» было бы неправдой
-      // на заполненном опросе. Нашёл `/review`.
-      if (context.editing) unsaved.value = true
-      else failure.value = 'Портал не сообщил, какой опрос открыт. Обновите карточку.'
-      return
-    }
-
-    const pass = await framePass(frame.auth)
-    if (pass === null) throw new Error('нет данных авторизации фрейма')
-
-    const reply = await $fetch<SurveyResultReply>('/api/portal/survey-result', {
-      method: 'POST',
-      body: {
-        memberId: pass.memberId,
-        authId: pass.authId,
-        itemId: context.itemId,
-        // Оба признака карточки — серверу: проверять, чья она, должен он, а не страница.
-        entityId: context.entityId,
-        entityTypeId: context.entityTypeId,
-      },
-    })
-    if (!reply.ok) {
-      failure.value = REFUSALS[reply.reason ?? ''] ?? 'Не удалось показать результат опроса. Обновите карточку.'
-      return
-    }
-    result.value = reply
-  }
-  catch {
-    failure.value = 'Не удалось получить результат опроса с портала. Обновите карточку.'
-  }
-  finally {
-    loading.value = false
-    await fit()
-    watchSize()
-  }
+// Каркас фрейма — общий с полем «Анкета» (`useFieldWidget`): высота, ширина, контекст портала, отказы.
+const { gate, loading, failure, editing, unsaved, reply: result, root } = useFieldWidget<SurveyResultReply>({
+  endpoint: '/api/portal/survey-result',
+  refusals: REFUSALS,
+  texts: {
+    noItem: 'Портал не сообщил, какой опрос открыт. Обновите карточку.',
+    refused: 'Не удалось показать результат опроса. Обновите карточку.',
+    unreachable: 'Не удалось получить результат опроса с портала. Обновите карточку.',
+  },
 })
-
-/** Слежка за размером содержимого. Снимается вместе со страницей. */
-let observer: ResizeObserver | undefined
-onBeforeUnmount(() => observer?.disconnect())
-
-/**
- * Подогнать высоту поля под содержимое.
- *
- * ⚠ Мерим СВОЙ корень, а не документ. Оболочка портальных страниц стоит `min-h-screen`,
- * то есть документ во фрейме никогда не ниже самого фрейма: померив его (`fitWindow`), поле
- * могло бы только расти — после скелета в двести двадцать пикселей строка «ещё не ответил»
- * стояла бы над пустым местом.
- *
- * ⚠ Ширина — `'100%'`, как у `fitWindow`, а не числом. `resizeWindowAuto` шлёт ширину в пикселях,
- * и портал прибил бы фрейм к ширине первого показа: сузили слайдер — поле вылезло за колонку,
- * расширили — пустое место справа. Нашли `/review` и `/code-review`. Поэтому команда та же, что
- * у `fitWindow`, а высота — наша.
- */
-async function fit() {
-  if (frame === undefined || root.value === null) return
-  await nextTick()
-  const height = Math.max(root.value.scrollHeight, root.value.offsetHeight, MIN_HEIGHT)
-  try {
-    await frame.parent.message.send(MessageCommands.resizeWindow, { width: '100%', height, isSafely: true })
-  }
-  catch {
-    // Портал не подогнал размер — поле останется начальной высоты, с прокруткой внутри.
-    // Результат при этом виден целиком, так что это косметика, а не отказ.
-  }
-}
-
-/**
- * Подгонять высоту и дальше — когда содержимое меняет размер.
- *
- * Ширина у поля резиновая, и при смене ширины карточки длинные ответы переносятся иначе:
- * подогнав высоту один раз, мы отправили бы их под внутреннюю прокрутку.
- */
-function watchSize() {
-  if (root.value === null || typeof ResizeObserver === 'undefined') return
-  observer = new ResizeObserver(() => void fit())
-  observer.observe(root.value)
-}
 </script>
 
 <template>

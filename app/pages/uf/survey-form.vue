@@ -1,20 +1,16 @@
 <script setup lang="ts">
-import { MessageCommands, initializeB24Frame, type B24Frame } from '@bitrix24/b24jssdk'
 import { TEMPLATE_SP_TITLE, TEMPLATE_TAB_TITLE } from '#shared/portal-names'
-import { framePass } from '~/utils/frame-auth'
-import { isPreview, portalGate } from '~/utils/in-portal'
-import { fieldContext } from '~/utils/placement'
+import { useFieldWidget } from '~/composables/useFieldWidget'
 import { DATE_HINT, QUESTION_TYPES, type QuestionType } from '~/utils/question-labels'
 
 /**
  * The «Анкета» field in the template card (`TEMPLATE_SP_TITLE`): the survey itself, in words (#84, п. 18).
  *
- * ⚠ ЭТО ПОЛЕ НАШЕГО ТИПА, как «Результат опроса» в карточке «Результата опросов» (`survey-result.vue`,
- * там же — всё про фрейм, высоту и `setValue`). Портал открывает страницу на месте значения поля —
- * вместо схемы-JSON, которую человек прочитать не мог. Данные лежат в той же схеме элемента.
+ * ⚠ ЭТО ПОЛЕ НАШЕГО ТИПА, как «Результат опроса» в карточке «Результата опросов», и каркас фрейма
+ * у них общий (`useFieldWidget`, там же — всё про высоту, ширину и `setValue`). Портал открывает
+ * страницу на месте значения поля — вместо схемы-JSON, которую человек прочитать не мог.
  *
  * ⚠ ТОЛЬКО ПОКАЗЫВАЕТ. Править анкету — во вкладке конструктора: там проверки, черновик и публикация.
- * Значение полю задаёт единственный вызов, `setValue` из его же фрейма, и здесь его нет.
  */
 
 interface FormQuestion {
@@ -33,21 +29,26 @@ interface FormSection {
   bands: { from: number, to: number, text: string }[]
 }
 
+interface FormView {
+  code: string
+  /** Ноль — версии ещё нет: черновик, которого никто не публиковал. */
+  version: number
+  /** `draft` | `published` | `retired` | пусто — не разобрали (`templateStateOf` на сервере). */
+  state: string
+  title: string
+  sections: FormSection[]
+}
+
 interface SurveyFormReply {
   ok: boolean
   reason?: string
-  form?: {
-    code: string
-    /** Ноль — версии ещё нет: черновик, которого никто не публиковал. */
-    version: number
-    state: string
-    title: string
-    sections: FormSection[]
-  }
+  form?: FormView
 }
 
 /** Отказы сервера — каждый своим текстом: чинятся они по-разному. */
 const REFUSALS: Record<string, string> = {
+  // Портал не различает «не видит» и «удалили» — отказ один, и слова честно называют оба случая.
+  'denied': 'У вас нет доступа к этой анкете — или её удалили.',
   'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
   'foreign-card': `Это поле показывает анкету и работает только в карточке «${TEMPLATE_SP_TITLE}». Здесь его можно удалить из карточки.`,
   // ⚠ Отдельно от `foreign-card`: это сбой встраивания на НАСТОЯЩЕЙ карточке, и совет
@@ -56,122 +57,35 @@ const REFUSALS: Record<string, string> = {
   'no-item': 'Анкета не найдена. Возможно, карточку удалили.',
 }
 
-/** Ниже этого поле не сжимается, пикселей: по той же причине, что у «Результата опроса». */
-const MIN_HEIGHT = 60
+/**
+ * Версия и состояние — одной строкой в шапке поля.
+ *
+ * ⚠ Состояние — наше, по закрытым полям (`templateStateOf`), а не стадия: стадию двигают в канбане.
+ * Без него снятая с публикации версия читалась бы как действующая. Нашли программист, `/review`
+ * и `/code-review` в панели PR #100: состояние приходило с сервера, а страница его не показывала.
+ */
+function versionNote(form: FormView): string {
+  if (form.state === 'retired') return `версия ${form.version} · снята с публикации`
+  if (form.state === 'draft') return form.version > 0 ? `черновик версии ${form.version}` : 'черновик, версии ещё нет'
+  return form.version > 0 ? `версия ${form.version}` : 'черновик, версии ещё нет'
+}
 
 definePageMeta({ layout: 'portal' })
 
-const route = useRoute()
-
-const resolved = ref(false)
-const inPortal = ref(false)
-const loading = ref(true)
-const failure = ref('')
-const editing = ref(false)
-const unsaved = ref(false)
-const form = ref<SurveyFormReply['form'] | null>(null)
-
-/** Корень содержимого — по нему меряется высота, см. `fit`. */
-const root = ref<HTMLElement | null>(null)
-
-const gate = computed(() => portalGate({
-  resolved: resolved.value,
-  inPortal: inPortal.value,
-  preview: isPreview(route.query.preview),
-}))
-
-/** Связь с порталом. `undefined` — не внутри портала либо ещё не установлена. */
-let frame: B24Frame | undefined
-
 useHead({ title: 'Анкета' })
 
-onMounted(async () => {
-  try {
-    frame = await initializeB24Frame()
-    inPortal.value = true
-  }
-  catch {
-    // Не внутри портала. Это не ошибка — это единственный способ узнать, где мы.
-    inPortal.value = false
-  }
-  finally {
-    resolved.value = true
-  }
-
-  if (frame === undefined) {
-    loading.value = false
-    return
-  }
-
-  const context = fieldContext(frame.placement.options)
-  editing.value = context.editing
-
-  try {
-    if (context.itemId === null) {
-      // Новая карточка бывает только в режиме правки: элемента ещё нет, и это не ошибка.
-      if (context.editing) unsaved.value = true
-      else failure.value = 'Портал не сообщил, какая анкета открыта. Обновите карточку.'
-      return
-    }
-
-    const pass = await framePass(frame.auth)
-    if (pass === null) throw new Error('нет данных авторизации фрейма')
-
-    const reply = await $fetch<SurveyFormReply>('/api/portal/survey-form', {
-      method: 'POST',
-      body: {
-        memberId: pass.memberId,
-        authId: pass.authId,
-        itemId: context.itemId,
-        // Оба признака карточки — серверу: проверять, чья она, должен он, а не страница.
-        entityId: context.entityId,
-        entityTypeId: context.entityTypeId,
-      },
-    })
-    if (!reply.ok || reply.form === undefined) {
-      failure.value = REFUSALS[reply.reason ?? ''] ?? 'Не удалось показать анкету. Обновите карточку.'
-      return
-    }
-    form.value = reply.form
-  }
-  catch {
-    failure.value = 'Не удалось получить анкету с портала. Обновите карточку.'
-  }
-  finally {
-    loading.value = false
-    await fit()
-    watchSize()
-  }
+// Каркас фрейма — общий с «Результатом опроса» (`useFieldWidget`): высота, ширина, контекст портала, отказы.
+const { gate, loading, failure, editing, unsaved, reply, root } = useFieldWidget<SurveyFormReply>({
+  endpoint: '/api/portal/survey-form',
+  refusals: REFUSALS,
+  texts: {
+    noItem: 'Портал не сообщил, какая анкета открыта. Обновите карточку.',
+    refused: 'Не удалось показать анкету. Обновите карточку.',
+    unreachable: 'Не удалось получить анкету с портала. Обновите карточку.',
+  },
 })
 
-/** Слежка за размером содержимого. Снимается вместе со страницей. */
-let observer: ResizeObserver | undefined
-onBeforeUnmount(() => observer?.disconnect())
-
-/**
- * Подогнать высоту поля под содержимое — своим корнем и шириной `'100%'`.
- *
- * Почему именно так, разобрано у `fit` в `survey-result.vue`: документ во фрейме не ниже самого фрейма,
- * а ширина числом прибила бы поле к ширине первого показа.
- */
-async function fit() {
-  if (frame === undefined || root.value === null) return
-  await nextTick()
-  const height = Math.max(root.value.scrollHeight, root.value.offsetHeight, MIN_HEIGHT)
-  try {
-    await frame.parent.message.send(MessageCommands.resizeWindow, { width: '100%', height, isSafely: true })
-  }
-  catch {
-    // Портал не подогнал размер — поле останется начальной высоты, с прокруткой внутри.
-  }
-}
-
-/** Подгонять высоту и дальше: при смене ширины карточки длинные формулировки переносятся иначе. */
-function watchSize() {
-  if (root.value === null || typeof ResizeObserver === 'undefined') return
-  observer = new ResizeObserver(() => void fit())
-  observer.observe(root.value)
-}
+const form = computed(() => reply.value?.form ?? null)
 </script>
 
 <template>
@@ -215,7 +129,7 @@ function watchSize() {
       </p>
 
       <p class="mb-3 font-semibold">
-        {{ form.title || form.code }}<span class="font-normal opacity-70"> · {{ form.version > 0 ? `версия ${form.version}` : 'черновик, версии ещё нет' }}</span>
+        {{ form.title || form.code }}<span class="font-normal opacity-70"> · {{ versionNote(form) }}</span>
       </p>
 
       <p
@@ -264,9 +178,12 @@ function watchSize() {
           v-if="section.bands.length > 0"
           class="mt-2 flex flex-col gap-1 border-t border-(--ui-color-design-outline-stroke) pt-2"
         >
+          <!-- Ключ — с номером строки: у черновика бывают одинаковые диапазоны (проверка идёт при
+               публикации), и ключ из одних границ повторился бы. Список здесь рисуется один раз,
+               но повторённый ключ — ошибка вёрстки, которая выстрелит при первой перерисовке. -->
           <li
-            v-for="band in section.bands"
-            :key="`${band.from}-${band.to}`"
+            v-for="(band, bandIndex) in section.bands"
+            :key="`${bandIndex}-${band.from}-${band.to}`"
             class="text-sm opacity-70"
           >
             {{ band.from }}–{{ band.to }}: {{ band.text }}

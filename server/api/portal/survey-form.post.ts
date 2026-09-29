@@ -1,7 +1,8 @@
-import { defineEventHandler, readBody } from 'h3'
+import { createError, defineEventHandler, readBody } from 'h3'
+import { verifyItemAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import type { SurveySection } from '../../domain/surveys/model'
-import { buildGetTemplateItemCall, readTemplateItem } from '../../domain/templates/portal-calls'
+import { readTemplateItem } from '../../domain/templates/portal-calls'
 import { logger } from '../../utils/logger'
 import { positiveInteger, readCardOwner, refuseForeignCard } from './-card-owner'
 import { openPortalSession } from './-session'
@@ -9,10 +10,13 @@ import { openPortalSession } from './-session'
 /**
  * Reads one survey template and hands the card field «Анкета» the survey in words (#84, п. 18).
  *
- * ⚠ ЭЛЕМЕНТ ЧИТАЕТСЯ ВЫЗОВОМ ПРИЛОЖЕНИЯ — тот же осознанный размен, что у вкладки конструктора
- * (`template.post.ts`, там же — разбор): в «Шаблоне опроса» лежат наши анкеты, а не данные
- * клиентов, и открывает поле сам портал — тому, кому карточка доступна. Виджет результата, наоборот,
- * читает токеном сотрудника (`survey-result.post.ts`): там ответы клиента.
+ * ⚠ ЭЛЕМЕНТ ЧИТАЕТСЯ ТОКЕНОМ СОТРУДНИКА, одним вызовом с проверкой доступа (`verifyItemAccess`), —
+ * как у виджета результата, а НЕ вызовом приложения, как у вкладки конструктора (`template.post.ts`).
+ * Номер элемента присылает страница, и вызовом приложения — с правами администратора — любой
+ * сотрудник с фреймовым пропуском прочитал бы любую анкету портала, включая черновики, мимо прав
+ * CRM на сам элемент. У вкладки этот размен принят; поле же видно в каждой карточке «Шаблона»,
+ * и подставить чужой номер здесь проще. Решать, что человеку видно, обязан портал. Нашла
+ * безопасность в панели PR #100; заодно ушёл отказ 500 на удалённом элементе (`/code-review`).
  *
  * ⚠ ПОЛЕ МОГУТ ЗАВЕСТИ НЕ ТАМ — как и «Результат опроса»: тип виден администратору в списке типов,
  * и без проверки владельца поле на сделке показало бы анкету с номером этой сделки
@@ -39,8 +43,15 @@ export default defineEventHandler(async (event) => {
   const refused = refuseForeignCard(readCardOwner(body), refs.template)
   if (refused !== null) return { ok: false as const, reason: refused }
 
-  const get = buildGetTemplateItemCall(refs.template, itemId)
-  const item = readTemplateItem(await session.call(get.method, get.params), refs.template)
+  const access = await verifyItemAccess(session.portal.domain, session.authId, refs.template.entityTypeId, itemId)
+  if (!access.ok) {
+    if (access.reason === 'unreachable') {
+      throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
+    }
+    // Не видит или элемента нет — портал на оба отвечает отказом, и различить их нам нечем.
+    return { ok: false as const, reason: 'denied' as const }
+  }
+  const item = readTemplateItem({ result: { item: access.item } }, refs.template)
   if (item === null) return { ok: false as const, reason: 'no-item' as const }
 
   const sections = (item.schema?.sections ?? []).map(viewOf)

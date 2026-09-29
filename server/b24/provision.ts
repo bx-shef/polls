@@ -858,6 +858,47 @@ async function ensureCardConfig(
 }
 
 /**
+ * Lays out one of our cards (`ensureCardConfig`) and tells whether its one-time fix is done.
+ *
+ * ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение работает
+ * целиком, просто карточка выглядит хуже. Роняя установку из-за косметики, мы поменяли бы местами
+ * главное и второстепенное.
+ *
+ * ⚠ «Разово» держит гейт `due`: правка положена только порталу ниже ревизии карточки. На отказе,
+ * который лечится повтором, она держит ревизию: отметив её, мы не вернулись бы к карточке никогда.
+ * Отказ, который повтор не вылечит, — только журнал.
+ *
+ * ⚠ Повторимый отказ шага поля виджета держит правку так же, как её собственный: без поля правка
+ * сняла бы не всё, ревизия отметилась бы — и к карточке мы не вернулись бы никогда (`/review`
+ * и `/code-review` в панели PR #98). Держит при ЛЮБОМ исходе карточки: повтор — ещё и единственная
+ * попытка завести само поле, а ждать приходится, только пока шаг падает. Второй круг PR #98 снимал
+ * удержание ради чужой и непонятной раскладки — и поле после сбоя связи не заводилось больше никогда:
+ * донастройка не берёт порталы, отмеченные ревизией. Разбор — `docs/PROCESS.md`, раздел 9.
+ *
+ * Одно правило на обе карточки: в PR #100 оно было переписано в двух местах, а правили его по ревью
+ * уже трижды — расхождение дало бы портал, навсегда застрявший ниже ревизии. Нашёл `/code-review`.
+ */
+async function settleOwnCard(
+  call: RestCall,
+  sp: { ref: SmartProcessRef, adopted: boolean },
+  own: OwnCard,
+  due: boolean,
+  widget: WidgetFieldResult,
+): Promise<{ outcome: CardOutcome, settled: boolean }> {
+  let outcome: CardOutcome = 'failed'
+  let settled = true
+  try {
+    outcome = await ensureCardConfig(call, sp.ref, { widget: widget.outcome === 'ok', due, adopted: sp.adopted }, own)
+  }
+  catch (error) {
+    if (due && isRetryableRefusal(error)) settled = false
+    logger.warn({ reason: safeRefusal(error) }, `раскладка карточки «${own.name}» не настроена`)
+  }
+  if (due && widget.refusal !== null && isRetryableRefusal(widget.refusal)) settled = false
+  return { outcome, settled }
+}
+
+/**
  * Создать или до-лечить оба смарт-процесса и их поля.
  *
  * Идемпотентно: повторный запуск на готовом портале не делает ни одного изменяющего вызова.
@@ -908,54 +949,18 @@ export async function provisionSmartProcesses(
   // Неудача установку не роняет: данные на месте, раскладка просто остаётся при JSON.
   const resultHandlerUrl = options.resultHandlerUrl ?? null
   const formHandlerUrl = options.formHandlerUrl ?? null
-  const widgets = await ensureWidgetFieldsSafely(call, {
+  const widgets = await ensureWidgetFields(call, {
     result: resultHandlerUrl === null ? null : { type: SURVEY_RESULT_FIELD_TYPE, handlerUrl: resultHandlerUrl, ref: survey.ref, postfix: SURVEY_RESULT_FIELD, listed: surveyFields.existing },
     form: formHandlerUrl === null ? null : { type: SURVEY_FORM_FIELD_TYPE, handlerUrl: formHandlerUrl, ref: template.ref, postfix: TEMPLATE_FORM_FIELD, listed: templateFields.existing },
   })
   const resultField = widgets.result.outcome
-  const widgetRefusal = widgets.result.refusal
   const formField = widgets.form.outcome
 
-  // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
-  // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
-  // мы поменяли бы местами главное и второстепенное.
-  let cardSettled = true
-  let card: CardOutcome = 'failed'
-  // ⚠ «Разово» держит гейт `cardDue`: правка положена только порталу ниже шестой ревизии.
-  const cardDue = (options.previousRevision ?? 0) < CARD_REVISION
-  try {
-    card = await ensureCardConfig(call, survey.ref, { widget: resultField === 'ok', due: cardDue, adopted: survey.adopted }, SURVEY_OWN_CARD)
-  }
-  catch (error) {
-    // ⚠ Разовая правка ревизии 6 на отказе, который лечится повтором, держит ревизию: отметив её,
-    // мы не вернулись бы к карточке никогда, и на старых порталах виджет со ссылкой так и не встали
-    // бы, а JSON остался бы. Отказ, который повтор не вылечит, — как прежде, только журнал.
-    if (cardDue && isRetryableRefusal(error)) cardSettled = false
-    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Результата опросов» не настроена')
-  }
-  // ⚠ Повторимый отказ шага поля виджета держит разовую правку так же, как её собственный: без поля
-  // правка поставила бы одну ссылку, JSON остался бы, ревизия 6 отметилась бы — и к карточке мы не
-  // вернулись бы никогда (`/review` и `/code-review` в панели PR #98). Держит при ЛЮБОМ исходе
-  // карточки: повтор — ещё и единственная попытка завести само поле, а ждать приходится, только пока
-  // шаг падает. Второй круг снимал удержание ради чужой и непонятной раскладки — и поле виджета
-  // после сбоя связи не заводилось больше никогда: донастройка не берёт порталы шестой ревизии.
-  // Вернул `/code-review` в третьем круге; разбор — `docs/PROCESS.md`, раздел 9.
-  if (cardDue && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
-
-  // ⚠ Карточка «Шаблона опроса» — по тем же правилам, что карточка «Результата опросов» выше:
-  // разовая правка ревизии 7, удержание по повторимому отказу — и её собственному, и шага поля
-  // «Анкета» (#84, п. 18). До ревизии 7 раскладку «Шаблона» мы не ставили вовсе.
-  let templateCardSettled = true
-  let templateCard: CardOutcome = 'failed'
-  const templateCardDue = (options.previousRevision ?? 0) < TEMPLATE_CARD_REVISION
-  try {
-    templateCard = await ensureCardConfig(call, template.ref, { widget: formField === 'ok', due: templateCardDue, adopted: template.adopted }, TEMPLATE_OWN_CARD)
-  }
-  catch (error) {
-    if (templateCardDue && isRetryableRefusal(error)) templateCardSettled = false
-    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Шаблона опроса» не настроена')
-  }
-  if (templateCardDue && widgets.form.refusal !== null && isRetryableRefusal(widgets.form.refusal)) templateCardSettled = false
+  // Обе карточки — одним правилом (`settleOwnCard`): «Результата опросов» с ревизии 6, «Шаблона
+  // опроса» с ревизии 7 (#84, п. 18); до неё раскладку «Шаблона» мы не ставили вовсе.
+  const previous = options.previousRevision ?? 0
+  const surveyCard = await settleOwnCard(call, survey, SURVEY_OWN_CARD, previous < CARD_REVISION, widgets.result)
+  const templateCard = await settleOwnCard(call, template, TEMPLATE_OWN_CARD, previous < TEMPLATE_CARD_REVISION, widgets.form)
 
   // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
   // в карточке «Опроса», а он дочерняя сущность: ни фильтр в списке сделок, ни робот
@@ -995,10 +1000,10 @@ export async function provisionSmartProcesses(
     adoptedSurvey: survey.adopted,
     addedFields: templateFields.added + surveyFields.added,
     dealLinked,
-    card,
-    cardSettled,
-    templateCard,
-    templateCardSettled,
+    card: surveyCard.outcome,
+    cardSettled: surveyCard.settled,
+    templateCard: templateCard.outcome,
+    templateCardSettled: templateCard.settled,
     resultField,
     formField,
     crmFields,
@@ -1667,25 +1672,6 @@ export interface WidgetTargets {
 const NOT_SET_UP: WidgetFieldResult = { outcome: 'failed', refusal: null }
 
 /**
- * Sets up both widget fields and never throws: a refusal stays with the field it belongs to.
- *
- * ⚠ Отказ `app.info` или списка типов — общий для обоих полей: без них не завести ни одного.
- * Отказ одного поля второму не мешает. Установку не роняет ни тот, ни другой: без виджета данные
- * на месте, в карточке остаётся JSON.
- */
-async function ensureWidgetFieldsSafely(call: RestCall, targets: WidgetTargets): Promise<Record<keyof WidgetTargets, WidgetFieldResult>> {
-  if (targets.result === null && targets.form === null) return { result: NOT_SET_UP, form: NOT_SET_UP }
-  try {
-    return await ensureWidgetFields(call, targets)
-  }
-  catch (error) {
-    logger.warn({ reason: safeRefusal(error) }, 'поля своего типа не заведены: портал не ответил о приложении или о типах')
-    const refused = { outcome: 'failed' as const, refusal: error }
-    return { result: targets.result === null ? NOT_SET_UP : refused, form: targets.form === null ? NOT_SET_UP : refused }
-  }
-}
-
-/**
  * Завести поля своего типа — виджеты, которые показывают словами то, что лежит в карточках простынёй
  * JSON: «Результат опроса» на «Результате опросов» и «Анкету» на «Шаблоне опроса» (#84, п. 18).
  *
@@ -1703,28 +1689,43 @@ async function ensureWidgetFieldsSafely(call: RestCall, targets: WidgetTargets):
  * `ERROR_BATCH_METHOD_NOT_ALLOWED`.
  *
  * ⚠ `app.info` и список типов — ОДИН раз на оба поля: приложение и его регистрации у них общие.
+ * Их отказ — общий для обоих полей; отказ на одном поле остаётся при нём (`refusal`) и второе не держит.
  *
- * ⚠ Отказ `app.info` или списка типов БРОСАЕТСЯ, а не превращается в `failed` молча: вызывающий
- * пишет его в журнал с причиной (`ensureWidgetFieldsSafely`). У соседнего приложения регистрация
- * шла батчем без проверки результата, и провалившаяся уезжала в «установлено»: приложение
- * считалось поставленным, а типа на портале не было. Отказ на одном поле остаётся при нём
- * (`refusal`) — второе поле он не держит.
+ * ⚠ НИЧЕГО НЕ БРОСАЕТ, но и не молчит: всякий отказ — строка в журнале с причиной и `failed`
+ * с этим отказом у поля. У соседнего приложения регистрация шла батчем без проверки результата,
+ * и провалившаяся уезжала в «установлено»: приложение считалось поставленным, а типа на портале
+ * не было. Установку отказ не роняет: без виджета данные на месте, в карточке остаётся JSON.
  */
-export async function ensureWidgetFields(call: RestCall, targets: WidgetTargets): Promise<Record<keyof WidgetTargets, WidgetFieldResult>> {
-  const app = readAppInfo(await call('app.info', {}))
-  if (!app.installed) {
-    logger.info({}, 'установка не завершена — поля своего типа заведёт донастройка')
-    const deferred = { outcome: 'deferred' as const, refusal: null }
-    return { result: targets.result === null ? NOT_SET_UP : deferred, form: targets.form === null ? NOT_SET_UP : deferred }
+async function ensureWidgetFields(call: RestCall, targets: WidgetTargets): Promise<Record<keyof WidgetTargets, WidgetFieldResult>> {
+  /** The same result for every field this run sets up; `NOT_SET_UP` for the ones it does not. */
+  const each = (result: WidgetFieldResult) => ({
+    result: targets.result === null ? NOT_SET_UP : result,
+    form: targets.form === null ? NOT_SET_UP : result,
+  })
+  // Нет https-хоста — ни одного вызова: заводить нечего (`buildTabHandlerUrl`).
+  if (targets.result === null && targets.form === null) return each(NOT_SET_UP)
+
+  let appId: number
+  let registered: unknown
+  try {
+    const app = readAppInfo(await call('app.info', {}))
+    if (!app.installed) {
+      logger.info({}, 'установка не завершена — поля своего типа заведёт донастройка')
+      return each({ outcome: 'deferred', refusal: null })
+    }
+    if (app.id === null) {
+      logger.warn({}, 'портал не назвал идентификатор приложения — поля своего типа не заведены')
+      return each(NOT_SET_UP)
+    }
+    appId = app.id
+    const listing = buildListTypesCall()
+    registered = await call(listing.method, listing.params)
   }
-  const appId = app.id
-  if (appId === null) {
-    logger.warn({}, 'портал не назвал идентификатор приложения — поля своего типа не заведены')
-    return { result: NOT_SET_UP, form: NOT_SET_UP }
+  catch (error) {
+    logger.warn({ reason: safeRefusal(error) }, 'поля своего типа не заведены: портал не ответил о приложении или о типах')
+    return each({ outcome: 'failed', refusal: error })
   }
 
-  const listing = buildListTypesCall()
-  const registered = await call(listing.method, listing.params)
   const one = async (target: WidgetTarget | null): Promise<WidgetFieldResult> => {
     if (target === null) return NOT_SET_UP
     try {

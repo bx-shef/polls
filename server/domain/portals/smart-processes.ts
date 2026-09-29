@@ -1,4 +1,4 @@
-import { LINK_FIELD_LABEL, ownerLabel, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../../../shared/portal-names'
+import { FORM_FIELD_LABEL, LINK_FIELD_LABEL, ownerLabel, SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../../../shared/portal-names'
 
 // Названия живут в `shared/`: по ним же пишутся тексты страниц приложения (разбор — в шапке
 // `shared/portal-names.ts`). Здесь повторный вывоз, чтобы у вызывающих на сервере не менялись импорты.
@@ -916,7 +916,7 @@ export function buildTemplateCardSections(spTypeId: number, formField: boolean, 
     },
     {
       name: TEMPLATE_FORM_SECTION,
-      title: 'Анкета',
+      title: FORM_FIELD_LABEL,
       type: 'section',
       elements: formField ? [{ ...own(TEMPLATE_FORM_FIELD), optionFlags: 1 }] : [own('SCHEMA')],
     },

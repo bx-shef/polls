@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  * Обработчик поля «Анкета»: `server/api/portal/survey-form.post.ts` (#84, п. 18).
  *
  * По образцу `survey-result-api.test.ts`: роут импортируется напрямую, сессия, портал и журнал
- * подделаны. Предмет проверки — порядок шагов (чья карточка — ДО чтения элемента), что уходит
- * наружу и что уходит в журнал.
+ * подделаны. Предмет проверки — порядок шагов (чья карточка — ДО чтения элемента), чьим токеном
+ * читается элемент, что уходит наружу и что уходит в журнал.
  */
 
 const SECRET_WORDING = 'Насколько вас раздражает наш менеджер?'
@@ -30,7 +30,8 @@ const SCHEMA = {
 
 /** Что подделки успели увидеть за один запрос. */
 interface Probe {
-  appCalls: { method: string, params: Record<string, unknown> }[]
+  accessChecks: unknown[][]
+  appCalls: string[]
   info: unknown[][]
   warned: string[]
 }
@@ -38,10 +39,10 @@ interface Probe {
 let probe: Probe
 let body: Record<string, unknown>
 let refs: Record<string, unknown>
-let item: Record<string, unknown> | null
+let access: unknown
 
 async function loadHandler() {
-  probe = { appCalls: [], info: [], warned: [] }
+  probe = { accessChecks: [], appCalls: [], info: [], warned: [] }
 
   vi.doMock('../../server/api/portal/-session', () => ({
     openPortalSession: async () => ({
@@ -49,14 +50,20 @@ async function loadHandler() {
       userId: 3,
       userName: '',
       authId: 'фреймовый-токен',
-      call: async (method: string, params: Record<string, unknown> = {}) => {
-        probe.appCalls.push({ method, params })
-        return { result: { item } }
+      call: async (method: string) => {
+        probe.appCalls.push(method)
+        return { result: true }
       },
       batch: async () => ({}),
     }),
   }))
   vi.doMock('../../server/b24/provision', () => ({ readStoredRefs: async () => refs }))
+  vi.doMock('../../server/b24/frame-auth', () => ({
+    verifyItemAccess: async (...args: unknown[]) => {
+      probe.accessChecks.push(args)
+      return access
+    },
+  }))
   vi.doMock('../../server/utils/logger', () => ({
     logger: {
       info: (fields: unknown, message: string) => void probe.info.push([fields, message]),
@@ -77,17 +84,17 @@ async function loadHandler() {
 beforeEach(() => {
   body = { memberId: 'm', authId: 'фреймовый-токен', itemId: 26, entityId: 'CRM_7', entityTypeId: null }
   refs = { survey: SURVEY, template: TEMPLATE_SP, revision: 7 }
-  item = {
+  access = { ok: true, item: {
     id: 26,
     UF_CRM_7_CODE: 'brand',
     UF_CRM_7_VERSION: 3,
     UF_CRM_7_PUBLISHED_AT: '2026-09-21T10:00:00+03:00',
     UF_CRM_7_SCHEMA: JSON.stringify(SCHEMA),
-  }
+  } }
 })
 
 afterEach(() => {
-  for (const path of ['../../server/api/portal/-session', '../../server/b24/provision', '../../server/utils/logger', 'h3']) vi.doUnmock(path)
+  for (const path of ['../../server/api/portal/-session', '../../server/b24/provision', '../../server/b24/frame-auth', '../../server/utils/logger', 'h3']) vi.doUnmock(path)
   vi.resetModules()
 })
 
@@ -99,7 +106,7 @@ describe('чья карточка — ДО чтения элемента', () =>
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: false, reason: 'foreign-card' })
-    expect(probe.appCalls).toHaveLength(0)
+    expect(probe.accessChecks).toHaveLength(0)
   })
 
   it('поле на карточке «Результата опросов» — тоже чужая карточка', async () => {
@@ -108,7 +115,7 @@ describe('чья карточка — ДО чтения элемента', () =>
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: false, reason: 'foreign-card' })
-    expect(probe.appCalls).toHaveLength(0)
+    expect(probe.accessChecks).toHaveLength(0)
   })
 
   it('без признаков карточки — отдельный отказ, и тоже без чтения', async () => {
@@ -116,7 +123,7 @@ describe('чья карточка — ДО чтения элемента', () =>
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: false, reason: 'no-owner' })
-    expect(probe.appCalls).toHaveLength(0)
+    expect(probe.accessChecks).toHaveLength(0)
   })
 
   it('узнаёт карточку и по типу объекта, когда `ENTITY_ID` не пришёл', async () => {
@@ -127,13 +134,33 @@ describe('чья карточка — ДО чтения элемента', () =>
   })
 })
 
-describe('чтение', () => {
-  it('читает ровно тот элемент «Шаблона», чей номер прислал портал', async () => {
+describe('чтение — токеном сотрудника', () => {
+  it('ГЛАВНОЕ: элемент читается ТОКЕНОМ СОТРУДНИКА, а не приложения — права решает портал', async () => {
+    // ⚠ Номер элемента присылает страница. Вызовом приложения — с правами администратора — любой
+    // сотрудник прочитал бы любую анкету портала, включая черновики, мимо прав на сам элемент.
+    // Нашла безопасность в панели PR #100.
     const handler = await loadHandler()
 
     await handler({})
 
-    expect(probe.appCalls).toEqual([{ method: 'crm.item.get', params: expect.objectContaining({ entityTypeId: TEMPLATE_SP.entityTypeId, id: 26 }) }])
+    expect(probe.accessChecks).toEqual([['shef.bitrix24.ru', 'фреймовый-токен', TEMPLATE_SP.entityTypeId, 26]])
+    expect(probe.appCalls).not.toContain('crm.item.get')
+  })
+
+  it('не видит или элемента нет — отказ без содержимого', async () => {
+    // Портал на удалённый элемент отвечает отказом, а не пустым ответом; различить их нечем.
+    // Прежде это был 500 и совет «обновите карточку», который не помогает (`/code-review`).
+    access = { ok: false, reason: 'denied' }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: false, reason: 'denied' })
+  })
+
+  it('портал недоступен — 503, а не «нет доступа»', async () => {
+    access = { ok: false, reason: 'unreachable' }
+    const handler = await loadHandler()
+
+    await expect(handler({})).rejects.toMatchObject({ statusCode: 503 })
   })
 
   it.each<[Record<string, unknown>, string]>([
@@ -145,14 +172,7 @@ describe('чтение', () => {
     const handler = await loadHandler()
 
     expect(await handler({})).toEqual({ ok: false, reason: 'no-item' })
-    expect(probe.appCalls).toHaveLength(0)
-  })
-
-  it('элемента нет — отказ, а не пустая анкета', async () => {
-    item = null
-    const handler = await loadHandler()
-
-    expect(await handler({})).toEqual({ ok: false, reason: 'no-item' })
+    expect(probe.accessChecks).toHaveLength(0)
   })
 
   it('без смарт-процессов — отказ и строка в журнале', async () => {
@@ -161,7 +181,7 @@ describe('чтение', () => {
 
     expect(await handler({})).toEqual({ ok: false, reason: 'not-provisioned' })
     expect(probe.warned.length).toBeGreaterThan(0)
-    expect(probe.appCalls).toHaveLength(0)
+    expect(probe.accessChecks).toHaveLength(0)
   })
 })
 
@@ -196,7 +216,7 @@ describe('что уходит наружу', () => {
 
   it('черновик без схемы — пустая анкета с нулевой версией, а не отказ', async () => {
     // Свежий черновик законно пуст: его соберут во вкладке конструктора.
-    item = { id: 26, UF_CRM_7_CODE: '', UF_CRM_7_VERSION: 0, UF_CRM_7_SCHEMA: '' }
+    access = { ok: true, item: { id: 26, UF_CRM_7_CODE: '', UF_CRM_7_VERSION: 0, UF_CRM_7_SCHEMA: '' } }
     const handler = await loadHandler()
 
     const reply = await handler({}) as { ok: boolean, form: Record<string, unknown> }

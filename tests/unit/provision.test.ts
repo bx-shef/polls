@@ -881,6 +881,32 @@ describe('поле «Анкета» и карточка «Шаблона опр�
     expect([refused.formField, created(foreign, FORM)]).toEqual(['failed', []])
   })
 
+  it('ГЛАВНОЕ: отказ `app.info` — общий для обоих полей, и вызван он один раз', async () => {
+    // Сведения о приложении и список типов — одни на оба поля: их отказ валит оба, но не повторяется
+    // по разу на поле. Не держал ни один тест — нашёл тестировщик в панели PR #100.
+    const p = portal({ 'app.info': QUERY_LIMIT })
+
+    // Портал пятой ревизии: положены обе разовые правки — и «Результата», и «Шаблона».
+    const result = await provisionSmartProcesses(p.call, {}, { ...BOTH, previousRevision: 5 })
+
+    expect([result.resultField, result.formField]).toEqual(['failed', 'failed'])
+    expect([p.of('app.info').length, p.of('userfieldtype.list').length]).toEqual([1, 0])
+    // Отказ повторимый — обе карточки ждут повтора: без полей правка сняла бы не всё.
+    expect([result.cardSettled, result.templateCardSettled, reachedRevision(5, result)]).toEqual([false, false, 5])
+  })
+
+  it('отказ списка типов — тоже общий, и ни одного поля не заводит', async () => {
+    // Без списка не понять, регистрировать тип или править: регистрировать вслепую значило бы
+    // упереться в «Handler already binded» (тестировщик в панели PR #100).
+    const p = portal({ 'userfieldtype.list': QUERY_LIMIT })
+
+    const result = await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect([result.resultField, result.formField]).toEqual(['failed', 'failed'])
+    expect([p.of('userfieldtype.add'), p.of('userfieldtype.update')]).toEqual([[], []])
+    expect(created(p, FORM)).toEqual([])
+  })
+
   it('до `installFinish` откладывает оба поля и ничего не регистрирует', async () => {
     const p = portal({ 'app.info': { result: { ID: 219, INSTALLED: false } } })
 
