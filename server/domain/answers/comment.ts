@@ -35,6 +35,9 @@ import type { SurveyTemplate } from '../surveys/model'
  * обезвреживаются — см. `neutralizeMarkup`. Нашла панель ревью PR #22.
  */
 
+/** Разделитель разделов: наш, из ответа клиента не собирается. */
+const RULE = '———'
+
 /** Выделить свой текст жирным. Собирается ТОЛЬКО из наших строк — см. `neutralizeMarkup`. */
 const bold = (text: string) => `[B]${text}[/B]`
 
@@ -56,6 +59,7 @@ export function buildResultDescription(
   const lines: string[] = [bold(`Опрос пройден: ${template.title}`)]
 
   for (const section of template.sections) {
+    const body: string[] = []
     for (const question of section.questions) {
       const value = answers[question.key]
 
@@ -71,8 +75,14 @@ export function buildResultDescription(
 
       // Формулировка вопроса не обезвреживается: её писал сотрудник портала, у неё тот же
       // уровень доверия, что у самой CRM. Обезвреживается ровно то, что набрал посторонний.
-      lines.push('', label(question.title), neutralizeMarkup(shown))
+      body.push('', label(question.title), neutralizeMarkup(shown))
     }
+    if (body.length === 0) continue
+
+    // ⚠ Шапка раздела — ради вопросов с одинаковой формулировкой в разных разделах: две строки
+    // «Комментарий:» подряд не сказали бы, к чему какая. Раздел без ответов словами не показывается.
+    // Нашёл `/review` в панели PR #102: шапки ушли из описания вместе с баллами.
+    lines.push('', RULE, ...(section.title === '' ? body.slice(1) : [bold(section.title), ...body.slice(1)]))
   }
 
   return lines.join('\n')

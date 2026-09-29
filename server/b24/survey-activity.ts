@@ -14,6 +14,7 @@ import {
   buildOverwriteActivityCall,
   buildRevokedActivityCall,
   buildTodoActivityCall,
+  isUntouchedIssueActivity,
   linkActivityOriginId,
   ownerOf,
   readBindingKeys,
@@ -22,6 +23,7 @@ import {
   readFoundActivity,
   readFoundActivityId,
   readMarkApplied,
+  RESULT_TITLE_PREFIX,
   type ActivityOwner,
   type FoundActivity,
 } from '../domain/answers/timeline-activity'
@@ -86,21 +88,24 @@ export async function tryIssueActivity(
     /** Кто выпустил. Ноль — портал поставит владельца токена. */
     responsibleId: number
   },
-): Promise<boolean> {
+): Promise<void> {
   try {
     const add = buildTodoActivityCall({
       dealEntityTypeId: DEAL_ENTITY_TYPE_ID,
       dealId: input.dealId,
       title: buildIssueActivityTitle(input.surveyTitle),
       description: buildIssueActivityDescription(input.url, input.expiresAt),
-      // Сутки — как у итога: не отправленная за сутки ссылка — честный повод для просрочки.
-      deadline: activityDeadline(new Date()),
+      // ⚠ Срок дела — срок ССЫЛКИ, а не сутки. Сутки делали дело просроченным со второго дня
+      // до самого ответа — при ссылке на тридцать дней — и подталкивали закрыть его, после чего
+      // итог уходил новым делом рядом. Теперь просрочка значит ровно одно: ссылка истекла,
+      // а ответа нет. И портал показывает этот срок в поясе человека (`/review`, PR #102).
+      deadline: input.expiresAt,
       ...(input.responsibleId > 0 ? { responsibleId: input.responsibleId } : {}),
     })
     const activityId = readActivityId(await call(add.method, add.params))
     if (activityId === null) {
       logger.warn({}, 'дело выпуска не записано: портал не вернул идентификатор; ссылка работает')
-      return false
+      return
     }
 
     if (!(await markActivity(call, activityId, linkActivityOriginId(input.survey.entityTypeId, input.itemId)))) {
@@ -110,13 +115,11 @@ export async function tryIssueActivity(
     }
 
     logger.info({}, 'дело выпуска записано в ленту сделки')
-    return true
   }
   catch (error) {
     // ⚠ Наружу — наш код отказа, не текст портала: в вызове лежит адрес анкеты с токеном,
     // а Битрикс24 любит цитировать присланное в тексте ошибки.
     logger.warn({ reason: safeRefusal(error) }, 'дело выпуска не записано; ссылка работает')
-    return false
   }
 }
 
@@ -136,9 +139,14 @@ export interface ResultActivityPlan {
  * Положить итог в ленту сделки: перезаписать дело выпуска или создать новое.
  *
  * ⚠ Порядок поиска — сначала ключ ИТОГА, потом ключ ВЫПУСКА. Найден итог — он уже записан
- * (повтор доставки), второго не пишем. Иначе смотрим дело выпуска: открытое перезаписываем,
- * закрытое не трогаем — портал его не даст — и пишем итог новым делом рядом. Нет ни того,
+ * (повтор доставки), второго не пишем. Иначе смотрим дело выпуска: открытое и нетронутое
+ * перезаписываем. Закрытое не трогаем — портал его не даст; правленное человеком не трогаем —
+ * перезапись стёрла бы его заметку. В обоих случаях итог пишется новым делом рядом. Нет ни того,
  * ни другого — ссылка выпущена до п. 14 или дело выпуска не записалось, — новое дело, как прежде.
+ *
+ * ⚠ Закрытым дело выпуска бывает не только руками: финальная стадия СДЕЛКИ («Сделка успешна»)
+ * закрывает её открытые дела — замерено 29.09, как и у элемента. Опрос по закрытию проекта
+ * поэтому обычно приходит новым делом рядом.
  *
  * Возвращает, стоит ли итог в ленте: перезаписан, создан или уже был.
  */
@@ -148,16 +156,22 @@ export async function writeResultActivity(call: RestCall, plan: ResultActivityPl
   const written = await findActivity(call, activityOriginId(plan.survey.entityTypeId, plan.itemId))
   if (written !== null) {
     logger.info({}, 'итог уже записан делом, второго не создаём')
-    // ⚠ Привязку досылаем И ЗДЕСЬ: у дел, записанных до issue #44, её нет вовсе,
-    // а второй раз дело не создаётся.
+    // ⚠ Блоки и привязку досылаем И ЗДЕСЬ: сюда приходит повтор доставки, а прошлая попытка могла
+    // оборваться между меткой и блоками. Второй раз дело не пишется, и без досылки итог навсегда
+    // остался бы без баллов разделов и без второй ленты. Оба вызова безопасно повторять: набор
+    // блоков заменяется целиком, стоящая привязка читается до постановки (`/review`, PR #102).
+    await trySetBlocks(call, written.id, ownerOf(written, plan.dealId), plan.blocks)
     await tryBindToSurveyItem(call, written.id, plan.survey, plan.itemId)
     return true
   }
 
   const issued = await findActivity(call, linkActivityOriginId(plan.survey.entityTypeId, plan.itemId))
-  if (issued !== null && !issued.completed && await overwriteWithResult(call, issued, plan)) return true
+  if (issued !== null && !issued.completed && isUntouchedIssueActivity(issued) && await overwriteWithResult(call, issued, plan)) return true
   if (issued !== null && issued.completed) {
-    logger.info({}, 'дело выпуска закрыто менеджером — итог пишем новым делом рядом')
+    logger.info({}, 'дело выпуска закрыто — итог пишем новым делом рядом')
+  }
+  else if (issued !== null && !isUntouchedIssueActivity(issued)) {
+    logger.info({}, 'дело выпуска правил человек — не перезаписываем, итог пишем новым делом рядом')
   }
 
   return await createResultActivity(call, plan)
@@ -184,6 +198,7 @@ async function overwriteWithResult(call: RestCall, found: FoundActivity, plan: R
     description: plan.description,
     deadline: activityDeadline(new Date()),
     color: plan.color,
+    responsibleId: plan.responsibleId,
   })
   try {
     if (readActivityId(await call(update.method, update.params)) === null && !(await overwriteLanded(call, plan))) {
@@ -203,7 +218,8 @@ async function overwriteWithResult(call: RestCall, found: FoundActivity, plan: R
   }
 
   if (!(await markActivity(call, found.id, activityOriginId(plan.survey.entityTypeId, plan.itemId)))) {
-    logger.error({}, 'дело перезаписано итогом, но ключ итога не лёг: повтор доставки перезапишет его ещё раз')
+    // Итог в ленте есть; не найдёт его только повтор доставки, а он после удачной доставки не наступает.
+    logger.error({}, 'дело перезаписано итогом, но ключ итога не лёг: как итог его не найти')
   }
   await trySetBlocks(call, found.id, owner, plan.blocks)
   await tryBindToSurveyItem(call, found.id, plan.survey, plan.itemId)
@@ -215,14 +231,15 @@ async function overwriteWithResult(call: RestCall, found: FoundActivity, plan: R
  * Легла ли перезапись, на которую портал не ответил как надо.
  *
  * ⚠ ТОТ ЖЕ ПРИЁМ, ЧТО У МЕТКИ (`markActivity`): исключение означает «мы не дождались ответа», а не
- * «портал ничего не сделал». Дело выпуска перезаписано, если оно по-прежнему открыто и носит
- * заголовок итога — наш заголовок, другого у дела выпуска быть не может. Не смогли даже спросить —
- * «нет»: худшее, что тогда случится, — дубль итога рядом, а не потеря.
+ * «портал ничего не сделал». Дело выпуска перезаписано, если оно по-прежнему открыто и его заголовок
+ * начинается как заголовок итога — у дела выпуска свой, другой. Сверяем начало, а не заголовок
+ * целиком: портал, который по-своему хранит эмодзи или пробелы, давал бы ложное «нет» и дубль итога
+ * (`/review`, PR #102). Не смогли даже спросить — «нет»: худшее тогда — дубль итога рядом, а не потеря.
  */
 async function overwriteLanded(call: RestCall, plan: ResultActivityPlan): Promise<boolean> {
   try {
     const again = await findActivity(call, linkActivityOriginId(plan.survey.entityTypeId, plan.itemId))
-    return again !== null && !again.completed && again.subject === plan.title
+    return again !== null && !again.completed && again.subject.startsWith(RESULT_TITLE_PREFIX)
   }
   catch {
     return false

@@ -206,22 +206,44 @@ describe('предел портала — 20 блоков', () => {
     expect(lines(set)).toContain('Вопрос 5: 7 из 10')
   })
 
-  it('ГЛАВНОЕ: не влезает — уходят баллы вопросов, разделы остаются, и ссылка говорит, где вопросы', () => {
+  it('ГЛАВНОЕ: не влезает — разделы все, а баллы вопросов добираются раздел за разделом, пока влезают', () => {
     // ⚠ Набор больше двадцати портал отвергает целиком (`TOO_MANY_ITEMS`), и дело осталось бы
-    // без блоков вовсе. Лучше таблица разделов, чем ничего.
+    // без блоков вовсе. Прежняя редакция при нехватке места снимала баллы ВСЕХ вопросов сразу,
+    // хотя большая часть влезала (`/review`, PR #102). Раздел показывает либо все свои вопросы,
+    // либо ни одного: половина раздела читалась бы как весь раздел.
     const wide = large(4, 5)
 
     const set = blocks(answered(wide), wide)
+    const shown = lines(set)
 
     expect(Object.keys(set).length).toBeLessThanOrEqual(MAX_LAYOUT_BLOCKS)
-    expect(lines(set)).toEqual([
-      'Итоговый балл: 7',
-      'Раздел 1: 7',
-      'Раздел 2: 7',
-      'Раздел 3: 7',
-      'Раздел 4: 7',
-      'Баллы вопросов — в карточке опроса',
-    ])
+    expect(shown.filter(line => line.startsWith('Раздел'))).toEqual(['Раздел 1: 7', 'Раздел 2: 7', 'Раздел 3: 7', 'Раздел 4: 7'])
+    // 18 мест под разделы: 4 шапки и два раздела вопросов по 5; на третий раздел остаётся 4 — он без вопросов.
+    expect(shown.filter(line => line.startsWith('Вопрос'))).toHaveLength(10)
+    expect(shown.indexOf('Раздел 3: 7')).toBe(shown.indexOf('Раздел 4: 7') - 1)
+    expect(shown.at(-1)).toBe('Остальные баллы вопросов — в карточке опроса')
+  })
+
+  it('раздел без балла, чьи вопросы не влезли, не показывается вовсе — пустой шапки нет', () => {
+    // Голая жирная шапка без строк под ней ничего не говорит (`/review`, PR #102).
+    const crowded: SurveyTemplate = {
+      ...large(3, 7),
+      sections: [
+        ...large(3, 7).sections,
+        {
+          key: 'mood',
+          title: 'Настроение',
+          scored: false,
+          bands: [],
+          questions: [{ key: 'M1', sourceKey: 'M1', title: 'Как настроение?', type: 'scale', weight: 0, scored: false, scale: { min: 0, max: 5 } }],
+        },
+      ],
+    }
+
+    const shown = lines(blocks({ ...answered(large(3, 7)), M1: 4 }, crowded))
+
+    expect(shown).not.toContain('Настроение')
+    expect(shown.some(line => line.startsWith('Как настроение?'))).toBe(false)
   })
 
   it('не влезают и разделы — первые остаются, ссылка говорит про остальное', () => {

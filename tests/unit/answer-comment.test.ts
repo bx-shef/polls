@@ -78,6 +78,23 @@ describe('описание дела с итогом', () => {
     expect(description({ P1: null, P2: null, T1: null, T2: null })).toBe('[B]Опрос пройден: Оценка работы по проекту[/B]')
   })
 
+  it('ответы словами — под шапкой своего раздела: одинаковые вопросы в разных разделах различимы', () => {
+    // Две строки «Комментарий:» подряд не сказали бы, к какому разделу какая (`/review`, PR #102).
+    const twin: SurveyTemplate = {
+      ...TEMPLATE,
+      sections: [
+        { key: 'a', title: 'Продукт', scored: false, bands: [], questions: [{ key: 'C1', sourceKey: 'C1', title: 'Комментарий', type: 'text', weight: 0, scored: false }] },
+        { key: 'b', title: 'Сервис', scored: false, bands: [], questions: [{ key: 'C2', sourceKey: 'C2', title: 'Комментарий', type: 'text', weight: 0, scored: false }] },
+      ],
+    }
+
+    const body = buildResultDescription(twin, { C1: 'про продукт', C2: 'про сервис' })
+
+    expect(body.indexOf('[B]Продукт[/B]')).toBeLessThan(body.indexOf('про продукт'))
+    expect(body.indexOf('про продукт')).toBeLessThan(body.indexOf('[B]Сервис[/B]'))
+    expect(body.indexOf('[B]Сервис[/B]')).toBeLessThan(body.indexOf('про сервис'))
+  })
+
   it('не перечисляет незаполненные текстовые вопросы', () => {
     // Строка «— не ответил» на каждый пропуск превращает описание в перечень пустоты.
     const body = description({ P1: 9, P2: 8, T1: 'Всё отлично', T2: null })

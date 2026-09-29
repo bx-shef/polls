@@ -258,6 +258,15 @@ describe('отказ портала не двухсотым', () => {
     expect((failure as PortalError).code).toBe('ERROR_WRONG_CONTEXT')
   })
 
+  it('HTTP 400 с пустым кодом — тоже отказ портала, а не беда связи', async () => {
+    // У `crm.activity.update` документирован и такой отказ: `"error": ""` (`/review`, PR #102).
+    answer(400, JSON.stringify({ error: '', error_description: 'Access denied.' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.update').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+  })
+
   it('не-2xx без тела портала — по-прежнему подсказка оператору', async () => {
     answer(502, '<html>Bad Gateway</html>')
 

@@ -176,6 +176,9 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
   })
 }
 
+/** Начало заголовка дела с итогом. По нему переспрос узнаёт, что перезапись легла (`survey-activity.ts`). */
+export const RESULT_TITLE_PREFIX = 'Опрос пройден: '
+
 /**
  * Заголовок дела: что случилось и с каким итогом.
  *
@@ -184,7 +187,7 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
  * в нём не осталось бы. Поэтому режется именно название, а итог приписывается после.
  */
 export function buildActivityTitle(template: SurveyTemplate, score: SurveyScore): string {
-  const prefix = 'Опрос пройден: '
+  const prefix = RESULT_TITLE_PREFIX
   const tail = score.overall === null ? '' : ` — ${format(score.overall)}`
 
   // ⚠ Режем НАЗВАНИЕ, а не готовую строку. Первая редакция склеивала всё и обрезала конец —
@@ -249,8 +252,9 @@ export function buildFindActivityCall(originId: string): PortalCall {
       // под фильтр, и один `ORIGIN_ID` мог бы совпасть с делом, которое клиент завёл сам
       // или принёс другой поставщик, — тогда мы молча решили бы, что уже писали.
       filter: { ORIGINATOR_ID: ACTIVITY_ORIGINATOR_ID, ORIGIN_ID: originId },
-      // Закрыто ли дело, чьё оно и как называется — то, что решает перезапись и отзыв (`FoundActivity`).
-      select: ['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT'],
+      // Закрыто ли дело, чьё оно, как называется и что в нём написано — то, что решает перезапись
+      // и отзыв (`FoundActivity`).
+      select: ['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT', 'DESCRIPTION'],
       order: { ID: 'ASC' },
     },
   }
@@ -280,6 +284,13 @@ export interface FoundActivity {
   ownerId: number
   /** The title — revoking keeps what came after our prefix. */
   subject: string
+  /**
+   * The description as stored.
+   *
+   * ⚠ Читается ради одного вопроса — правил ли дело выпуска человек (`isUntouchedIssueActivity`).
+   * У дела итога здесь слова клиента: в журнал это поле не уходит никогда.
+   */
+  description: string
 }
 
 /** The first activity carrying our marker; `null` — none, or the answer is not a list of them. */
@@ -293,6 +304,7 @@ export function readFoundActivity(response: unknown): FoundActivity | null {
     ownerTypeId: positive(row.OWNER_TYPE_ID),
     ownerId: positive(row.OWNER_ID),
     subject: typeof row.SUBJECT === 'string' ? row.SUBJECT : '',
+    description: typeof row.DESCRIPTION === 'string' ? row.DESCRIPTION : '',
   }
 }
 
@@ -527,12 +539,44 @@ export function buildIssueActivityTitle(surveyTitle: string): string {
  */
 export function buildIssueActivityDescription(url: string, expiresAt: Date): string {
   return [
-    '[B]Адрес анкеты для клиента:[/B]',
+    ISSUE_DESCRIPTION_HEAD,
     url,
     '',
-    `Действует до ${formatExpiryDay(expiresAt)}. Ответить по ней можно один раз.`,
-    'Когда клиент ответит, это дело сменится итогом опроса.',
+    `${ISSUE_EXPIRY_LEAD}${formatExpiryDay(expiresAt)}. Ответить по ней можно один раз.`,
+    ISSUE_DESCRIPTION_TAIL,
   ].join('\n')
+}
+
+/** Первая строка описания дела выпуска — наша, по ней и по последней дело узнаётся нетронутым. */
+const ISSUE_DESCRIPTION_HEAD = '[B]Адрес анкеты для клиента:[/B]'
+const ISSUE_EXPIRY_LEAD = 'Действует до '
+/**
+ * Последняя строка: что будет с делом.
+ *
+ * ⚠ Обещание честное с обеих сторон: закрытое дело портал не перезаписывает, и итог тогда приходит
+ * новым делом рядом (решение владельца, п. 14). Прежний текст «это дело сменится итогом» в этой
+ * ветке был неправдой — нашёл `/review` в панели PR #102.
+ */
+const ISSUE_DESCRIPTION_TAIL = 'Пока дело открыто, ответ клиента заменит его итогом. Закроете раньше — итог придёт новым делом рядом.'
+
+/**
+ * Правил ли дело выпуска человек: заголовок и описание — ровно наши.
+ *
+ * ⚠ ПРАВЛЕННОЕ ДЕЛО НЕ ПЕРЕЗАПИСЫВАЕМ. Перезапись заменяет заголовок и описание целиком, и заметка
+ * менеджера («отправил в мессенджер, обещал до пятницы») пропала бы без следа. Нашёл `/review`
+ * в панели PR #102. Тронутое дело остаётся как есть, итог пишется новым делом рядом.
+ *
+ * Сверяем строение, а не текст целиком: адреса анкеты у доставки нет — у нас лежит только хеш токена.
+ */
+export function isUntouchedIssueActivity(found: FoundActivity): boolean {
+  if (!found.subject.startsWith(ISSUE_TITLE_PREFIX)) return false
+  const lines = found.description.split(/\r?\n/)
+  return lines.length === 5
+    && lines[0] === ISSUE_DESCRIPTION_HEAD
+    && /^https:\/\/\S+$/.test(lines[1]!)
+    && lines[2] === ''
+    && lines[3]!.startsWith(ISSUE_EXPIRY_LEAD)
+    && lines[4] === ISSUE_DESCRIPTION_TAIL
 }
 
 /**
@@ -580,13 +624,20 @@ export function ownerOf(found: FoundActivity, dealId: number): ActivityOwner {
  * у дела те же `ORIGINATOR_ID`, `ORIGIN_ID` и `DESCRIPTION_TYPE = 2`. Ключ итога ставит
  * следующий вызов (`buildActivityMarkerCall`).
  *
- * Ответственного не передаём: он остаётся прежним — тот, кто выпускал ссылку.
  */
 export function buildOverwriteActivityCall(activityId: string, owner: ActivityOwner, params: {
   title: string
   description: string
   deadline: Date
   color: string
+  /**
+   * Нынешний ответственный за элемент — тот же, что у нового дела итога.
+   *
+   * ⚠ Без него итог оставался бы на том, кто выпускал ссылку до тридцати дней назад, а новое дело
+   * итога шло бы нынешнему ответственному: ответ клиента зависел бы от ветки (`/review`, PR #102).
+   * Ноль — не передаём, портал оставит прежнего.
+   */
+  responsibleId: number
 }): PortalCall {
   return {
     method: ACTIVITY_TODO_UPDATE_METHOD,
@@ -598,6 +649,7 @@ export function buildOverwriteActivityCall(activityId: string, owner: ActivityOw
       title: params.title,
       description: params.description,
       colorId: params.color,
+      ...(params.responsibleId > 0 ? { responsibleId: params.responsibleId } : {}),
     },
   }
 }

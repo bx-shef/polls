@@ -58,12 +58,21 @@ export interface SurveyCardRef {
   itemId: number
 }
 
-/** One row with its key: sections and questions are kept apart so the long form can drop the latter. */
+/** One row with its key. */
 interface Row {
   key: string
   block: LayoutBlock
-  /** A question's score: the first thing to go when the set does not fit. */
-  question: boolean
+}
+
+/** A section's rows: its heading, then its questions' scores. */
+interface SectionRows {
+  header: Row
+  questions: Row[]
+  /**
+   * The heading carries the section's score (or «без оценки») — worth showing on its own.
+   * A plain heading over scale answers is not: without its rows it says nothing.
+   */
+  scored: boolean
 }
 
 /**
@@ -72,10 +81,14 @@ interface Row {
  * Порядок — сверху вниз: итоговый балл, затем разделы анкеты в её порядке, у каждого — его балл
  * и баллы вопросов, и последним — ссылка на карточку «Результата опросов».
  *
- * ⚠ НЕ ВЛЕЗАЕТ В 20 — сначала уходят баллы вопросов, разделы остаются. Не влезают и разделы —
- * остаются первые, и ссылка внизу говорит, что остальное в карточке. Молча отвергнутый набор
- * оставил бы дело без блоков вовсе, а усечённый хоть что-то показывает. Анкета «brand»
- * (3 раздела, 8 балльных вопросов) даёт 13 блоков — её это не касается.
+ * ⚠ НЕ ВЛЕЗАЕТ В 20 — разделы с баллом остаются все, а баллы вопросов добираются раздел за разделом,
+ * пока влезают: раздел показывает либо все свои вопросы, либо ни одного. Не влезают и сами
+ * разделы — остаются первые. Раздел без балла, чьи вопросы не влезли, не показывается вовсе: голая
+ * шапка без строк под ней ничего не говорит. Ссылка внизу говорит, что остальное в карточке.
+ * Молча отвергнутый набор оставил бы дело без блоков вовсе, а усечённый хоть что-то показывает.
+ * Прежняя редакция при нехватке места снимала баллы ВСЕХ вопросов сразу, хотя большая часть
+ * влезала (`/review`, PR #102). Анкета «brand» (3 раздела, 8 балльных вопросов) даёт 13 блоков —
+ * её это не касается.
  */
 export function buildResultBlocks(
   template: SurveyTemplate,
@@ -85,16 +98,37 @@ export function buildResultBlocks(
 ): LayoutBlocks {
   const head: Row[] = score.overall === null
     ? []
-    : [{ key: 'total', block: row('Итоговый балл', formatScore(score.overall), { bold: true, color: 'base_90' }), question: false }]
-  const body = template.sections.flatMap((section, index) => sectionRows(section, index + 1, answers, score))
+    : [{ key: 'total', block: row('Итоговый балл', formatScore(score.overall), { bold: true, color: 'base_90' }) }]
+  const sections = template.sections
+    .map((section, index) => sectionRows(section, index + 1, answers, score))
+    .filter((rows): rows is SectionRows => rows !== null)
 
-  const full = [...head, ...body]
-  if (full.length + 1 <= MAX_LAYOUT_BLOCKS) return assemble(full, cardLink(card, 'Разбор анкеты — в карточке опроса'))
+  // Место под строки разделов: предел без итога и без ссылки внизу.
+  const budget = MAX_LAYOUT_BLOCKS - head.length - 1
+  const everything = sections.flatMap(rows => [rows.header, ...rows.questions])
+  if (everything.length <= budget) return assemble([...head, ...everything], cardLink(card, 'Разбор анкеты — в карточке опроса'))
 
-  const sections = [...head, ...body.filter(item => !item.question)]
-  if (sections.length + 1 <= MAX_LAYOUT_BLOCKS) return assemble(sections, cardLink(card, 'Баллы вопросов — в карточке опроса'))
+  const headed = sections.filter(rows => rows.scored)
+  if (headed.length > budget) {
+    return assemble([...head, ...headed.slice(0, budget).map(rows => rows.header)], cardLink(card, 'Остальные разделы и баллы вопросов — в карточке опроса'))
+  }
 
-  return assemble(sections.slice(0, MAX_LAYOUT_BLOCKS - 1), cardLink(card, 'Остальные разделы и баллы вопросов — в карточке опроса'))
+  let left = budget - headed.length
+  const picked: Row[] = []
+  for (const rows of sections) {
+    if (rows.scored) {
+      picked.push(rows.header)
+      if (rows.questions.length <= left) {
+        picked.push(...rows.questions)
+        left -= rows.questions.length
+      }
+    }
+    else if (1 + rows.questions.length <= left) {
+      picked.push(rows.header, ...rows.questions)
+      left -= 1 + rows.questions.length
+    }
+  }
+  return assemble([...head, ...picked], cardLink(card, 'Остальные баллы вопросов — в карточке опроса'))
 }
 
 /**
@@ -108,7 +142,7 @@ function sectionRows(
   index: number,
   answers: Record<string, AnswerValue>,
   score: SurveyScore,
-): Row[] {
+): SectionRows | null {
   const questions: Row[] = []
   section.questions.forEach((question, position) => {
     const value = answers[question.key]
@@ -116,7 +150,7 @@ function sectionRows(
     // уже ловил. Пропуск строки не даёт — о нём говорит подпись раздела «ответ на N из M».
     if (question.type !== 'scale' || typeof value !== 'number') return
     const max = question.scale === undefined ? '' : ` из ${formatScore(question.scale.max)}`
-    questions.push({ key: `s${index}q${position + 1}`, block: row(question.title, `${formatScore(value)}${max}`), question: true })
+    questions.push({ key: `s${index}q${position + 1}`, block: row(question.title, `${formatScore(value)}${max}`) })
   })
 
   const own = score.sections.find(item => item.key === section.key)
@@ -125,14 +159,14 @@ function sectionRows(
   if (own !== undefined && own.score !== null) {
     const partial = partialScoreNote(own.answered, own.scored)
     const value = `${formatScore(own.score)}${partial === '' ? '' : ` (${partial})`}`
-    return [{ key: `s${index}`, block: row(title, value, { bold: true }), question: false }, ...questions]
+    return { header: { key: `s${index}`, block: row(title, value, { bold: true }) }, questions, scored: true }
   }
   // Балльный раздел без балла — перенесённая анкета, опубликованная мимо проверки: говорим об этом,
   // а не молчим (та же ветка, что была в тексте дела).
-  if (section.scored) return [{ key: `s${index}`, block: row(title, NO_SCORE_NOTE, { bold: true }), question: false }, ...questions]
+  if (section.scored) return { header: { key: `s${index}`, block: row(title, NO_SCORE_NOTE, { bold: true }) }, questions, scored: true }
   // Раздел без балла, но с ответами по шкале: шапка — просто название, баллы вопросов под ней.
-  if (questions.length > 0) return [{ key: `s${index}`, block: text(title, { bold: true }), question: false }, ...questions]
-  return []
+  if (questions.length > 0) return { header: { key: `s${index}`, block: text(title, { bold: true }) }, questions, scored: false }
+  return null
 }
 
 /**

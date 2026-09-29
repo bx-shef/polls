@@ -444,7 +444,7 @@ async function findOwn(
   const answer = await call(find.method, find.params) as { result?: unknown }
   return {
     count: Array.isArray(answer.result) ? answer.result.length : 0,
-    found: readFoundActivity(answer) ?? { id: '', completed: false, ownerTypeId: 0, ownerId: 0, subject: '' },
+    found: readFoundActivity(answer) ?? { id: '', completed: false, ownerTypeId: 0, ownerId: 0, subject: '', description: '' },
   }
 }
 

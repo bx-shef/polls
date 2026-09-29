@@ -90,7 +90,8 @@ export function hookCall(base: string): RestCall {
 async function portalRefusal(response: Response): Promise<PortalError | null> {
   try {
     const body = await response.json() as { error?: unknown, error_description?: unknown }
-    if (typeof body.error !== 'string' || body.error === '') return null
+    // Пустой код — тоже отказ портала: у `crm.activity.update` документирован и такой (`"error": ""`).
+    if (typeof body.error !== 'string') return null
     return new PortalError(body.error, typeof body.error_description === 'string' ? body.error_description : '')
   }
   catch {

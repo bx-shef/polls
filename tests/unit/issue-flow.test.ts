@@ -117,6 +117,17 @@ describe('дело выпуска в ленте сделки (issue #84, п. 14)
     expect(steps.indexOf('crm.activity.todo.add')).toBeGreaterThan(steps.indexOf('insertLink'))
   })
 
+  it('ГЛАВНОЕ: срок дела выпуска — срок ссылки, а не сутки', async () => {
+    // ⚠ Сутки делали дело просроченным со второго дня до самого ответа при ссылке на тридцать дней
+    // и подталкивали закрыть его — после чего итог уходил новым делом рядом (`/review`, PR #102).
+    const request = input()
+
+    const issued = await issueLink(request)
+
+    const add = request.call.mock.calls.find(([method]) => method === 'crm.activity.todo.add')![1]!
+    expect(add.deadline).toBe(issued.ok ? issued.expiresAt.toISOString() : '—')
+  })
+
   it('дело получает ключ ВЫПУСКА', async () => {
     const request = input()
 

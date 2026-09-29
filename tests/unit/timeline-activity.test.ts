@@ -16,6 +16,7 @@ import {
   capTitle,
   formatExpiryDay,
   hasBadSection,
+  isUntouchedIssueActivity,
   ISSUE_TITLE_PREFIX,
   linkActivityOriginId,
   MAX_TITLE_BYTES,
@@ -311,14 +312,14 @@ describe('дело выпуска: «Отправить опрос клиент�
 
 describe('найденное дело', () => {
   it('поиск просит закрыто ли дело, чьё оно и как называется', () => {
-    expect(buildFindActivityCall('survey-link-78').params.select).toEqual(['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT'])
+    expect(buildFindActivityCall('survey-link-1040-78').params.select).toEqual(['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT', 'DESCRIPTION'])
   })
 
   it('без владельца и заголовка — нули и пустая строка, а не падение', () => {
     // ⚠ Заголовок дальше режут `startsWith` (`buildRevokedTitle`): не строкой он уронил бы отзыв
     // изнутри, и в журнале стоял бы посторонний диагноз. Нашёл тестировщик в панели PR #102.
     expect(readFoundActivity({ result: [{ ID: '1', COMPLETED: 'N' }] }))
-      .toEqual({ id: '1', completed: false, ownerTypeId: 0, ownerId: 0, subject: '' })
+      .toEqual({ id: '1', completed: false, ownerTypeId: 0, ownerId: 0, subject: '', description: '' })
     expect(readFoundActivity({ result: [{ ID: '1', SUBJECT: 42 }] })?.subject).toBe('')
   })
 
@@ -326,13 +327,13 @@ describe('найденное дело', () => {
     // Форма строки — с живого портала 29.09: числа строками, `COMPLETED` — `Y`/`N`.
     const answer = { result: [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '1040', OWNER_ID: '78', SUBJECT: 'Отправить опрос клиенту: brand' }] }
 
-    expect(readFoundActivity(answer)).toEqual({ id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: 'Отправить опрос клиенту: brand' })
+    expect(readFoundActivity(answer)).toEqual({ id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: 'Отправить опрос клиенту: brand', description: '' })
     expect(readFoundActivity({ result: [{ ID: '308', COMPLETED: 'Y' }] })?.completed).toBe(true)
     expect(readFoundActivity({ result: [] })).toBeNull()
   })
 
   it('владелец — тот, кого назвал портал; не назвал — сделка', () => {
-    const found = { id: '1', completed: false, ownerTypeId: 1040, ownerId: 78, subject: '' }
+    const found = { id: '1', completed: false, ownerTypeId: 1040, ownerId: 78, subject: '', description: '' }
 
     expect(ownerOf(found, 42)).toEqual({ entityTypeId: 1040, entityId: 78 })
     expect(ownerOf({ ...found, ownerTypeId: 0 }, 42)).toEqual({ entityTypeId: 2, entityId: 42 })
@@ -340,6 +341,18 @@ describe('найденное дело', () => {
 })
 
 describe('перезапись итогом', () => {
+  it('ответственный уходит в перезапись, когда он известен', () => {
+    const call = buildOverwriteActivityCall('308', { entityTypeId: 2, entityId: 42 }, {
+      title: 't',
+      description: 'd',
+      deadline: new Date(0),
+      color: ACTIVITY_COLOR_GOOD,
+      responsibleId: 5,
+    })
+
+    expect(call.params).toMatchObject({ responsibleId: 5 })
+  })
+
   it('ГЛАВНОЕ: `todo.update` с владельцем, сроком, заголовком, текстом и цветом', () => {
     // ⚠ `deadline` в этом методе обязателен в каждом вызове (документация) — без него портал
     // отказал бы, и итог ушёл бы новым делом рядом, оставив в ленте адрес.
@@ -348,6 +361,7 @@ describe('перезапись итогом', () => {
       description: '[B]Опрос пройден: brand[/B]',
       deadline: new Date('2026-09-30T00:00:00Z'),
       color: ACTIVITY_COLOR_GOOD,
+      responsibleId: 0,
     })
 
     expect(call).toEqual({
@@ -365,8 +379,34 @@ describe('перезапись итогом', () => {
   })
 })
 
+describe('нетронутое ли дело выпуска', () => {
+  const URL_ = 'https://polls.example/s/abc123'
+  const found = (subject: string, description: string) => ({ id: '1', completed: false, ownerTypeId: 2, ownerId: 42, subject, description })
+  const ours = buildIssueActivityDescription(URL_, new Date('2026-10-29T02:43:00Z'))
+
+  it('ровно наши заголовок и описание — нетронутое', () => {
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ours))).toBe(true)
+  })
+
+  it('перевод строки портала `\\r\\n` нетронутым делом считается', () => {
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ours.replaceAll('\n', '\r\n')))).toBe(true)
+  })
+
+  it('дописанная строка, правка строки или чужой заголовок — тронутое', () => {
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, `${ours}\nзаметка`))).toBe(false)
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ours.replace('Действует до', 'Действовала до')))).toBe(false)
+    expect(isUntouchedIssueActivity(found('Позвонить Иванову', ours))).toBe(false)
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ''))).toBe(false)
+  })
+
+  it('текст дела выпуска честно говорит, что будет при закрытии', () => {
+    // Закрытое дело портал не перезаписывает — итог приходит новым делом рядом (решение владельца, п. 14).
+    expect(ours).toContain('Закроете раньше — итог придёт новым делом рядом.')
+  })
+})
+
 describe('закрытие при отзыве', () => {
-  const found = { id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: `${ISSUE_TITLE_PREFIX}brand` }
+  const found = { id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: `${ISSUE_TITLE_PREFIX}brand`, description: '' }
 
   it('ГЛАВНОЕ: одним вызовом — тема, текст без адреса и «выполнено»', () => {
     // ⚠ Двумя вызовами дело могло бы остаться открытым с текстом «отозвана» или закрытым

@@ -12,7 +12,7 @@ import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
 import { LAST_SCORE_CODE, crmFieldName } from '../../server/domain/portals/crm-fields'
-import { ACTIVITY_ORIGINATOR_ID, activityOriginId, linkActivityOriginId } from '../../server/domain/answers/timeline-activity'
+import { ACTIVITY_ORIGINATOR_ID, activityOriginId, buildIssueActivityDescription, linkActivityOriginId } from '../../server/domain/answers/timeline-activity'
 import { logger } from '../../server/utils/logger'
 
 /**
@@ -715,8 +715,18 @@ describe('дело выпуска перезаписывается итогом'
 
   const ITEM = { result: { item: { id: 777, parentId2: 351, contactId: 12, assignedById: 5 } } }
 
-  /** Строка дела выпуска так, как её отдаёт портал: после привязки владелец — элемент «Опроса». */
-  const ISSUED = { ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: String(SURVEY.entityTypeId), OWNER_ID: '777', SUBJECT: 'Отправить опрос клиенту: Оценка работы' }
+  /**
+   * Строка дела выпуска так, как её отдаёт портал: владелец — сделка (к элементу дело выпуска
+   * не привязывается), заголовок и описание — ровно наши.
+   */
+  const ISSUED = {
+    ID: '308',
+    COMPLETED: 'N',
+    OWNER_TYPE_ID: '2',
+    OWNER_ID: '351',
+    SUBJECT: 'Отправить опрос клиенту: Оценка работы',
+    DESCRIPTION: buildIssueActivityDescription('https://polls.example/s/abc', new Date('2026-10-29T02:43:00Z')),
+  }
 
   /** Портал, у которого по ключу выпуска находится `row`, а по ключу итога — ничего. */
   function issued(row: Record<string, unknown>, extra: Parameters<typeof portal>[0] = {}) {
@@ -744,15 +754,43 @@ describe('дело выпуска перезаписывается итогом'
     expect(typeof update.deadline).toBe('string')
   })
 
-  it('владелец в перезаписи и в блоках — тот, кого назвал портал', async () => {
-    // После привязки владельцем стал элемент «Опроса» (замерено 24.09 и 29.09). Документация
-    // велит передавать сущность, «к которой привязано дело», — её портал и называет.
+  it('владелец в перезаписи и в блоках — тот, кого назвал портал: у дела выпуска это сделка', async () => {
+    // Документация велит передавать сущность, «к которой привязано дело», — её портал и называет.
     const p = issued(ISSUED)
 
     await run(p)
 
-    expect(p.of('crm.activity.todo.update')[0]!.params).toMatchObject({ ownerTypeId: SURVEY.entityTypeId, ownerId: 777 })
-    expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ entityTypeId: SURVEY.entityTypeId, entityId: 777, activityId: 308 })
+    expect(p.of('crm.activity.todo.update')[0]!.params).toMatchObject({ ownerTypeId: 2, ownerId: 351 })
+    expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ entityTypeId: 2, entityId: 351, activityId: 308 })
+  })
+
+  it('перезапись передаёт нынешнего ответственного элемента — того же, что у нового дела итога', async () => {
+    // Иначе итог оставался бы на том, кто выпускал ссылку, а новое дело шло бы нынешнему:
+    // ответ зависел бы от ветки (`/review`, PR #102).
+    const p = issued(ISSUED)
+
+    await run(p)
+
+    expect(p.of('crm.activity.todo.update')[0]!.params).toMatchObject({ responsibleId: 5 })
+  })
+
+  it('ГЛАВНОЕ: дело выпуска, которое правил человек, не перезаписываем — итог новым делом рядом', async () => {
+    // ⚠ Перезапись заменяет заголовок и описание целиком: заметка менеджера пропала бы без следа
+    // (`/review`, PR #102).
+    const p = issued({ ...ISSUED, DESCRIPTION: `${ISSUED.DESCRIPTION}\nОтправил в мессенджер, обещал до пятницы.` })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.update')
+    expect(p.of('crm.activity.todo.add')).toHaveLength(1)
+  })
+
+  it('заголовок дела выпуска переписан человеком — тоже не перезаписываем', async () => {
+    const p = issued({ ...ISSUED, SUBJECT: 'Позвонить Иванову про опрос' })
+
+    await run(p)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.update')
   })
 
   it('ГЛАВНОЕ: после перезаписи дело получает ключ итога — повтор доставки найдёт его как итог', async () => {
@@ -853,6 +891,16 @@ describe('дело выпуска перезаписывается итогом'
 
     expect(p.of('crm.activity.list')).toHaveLength(1)
     expect(p.methods()).not.toContain('crm.activity.todo.update')
+  })
+
+  it('ГЛАВНОЕ: итог уже записан — блоки досылаются: прошлая попытка могла оборваться до них', async () => {
+    // Второй раз дело не пишется, и без досылки итог навсегда остался бы без баллов разделов
+    // (`/review`, PR #102). Набор блоков заменяется целиком — повтор безопасен.
+    const p = portal({ 'crm.activity.list': { result: [{ ID: 4242, OWNER_TYPE_ID: String(SURVEY.entityTypeId), OWNER_ID: '777' }] } })
+
+    await run(p)
+
+    expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ activityId: 4242, entityTypeId: SURVEY.entityTypeId, entityId: 777 })
   })
 
   it('отказ блоков доставку не роняет: итог в заголовке, разбор — в карточке', async () => {
