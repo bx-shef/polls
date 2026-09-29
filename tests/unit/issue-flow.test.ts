@@ -229,3 +229,18 @@ describe('отказ нашей базы после создания элеме�
     expect(thrown?.cause).toBeUndefined()
   })
 })
+
+describe('чтение сделки не удалось', () => {
+  it('выпуск идёт дальше, а журнал говорит почему — кодом, без текста портала', async () => {
+    // Отказ всего пакета с PR #106 бросается, и голый `catch {}` оставлял журнал без причины: ссылка ушла
+    // без шапки, а почему — не видно (`/review` и технический директор в закрывающем круге панели).
+    const request = input()
+    request.batch.mockRejectedValueOnce(new PortalError('ACCESS_DENIED', 'значение «Ромашка» недопустимо'))
+
+    const issued = await issueLink(request)
+
+    expect(issued.ok).toBe(true)
+    expect(warn).toHaveBeenCalledWith({ domain: 'shef.bitrix24.ru', reason: 'ACCESS_DENIED' }, expect.stringContaining('сделка не прочитана'))
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('Ромашка')
+  })
+})

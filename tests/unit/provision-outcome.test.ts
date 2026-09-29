@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { provisionWithCall } from '../../server/b24/register'
-import { PortalError } from '../../server/domain/portals/portal-error'
+import { PortalError, UNREACHABLE_CODE } from '../../server/domain/portals/portal-error'
 import { PROVISION_REVISION } from '../../server/domain/portals/smart-processes'
 import { logger } from '../../server/utils/logger'
 
@@ -199,9 +199,12 @@ describe('исход обустройства', () => {
     // ⚠ Лечится она галочкой в партнёрском кабинете, а не повтором через минуту.
     // Перепутать эти два совета дорого: администратор будет жать «попробовать ещё раз»
     // ровно столько раз, сколько у него терпения.
+    // ⚠ Отказ — в той форме, что даёт `makePortalCall`: код в поле, в тексте описание портала без кода.
+    // Прежде здесь стояла `new Error('insufficient_scope: …')` — форма, которой SDK не производит, — и тест
+    // был зелёным, пока мастер не узнавал отказ ни разу (`/code-review` во втором круге панели PR #106).
     const p = portal({
       'userfieldconfig.list': () => {
-        throw new Error('insufficient_scope: недостаточно прав приложения')
+        throw new PortalError('insufficient_scope', 'The request requires higher privileges than provided by the access token')
       },
     })
 
@@ -213,7 +216,7 @@ describe('исход обустройства', () => {
     // в состоянии `degraded`: токены сохранены, а событие установки второй раз не придёт.
     const p = portal({
       'userfieldconfig.list': () => {
-        throw new Error('ECONNRESET')
+        throw new PortalError(UNREACHABLE_CODE, 'socket hang up')
       },
     })
 
@@ -244,7 +247,7 @@ describe('что уходит в журнал', () => {
     const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
     const p = portal({
       'userfieldconfig.list': () => {
-        throw new Error('ECONNRESET')
+        throw new PortalError(UNREACHABLE_CODE, 'socket hang up')
       },
     })
 

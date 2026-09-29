@@ -1,4 +1,4 @@
-import { refusalCode } from '../portals/portal-error'
+import { PortalError, REJECTED_CODE, UNREACHABLE_CODE, refusalCode } from '../portals/portal-error'
 
 /**
  * Turns a portal refusal into something safe to write down.
@@ -69,6 +69,15 @@ const KNOWN_CODES = [
   'FIELD_IS_REDUNDANT',
   'WRONG_FIELD_VALUE',
   'ENUM_FIELD',
+  // С PR #106 — системные коды «Коды ошибок» и коды сервера авторизации: мёртвый грант при доставке
+  // ответа иначе назывался в `inbox.last_error` «код не распознан» (`/code-review` в закрывающем круге).
+  'ERROR_METHOD_NOT_FOUND',
+  'ERROR_BATCH_LENGTH_EXCEEDED',
+  'invalid_grant',
+  'invalid_request',
+  'invalid_client',
+  'invalid_scope',
+  'PAYMENT_REQUIRED',
 ] as const
 
 /**
@@ -88,13 +97,33 @@ const OWN_CODES = [
   'SHEF_UPDATED_NOTHING',
   /** Списочный метод не дочитан до конца: продолжать на неполных данных нельзя. */
   'SHEF_LIST_TRUNCATED',
+  /** Портал отказал без кода (`"error": ""` или `"0"`), повтор не лечит. */
+  REJECTED_CODE,
+  /** Ответа портала нет — сеть, обрыв посреди ответа, не тело портала, ответ без `result`, токен не продлён. */
+  UNREACHABLE_CODE,
 ] as const
 
 /** Что пишем, когда код не распознан. Фиксированная строка — в ней нет ничего чужого. */
 export const UNKNOWN_REFUSAL = 'портал отказал, код не распознан'
 
+/**
+ * What we write for a `PortalError` without a code: not the portal's verdict.
+ *
+ * ⚠ Отдельно от `UNKNOWN_REFUSAL`: пустой код с issue #99 — это наше исключение, код SDK или ответ
+ * портала без кода с 5xx, 408 или 429, и «портал отказал» про него неправда. Ровно против такого
+ * ложного диагноза и заведён `UNREACHABLE_CODE` (технический директор в закрывающем круге панели
+ * PR #106; было issue #108, п. 7). Исключение, которое не прошло разбор `asPortalError` и потому
+ * не `PortalError`, по-прежнему называется `UNKNOWN_REFUSAL`: его происхождения мы здесь не знаем.
+ */
+export const CODELESS_REFUSAL = 'ошибка без кода портала'
+
 /** Наш собственный текст таймаута из `server/b24/client.ts`: он безопасен, в нём только имя метода. */
 const TIMEOUT_MARK = 'портал не ответил за'
+
+/** Whether a code is one we can name: a documented portal code or one of ours. */
+function isNamedCode(code: string): boolean {
+  return (KNOWN_CODES as readonly string[]).includes(code) || (OWN_CODES as readonly string[]).includes(code)
+}
 
 /**
  * Свести отказ портала к безопасной строке.
@@ -104,10 +133,6 @@ const TIMEOUT_MARK = 'портал не ответил за'
  * через подчёркивания, и «вырезание всего, кроме кодов» вынесло бы его текст наружу.
  * Здесь же результат — всегда одна из констант этого файла.
  */
-function isNamedCode(code: string): boolean {
-  return (KNOWN_CODES as readonly string[]).includes(code) || (OWN_CODES as readonly string[]).includes(code)
-}
-
 export function safeRefusal(error: unknown): string {
   // ⚠ Сначала СТРУКТУРНЫЙ код, и только он имеет силу. Портал присылает код в поле `error`,
   // а пояснение — в `error_description`; документация Битрикс24 велит ветвиться по коду.
@@ -116,7 +141,6 @@ export function safeRefusal(error: unknown): string {
   if (code !== '') return isNamedCode(code) ? code : UNKNOWN_REFUSAL
 
   const raw = typeof error === 'string' ? error : String((error as Error | undefined)?.message ?? '')
-  if (raw === '') return UNKNOWN_REFUSAL
 
   // Таймаут — наша собственная формулировка, и метод в ней назвать полезно.
   if (raw.includes(TIMEOUT_MARK)) return 'портал не ответил вовремя'
@@ -134,7 +158,8 @@ export function safeRefusal(error: unknown): string {
   // коде принимаются необратимые решения (`server/domain/portals/lifecycle.ts`).
   // Обе находки — панель ревью PR #34.
   //
-  // Осталось без кода — значит перед нами не отказ портала, а что-то наше: сеть, разбор,
-  // исключение из нашего же кода. Называть это чужим кодом нельзя.
-  return UNKNOWN_REFUSAL
+  // Осталось без кода — значит перед нами не вердикт портала: наше исключение, код SDK или ответ
+  // портала без кода с 5xx, 408 или 429. Беда связи сюда не доезжает — у неё свой код
+  // (`UNREACHABLE_CODE`, issue #99). Называть это чужим кодом нельзя, а «портал отказал» — неправда.
+  return error instanceof PortalError ? CODELESS_REFUSAL : UNKNOWN_REFUSAL
 }

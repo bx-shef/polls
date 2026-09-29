@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../../server/domain/portals/scopes'
+import { PortalError, REJECTED_CODE, UNREACHABLE_CODE } from '../../server/domain/portals/portal-error'
+import { REQUIRED_SCOPES, isScopeRefusal } from '../../server/domain/portals/scopes'
 
 /**
  * Гвард под отличение «не хватает прав» от «не получилось».
@@ -16,24 +17,33 @@ import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../../server/domain/port
  */
 
 describe('нехватка прав приложения', () => {
-  it('узнаётся по коду портала', () => {
-    expect(looksLikeScopeRefusal('insufficient_scope')).toBe(true)
-    // Так код приезжает, когда его пересказывает SDK вместе со своим текстом.
-    expect(looksLikeScopeRefusal('Bitrix24 error: insufficient_scope — the request requires higher privileges')).toBe(true)
+  it('ГЛАВНОЕ: узнаётся по коду отказа — в тексте его нет', () => {
+    // ⚠ Форма настоящая: код в поле, а в тексте — описание портала, и кода в нём нет («Коды ошибок»,
+    // `401 insufficient_scope`). Первая редакция искала код в тексте и не узнавала отказ НИКОГДА;
+    // её тест строил `new Error('insufficient_scope')` — форму, которой SDK не производит.
+    // `/code-review` во втором круге панели PR #106.
+    const refusal = new PortalError('insufficient_scope', 'The request requires higher privileges than provided by the access token')
+
+    expect(isScopeRefusal(refusal)).toBe(true)
   })
 
-  it('узнаётся независимо от регистра', () => {
-    expect(looksLikeScopeRefusal('INSUFFICIENT_SCOPE')).toBe(true)
+  it('код в тексте ошибки не в счёт: решение принимается только по коду', () => {
+    // Текст — проза портала или наша, и выбирать по нему исход установки нельзя.
+    expect(isScopeRefusal(new Error('insufficient_scope: недостаточно прав приложения'))).toBe(false)
+  })
+
+  it('код берётся только у `PortalError`, а не у чего угодно с полем `code`', () => {
+    // Системная ошибка или чужой объект с таким полем решали бы исход установки за нас (тестировщик
+    // в закрывающем круге панели PR #106).
+    expect(isScopeRefusal(Object.assign(new Error('x'), { code: 'insufficient_scope' }))).toBe(false)
   })
 
   it('не путается с другими отказами портала', () => {
     // ⚠ Каждый из них лечится не галочкой в кабинете, и выдать их за нехватку прав
     // значит отправить администратора править то, что в порядке.
-    expect(looksLikeScopeRefusal('ACCESS_DENIED')).toBe(false)
-    expect(looksLikeScopeRefusal('expired_token')).toBe(false)
-    expect(looksLikeScopeRefusal('QUERY_LIMIT_EXCEEDED')).toBe(false)
-    expect(looksLikeScopeRefusal('CREATE_DYNAMIC_TYPE_RESTRICTED')).toBe(false)
-    expect(looksLikeScopeRefusal('')).toBe(false)
+    for (const code of ['ACCESS_DENIED', 'expired_token', 'QUERY_LIMIT_EXCEEDED', 'CREATE_DYNAMIC_TYPE_RESTRICTED', REJECTED_CODE, UNREACHABLE_CODE, '']) {
+      expect(isScopeRefusal(new PortalError(code, 'описание портала'))).toBe(false)
+    }
   })
 
   it('называет ровно те разрешения, которые отмечают в кабинете', () => {

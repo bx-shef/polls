@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureDealRelation, isPortalAdmin, provisionSmartProcesses, reachedRevision, readStoredRefs, SP_REFS_OPTION, storeRefs, withDeadline } from '../../server/b24/provision'
 import { buildCardSections, buildReadTypeCall, buildUpdateRelationsCall, DEAL_ENTITY_TYPE_ID, planDealRelation, OWNERSHIP_REVISION, PROVISION_REVISION, readTypeRelations, SURVEY_FIELDS, SURVEY_SP_TITLE, TEMPLATE_FIELDS } from '../../server/domain/portals/smart-processes'
-import { PortalError } from '../../server/domain/portals/portal-error'
+import { PortalError, UNREACHABLE_CODE } from '../../server/domain/portals/portal-error'
 import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 import { logger } from '../../server/utils/logger'
 
@@ -1525,10 +1525,11 @@ describe('ревизия 4: метка владельца и закрытые п
     expect(result.ownership).toMatchObject({ fieldsLocked: true, settled: true })
   })
 
-  it('сбой связи без кода портала миграцию держит — его лечит повтор', async () => {
+  it('сбой связи миграцию держит — его лечит повтор', async () => {
+    // Форма та, что даёт `makePortalCall` с issue #99: свой код беды связи, а не голая ошибка.
     const p = legacyPortal({
       'crm.deal.userfield.update': () => {
-        throw new Error('ECONNRESET')
+        throw new PortalError(UNREACHABLE_CODE, 'socket hang up')
       },
     })
 

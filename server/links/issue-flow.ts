@@ -111,8 +111,10 @@ export async function issueLink(input: IssueInput): Promise<IssueResult> {
     deal = readDealFacts(facts)
     header = readSurveyHeader(facts, input.managerName)
   }
-  catch {
-    logger.warn({ domain: input.domain }, 'сделка не прочитана, приглашение уйдёт без клиента и без её названия')
+  catch (error) {
+    // Причина — через `safeRefusal`: отказ всего пакета с PR #106 бросается, и без неё журнал молчал бы,
+    // почему ссылка ушла без шапки (`/review` и технический директор в закрывающем круге панели).
+    logger.warn({ domain: input.domain, reason: safeRefusal(error) }, 'сделка не прочитана, приглашение уйдёт без клиента и без её названия')
   }
 
   const createCall = buildCreateSurveyItemCall(input.survey, input.dealId, {

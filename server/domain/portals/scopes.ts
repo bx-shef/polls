@@ -1,3 +1,5 @@
+import { refusalCode } from './portal-error'
+
 /**
  * Which OAuth scopes the app needs, and how to recognise the portal refusing for lack of them.
  *
@@ -43,18 +45,21 @@
 export const REQUIRED_SCOPES = ['crm', 'userfieldconfig', 'placement'] as const
 
 /**
- * Отказал ли портал именно из-за нехватки прав приложения.
+ * Whether the portal refused because the application lacks a scope.
  *
  * ⚠ Отличать это от прочих отказов обязательно: нехватка прав лечится галочкой
  * в партнёрском кабинете, а не повтором через минуту. Показать администратору
  * «попробуйте позже» на неисправимую сам собой причину значит отправить его жать кнопку
  * столько раз, сколько у него терпения.
  *
- * Ищем код, а не текст: `insufficient_scope` — машинный код сервера Битрикс24, он
- * не переводится и не меняется от локали портала. Сравнение регистронезависимое,
- * потому что в сообщение об ошибке код попадает по-разному в зависимости от того,
- * SDK его пересказал или мы прочитали ответ сами.
+ * ⚠ Код — из `PortalError.code` (`refusalCode`), а не из текста ошибки. Первая редакция искала
+ * `insufficient_scope` подстрокой в `message` — а там с PR #34 лежит одно описание портала («The request
+ * requires higher privileges than provided by the access token»), кода в нём нет. То есть отказ
+ * по правам не распознавался НИКОГДА: мастер советовал «попробовать ещё раз». Тест мастера держал
+ * самодельную форму `new Error('insufficient_scope: …')`, какой SDK не производит, и был зелёным.
+ * Нашёл `/code-review` во втором круге панели PR #106. Код и статус — из «Коды ошибок»: `401`,
+ * `insufficient_scope`.
  */
-export function looksLikeScopeRefusal(reason: string): boolean {
-  return reason.toLowerCase().includes('insufficient_scope')
+export function isScopeRefusal(error: unknown): boolean {
+  return refusalCode(error) === 'insufficient_scope'
 }

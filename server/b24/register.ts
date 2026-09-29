@@ -9,7 +9,7 @@ import { applyProvisionStatus } from '../portals/store'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
 import { SURVEY_FORM_FIELD_TYPE, SURVEY_RESULT_FIELD_TYPE } from '../domain/portals/userfield-type'
 import { STAGES_REVISION } from '../domain/portals/smart-processes'
-import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
+import { REQUIRED_SCOPES, isScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
 import { encryptSecret } from '../utils/crypto'
 import { logger } from '../utils/logger'
@@ -370,7 +370,8 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // будет жать «попробовать ещё раз» ровно столько раз, сколько у него терпения.
     // Портал — единственный, кто знает правду о правах: предсказать её по `scope`
     // из ответа сервера авторизации нельзя, см. комментарий в `provisionPortal`.
-    if (looksLikeScopeRefusal(reason)) {
+    // Узнаётся по коду отказа, а не по тексту: в тексте кода нет (`isScopeRefusal`).
+    if (isScopeRefusal(error)) {
       logger.error({ domain: portal.domain, required: [...REQUIRED_SCOPES] }, 'порталу не хватает прав приложения')
       return 'no-scope'
     }

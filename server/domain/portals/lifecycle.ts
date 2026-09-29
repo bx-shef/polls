@@ -73,7 +73,21 @@ const DEAD_GRANT_CODES: readonly string[] = ['invalid_grant']
  * Теперь решение принимается по полю `error` ответа портала и ни по чему больше.
  */
 export function isDeadGrant(error: unknown): boolean {
-  return DEAD_GRANT_CODES.includes(refusalCode(error))
+  return isDeadGrantCode(refusalCode(error))
+}
+
+/**
+ * Whether a refusal code means the portal's grant is dead.
+ *
+ * Нужна разборщику ошибок SDK (`asPortalError`): продление, отвергнутое с этим кодом, он признаёт
+ * мёртвым грантом при любом статусе ответа с ошибкой, а всё прочее — «ответа нет» (`UNREACHABLE_CODE`).
+ * Сетью такой код не получить, а сдвиг статуса в новой версии SDK не должен его спрятать (безопасность
+ * в панели PR #106). Ответ 2xx с этим кодом SDK прячет сам — issue #111. В ответе на обычный вызов
+ * этот код мёртвым грантом не считается: решает только продление, иначе отсчёт до стирания токенов
+ * запускал бы любой, кто держит тело ответа (безопасность в закрывающем круге).
+ */
+export function isDeadGrantCode(code: string): boolean {
+  return DEAD_GRANT_CODES.includes(code)
 }
 
 /**

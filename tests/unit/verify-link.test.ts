@@ -148,6 +148,29 @@ describe('пакет через входящий вебхук', () => {
     expect(Object.keys(data)).toEqual(['deal'])
   })
 
+  it('имена упавших команд в терминале — только наши: ключи из тела как есть не печатаются', async () => {
+    // Ключи `result_error` приходят из тела, и управляющая последовательность в них ушла бы в терминал
+    // оператора и в `| tee` (безопасность в закрывающем круге панели PR #106).
+    portal({
+      result: {
+        result: { deal: { item: { id: 2 } } },
+        result_error: { 'company': { error: 'NOT_FOUND', error_description: 'x' }, '\u001B[2Jчужое': { error: 'X', error_description: 'y' }, 'constructor': { error: 'X', error_description: 'y' } },
+      },
+    })
+    const lines: string[] = []
+    vi.spyOn(console, 'warn').mockImplementation((...parts) => void lines.push(parts.join(' ')))
+
+    await hookBatch('https://portal.example/rest/1/key/')({
+      deal: { method: 'crm.item.get', params: { id: 2 } },
+      company: { method: 'crm.item.get', params: { id: 0 } },
+    })
+
+    expect(lines.join('\n')).toContain('company')
+    expect(lines.join('\n')).not.toContain('\u001B')
+    // Имя с прототипа объекта — тоже не наше (`/review` в закрывающем круге).
+    expect(lines.join('\n')).not.toContain('constructor')
+  })
+
   it('подстановку `$result[…]` не ломает', async () => {
     // Связанные команды — единственная причина, по которой пакет вообще укладывается
     // в одно обращение. Percent-encoding портал понимает: проверено живьём.
@@ -172,6 +195,20 @@ describe('диагноз, который видит оператор', () => {
     report(error)
     return lines.join('\n')
   }
+
+  it('код, который фраза уже назвала, дважды не печатается', () => {
+    const out = printed(new PortalError('SHEF_REJECTED', 'описание'))
+
+    expect(out.split('SHEF_REJECTED')).toHaveLength(2)
+  })
+
+  it('код не по форме в терминал не уходит: чужая управляющая последовательность остаётся снаружи', () => {
+    // Граница вывода проверяет форму ещё раз, даже если код пришёл не из вебхука
+    // (безопасность в закрывающем круге панели PR #106).
+    const out = printed(new PortalError('\u001B[2J\u001B[31mFAKE', 'описание'))
+
+    expect(out).not.toContain('\u001B')
+  })
 
   it('беда на нашей стороне НЕ выдаётся за отказ портала', () => {
     // ⚠ ГЛАВНЫЙ ГВАРД БЛОКА, и он оплачен потерянным вечером. Живьём: не поднята локальная
@@ -239,7 +276,7 @@ describe('диагноз, который видит оператор', () => {
   })
 })
 
-describe('отказ портала не двухсотым', () => {
+describe('как вебхук читает ответ портала', () => {
   afterEach(() => vi.restoreAllMocks())
 
   function answer(status: number, body: string) {
@@ -258,13 +295,77 @@ describe('отказ портала не двухсотым', () => {
     expect((failure as PortalError).code).toBe('ERROR_WRONG_CONTEXT')
   })
 
-  it('HTTP 400 с пустым кодом — тоже отказ портала, а не беда связи', async () => {
-    // У `crm.activity.update` документирован и такой отказ: `"error": ""` (`/review`, PR #102).
-    answer(400, JSON.stringify({ error: '', error_description: 'Access denied.' }))
+  it.each([['пустой', ''], ['«0»', '0']])('HTTP 400 с кодом %s — отказ портала SHEF_REJECTED, а не беда связи', async (_name, code) => {
+    // У `crm.activity.update` документирован и такой отказ: `"error": ""` (`/review`, PR #102), а `"0"`
+    // портал прислал 29.09 на правку закрытого дела. Код — тот же, что ставит разборщик SDK (issue #99).
+    answer(400, JSON.stringify({ error: code, error_description: 'Access denied.' }))
 
     const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.update').catch((error: unknown) => error)
 
     expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('SHEF_REJECTED')
+  })
+
+  it('двухсотый ответ с кодом «0» — тоже SHEF_REJECTED, как у разборщика SDK', async () => {
+    answer(200, JSON.stringify({ error: '0', error_description: 'Some error' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.update').catch((error: unknown) => error)
+
+    expect((failure as PortalError).code).toBe('SHEF_REJECTED')
+  })
+
+  it.each<[string, unknown]>([
+    ['пустой `error`', { error: '', error_description: 'Some error' }],
+    ['одно поле `time`', { time: { start: 1, finish: 2 } }],
+    ['не объект', null],
+  ])('ГЛАВНОЕ: двухсотый ответ без `result` (%s) — не успех, а SHEF_UNREACHABLE', async (_name, body) => {
+    // ⚠ Прежде такой ответ уезжал к переносу успехом, и пустое чтение значило бы «шаблонов нет» — перенос
+    // записал бы второй. Тот же предохранитель, что у `makePortalCall` (`/review` в панели PR #106).
+    answer(200, JSON.stringify(body))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.list').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('SHEF_UNREACHABLE')
+  })
+
+  it.each<[string, string]>([
+    ['`error` не строка', '{"error":true}'],
+    ['код без описания — так отвечает шлюз', '{"error":"Forbidden"}'],
+    ['проза вместо кода', '{"error":"Access denied by policy","error_description":"x"}'],
+  ])('HTTP 400 с телом не портала (%s) — подсказка оператору, а не отказ портала', async (_name, body) => {
+    // Отказ портала — только документированная форма, общая с вызовами через SDK (`refusalCodeIn`).
+    answer(400, body)
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.get').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Stop)
+  })
+
+  it('ГЛАВНОЕ: двухсотый ответ не JSON — ответа портала нет, а не «беда на нашей стороне»', async () => {
+    // Голый `SyntaxError` дошёл бы до `report` с диагнозом «Портал тут ни при чём» — а отвечала страница
+    // прокси (`/code-review` в закрывающем круге панели PR #106).
+    answer(200, '<html>Service is being updated</html>')
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.list').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('SHEF_UNREACHABLE')
+  })
+
+  it.each<[number, string]>([
+    [403, 'ACCESS_DENIED'],
+    [503, 'QUERY_LIMIT_EXCEEDED'],
+  ])('HTTP %s с телом портала — отказ портала с кодом, а не «проверьте вебхук»', async (status, code) => {
+    // Ошибки метода, по документации, приходят «с 400 или 403»; `app.option.get` вебхуком 29.09 ответил 403
+    // `ACCESS_DENIED`. Прежде отказом считался только 400, и оператора отправляли проверять адрес вебхука
+    // (`/review` в закрывающем круге панели PR #106).
+    answer(status, JSON.stringify({ error: code, error_description: 'описание' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.get').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe(code)
   })
 
   it('не-2xx без тела портала — по-прежнему подсказка оператору', async () => {
