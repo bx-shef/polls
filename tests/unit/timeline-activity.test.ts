@@ -4,13 +4,26 @@ import {
   ACTIVITY_COLOR_BAD,
   ACTIVITY_COLOR_GOOD,
   activityDeadline,
+  activityOriginId,
   buildActivityTitle,
+  buildFindActivityCall,
+  buildIssueActivityDescription,
+  buildIssueActivityTitle,
+  buildOverwriteActivityCall,
+  buildRevokedActivityCall,
+  buildRevokedTitle,
   buildTodoActivityCall,
   capTitle,
+  formatExpiryDay,
   hasBadSection,
+  ISSUE_TITLE_PREFIX,
+  linkActivityOriginId,
   MAX_TITLE_BYTES,
+  ownerOf,
   readCreatedActivityId,
+  readFoundActivity,
   readFoundActivityId,
+  REVOKED_TITLE_PREFIX,
 } from '../../server/domain/answers/timeline-activity'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
@@ -236,5 +249,115 @@ describe('разбор ответов портала', () => {
     expect(readFoundActivityId({ result: [] })).toBeNull()
     expect(readFoundActivityId(null)).toBeNull()
     expect(readFoundActivityId({ result: [{ ID: 42 }] })).toBe('42')
+  })
+})
+
+describe('дело выпуска: «Отправить опрос клиенту» (#84, п. 14)', () => {
+  const URL = 'https://polls.example/s/abc123'
+  const EXPIRES = new Date('2026-10-29T02:43:00Z')
+
+  it('ГЛАВНОЕ: ключ выпуска свой и не находится ключом итога — ни целиком, ни началом', () => {
+    // ⚠ С общим ключом повтор доставки нашёл бы закрытое менеджером дело выпуска и решил бы,
+    // что итог уже записан. Фильтр портала — точное совпадение (замер 29.09), но и сами строки
+    // не должны быть началом друг друга: `survey-7` не должен быть началом ключа элемента 78.
+    expect(linkActivityOriginId(78)).not.toBe(activityOriginId(78))
+    expect(linkActivityOriginId(78).startsWith(activityOriginId(7))).toBe(false)
+    expect(linkActivityOriginId(78).startsWith(activityOriginId(78))).toBe(false)
+  })
+
+  it('в описании — выпущенный адрес и день окончания', () => {
+    const text = buildIssueActivityDescription(URL, EXPIRES)
+
+    expect(text).toContain(URL)
+    expect(text).toContain('Действует до 29.10.2026')
+  })
+
+  it('день окончания считается в UTC+3: вечер по UTC — это уже завтра в Минске и Москве', () => {
+    // ⚠ Пояс чужого портала неизвестен, текст дела портал не переводит (разбор у `formatExpiryDay`).
+    expect(formatExpiryDay(new Date('2026-10-29T20:59:00Z'))).toBe('29.10.2026')
+    expect(formatExpiryDay(new Date('2026-10-29T21:00:00Z'))).toBe('30.10.2026')
+  })
+
+  it('заголовок — наш префикс и название анкеты, в пределе байтов', () => {
+    expect(buildIssueActivityTitle('Бренд')).toBe(`${ISSUE_TITLE_PREFIX}Бренд`)
+    expect(buildIssueActivityTitle('')).toBe(`${ISSUE_TITLE_PREFIX}Опрос`)
+    expect(Buffer.byteLength(buildIssueActivityTitle('я'.repeat(400)), 'utf8')).toBeLessThanOrEqual(MAX_TITLE_BYTES)
+  })
+
+  it('без цвета — портальный по умолчанию; итог цвет передаёт всегда', () => {
+    const base = { dealEntityTypeId: 2, dealId: 42, title: 't', description: 'd', deadline: new Date(0) }
+
+    expect(buildTodoActivityCall(base).params).not.toHaveProperty('colorId')
+    expect(buildTodoActivityCall({ ...base, color: ACTIVITY_COLOR_GOOD }).params).toMatchObject({ colorId: ACTIVITY_COLOR_GOOD })
+  })
+})
+
+describe('найденное дело', () => {
+  it('поиск просит закрыто ли дело, чьё оно и как называется', () => {
+    expect(buildFindActivityCall('survey-link-78').params.select).toEqual(['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT'])
+  })
+
+  it('читает закрытость, владельца и заголовок так, как отдаёт портал — строками', () => {
+    // Форма строки — с живого портала 29.09: числа строками, `COMPLETED` — `Y`/`N`.
+    const answer = { result: [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '1040', OWNER_ID: '78', SUBJECT: 'Отправить опрос клиенту: brand' }] }
+
+    expect(readFoundActivity(answer)).toEqual({ id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: 'Отправить опрос клиенту: brand' })
+    expect(readFoundActivity({ result: [{ ID: '308', COMPLETED: 'Y' }] })?.completed).toBe(true)
+    expect(readFoundActivity({ result: [] })).toBeNull()
+  })
+
+  it('владелец — тот, кого назвал портал; не назвал — сделка', () => {
+    const found = { id: '1', completed: false, ownerTypeId: 1040, ownerId: 78, subject: '' }
+
+    expect(ownerOf(found, 42)).toEqual({ entityTypeId: 1040, entityId: 78 })
+    expect(ownerOf({ ...found, ownerTypeId: 0 }, 42)).toEqual({ entityTypeId: 2, entityId: 42 })
+  })
+})
+
+describe('перезапись итогом', () => {
+  it('ГЛАВНОЕ: `todo.update` с владельцем, сроком, заголовком, текстом и цветом', () => {
+    // ⚠ `deadline` в этом методе обязателен в каждом вызове (документация) — без него портал
+    // отказал бы, и итог ушёл бы новым делом рядом, оставив в ленте адрес.
+    const call = buildOverwriteActivityCall('308', { entityTypeId: 1040, entityId: 78 }, {
+      title: 'Опрос пройден: brand — 7,2',
+      description: '[B]Опрос пройден: brand[/B]',
+      deadline: new Date('2026-09-30T00:00:00Z'),
+      color: ACTIVITY_COLOR_GOOD,
+    })
+
+    expect(call).toEqual({
+      method: 'crm.activity.todo.update',
+      params: {
+        id: 308,
+        ownerTypeId: 1040,
+        ownerId: 78,
+        deadline: '2026-09-30T00:00:00.000Z',
+        title: 'Опрос пройден: brand — 7,2',
+        description: '[B]Опрос пройден: brand[/B]',
+        colorId: ACTIVITY_COLOR_GOOD,
+      },
+    })
+  })
+})
+
+describe('закрытие при отзыве', () => {
+  const found = { id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: `${ISSUE_TITLE_PREFIX}brand` }
+
+  it('ГЛАВНОЕ: одним вызовом — тема, текст без адреса и «выполнено»', () => {
+    // ⚠ Двумя вызовами дело могло бы остаться открытым с текстом «отозвана» или закрытым
+    // с живым на вид адресом.
+    const call = buildRevokedActivityCall(found, '[sh] Ссылки на опросы')
+
+    expect(call.method).toBe('crm.activity.update')
+    const fields = call.params.fields as Record<string, unknown>
+    expect(fields).toMatchObject({ SUBJECT: `${REVOKED_TITLE_PREFIX}brand`, DESCRIPTION_TYPE: 2, COMPLETED: 'Y' })
+    expect(String(fields.DESCRIPTION)).not.toContain('/s/')
+    expect(String(fields.DESCRIPTION)).toContain('[sh] Ссылки на опросы')
+  })
+
+  it('чужой заголовок сохраняется целиком и получает префикс спереди', () => {
+    // Менеджер мог переписать тему дела — выбрасывать написанное им нельзя.
+    expect(buildRevokedTitle('Позвонить Иванову')).toBe(`${REVOKED_TITLE_PREFIX}Позвонить Иванову`)
+    expect(buildRevokedTitle('')).toBe(`${REVOKED_TITLE_PREFIX}Опрос`)
   })
 })

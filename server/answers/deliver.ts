@@ -11,7 +11,8 @@ import {
   type CrmEntity,
 } from '../domain/portals/crm-fields'
 import { getDb, schema } from '../db/client'
-import { buildAnswerComment } from '../domain/answers/comment'
+import { buildResultBlocks } from '../domain/answers/activity-blocks'
+import { buildResultDescription } from '../domain/answers/comment'
 import { safeRefusal } from '../domain/answers/portal-errors'
 import {
   buildCompleteSurveyCall,
@@ -25,22 +26,11 @@ import {
 import {
   ACTIVITY_COLOR_BAD,
   ACTIVITY_COLOR_GOOD,
-  activityDeadline,
-  activityOriginId,
-  buildActivityMarkerCall,
   buildActivityTitle,
-  bindingKey,
-  buildBindActivityCall,
-  buildFindActivityCall,
-  buildListBindingsCall,
-  buildTodoActivityCall,
   hasBadSection,
-  readCreatedActivityId,
-  readMarkApplied,
-  readBindingKeys,
-  readFoundActivityId,
 } from '../domain/answers/timeline-activity'
 import { DEAL_ENTITY_TYPE_ID } from '../domain/invitations/portal-calls'
+import { writeResultActivity } from '../b24/survey-activity'
 import { purgeBoundary } from '../domain/portals/lifecycle'
 import type { AnswerValue } from '../domain/surveys/answer'
 import type { SurveyTemplate } from '../domain/surveys/model'
@@ -403,190 +393,21 @@ export async function tryTimelineActivity(
       return false
     }
 
-    const description = buildAnswerComment(template, answers, score)
-    if (description === '') {
-      logger.warn({}, 'итог не записан: из ответов нечего собрать')
-      return false
-    }
-
-    // ⚠ Инвариант проекта: перед созданием — поиск существующего. Источник правды о том,
-    // писали мы уже или нет, — сам портал, а не таблица у нас.
-    const find = buildFindActivityCall(activityOriginId(itemId))
-    const existing = readFoundActivityId(await call(find.method, find.params))
-    if (existing !== null) {
-      logger.info({}, 'итог уже записан делом, второго не создаём')
-      // ⚠ Привязку досылаем И ЗДЕСЬ. «Дело есть, а привязки нет» — новое состояние, которого
-      // раньше не бывало: у всех дел, записанных до issue #44, её нет вовсе. Без этой строки
-      // они остались бы без привязки навсегда, потому что второй раз дело не создаётся.
-      await tryBindToSurveyItem(call, existing, survey, itemId)
-      return true
-    }
-
-    return await createMarkedActivity(call, {
+    // ⚠ Дело выпуска («Отправить опрос клиенту») перезаписывается итогом, а нет его — создаётся
+    // новое. Правила поиска, перезаписи и метки — в `server/b24/survey-activity.ts`.
+    return await writeResultActivity(call, {
       dealId,
       itemId,
       survey,
-      description,
       title: buildActivityTitle(template, score),
+      description: buildResultDescription(template, answers),
       color: hasBadSection(template, score) ? ACTIVITY_COLOR_BAD : ACTIVITY_COLOR_GOOD,
       responsibleId: readAssignedById(item),
+      blocks: buildResultBlocks(template, answers, score, { entityTypeId: survey.entityTypeId, itemId }),
     })
   }
   catch (error) {
     logger.warn({ reason: safeRefusal(error) }, 'дело с итогом не записано; ответ в портале')
-    return false
-  }
-}
-
-/**
- * Создать дело и сделать его находимым.
- *
- * ⚠ Два вызова, и это навязано, а не выбрано: `crm.activity.todo.add` метку не принимает,
- * `DESCRIPTION_TYPE` — тоже. Между ними есть окно, в котором дело существует БЕЗ метки:
- * остановись мы там, поиск его больше никогда не нашёл бы, а следующая запись создала бы
- * второе. Поэтому неудачная пометка КОМПЕНСИРУЕТСЯ — дело снимается.
- *
- * ⚠ Чего это окно не закрывает: жёсткая смерть процесса между созданием и удалением.
- * Останется одно ненаходимое дело. Закрыть это с нашей стороны нечем — нужен был бы
- * атомарный «создать с меткой», которого у этого типа дел нет. Цена ограничена одним делом
- * на падение, а не на ответ.
- */
-async function createMarkedActivity(
-  call: RestCall,
-  plan: {
-    dealId: number
-    itemId: number
-    survey: SmartProcessRef
-    title: string
-    description: string
-    color: string
-    responsibleId: number
-  },
-): Promise<boolean> {
-  const add = buildTodoActivityCall({
-    dealEntityTypeId: DEAL_ENTITY_TYPE_ID,
-    dealId: plan.dealId,
-    title: plan.title,
-    description: plan.description,
-    deadline: activityDeadline(new Date()),
-    color: plan.color,
-    ...(plan.responsibleId ? { responsibleId: plan.responsibleId } : {}),
-  })
-  const activityId = readCreatedActivityId(await call(add.method, add.params))
-  if (activityId === null) {
-    logger.warn({}, 'итог не записан: портал не вернул идентификатор дела')
-    return false
-  }
-
-  const originId = activityOriginId(plan.itemId)
-  if (await markActivity(call, activityId, originId)) {
-    logger.info({}, 'итог опроса записан делом в таймлайн сделки')
-  }
-  else {
-    // ⚠ ДЕЛО ОСТАЁТСЯ, И ЭТО СМЕНА РЕШЕНИЯ. Раньше здесь стояла компенсация: непомеченное
-    // дело снималось, чтобы следующая доставка не создала второе. Замер на живом портале
-    // 24.09 показал, что компенсация своей цели НЕ достигает — `crm.activity.delete` убирает
-    // дело, а его запись в ленте сделки остаётся навсегда, с тем же заголовком и тем же
-    // полным текстом. Снять её нечем: у метода удаления других параметров нет,
-    // а `crm.timeline.logmessage.delete` работает только со своими записями.
-    //
-    // То есть удаление меняло «дело, которое может задвоиться» на «мёртвый текст в ленте»
-    // и при повторной доставке давало ровно ту картину, из-за которой заведён issue #45:
-    // сверху живое дело, ниже запись с тем же текстом. Живое дело без метки честнее:
-    // менеджер видит итог и кнопки, а цена — возможный дубль, и только если ЭТОТ ЖЕ ответ
-    // доставят ещё раз.
-    logger.error({}, 'дело записано БЕЗ метки: поиск его не найдёт, повторная доставка создаст второе')
-  }
-
-  // ⚠ Привязка ставится ПОСЛЕ пометки и НЕ входит в компенсацию выше. Дело создано
-  // и находимо — это главное; привязка только добавляет его во вторую ленту. Включи мы её
-  // в компенсацию, отказ привязки сносил бы уже записанный итог.
-  await tryBindToSurveyItem(call, activityId, plan.survey, plan.itemId)
-  return true
-}
-
-/**
- * Привязать дело ещё и к элементу «Опроса».
- *
- * ⚠ ЛУЧШИЕ УСИЛИЯ, а не обязательство. Ответ уже в портале, дело в ленте сделки уже есть;
- * отказ привязки не должен ни ронять доставку, ни запускать компенсирующее удаление. Отказ —
- * в журнал, и всё. Форма взята у соседа (`activityBindingsWrite.ts`), где оплачена живым
- * портале.
- *
- * ⚠ СНАЧАЛА ЧИТАЕМ, ПОТОМ СТАВИМ. Повторная привязка той же пары — ошибка
- * (`ACTIVITY_IS_ALREADY_BOUND`), а через SDK до нас доезжает локализованный ТЕКСТ без кода,
- * то есть отличить её от настоящего отказа нечем. Один лишний вызов дешевле разбора чужой
- * строки, которая завтра придёт на другом языке.
- *
- * ⚠ Что это НЕ доказывает: привязка к несуществующей сущности отвечает `{result: true}` —
- * портал молча принимает `entityId`, которого нет (замер соседа). Значит «вызов не упал»
- * не значит ничего, и единственная защита — правильность самих ссылок.
- */
-async function tryBindToSurveyItem(
-  call: RestCall,
-  activityId: string,
-  survey: SmartProcessRef,
-  itemId: number,
-): Promise<void> {
-  try {
-    const list = buildListBindingsCall(activityId)
-    const already = readBindingKeys(await call(list.method, list.params))
-    if (already.has(bindingKey(survey.entityTypeId, itemId))) return
-
-    const bind = buildBindActivityCall(activityId, survey.entityTypeId, itemId)
-    await call(bind.method, bind.params)
-    logger.info({}, 'дело привязано к элементу «Опроса»')
-  }
-  catch (error) {
-    // Дело в ленте сделки на месте — потеряна только вторая лента.
-    logger.warn({ reason: safeRefusal(error) }, 'дело не привязано к элементу «Опроса»; в сделке оно есть')
-  }
-}
-
-/**
- * Нанести метку, со второй попыткой.
- *
- * ⚠ ДВЕ ПОПЫТКИ, А НЕ ОДНА, и вторая стоит ровно одного вызова на пути отказа. Метка —
- * единственное, что делает дело находимым, а `crm.activity.update` идемпотентен: те же поля,
- * тот же результат. Раз цена ошибки — дубль в ленте клиента, один дешёвый повтор окупается.
- *
- * ⚠ СНАЧАЛА ПЕРЕСПРАШИВАЕМ ПОРТАЛ, и только потом повторяем. Исключение из пометки означает
- * «мы не дождались ответа», а не «портал ничего не сделал»: наш собственный таймаут и обрыв
- * сети выглядят точно так же, при том что запрос мог дойти и примениться. Без переспроса
- * второй вызов шёл бы вслепую. Приём достался от прежней компенсации, где он защищал
- * от удаления правильно помеченного дела; он пережил саму компенсацию, потому что причина
- * у него своя.
- *
- * ⚠ Двухсотый ответ с `false` — задокументированный путь отказа этого метода. Приняв его
- * за успех, мы оставили бы дело без метки и не узнали бы об этом. Нашла панель ревью.
- */
-async function markActivity(call: RestCall, activityId: string, originId: string): Promise<boolean> {
-  const mark = buildActivityMarkerCall(activityId, originId)
-
-  for (const attempt of [1, 2]) {
-    try {
-      if (readMarkApplied(await call(mark.method, mark.params))) return true
-    }
-    catch (error) {
-      logger.warn({ attempt, reason: safeRefusal(error) }, 'пометка дела не прошла')
-
-      // Портал мог применить её и не успеть ответить — тогда повторять нечего.
-      if (await isActivityFindable(call, originId)) return true
-    }
-  }
-
-  return false
-}
-
-/** Находится ли дело по метке. Единственный вопрос, ответ на который здесь и нужен. */
-async function isActivityFindable(call: RestCall, originId: string): Promise<boolean> {
-  try {
-    const find = buildFindActivityCall(originId)
-    return readFoundActivityId(await call(find.method, find.params)) !== null
-  }
-  catch {
-    // Не смогли даже спросить — отвечаем «нет»: повтор пометки безвреден, а ложное «да»
-    // оставило бы дело ненаходимым молча.
     return false
   }
 }

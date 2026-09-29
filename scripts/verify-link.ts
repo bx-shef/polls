@@ -41,8 +41,12 @@ import {
   bindingKey,
   buildFindActivityCall,
   buildListBindingsCall,
+  ISSUE_TITLE_PREFIX,
+  linkActivityOriginId,
   readBindingKeys,
-  readFoundActivityId,
+  readFoundActivity,
+  REVOKED_TITLE_PREFIX,
+  type FoundActivity,
 } from '../server/domain/answers/timeline-activity'
 import { hashToken } from '../server/domain/links/token'
 import { buildFieldName, DEAL_ENTITY_TYPE_ID } from '../server/domain/portals/smart-processes'
@@ -50,7 +54,9 @@ import { formatAnswerDate } from '../shared/answer-date'
 import { surveyStateOf } from '../server/domain/portals/stages'
 import { SURVEY_SP_TITLE, TEMPLATE_SP_TITLE } from '../shared/portal-names'
 import type { PublishedTemplate } from '../server/domain/invitations/portal-calls'
-import { issueLink } from '../server/links/issue-flow'
+import { revokeLink } from '../server/links/issue'
+import { issueLink, type IssueInput } from '../server/links/issue-flow'
+import { reflectRevocation } from '../server/links/revoke-flow'
 import { publicBaseUrl } from '../server/utils/env'
 
 interface Args {
@@ -214,7 +220,7 @@ async function main(): Promise<number> {
   ok(`берём «${chosen.title}» (${chosen.code}, версия ${chosen.version})`)
 
   step('Выпуск ссылки — тем же кодом, что и вкладка сделки')
-  const issued = await issueLink({
+  const issueInput: IssueInput = {
     call,
     batch,
     // ⚠ Портал у нас в базе может быть не заведён вовсе: проверка ходит вебхуком, а не
@@ -230,7 +236,8 @@ async function main(): Promise<number> {
     // и портал поставит ответственным владельца вебхука — это верно для проверки.
     assignedById: 0,
     managerName: 'Проверка verify:link',
-  })
+  }
+  const issued = await issueLink(issueInput)
   if (!issued.ok) {
     die(`  ✗ Выпуск не прошёл: ${issued.reason === 'no-public-host' ? 'PUBLIC_BASE_URL не задан или не https' : 'портал не подтвердил создание элемента'}.`, 1)
   }
@@ -239,6 +246,20 @@ async function main(): Promise<number> {
   if (base !== linkBase) {
     console.log(`  · ссылка ведёт на ${linkBase}, стучусь в ${base}: доказан путь, но не адрес`)
   }
+
+  step('Дело «Отправить опрос клиенту» — в ленте сделки, с адресом анкеты')
+  // ⚠ Issue #84, п. 14: дело заводится при выпуске, и в нём адрес — второй путь скопировать
+  // ссылку. Сверяем ИМЕННО выпущенный адрес, но сам его не печатаем: в нём токен.
+  const sent = await findOwn(call, linkActivityOriginId(issued.itemId))
+  expect(sent.count === 1, `дел выпуска с нашей меткой: ${sent.count}`)
+  expect(sent.found.subject.startsWith(ISSUE_TITLE_PREFIX), `заголовок дела: «${sent.found.subject}»`)
+  expect((await readActivityText(call, sent.found.id)).includes(issued.url), 'в деле лежит выпущенный адрес анкеты')
+  // ⚠ К элементу — НЕТ, и это проверяется живьём: финальная стадия элемента закрывает все открытые
+  // дела, привязанные к нему (замер 29.09), и «Пройдена» закрыла бы дело выпуска до перезаписи итогом.
+  // Первый прогон этой проверки на то и упал. Привязка к элементу — при записи итога.
+  const sentBindings = await readBindings(call, sent.found.id)
+  expect(!sentBindings.has(bindingKey(surveySp.entityTypeId, issued.itemId)), `дело выпуска к элементу «${SURVEY_SP_TITLE}» не привязано`)
+  expect(sentBindings.has(bindingKey(DEAL_ENTITY_TYPE_ID, args.deal)), 'дело выпуска стоит в сделке')
 
   step('Анкета открывается по самой ссылке')
   // ⚠ Проверяются ОБА адреса, и это не дубль. По `/s/<токен>` живёт СТРАНИЦА, она
@@ -323,14 +344,29 @@ async function main(): Promise<number> {
   if (dated === undefined) console.log('  · вопроса «Дата» в этой анкете нет: путь даты не проверен (есть в анкете media)')
   else expect(parsed[dated] === VERIFY_DATE, `дата «${dated}» записана записью провода ${VERIFY_DATE}`)
 
-  step('Дело в истории сделки')
-  const { count: activities, id: activityId } = await findActivity(call, issued.itemId)
-  expect(activities === 1, `дел с нашей меткой: ${activities}`)
+  step('Итог — в том же деле, а не в новом рядом')
+  const result = await findOwn(call, activityOriginId(issued.itemId))
+  expect(result.count === 1, `дел итога с нашей меткой: ${result.count}`)
+  const activityId = result.found.id
+  // ⚠ ТО ЖЕ САМОЕ дело: п. 14 — итог перезаписывает дело выпуска. Два дела в ленте на одну
+  // ссылку — ровно то, от чего пункт и заведён.
+  expect(activityId === sent.found.id, `итог записан в дело выпуска (${activityId})`)
+  expect((await findOwn(call, linkActivityOriginId(issued.itemId))).count === 0, 'ключ выпуска сменился ключом итога')
+  expect(result.found.subject.startsWith('Опрос пройден'), `заголовок дела: «${result.found.subject}»`)
+  // ⚠ Дело итога — ОТКРЫТОЕ: опрос — повод поговорить с клиентом, а не отчёт (решение владельца 21.09).
+  // Живьём, потому что закрыть его может сам портал: финальная стадия элемента закрывает привязанные
+  // к нему дела (замер 29.09), и открытым его держит только порядок «стадия, потом привязка».
+  expect(!result.found.completed, 'дело итога открыто')
+  const text = await readActivityText(call, activityId)
+  expect(!text.includes(issued.url), 'адрес анкеты из дела ушёл')
+  expect(text.includes(marker), 'в описании — текстовый ответ, который мы отправляли')
   if (dated !== undefined) {
     // И в деле — по-русски: лента до issue #84 печатала дату с провода как есть.
-    const text = await readActivityText(call, activityId!)
     expect(text.includes(formatAnswerDate(VERIFY_DATE)), `в деле дата по-русски: ${formatAnswerDate(VERIFY_DATE)}`)
   }
+  // ⚠ Блоков здесь не проверить: `crm.activity.layout.blocks.set` работает только в контексте
+  // приложения, вебхуком отвечает `ERROR_WRONG_CONTEXT`. Доставка это переживает — строкой журнала.
+  console.log('  · блоки с баллами вебхуком не ставятся (ERROR_WRONG_CONTEXT) — их смотрят глазами после ответа по ссылке из вкладки сделки')
 
   step(`Дело видно и в карточке «${SURVEY_SP_TITLE}»`)
   // ⚠ Дело создаётся владельцем-сделкой, а к элементу «Опроса» привязывается вторым шагом
@@ -338,7 +374,7 @@ async function main(): Promise<number> {
   // к НЕСУЩЕСТВУЮЩЕЙ сущности отвечает `{result: true}` — портал молча принимает
   // идентификатор, которого нет. «Вызов не упал» здесь не значит ничего; значит только
   // перечитанный список привязок.
-  const bound = await readBindings(call, activityId!)
+  const bound = await readBindings(call, activityId)
   expect(
     bound.has(bindingKey(surveySp.entityTypeId, issued.itemId)),
     `дело привязано к элементу «${SURVEY_SP_TITLE}» (привязок всего: ${bound.size})`,
@@ -363,33 +399,52 @@ async function main(): Promise<number> {
   // при любом обрыве после записи.
   const again = await writeToPortal(call, surveySp, issued.itemId, chosen.schema, bufferedAnswers!)
   expect(again.ok, `повторная запись прошла${again.ok ? '' : `: ${again.reason}`}`)
-  const afterRepeat = (await findActivity(call, issued.itemId)).count
+  const afterRepeat = (await findOwn(call, activityOriginId(issued.itemId))).count
   expect(afterRepeat === 1, `дел с нашей меткой после повтора: ${afterRepeat}`)
+
+  step('Отзыв закрывает дело выпуска — тем же путём, что кнопка «Отозвать»')
+  // ⚠ Вторая ссылка — затем, что первая уже пройдена, а пройденную не отзывают.
+  const spare = await issueLink(issueInput)
+  if (!spare.ok) die('  ✗ Вторая ссылка не выпущена.', 1)
+  // Наша строка — первой, как у обработчика отзыва: ссылка перестаёт открываться раньше,
+  // чем это видно на портале. Дальше — общий с обработчиком путь (`reflectRevocation`).
+  expect(await revokeLink(issueInput.portalId, spare.itemId) === 1, 'строка ссылки погашена')
+  await reflectRevocation(call, surveySp, spare.itemId)
+  const closed = await findOwn(call, linkActivityOriginId(spare.itemId))
+  expect(closed.count === 1 && closed.found.completed, 'дело выпуска закрыто')
+  expect(closed.found.subject.startsWith(REVOKED_TITLE_PREFIX), `заголовок дела: «${closed.found.subject}»`)
+  expect(!(await readActivityText(call, closed.found.id)).includes(spare.url), 'адреса в закрытом деле нет')
 
   console.log([
     '',
     'Проверка пройдена. Что она доказала:',
-    '  выпущенная ссылка открывается, ответ по ней записывается в элемент смарт-процесса,',
-    '  в сделке появляется ровно одно дело с нашей меткой, повторная отправка отбивается,',
+    '  при выпуске в сделке появляется дело с адресом анкеты; выпущенная ссылка открывается,',
+    '  ответ по ней записывается в элемент смарт-процесса, итог перезаписывает то же дело,',
+    '  повторная отправка отбивается, отзыв закрывает дело выпуска,',
     '  а записанное в портал совпадает с отправленным.',
     '',
-    `След на портале оставлен намеренно: элемент «${SURVEY_SP_TITLE}» ${issued.itemId} и дело в сделке ${args.deal}.`,
+    `След на портале оставлен намеренно: элементы «${SURVEY_SP_TITLE}» ${issued.itemId} и ${spare.itemId}, дела в сделке ${args.deal}.`,
     'Его и смотрят глазами, когда проверка вдруг разойдётся с тем, что видно в карточке.',
   ].join('\n'))
 
   return 0
 }
 
-/** Сколько дел с нашей меткой висит на этом элементе и какое из них первое. Ждём ровно одно. */
-async function findActivity(
+/**
+ * Сколько дел с этим ключом и первое из них. Ждём ровно одно — или ни одного.
+ *
+ * Пустое дело вместо `null`: сверки ниже читают его поля и проваливаются на пустых значениях
+ * сами, без отдельной проверки на `null` в каждом месте.
+ */
+async function findOwn(
   call: ReturnType<typeof hookCall>,
-  itemId: number,
-): Promise<{ count: number, id: string | null }> {
-  const find = buildFindActivityCall(activityOriginId(itemId))
+  originId: string,
+): Promise<{ count: number, found: FoundActivity }> {
+  const find = buildFindActivityCall(originId)
   const answer = await call(find.method, find.params) as { result?: unknown }
   return {
     count: Array.isArray(answer.result) ? answer.result.length : 0,
-    id: readFoundActivityId(answer),
+    found: readFoundActivity(answer) ?? { id: '', completed: false, ownerTypeId: 0, ownerId: 0, subject: '' },
   }
 }
 

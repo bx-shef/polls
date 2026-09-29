@@ -25,6 +25,10 @@ let probe: Probe
 let item: Record<string, unknown>
 let linkStatus: string | null
 let revokedRows: number
+/** Дела выпуска, которые находит поиск по ключу; пусто — ссылка выпущена до issue #84, п. 14. */
+let activities: Record<string, unknown>[]
+/** Как портал отвечает на закрытие дела. */
+let closeActivity: () => unknown
 
 async function loadHandler() {
   probe = { portalCalls: [], revoked: [] }
@@ -37,6 +41,8 @@ async function loadHandler() {
       call: async (method: string, params: Record<string, unknown> = {}) => {
         probe.portalCalls.push({ method, params })
         if (method === 'crm.item.list') return { result: { items: [item] } }
+        if (method === 'crm.activity.list') return { result: activities }
+        if (method === 'crm.activity.update') return closeActivity()
         return { result: { item: { id: ITEM } } }
       },
     }),
@@ -63,6 +69,7 @@ async function loadHandler() {
 }
 
 const stageWrites = () => probe.portalCalls.filter(one => one.method === 'crm.item.update')
+const activityCloses = () => probe.portalCalls.filter(one => one.method === 'crm.activity.update')
 
 beforeEach(() => {
   item = {
@@ -74,6 +81,8 @@ beforeEach(() => {
   }
   linkStatus = 'sent'
   revokedRows = 1
+  activities = []
+  closeActivity = () => ({ result: true })
 })
 
 afterEach(() => {
@@ -157,5 +166,70 @@ describe('отзыв ссылки', () => {
     expect(await handler({})).toEqual({ ok: false, reason: 'not-revocable' })
     expect(probe.revoked).toEqual([])
     expect(stageWrites()).toEqual([])
+  })
+})
+
+describe('дело выпуска при отзыве (issue #84, п. 14)', () => {
+  const OPEN = { ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '1040', OWNER_ID: String(ITEM), SUBJECT: 'Отправить опрос клиенту: Бренд' }
+
+  it('ГЛАВНОЕ: открытое дело закрывается с «Ссылка отозвана» — после стадии, одним вызовом', async () => {
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+
+    const closes = activityCloses()
+    expect(closes).toHaveLength(1)
+    expect(closes[0]!.params).toMatchObject({ id: 308, fields: { SUBJECT: 'Ссылка отозвана: Бренд', COMPLETED: 'Y' } })
+    const methods = probe.portalCalls.map(one => one.method)
+    expect(methods.indexOf('crm.item.update')).toBeLessThan(methods.indexOf('crm.activity.update'))
+  })
+
+  it('ищет дело по ключу ВЫПУСКА этого элемента', async () => {
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    await handler({})
+
+    const find = probe.portalCalls.find(one => one.method === 'crm.activity.list')!
+    expect(find.params.filter).toEqual({ ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: `survey-link-${ITEM}` })
+  })
+
+  it('закрытое менеджером дело не трогает', async () => {
+    activities = [{ ...OPEN, COMPLETED: 'Y' }]
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(activityCloses()).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: отказ закрытия дела отзыв не отменяет — ссылку гасит наша строка', async () => {
+    activities = [OPEN]
+    closeActivity = () => {
+      throw new Error('ACCESS_DENIED')
+    }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(probe.revoked).toEqual([ITEM])
+  })
+
+  it('повторное нажатие, дописывающее стадию, закрывает и дело', async () => {
+    linkStatus = 'revoked'
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(activityCloses()).toHaveLength(1)
+  })
+
+  it('база не погасила строку — дело не трогаем: ответ мог уже прийти', async () => {
+    revokedRows = 0
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    await handler({})
+
+    expect(probe.portalCalls.some(one => one.method.startsWith('crm.activity.'))).toBe(false)
   })
 })

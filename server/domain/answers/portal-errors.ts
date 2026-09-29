@@ -31,7 +31,11 @@ import { refusalCode } from '../portals/portal-error'
  * это дешевле, чем пропустить наружу чужую прозу ради диагностики одного редкого случая.
  *
  * Собрано из разделов «Errors» методов `crm.item.update`, `crm.item.get`
- * и `crm.timeline.comment.add` в документации Битрикс24.
+ * и `crm.timeline.comment.add` в документации Битрикс24, а с issue #84 (п. 14 и 6) —
+ * ещё `crm.activity.todo.update` и `crm.activity.layout.blocks.set`.
+ *
+ * ⚠ `CAN_NOT_UPDATE_COMPLETED_TODO` записан по документации, но портал 29.09 на закрытое дело
+ * ответил кодом `"0"` — решения на этом коде не принимаются (`FoundActivity.completed`).
  */
 const KNOWN_CODES = [
   'ACCESS_DENIED',
@@ -55,6 +59,16 @@ const KNOWN_CODES = [
   'expired_token',
   'user_access_error',
   'PORTAL_DELETED',
+  'CAN_NOT_UPDATE_COMPLETED_TODO',
+  'WRONG_DATETIME_FORMAT',
+  'ERROR_WRONG_CONTEXT',
+  'UNSUITABLE_ACTIVITY_TYPE_ERROR',
+  'TOO_MANY_ITEMS',
+  'KEY_CONTAIN_WRONG_SYMBOLS',
+  'FIELD_IS_REQUIRED',
+  'FIELD_IS_REDUNDANT',
+  'WRONG_FIELD_VALUE',
+  'ENUM_FIELD',
 ] as const
 
 /**
