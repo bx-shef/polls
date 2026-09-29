@@ -148,6 +148,27 @@ describe('пакет через входящий вебхук', () => {
     expect(Object.keys(data)).toEqual(['deal'])
   })
 
+  it('имена упавших команд в терминале — только наши: ключи из тела как есть не печатаются', async () => {
+    // Ключи `result_error` приходят из тела, и управляющая последовательность в них ушла бы в терминал
+    // оператора и в `| tee` (безопасность в закрывающем круге панели PR #106).
+    portal({
+      result: {
+        result: { deal: { item: { id: 2 } } },
+        result_error: { 'company': { error: 'NOT_FOUND', error_description: 'x' }, '\u001B[2Jчужое': { error: 'X', error_description: 'y' } },
+      },
+    })
+    const lines: string[] = []
+    vi.spyOn(console, 'warn').mockImplementation((...parts) => void lines.push(parts.join(' ')))
+
+    await hookBatch('https://portal.example/rest/1/key/')({
+      deal: { method: 'crm.item.get', params: { id: 2 } },
+      company: { method: 'crm.item.get', params: { id: 0 } },
+    })
+
+    expect(lines.join('\n')).toContain('company')
+    expect(lines.join('\n')).not.toContain('\u001B')
+  })
+
   it('подстановку `$result[…]` не ломает', async () => {
     // Связанные команды — единственная причина, по которой пакет вообще укладывается
     // в одно обращение. Percent-encoding портал понимает: проверено живьём.
@@ -172,6 +193,20 @@ describe('диагноз, который видит оператор', () => {
     report(error)
     return lines.join('\n')
   }
+
+  it('код, который фраза уже назвала, дважды не печатается', () => {
+    const out = printed(new PortalError('SHEF_REJECTED', 'описание'))
+
+    expect(out.split('SHEF_REJECTED')).toHaveLength(2)
+  })
+
+  it('код не по форме в терминал не уходит: чужая управляющая последовательность остаётся снаружи', () => {
+    // Граница вывода проверяет форму ещё раз, даже если код пришёл не из вебхука
+    // (безопасность в закрывающем круге панели PR #106).
+    const out = printed(new PortalError('\u001B[2J\u001B[31mFAKE', 'описание'))
+
+    expect(out).not.toContain('\u001B')
+  })
 
   it('беда на нашей стороне НЕ выдаётся за отказ портала', () => {
     // ⚠ ГЛАВНЫЙ ГВАРД БЛОКА, и он оплачен потерянным вечером. Живьём: не поднята локальная
@@ -239,7 +274,7 @@ describe('диагноз, который видит оператор', () => {
   })
 })
 
-describe('как вебхук читает ответ с отказом', () => {
+describe('как вебхук читает ответ портала', () => {
   afterEach(() => vi.restoreAllMocks())
 
   function answer(status: number, body: string) {
@@ -285,6 +320,30 @@ describe('как вебхук читает ответ с отказом', () => 
     // ⚠ Прежде такой ответ уезжал к переносу успехом, и пустое чтение значило бы «шаблонов нет» — перенос
     // записал бы второй. Тот же предохранитель, что у `makePortalCall` (`/review` в панели PR #106).
     answer(200, JSON.stringify(body))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.list').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('SHEF_UNREACHABLE')
+  })
+
+  it.each<[string, string]>([
+    ['`error` не строка', '{"error":true}'],
+    ['код без описания — так отвечает шлюз', '{"error":"Forbidden"}'],
+    ['проза вместо кода', '{"error":"Access denied by policy","error_description":"x"}'],
+  ])('HTTP 400 с телом не портала (%s) — подсказка оператору, а не отказ портала', async (_name, body) => {
+    // Отказ портала — только документированная форма, общая с вызовами через SDK (`refusalCodeIn`).
+    answer(400, body)
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.get').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Stop)
+  })
+
+  it('ГЛАВНОЕ: двухсотый ответ не JSON — ответа портала нет, а не «беда на нашей стороне»', async () => {
+    // Голый `SyntaxError` дошёл бы до `report` с диагнозом «Портал тут ни при чём» — а отвечала страница
+    // прокси (`/code-review` в закрывающем круге панели PR #106).
+    answer(200, '<html>Service is being updated</html>')
 
     const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.list').catch((error: unknown) => error)
 

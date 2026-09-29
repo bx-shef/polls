@@ -28,8 +28,9 @@ export class PortalError extends Error {
    * The machine code: the portal's own from its `error` field, or ours — `REJECTED_CODE` (the portal
    * refused without naming a code), `UNREACHABLE_CODE` (no portal answer).
    *
-   * Пусто — не вердикт портала, а то, что лечит повтор: наше исключение, наш таймаут, код SDK,
-   * ответ портала без кода с 5xx, 408 или 429.
+   * Вердикт портала — код, который он назвал сам, или `REJECTED_CODE`: по нему решают «повторять или нет».
+   * `UNREACHABLE_CODE` и пустота — не вердикт, а то, что лечит повтор. Пусто — это наше исключение, наш
+   * таймаут, код SDK, ответ портала без кода с 5xx, 408 или 429 и незнакомый код с ними же.
    */
   readonly code: string
 
@@ -42,7 +43,7 @@ export class PortalError extends Error {
 
 /**
  * Code for a refusal the portal sent without naming a code: `"error": ""` or `"0"` in a 4xx answer other
- * than 408 and 429, or `"0"` in a 2xx one.
+ * than 408 and 429, or `"0"` in a 2xx one — always in the documented body form (`refusalCodeIn`).
  *
  * ⚠ Свой код, а не пустота: пустота повторяется (`isRetryableRefusal`), а портал, ответивший отказом,
  * повтором не переубедишь. Так приходят отказы проверки («Section at index 0 does not have title.»
@@ -50,10 +51,10 @@ export class PortalError extends Error {
  * "Not found"}`, пример из «Коды ошибок» документации. Сведи их к пустоте — и портал вечно ходит
  * по кругу обустройства (issue #99, `/review` в панели PR #98).
  *
- * ⚠ Только когда ОТВЕТИЛ ПОРТАЛ: в теле ключ `error` строкой, пустой в том числе, — так документация
+ * ⚠ Только когда ОТВЕТИЛ ПОРТАЛ — тело в документированной форме (`refusalCodeIn`): так документация
  * и велит распознавать ошибку, «по составу полей в теле ответа, а не по HTTP-статусу». Страница прокси
- * или WAF с тем же 403 и чужой JSON вроде `{"error": true}` — не отказ портала, а `UNREACHABLE_CODE`
- * (безопасность в панели PR #106).
+ * или WAF с тем же 403, чужой JSON вроде `{"error": true}` и проза вместо кода — не отказ портала,
+ * а `UNREACHABLE_CODE` (безопасность в панели PR #106).
  *
  * Ставят его разборщик ошибок SDK (`asPortalError` — и для брошенного, и для отданного результатом)
  * и вебхук операторских команд (`scripts/-hook.ts`).
@@ -61,8 +62,10 @@ export class PortalError extends Error {
 export const REJECTED_CODE = 'SHEF_REJECTED'
 
 /**
- * Code for a call that got no portal answer: no response, a truncated body, a page that is not the portal's,
- * a 2xx answer without `result`, or no fresh token — a refresh refused for any reason but a dead grant.
+ * Code for a call that got no portal answer: no response, a truncated body, a body that is not a portal
+ * refusal (a page, foreign JSON, prose or a foreign code for a code), a 2xx answer without `result`
+ * (with `time` in it), `invalid_grant` in an answer to a call, or no fresh token — a refresh refused
+ * for any reason but a dead grant.
  *
  * ⚠ Свой код, а не пустота, ради того, кто читает журнал: `safeRefusal` называет его, и беда связи
  * не выглядит «портал отказал, код не распознан». Повторяется (`isRetryableRefusal`): сеть, прокси
@@ -87,6 +90,52 @@ export function refusalCode(error: unknown): string {
 }
 
 /**
+ * Whether a code is one a portal can name: the documented shape, and not a code of the SDK, axios or ours.
+ *
+ * Форма — из документации: код «состоит из цифр, латинских букв и знака подчеркивания» («Коды ошибок»).
+ * Своих кодов портал назвать не может: `SHEF_*` в теле — чужая строка, а не наш диагноз; `JSSDK_*`
+ * и `ERR_*` — коды SDK и axios (безопасность в панели PR #106).
+ */
+export function isPortalCode(code: string): boolean {
+  return /^\w+$/.test(code) && !/^(?:JSSDK|ERR|SHEF)_/.test(code)
+}
+
+/**
+ * The code a response body refuses with: the portal's own, `''` for a refusal without a code (`""` or `"0"`),
+ * or `null` when the body is not a portal refusal at all.
+ *
+ * ⚠ Отказ портала — ровно документированная форма: поля `error` и `error_description` строками («Коды
+ * ошибок»: «Есть поля `error` и `error_description`» — «Вызов не выполнен») или объект REST v3 со строкой
+ * `code`. Всё прочее с ключом `error` — не ответ портала: `{"error": true}`, `{"error": "Forbidden"}` без
+ * описания от шлюза или WAF, проза вместо кода, код SDK или наш в чужом теле. Выдать такое за
+ * окончательный отказ значило бы отпустить шаг навсегда — тот же дефект, что #99. Нашли все семеро
+ * в закрывающем круге панели PR #106: форма `^\w+$` одна отсекала только прозу с пробелом.
+ *
+ * ⚠ Пустой код — тоже отказ портала: документация велит «проверять в ответе наличие ключа `error`,
+ * а не его значение», и `400 {"error": "", "error_description": "Not found"}` — её же пример. `"0"`
+ * портал прислал 29.09 на правку закрытого дела.
+ *
+ * Общая для вызовов через SDK (`server/b24/client.ts`) и вебхука операторских команд (`scripts/-hook.ts`):
+ * двум путям к порталу расходиться нельзя.
+ */
+export function refusalCodeIn(body: unknown): string | null {
+  const named = namedIn(body)
+  if (named === null) return null
+  if (named === '' || named === '0') return ''
+  return isPortalCode(named) ? named : null
+}
+
+/** The string a refusal body names in `error`: `error` beside `error_description`, or a REST v3 `error.code`. */
+function namedIn(body: unknown): string | null {
+  if (body === null || typeof body !== 'object') return null
+  const { error, error_description: description } = body as { error?: unknown, error_description?: unknown }
+  if (typeof error === 'string') return typeof description === 'string' ? error : null
+  if (error === null || typeof error !== 'object') return null
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : null
+}
+
+/**
  * Коды отказов, которые лечатся повтором: предел запросов, перегрузка, сбой на стороне портала.
  *
  * Собрано из разделов «Errors» документации `crm.type.update`, `crm.item.update`
@@ -105,17 +154,23 @@ const RETRYABLE_CODES: readonly string[] = [
  * Whether a refusal is worth retrying later: a known transient code, no portal answer (`UNREACHABLE_CODE`),
  * or no code at all.
  *
- * ⚠ Ошибка без кода — это не портал сказал «нет», а наше собственное исключение или таймаут;
- * такое повтор лечит чаще всего. Не путать с отказом портала без кода: у того свой код
- * (`REJECTED_CODE`), и его не повторяют; у беды связи — тоже свой (`UNREACHABLE_CODE`), повторяемый.
- * А отказ с кодом, которого нет в списке, повтором не лечится: держать ради него незавершённую
- * работу значило бы ходить к порталу каждый час вечно. Нашёл `/review` во втором круге панели PR #87.
+ * ⚠ Ошибка без кода — это не портал сказал «нет», а наше исключение, наш таймаут, код SDK или ответ
+ * портала без кода с 5xx, 408 или 429; такое повтор лечит чаще всего. Не путать с отказом портала
+ * без кода: у того свой код (`REJECTED_CODE`), и его не повторяют; у беды связи — тоже свой
+ * (`UNREACHABLE_CODE`), повторяемый. А отказ с кодом, которого нет в списке, повтором не лечится:
+ * держать ради него незавершённую работу значило бы ходить к порталу каждый час вечно. Нашёл `/review`
+ * во втором круге панели PR #87. Обратная сторона — повтор без счётчика попыток: беда связи, которая
+ * не проходит, повторяется раз в час без конца; это принятый риск (`docs/PROCESS.md`, issue #108, п. 5).
  *
  * ⚠ Правило держится на том, что код СТАВЯТ ЧЕСТНО: ответа портала нет — `UNREACHABLE_CODE`, отказ
  * портала без кода — `REJECTED_CODE`. Это делает `asPortalError` по источнику ошибки и телу ответа;
  * до issue #99 он путал оба случая.
  */
 export function isRetryableRefusal(error: unknown): boolean {
-  const code = refusalCode(error)
+  return isRetryableCode(refusalCode(error))
+}
+
+/** Whether a refusal code is worth retrying: the rule of `isRetryableRefusal`, for a code at hand. */
+export function isRetryableCode(code: string): boolean {
   return code === '' || code === UNREACHABLE_CODE || RETRYABLE_CODES.includes(code)
 }

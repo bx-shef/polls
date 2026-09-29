@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { UNKNOWN_REFUSAL, safeRefusal } from '../../server/domain/answers/portal-errors'
+import { CODELESS_REFUSAL, UNKNOWN_REFUSAL, safeRefusal } from '../../server/domain/answers/portal-errors'
 import { PURGE_GRACE_DAYS, isDeadGrant, purgeBoundary } from '../../server/domain/portals/lifecycle'
 import { PortalError } from '../../server/domain/portals/portal-error'
 
@@ -100,6 +100,13 @@ describe('безопасный текст отказа', () => {
   it('незнакомый код наружу не выносит', () => {
     // Список кодов — выбор из нашего набора, а не фильтр чужой строки.
     expect(safeRefusal(refusal('СОВЕРШЕННО_НОВЫЙ_КОД', 'что-то новое'))).toBe(UNKNOWN_REFUSAL)
+  })
+
+  it('отказ без кода называет своей фразой, а не «портал отказал»', () => {
+    // Пустой код с issue #99 — наше исключение, код SDK или 5xx без кода, то есть не вердикт портала
+    // (технический директор в закрывающем круге панели PR #106). Сырое исключение — по-прежнему своё.
+    expect(safeRefusal(new PortalError('', 'значение «меня зовут Иван» недопустимо'))).toBe(CODELESS_REFUSAL)
+    expect(safeRefusal(new Error('что-то наше'))).toBe(UNKNOWN_REFUSAL)
   })
 
   it('узнаёт наш собственный таймаут', () => {

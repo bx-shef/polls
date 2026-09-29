@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PortalError, UNREACHABLE_CODE } from '../../server/domain/portals/portal-error'
+import { PortalError, REJECTED_CODE, UNREACHABLE_CODE } from '../../server/domain/portals/portal-error'
 import { REQUIRED_SCOPES, isScopeRefusal } from '../../server/domain/portals/scopes'
 
 /**
@@ -32,10 +32,16 @@ describe('нехватка прав приложения', () => {
     expect(isScopeRefusal(new Error('insufficient_scope: недостаточно прав приложения'))).toBe(false)
   })
 
+  it('код берётся только у `PortalError`, а не у чего угодно с полем `code`', () => {
+    // Системная ошибка или чужой объект с таким полем решали бы исход установки за нас (тестировщик
+    // в закрывающем круге панели PR #106).
+    expect(isScopeRefusal(Object.assign(new Error('x'), { code: 'insufficient_scope' }))).toBe(false)
+  })
+
   it('не путается с другими отказами портала', () => {
     // ⚠ Каждый из них лечится не галочкой в кабинете, и выдать их за нехватку прав
     // значит отправить администратора править то, что в порядке.
-    for (const code of ['ACCESS_DENIED', 'expired_token', 'QUERY_LIMIT_EXCEEDED', 'CREATE_DYNAMIC_TYPE_RESTRICTED', UNREACHABLE_CODE, '']) {
+    for (const code of ['ACCESS_DENIED', 'expired_token', 'QUERY_LIMIT_EXCEEDED', 'CREATE_DYNAMIC_TYPE_RESTRICTED', REJECTED_CODE, UNREACHABLE_CODE, '']) {
       expect(isScopeRefusal(new PortalError(code, 'описание портала'))).toBe(false)
     }
   })

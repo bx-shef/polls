@@ -9,8 +9,9 @@ import process from 'node:process'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AjaxError, RefreshTokenError } from '@bitrix24/b24jssdk'
 import { asPortalError, makePortalCall } from '../../server/b24/client'
-import { safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
+import { CODELESS_REFUSAL, safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
 import { isDeadGrant } from '../../server/domain/portals/lifecycle'
+import { isScopeRefusal } from '../../server/domain/portals/scopes'
 import { isRetryableRefusal, PortalError, refusalCode } from '../../server/domain/portals/portal-error'
 import { logger } from '../../server/utils/logger'
 
@@ -25,9 +26,10 @@ import { logger } from '../../server/utils/logger'
  * Первый раз оказалось, что `message` не содержит машинного кода (он в отдельном поле).
  * Второй — что SDK вообще БРОСАЕТ отказ, а не возвращает результатом, и ветка, где код
  * доставался, не достигалась. Третьего раза быть не должно, поэтому здесь поднимается
- * настоящий HTTP-сервер и настоящий клиент SDK: ответ портала не подделывается. Руками — из
- * настоящих классов SDK — собраны лишь три формы, до которых сокетом не дотянуться, и каждая
- * так и названа: мёртвый грант с другим статусом, ошибка axios с телом портала, системная ошибка Node.
+ * настоящий HTTP-сервер и настоящий клиент SDK: ответ портала не подделывается. Руками собраны
+ * лишь три формы, и каждая так и названа: мёртвый грант с другим статусом вложенной ошибки
+ * (настоящие классы SDK), ошибка axios с телом портала (класс SDK вокруг утиной ошибки axios)
+ * и системная ошибка Node.
  *
  * ⚠ Сервер локальный и отвечает мгновенно; сети наружу тест не трогает. TLS настоящий,
  * потому что `makePortalCall` строит адрес портала по `https://` — подменить схему значило
@@ -58,6 +60,8 @@ let authDelivery: 'answer' | 'drop' | 'truncate' = 'answer'
  * и проверка проходила бы, ни разу не дойдя до нашего сервера (программист в панели PR #106).
  */
 let hits = 0
+/** Сколько из них — продление токена. */
+let authHits = 0
 /** Тело последнего запроса к «порталу» — чтобы проверить, что именно ушло. */
 let lastBody = ''
 
@@ -101,6 +105,7 @@ beforeAll(async () => {
     req.on('end', () => {
       const isAuth = (req.url ?? '').includes('token') || (req.url ?? '').includes('oauth')
       if (!isAuth) lastBody = raw
+      else authHits += 1
       const how = isAuth ? authDelivery : delivery
       if (how === 'drop') {
         req.socket.destroy()
@@ -145,19 +150,38 @@ afterAll(() => {
 /**
  * Клиент, смотрящий на наш сервер.
  *
- * Токен у него живой: продление идёт на зашитый адрес сервера авторизации, и его проверяет
- * клиент с истёкшим токеном в «продлении токена» ниже.
+ * Токен у него живой, и продление здесь не запускается — его проверяет клиент с истёкшим токеном
+ * в «продлении токена» ниже. ⚠ Адрес сервера авторизации всё равно наш, локальный: ответ портала
+ * `401 expired_token` в будущем тесте отправил бы SDK за продлением, и с адресом по умолчанию —
+ * на настоящий `oauth.bitrix.info` (тестировщик в закрывающем круге панели PR #106).
  */
 function portalTo() {
-  return makePortalCall({
-    memberId: 'm1',
-    domain: `127.0.0.1:${port}`,
-    accessToken: 'доступ',
-    refreshToken: 'обновление',
-    applicationToken: '',
-    expiresIn: 3600,
-    scope: ['crm'],
-  })
+  return makePortalCall(
+    {
+      memberId: 'm1',
+      domain: `127.0.0.1:${port}`,
+      accessToken: 'доступ',
+      refreshToken: 'обновление',
+      applicationToken: '',
+      expiresIn: 3600,
+      scope: ['crm'],
+    },
+    undefined,
+    `https://127.0.0.1:${port}/rest/`,
+  )
+}
+
+/**
+ * Дождаться, пока запрос дойдёт до «портала», — не дольше двух секунд настоящего времени.
+ *
+ * ⚠ Граница нужна: без неё недошедший запрос (мёртвый прокси) давал бы вечный цикл и два чужих таймаута
+ * вместо ясного «запрос не дошёл» (тестировщик в закрывающем круге панели PR #106). Время настоящее:
+ * подставные таймеры подменяют только `setTimeout`, а `Date` и `setImmediate` — нет.
+ */
+async function reached(before: number): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (hits === before && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve))
+  expect(hits, 'запрос не дошёл до «портала»').toBeGreaterThan(before)
 }
 
 /**
@@ -277,6 +301,47 @@ describe('отказ портала доезжает до нас с машинн
 
     await expect(portalTo().call('crm.item.get', {})).resolves.toMatchObject({ result: { item: { id: 7 } } })
   })
+
+  it.each<[string, unknown]>([
+    ['false — ответ `user.admin` не администратору', false],
+    ['0', 0],
+    ['пустая строка', ''],
+    ['null', null],
+    ['пустой список', []],
+  ])('ГЛАВНОЕ: результат %s — это успех, а не «в ответе нет результата»', async (_name, result) => {
+    // ⚠ Успех — ответ С полем `result`, каким бы ни было его значение. `!data.result` выдал бы `false` от
+    // `user.admin` за беду связи, и мастер установки повторял бы вместо «нужны права администратора».
+    reply = { status: 200, body: { result, time: { start: 1, finish: 2, duration: 1 } } }
+
+    await expect(portalTo().call('user.admin', {})).resolves.toMatchObject({ result })
+  })
+
+  it('ГЛАВНОЕ: отказ по правам доезжает до мастера установки — код в поле, в тексте его нет', async () => {
+    // ⚠ Насквозь: настоящий SDK, настоящий сокет, а затем сам `isScopeRefusal`. Тесты мастера строят такую
+    // ошибку руками — и держат нашу догадку о форме, а не форму.
+    reply = { status: 401, body: { error: 'insufficient_scope', error_description: 'The request requires higher privileges than provided by the access token' } }
+
+    const error = await callRefusal()
+
+    expect(refusalCode(error)).toBe('insufficient_scope')
+    expect(isScopeRefusal(error)).toBe(true)
+    expect(isRetryableRefusal(error)).toBe(false)
+    expect(error.message).not.toContain('insufficient_scope')
+  })
+
+  it.each<[string, unknown]>([
+    ['REST v3: объект с кодом', { error: { code: 'BITRIX_REST_V3_EXCEPTION_ACCESSDENIEDEXCEPTION', message: 'Access denied' } }],
+    ['код нижним регистром', { error: 'invalid_request', error_description: 'x' }],
+    ['код с цифрой', { error: 'WRONG_ARG_2', error_description: 'x' }],
+  ])('портал назвал код в другой форме: %s — код сохраняется', async (_name, body) => {
+    reply = { status: 400, body }
+    const expected = typeof (body as { error: unknown }).error === 'string' ? (body as { error: string }).error : (body as { error: { code: string } }).error.code
+
+    const error = await callRefusal()
+
+    expect(refusalCode(error)).toBe(expected)
+    expect(isRetryableRefusal(error)).toBe(false)
+  })
 })
 
 /**
@@ -325,6 +390,10 @@ describe('ответа портала нет — повторяем', () => {
     ['JSON шлюза: error — не строка', 403, 'application/json', '{"error":true}'],
     ['JSON шлюза: error — объект без code', 403, 'application/json', '{"error":{"message":"blocked"}}'],
     ['JSON шлюза: error — null', 403, 'application/json', '{"error":null}'],
+    ['JSON шлюза: код без описания', 403, 'application/json', '{"error":"Forbidden"}'],
+    ['JSON шлюза при 503: код без описания', 503, 'application/json', '{"error":"unavailable"}'],
+    ['проза шлюза вместо кода', 502, 'application/json', '{"error":"Bad gateway"}'],
+    ['проза вместо кода, хоть и с описанием', 403, 'application/json', '{"error":"Access denied by policy","error_description":"x"}'],
     ['JSON null вместо тела', 400, 'application/json', 'null'],
     ['страница прокси со словом error', 502, 'text/html', '<html><h1>502 Bad Gateway</h1><p>upstream error</p></html>'],
     ['408 без тела', 408, 'text/plain', ''],
@@ -366,7 +435,7 @@ describe('ответа портала нет — повторяем', () => {
     // ⚠ Сначала запрос должен ДОЙТИ до «портала», и только потом идёт время. Иначе подставные двадцать
     // секунд истекали раньше, чем завершалось рукопожатие TLS, и тест мерил таймаут без молчащего
     // портала — вскрыл счётчик обращений, заведённый во втором круге панели PR #106.
-    while (hits === before) await new Promise(resolve => setImmediate(resolve))
+    await reached(before)
     let settled = false
     void pending.finally(() => (settled = true))
     // Ровно двадцать секунд: не раньше — медленный портал не отрезается, и не позже (тестировщик там же).
@@ -386,7 +455,7 @@ describe('ответа портала нет — повторяем', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const before = hits
     const pending = refusalOf(() => portalTo().batch({ deal: { method: 'crm.item.get', params: { id: 1 } } }))
-    while (hits === before) await new Promise(resolve => setImmediate(resolve))
+    await reached(before)
     await vi.advanceTimersByTimeAsync(20_000)
 
     const error = await pending
@@ -394,11 +463,14 @@ describe('ответа портала нет — повторяем', () => {
     expect(safeRefusal(error)).toBe('портал не ответил вовремя')
   })
 
-  it('таймер снимается после ответа — не держит процесс живым', async () => {
+  it.each<[string, { status: number, body: unknown }]>([
+    ['успешного', { status: 200, body: { result: { item: { id: 7 } }, time: { start: 1, finish: 2, duration: 1 } } }],
+    ['отказа', { status: 400, body: { error: 'ACCESS_DENIED', error_description: 'x' } }],
+  ])('таймер снимается после %s ответа — не держит процесс живым', async (_name, answer) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    reply = { status: 200, body: { result: { item: { id: 7 } }, time: { start: 1, finish: 2, duration: 1 } } }
+    reply = answer
 
-    await portalTo().call('crm.item.get', {})
+    await portalTo().call('crm.item.get', {}).catch(() => {})
 
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -430,10 +502,32 @@ describe('портал отказал без кода — SHEF_REJECTED, не п
     expect(refusalCode(error)).toBe('SHEF_REJECTED')
   })
 
-  it('проза шлюза в поле error — не код портала: 5xx без кода повторяется', async () => {
-    // Код портала «состоит из цифр, латинских букв и знака подчеркивания» («Коды ошибок»). Фраза шлюза
-    // в том же поле, принятая за код, отметила бы шаг навсегда (программист в панели PR #106).
-    reply = { status: 502, body: { error: 'Bad gateway' } }
+  it.each<[string, number]>([
+    ['SHEF_REJECTED', 503],
+    ['SHEF_CREATED_NOTHING', 400],
+    ['JSSDK_UNKNOWN_ERROR', 403],
+    ['ERR_BAD_REQUEST', 400],
+  ])('чужой код в теле ответа (%s при %s) — не код портала: ответа портала нет', async (code, status) => {
+    // Код SDK, axios или наш портал назвать не может. Принятый как есть, он выбирал бы решение за нас:
+    // `SHEF_REJECTED` при 503 отпустил бы шаг навсегда (безопасность в панели PR #106).
+    reply = { status, body: { error: code, error_description: 'описание' } }
+
+    const error = await callRefusal()
+
+    expect(refusalCode(error)).toBe('SHEF_UNREACHABLE')
+    expect(isRetryableRefusal(error)).toBe(true)
+  })
+
+  it.each<[number, string]>([
+    [502, 'gateway_timeout'],
+    [500, 'SOME_NEW_SERVER_CODE'],
+    [429, 'ratelimited'],
+    [408, 'TIMEOUT'],
+  ])('незнакомый код при %s (%s) — сбой или предел, а не отказ метода: повторяем', async (status, code) => {
+    // Документация различает системные ошибки и ошибки метода статусом: ошибки метода — с 400 и 403,
+    // а системные коды с 5xx и 429 она велит повторять. Незнакомый код шлюза при выкладке иначе отпустил
+    // бы разовый шаг обустройства навсегда (безопасность и `/review` в закрывающем круге панели PR #106).
+    reply = { status, body: { error: code, error_description: 'описание' } }
 
     const error = await callRefusal()
 
@@ -441,14 +535,15 @@ describe('портал отказал без кода — SHEF_REJECTED, не п
     expect(isRetryableRefusal(error)).toBe(true)
   })
 
-  it('наш код в теле ответа — не наш диагноз: портал своих кодов назвать не может', async () => {
-    // Иначе чужая строка выбирала бы за нас «повторять» (безопасность в панели PR #106).
-    reply = { status: 403, body: { error: 'SHEF_UNREACHABLE', error_description: 'описание' } }
+  it('ГЛАВНОЕ: invalid_grant в ответе на вызов — не мёртвый грант: его признаёт только продление', async () => {
+    // Иначе любой, кто держит тело ответа, — шлюз, прокси, — запускал бы отсчёт до стирания токенов
+    // (безопасность в закрывающем круге панели PR #106).
+    reply = { status: 400, body: { error: 'invalid_grant', error_description: 'x' } }
 
     const error = await callRefusal()
 
-    expect(refusalCode(error)).toBe('SHEF_REJECTED')
-    expect(isRetryableRefusal(error)).toBe(false)
+    expect(refusalCode(error)).toBe('SHEF_UNREACHABLE')
+    expect(isDeadGrant(error)).toBe(false)
   })
 
   it.each([500, 408, 429])('портал ответил %s без кода — повторяем: это лечит время', async (status) => {
@@ -523,8 +618,13 @@ describe('продление токена', () => {
   }
 
   /** Отказ вызова, который ушёл за продлением. */
-  function refreshRefusal(onRefresh?: Parameters<typeof makePortalCall>[1]): Promise<PortalError> {
-    return refusalOf(() => expiredPortal(onRefresh).call('crm.item.update', {}))
+  async function refreshRefusal(onRefresh?: Parameters<typeof makePortalCall>[1]): Promise<PortalError> {
+    const before = authHits
+    const error = await refusalOf(() => expiredPortal(onRefresh).call('crm.item.update', {}))
+    // ⚠ Без этой строки тесты ниже проходили вхолостую: клиент, которого не отправили на продление, доходил до
+    // «портала» и получал то, что оставил в `reply` соседний тест, — и в половине порядков это тоже «ответа нет».
+    expect(authHits, 'продление не дошло до сервера авторизации').toBeGreaterThan(before)
+    return error
   }
 
   it.each([400, 401, 500])('ГЛАВНОЕ: сервер авторизации ответил invalid_grant (%s) — грант мёртв', async (status) => {
@@ -573,9 +673,9 @@ describe('продление токена', () => {
     ['сбой сервера авторизации', 503, { error: 'server_error', error_description: 'Try later' }],
     ['отказ без кода', 400, { error: '0', error_description: 'Some error' }],
   ])('продление отвергнуто, но грант жив: %s (%s) — ответа нет, повторяем', async (_name, status, body) => {
-    // Токена нет — до портала вызов не дошёл, и вердикта о нём никто не выносил. Так же решает наш обмен
-    // токена (`REJECTION_CODES` в `server/b24/oauth.ts`): чинит это исправленная настройка или время,
-    // а не отметка шага навсегда (`/review` и программист во втором круге панели PR #106).
+    // Токена нет — до портала вызов не дошёл, и вердикта о нём никто не выносил. Тот же принцип у нашего
+    // обмена токена (`server/b24/oauth.ts`: неперечисленное — `unavailable`): чинит это исправленная
+    // настройка или время, а не отметка шага навсегда (`/review` и программист во втором круге панели PR #106).
     authReply = { status, body }
 
     const error = await refreshRefusal()
@@ -583,6 +683,22 @@ describe('продление токена', () => {
     expect(refusalCode(error)).toBe('SHEF_UNREACHABLE')
     expect(isRetryableRefusal(error)).toBe(true)
     expect(isDeadGrant(error)).toBe(false)
+  })
+
+  it('код сервера авторизации уходит в журнал: наша пара ключей не выглядит бедой связи', async () => {
+    // `invalid_client` на всём флоте — это наша настройка, а наружу он уходит `SHEF_UNREACHABLE`. Без строки
+    // в журнале оператор искал бы сеть (программист и технический директор в закрывающем круге).
+    authReply = { status: 401, body: { error: 'invalid_client', error_description: 'Invalid client' } }
+    const warn = vi.spyOn(logger, 'warn')
+
+    try {
+      await refreshRefusal()
+
+      expect(warn).toHaveBeenCalledWith({ code: 'invalid_client' }, 'продление токена не удалось — вызов до портала не дошёл')
+    }
+    finally {
+      warn.mockRestore()
+    }
   })
 
   it('наше собственное исключение при записи продлённых токенов — не код портала', async () => {
@@ -594,9 +710,13 @@ describe('продление токена', () => {
       body: { access_token: 'новый', refresh_token: 'новый', expires: 9999999999, expires_in: 3600, client_endpoint: `https://127.0.0.1:${port}/rest/`, server_endpoint: `https://127.0.0.1:${port}/rest/`, scope: 'crm', status: 'L' },
     }
 
-    const error = await refreshRefusal(async () => {
+    const onRefresh = vi.fn(async () => {
       throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
     })
+
+    const error = await refreshRefusal(onRefresh)
+
+    expect(onRefresh).toHaveBeenCalledOnce()
 
     expect(refusalCode(error)).toBe('')
     expect(isRetryableRefusal(error)).toBe(true)
@@ -674,7 +794,9 @@ describe('пакетный вызов', () => {
     ['отказ без кода «0»', { error: '0', error_description: 'Some error' }, 'SHEF_REJECTED'],
     // Строка из тела, которой нет в нашем списке, в журнал не уходит — только фиксированная фраза.
     ['незнакомый код', { error: 'CLIENT_WROTE_THIS', error_description: 'x' }, UNKNOWN_REFUSAL],
-  ])('код отказа команды пакета доезжает до журнала: %s', async (_name, refusal, reason) => {
+    // Мёртвым грант признаёт только продление, а не тело команды (безопасность в закрывающем круге).
+    ['мёртвый грант в команде — не наш вердикт', { error: 'invalid_grant', error_description: 'x' }, CODELESS_REFUSAL],
+  ])('отказ команды пакета доезжает до журнала безопасной строкой: %s', async (_name, refusal, reason) => {
     // SDK отдаёт отказ команды ошибкой, разобранной из её записи в `result_error`. Без кода журнал сказал бы
     // «что-то не отработало» без ответа на вопрос ЧТО. Пишется через `safeRefusal`: код приходит из тела
     // портала, и мимо него в журнал уехала бы любая строка (безопасность в панели PR #106).
@@ -694,10 +816,33 @@ describe('пакетный вызов', () => {
     }
   })
 
+  it('ГЛАВНОЕ: команда с пустым кодом отказа — не «пустые данные»: ключа нет, запись в журнале есть', async () => {
+    // ⚠ `"error": ""` в `result_error` — документированная форма отказа, а SDK считает такую команду успехом
+    // и отдаёт её ключ с `undefined`. Нарушалось обещание «нет ключа — отказ», и отказ не писался никуда
+    // (issue #108, п. 2; `/review` и технический директор в закрывающем круге панели PR #106).
+    reply = envelope({ deal: { item: { id: 2, title: 'Test' } } }, { company: { error: '', error_description: 'Not found' } })
+    const warn = vi.spyOn(logger, 'warn')
+
+    try {
+      const data = await portalTo().batch({
+        deal: { method: 'crm.item.get', params: { entityTypeId: 2, id: 2 } },
+        company: { method: 'crm.item.get', params: { entityTypeId: 4, id: 0 } },
+      })
+
+      expect(data).not.toHaveProperty('company')
+      expect(data.deal).toMatchObject({ item: { title: 'Test' } })
+      expect(warn).toHaveBeenCalledWith({ command: 'company', reason: 'портал не вернул результата команды' }, 'команда пакета не отработала')
+    }
+    finally {
+      warn.mockRestore()
+    }
+  })
+
   it('отказ всего пакета бросается кодом портала, как и одиночный вызов', async () => {
-    // Мёртвый грант, отобранные права, недоступный портал — это не «команда не отработала»,
-    // а «разговора не было». Молча вернуть пустую карту здесь значило бы выдать отказ
-    // портала за «у сделки ничего не заполнено».
+    // Мёртвый токен, недоступный портал — это не «команда не отработала», а «разговора не было». Молча вернуть
+    // пустую карту здесь значило бы выдать отказ портала за «у сделки ничего не заполнено». Нехватку прав
+    // документация `batch` описывает иначе — по каждой команде, со статусом 200, — и такой пакет не бросается,
+    // а пишет каждую команду в журнал (`/code-review` в закрывающем круге).
     reply = { status: 400, body: { error: 'ACCESS_DENIED', error_description: 'Доступ запрещен' } }
     authReply = { status: 200, body: { result: true } }
 

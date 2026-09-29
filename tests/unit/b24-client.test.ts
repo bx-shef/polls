@@ -102,6 +102,18 @@ describe('конструктор клиента', () => {
     expect(probe.last!.auth.memberId).toBe(AUTH.memberId)
   })
 
+  it('продление идёт на сервер авторизации, а не на адрес по умолчанию из тестов', async () => {
+    // SDK строит из этого адреса `https://oauth.bitrix.info/oauth/token/` (`.replace('/rest/', '')`), и опечатка
+    // в константе ломала бы продление у всех порталов разом. Сокетные тесты подменяют адрес на свой,
+    // так что саму константу не видит никто.
+    withCredentials()
+    const { makePortalCall } = await import('../../server/b24/client')
+
+    makePortalCall(AUTH)
+
+    expect(probe.last!.auth.serverEndpoint).toBe('https://oauth.bitrix.info/rest/')
+  })
+
   it('пара приложения уходит отдельным аргументом, а не в токенах', async () => {
     // `client_secret` не должен смешиваться с данными портала: это наш секрет,
     // а не его.

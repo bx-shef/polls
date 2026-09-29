@@ -8,7 +8,7 @@
  *
  * Имя с дефисом впереди — соглашение проекта: файл рядом с обработчиками, но сам не команда.
  */
-import { PortalError, REJECTED_CODE, UNREACHABLE_CODE } from '../server/domain/portals/portal-error'
+import { PortalError, refusalCodeIn, REJECTED_CODE, UNREACHABLE_CODE } from '../server/domain/portals/portal-error'
 import { safeRefusal } from '../server/domain/answers/portal-errors'
 import type { RestBatch, RestCall } from '../server/b24/provision'
 import type { PortalCall } from '../server/domain/portals/smart-processes'
@@ -69,7 +69,7 @@ export function hookCall(base: string): RestCall {
     // Остальные не-2xx — беда ДО портала: прокси, опечатка в адресе, погашенный вебхук; тела
     // у неё может не быть вовсе, а может быть страница, и подсказка ниже полезнее кода.
     if (!response.ok) {
-      const refusal = response.status === 400 ? await portalRefusal(response) : null
+      const refusal = response.status === 400 ? refusalIn(await response.json().catch(() => null)) : null
       if (refusal !== null) throw refusal
       // ⚠ `Stop`, а не голый `Error`: текст здесь НАШ, и `report` печатает его как есть.
       // Пройдя через `safeRefusal`, понятное «портал ответил 502» схлопнулось бы
@@ -78,13 +78,20 @@ export function hookCall(base: string): RestCall {
       throw new Stop(`\nПортал ответил ${response.status} на ${method}. Проверьте адрес вебхука и то, что он ещё жив.`, 1)
     }
 
-    const body: unknown = await response.json()
-    const answer = (body !== null && typeof body === 'object' ? body : {}) as { error?: unknown, error_description?: unknown }
+    let body: unknown
+    try {
+      body = await response.json()
+    }
+    catch {
+      // Страница или пустое тело при 2xx — не ответ портала. Голый `SyntaxError` дошёл бы до `report`
+      // как «беда на нашей стороне» — ложный диагноз (`/code-review` в закрывающем круге панели PR #106).
+      throw new PortalError(UNREACHABLE_CODE, `${method}: ответ портала — не JSON`)
+    }
+    const answer = (body !== null && typeof body === 'object' ? body : {}) as { error?: unknown }
     // Пустой `error` при 2xx отказом не считаем, как не считает и SDK: такой ответ без `result` ловит
     // проверка ниже. Двум путям к порталу расходиться нельзя (см. `hookBatch`).
-    if (typeof answer.error === 'string' && answer.error !== '') {
-      throw new PortalError(refusalCodeOf(answer.error), typeof answer.error_description === 'string' ? answer.error_description : '')
-    }
+    const refusal = answer.error === '' ? null : refusalIn(body)
+    if (refusal !== null) throw refusal
     // ⚠ Успех — это ответ С `result` («Коды ошибок»), тот же предохранитель, что у `makePortalCall`.
     // Без него ответ 2xx без результата — страница, пустой `"error": ""` — уезжал к переносу успехом,
     // и пустое чтение значило бы «шаблонов нет»: записал бы второй. `/review` в панели PR #106.
@@ -94,29 +101,20 @@ export function hookCall(base: string): RestCall {
 }
 
 /**
- * A portal refusal in an HTTP 400 answer: the usual `{error, error_description}` body; `null` — not one.
- */
-async function portalRefusal(response: Response): Promise<PortalError | null> {
-  try {
-    const body = await response.json() as { error?: unknown, error_description?: unknown }
-    if (typeof body.error !== 'string') return null
-    return new PortalError(refusalCodeOf(body.error), typeof body.error_description === 'string' ? body.error_description : '')
-  }
-  catch {
-    return null
-  }
-}
-
-/**
- * The code a refusal is known by: the portal's own, or `REJECTED_CODE` for `""` and `"0"`.
+ * A portal refusal in an answer body, with `""` and `"0"` named `REJECTED_CODE`; `null` — the body is not one.
  *
- * Пустой код — тоже отказ портала: у `crm.activity.update` документирован и такой (`"error": ""`).
- * И `"0"` — так портал 29.09 ответил на правку закрытого дела (HTTP 400); при 2xx SDK читает `"0"` так же.
- * Оба без имени, и оба — окончательный отказ, а не беда связи: тот же код, что ставит разборщик ошибок SDK
- * (issue #99).
+ * Разбор тела — общий с вызовами через SDK (`refusalCodeIn`): отказ портала — только документированная
+ * форма, а проза, чужой JSON и наш код в чужом теле — не он. Прежде вебхук брал любую строку из `error`,
+ * и `report` печатал её в терминал оператора как есть — вместе с управляющими последовательностями
+ * (безопасность в закрывающем круге панели PR #106). Пустой код и `"0"` — окончательный отказ без имени:
+ * `"error": ""` документирован у `crm.activity.update`, `"0"` портал прислал 29.09 на правку закрытого
+ * дела (HTTP 400); при 2xx SDK читает `"0"` так же.
  */
-function refusalCodeOf(error: string): string {
-  return error === '' || error === '0' ? REJECTED_CODE : error
+function refusalIn(body: unknown): PortalError | null {
+  const named = refusalCodeIn(body)
+  if (named === null) return null
+  const description = (body as { error_description?: unknown }).error_description
+  return new PortalError(named === '' ? REJECTED_CODE : named, typeof description === 'string' ? description : '')
 }
 
 /**
@@ -148,7 +146,8 @@ export function hookBatch(base: string): RestBatch {
       result?: { result?: Record<string, unknown>, result_error?: Record<string, unknown> }
     }
 
-    const failed = Object.keys(answer.result?.result_error ?? {})
+    // Только имена наших команд: ключи `result_error` приходят из тела, и печатать их как есть нельзя.
+    const failed = Object.keys(answer.result?.result_error ?? {}).filter(name => name in calls)
     if (failed.length > 0) console.warn(`  · команды пакета не отработали: ${failed.join(', ')}`)
 
     return answer.result?.result ?? {}
@@ -184,13 +183,16 @@ export function report(error: unknown): number {
     return 1
   }
 
-  // ⚠ Машинный код печатается РЯДОМ с фразой, и это не дублирование. `safeRefusal` схлопывает
+  // ⚠ Машинный код печатается РЯДОМ с фразой, когда фраза его не называет. `safeRefusal` схлопывает
   // всё, чего нет в его списке, в одну строку — и правильно делает: список защищает вывод
   // от чужой прозы, в которой едет присланное значение. Но у операторского скрипта другой
   // читатель: человек выбирает между «чинить права», «чинить вызов» и «подождать», и без
-  // кода выбрать нечем. Печатается КОД — машинное поле ответа, чужого в нём нет.
-  const detail = error.code === '' ? '' : ` (${error.code})`
-  console.error(`\nНе получилось: ${safeRefusal(error)}${detail}`)
+  // кода выбрать нечем. Печатается КОД, прошедший форму кода портала (`refusalCodeIn`), и форма
+  // проверяется здесь ещё раз: это граница вывода в терминал, и управляющей последовательности
+  // из чужого тела в ней быть не должно (безопасность в закрывающем круге панели PR #106).
+  const said = safeRefusal(error)
+  const detail = said !== error.code && /^\w{1,64}$/.test(error.code) ? ` (${error.code})` : ''
+  console.error(`\nНе получилось: ${said}${detail}`)
   return 1
 }
 
