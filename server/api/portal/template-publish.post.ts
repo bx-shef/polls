@@ -1,5 +1,4 @@
-import { createError, defineEventHandler, readBody } from 'h3'
-import { verifyItemAccess } from '../../b24/frame-auth'
+import { defineEventHandler, readBody } from 'h3'
 import { readStoredRefs } from '../../b24/provision'
 import { readUpdatedItemId } from '../../domain/answers/portal-calls'
 import { buildListTemplatesCall } from '../../domain/invitations/portal-calls'
@@ -7,16 +6,16 @@ import { readNextOffset } from '../../domain/portals/smart-processes'
 import { validateTemplate } from '../../domain/surveys/validate'
 import {
   isFrozen,
-  buildGetTemplateItemCall,
+  isStale,
   buildNewVersionCall,
   buildPublishTemplateCall,
   findDraftOfCode,
   nextVersion,
-  readTemplateItem,
   readVersionsOfCode,
 } from '../../domain/templates/portal-calls'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
+import { openTemplate } from './-template-access'
 
 /**
  * Publishes a draft, or opens a new draft version from a published one.
@@ -33,7 +32,7 @@ import { openPortalSession } from './-session'
  */
 export default defineEventHandler(async (event) => {
   const session = await openPortalSession(event)
-  const body = await readBody<{ itemId?: unknown, action?: unknown }>(event).catch(() => null)
+  const body = await readBody<{ itemId?: unknown, action?: unknown, updatedAt?: unknown }>(event).catch(() => null)
 
   const itemId = Number(body?.itemId)
   // ⚠ Действие принимается ТОЛЬКО точным совпадением. Прежняя редакция сводила всё, что
@@ -51,23 +50,13 @@ export default defineEventHandler(async (event) => {
   }
 
   // Права — токеном сотрудника, по той же причине, что у записи схемы: пишем мы токеном
-  // приложения, у которого прав больше, значит решать должен портал.
-  const access = await verifyItemAccess(
-    session.portal.domain,
-    session.authId,
-    refs.template.entityTypeId,
-    itemId,
-  )
-  if (!access.ok) {
-    if (access.reason === 'unreachable') {
-      throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
-    }
-    return { ok: false as const, reason: 'denied' as const }
-  }
-
-  const get = buildGetTemplateItemCall(refs.template, itemId)
-  const current = readTemplateItem(await session.call(get.method, get.params), refs.template)
-  if (current === null) return { ok: false as const, reason: 'no-item' as const }
+  // приложения, у которого прав больше, значит решать должен портал. Вход общий с чтением
+  // и сохранением (`openTemplate`), и отказ `hidden-fields` здесь несущий: иначе публикация
+  // выпустила бы схему, которой сотрудник не видел, а отказ проверки ниже отдал бы её
+  // формулировки. Нашли `/review` и `/code-review` в PR #104.
+  const opened = await openTemplate(session, refs.template, itemId)
+  if (!opened.ok) return { ok: false as const, reason: opened.reason }
+  const { userView, current } = opened
   if (current.schema === null) return { ok: false as const, reason: 'no-schema' as const }
 
   // Опубликованная ИЛИ снятая с публикации: обе неизменяемы, и от обеих заводится новая версия.
@@ -103,6 +92,14 @@ export default defineEventHandler(async (event) => {
   }
 
   if (published) return { ok: false as const, reason: 'published' as const }
+
+  // ⚠ Публикуется та редакция, которую сотрудник видел во вкладке, а не та, что лежит на портале
+  // сейчас. Черновик мог сохранить коллега из соседней вкладки, пока эта была открыта, и выпуск
+  // необратим: номер занят, по версии выпускают ссылки. Та же сверка отметки, что у сохранения
+  // (`isStale`); нашёл `/review` во втором замыкающем круге PR #104. Новой версии она не нужна:
+  // её заводят от опубликованной, а та не меняется.
+  const seen = typeof body?.updatedAt === 'string' ? body.updatedAt : ''
+  if (isStale(seen, userView.updatedAt)) return { ok: false as const, reason: 'stale' as const }
 
   const problems = validateTemplate(current.schema)
   const blocking = problems.filter(problem => problem.level === 'error')

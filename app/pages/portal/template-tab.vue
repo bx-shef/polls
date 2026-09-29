@@ -74,7 +74,8 @@ const SAVE_REFUSALS: Record<string, string> = {
   'too-big': 'Анкета слишком большая. Сократите тексты вопросов или разбейте её на две.',
   'too-many': 'Слишком много разделов или вопросов. Разбейте анкету на две.',
   'no-item': 'Анкета не найдена. Возможно, карточку удалили, пока вкладка была открыта.',
-  'denied': 'У вас нет доступа к этой анкете — править её нельзя.',
+  'denied': 'Нет доступа к этой анкете, или её удалили, пока вкладка была открыта.',
+  'hidden-fields': 'Портал не показывает вам часть полей этой анкеты, поэтому менять её здесь нельзя: вы изменили бы то, чего не видите.',
   'stale': 'Анкету изменили в другом месте, пока вы правили эту. Обновите страницу, чтобы не затереть чужую работу.',
   'not-saved': 'Портал не подтвердил запись. Анкета НЕ сохранена — попробуйте ещё раз.',
   'invalid': 'Анкету нельзя опубликовать, пока в ней есть то, что мешает. Список выше.',
@@ -82,6 +83,25 @@ const SAVE_REFUSALS: Record<string, string> = {
   'not-published': 'Новую версию заводят от опубликованной. Эта ещё черновик.',
   'no-action': 'Вкладка не сказала порталу, что именно сделать. Обновите страницу.',
   'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
+}
+
+/** Отказы роута чтения анкеты. */
+type ReadRefusal = 'denied' | 'hidden-fields' | 'stale' | 'no-item' | 'not-provisioned'
+
+/**
+ * Почему анкету не прочитали: отказ роута — или наше. `no-pass` — портал не передал данные
+ * авторизации, `unreachable` — запрос не дошёл или сервер ответил ошибкой.
+ */
+type LoadRefusal = ReadRefusal | 'no-pass' | 'unreachable'
+
+/**
+ * Отказы публикации, у которых слова свои, а не как у сохранения.
+ *
+ * `stale` у сохранения говорит «не затереть чужую работу», а публикация ничего не затирает: она
+ * выпустила бы редакцию, которой человек не видел. Прочие отказы — общие (`SAVE_REFUSALS`).
+ */
+const PUBLISH_REFUSALS: Record<string, string> = {
+  stale: 'Анкету изменили в другом месте, пока вкладка была открыта. Обновите страницу и проверьте её.',
 }
 
 definePageMeta({ layout: 'portal' })
@@ -113,6 +133,13 @@ const saveFailure = ref('')
 const releasing = ref(false)
 /** Что сказать после удачного действия: «опубликовано» или «версия заведена». */
 const releaseNote = ref('')
+/**
+ * Портал больше не показывает сотруднику анкету, которую он только что опубликовал, — или часть её полей.
+ *
+ * Тогда у версии не остаётся ни одного действия: «Создать новую версию» спросит доступ к тому же
+ * элементу и получит отказ сразу после «опубликована». `/review` в PR #104.
+ */
+const locked = ref(false)
 
 /**
  * Черновик под правкой — СВОЯ копия, а не тот же объект.
@@ -175,27 +202,33 @@ onMounted(async () => {
 
   try {
     itemId.value = placementItemId(frame.placement.options, route.query)
-    await loadTemplate()
+    const refusal = await loadTemplate()
+    if (refusal !== null) showLoadRefusal(refusal)
   }
   catch {
-    failure.value = 'Не удалось прочитать анкету с портала. Обновите страницу.'
+    showLoadRefusal('unreachable')
   }
   finally {
     loading.value = false
   }
 })
 
-async function loadTemplate() {
-  if (itemId.value === null) return
+/**
+ * Прочитать анкету с портала в `template` и `problems`.
+ *
+ * Отдаёт причину отказа; `null` — прочитана или читать нечего (номера элемента нет). Что показать
+ * на отказ, решает вызывающий: при открытии вкладки отказ встаёт вместо редактора
+ * (`showLoadRefusal`), а перечитка после публикации только дописывает сообщение о выпуске —
+ * версия уже вышла (`release`).
+ */
+async function loadTemplate(): Promise<LoadRefusal | null> {
+  if (itemId.value === null) return null
 
   const pass = await framePass(frame!.auth)
-  if (pass === null) {
-    failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
-    return
-  }
+  if (pass === null) return 'no-pass'
 
   const answer = await $fetch<
-    { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: string }
+    { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: ReadRefusal }
   >('/api/portal/template', {
     method: 'POST',
     body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value },
@@ -208,11 +241,42 @@ async function loadTemplate() {
     // перезапуска контейнера. Ответ без этого поля уронил бы страницу целиком, и снаружи
     // это выглядело бы как «конструктор перестал работать».
     problems.value = answer.problems ?? []
+    return null
+  }
+  return answer.reason
+}
+
+/** Отказ чтения при открытии вкладки: встаёт вместо редактора, и у каждого свои слова. */
+function showLoadRefusal(reason: LoadRefusal): void {
+  if (reason === 'no-pass') {
+    failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
+    return
+  }
+  if (reason === 'unreachable') {
+    failure.value = 'Не удалось прочитать анкету с портала. Обновите страницу.'
+    return
+  }
+  // Анкету меняли ровно в тот момент, когда вкладка её читала (`openTemplate`): совет — перечитать.
+  if (reason === 'stale') {
+    failure.value = 'Анкету прямо сейчас изменили в другом месте. Обновите страницу.'
+    return
+  }
+  // «Нет доступа» — свой текст, а не «откройте из карточки»: из карточки её и открыли. Анкету
+  // читает токен сотрудника (#101), и отказ значит, что портал её ему не показывает — или её удалили:
+  // эти два случая портал не различает.
+  if (reason === 'denied') {
+    failure.value = `Нет доступа к этой анкете, или её удалили. Доступ к «${TEMPLATE_SP_TITLE}» настраивает администратор в правах CRM.`
+    return
+  }
+  // Элемент виден, а поля конструктора — не все. Пустой черновик на месте спрятанной схемы пригласил
+  // бы собрать анкету заново поверх настоящей, поэтому вкладка не открывается вовсе и говорит почему.
+  if (reason === 'hidden-fields') {
+    failure.value = `Портал не показывает вам часть полей этой анкеты, поэтому работать с ней здесь нельзя. Видимость полей «${TEMPLATE_SP_TITLE}» настраивает администратор CRM.`
     return
   }
   // «Не настроено» и «нет элемента» различаются текстом: первое лечит администратор,
   // второе означает, что вкладку открыли не из карточки.
-  notProvisioned.value = answer.reason === 'not-provisioned'
+  notProvisioned.value = reason === 'not-provisioned'
   if (!notProvisioned.value) itemId.value = null
 }
 
@@ -327,11 +391,12 @@ async function release(action: 'publish' | 'new-version'): Promise<void> {
       | { ok: false, reason: string, problems?: Problem[] }
     >('/api/portal/template-publish', {
       method: 'POST',
-      body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value, action },
+      // Отметка — та, что вкладка показала: публикуется редакция, которую человек видел (`isStale`).
+      body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value, action, updatedAt: template.value?.updatedAt ?? '' },
     })
 
     if (!answer.ok) {
-      saveFailure.value = SAVE_REFUSALS[answer.reason] ?? 'Не получилось. Попробуйте ещё раз.'
+      saveFailure.value = PUBLISH_REFUSALS[answer.reason] ?? SAVE_REFUSALS[answer.reason] ?? 'Не получилось. Попробуйте ещё раз.'
       // ⚠ Претензии от сервера ЗАБИРАЕМ. Отказ говорит «список выше», а список на экране —
       // это то, что вкладка прочитала при открытии; схему на портале могли поправить
       // с тех пор, и человек получил бы совет чинить то, чего не видит.
@@ -357,12 +422,26 @@ async function release(action: 'publish' | 'new-version'): Promise<void> {
   if (releasedVersion === 0) return
 
   releaseNote.value = `Анкета опубликована как версия ${releasedVersion}.`
-  try {
-    await loadTemplate()
+  // ⚠ Отказ перечитки — дописка к сообщению, а НЕ отказ вместо редактора. С #101 анкету
+  // перечитывает токен сотрудника, и портал вправе её не показать: права по стадиям пускают
+  // в «Черновик», но не в «Опубликован». Общий `failure` стёр бы сообщение о выпуске, и человек
+  // решил бы, что анкета не вышла, хотя она уже вышла. Нашёл `/code-review` в PR #104.
+  const reread = await loadTemplate().catch((): LoadRefusal => 'unreachable')
+  if (reread === null) return
+  // Выпуск сервер подтвердил номером версии, так что показываем её неизменяемой, а не черновиком
+  // с кнопками «Править» и «Опубликовать»: они теперь получили бы только отказ.
+  if (template.value !== null) template.value = { ...template.value, state: 'published', version: releasedVersion }
+  // ⚠ Отказ в доступе — не «обновите страницу»: после обновления вкладка откажет тем же. Портал
+  // больше не показывает сотруднику версию (права по стадиям) или часть её полей, и действий у неё
+  // здесь не остаётся (`locked`) — плашка неизменяемости тоже не советует новую версию.
+  if (reread === 'denied' || reread === 'hidden-fields') {
+    locked.value = true
+    releaseNote.value += reread === 'denied'
+      ? ' Дальше работать с ней здесь нельзя: портал её вам больше не показывает.'
+      : ' Дальше работать с ней здесь нельзя: портал не показывает вам часть её полей.'
+    return
   }
-  catch {
-    releaseNote.value += ' Обновите страницу, чтобы увидеть новое состояние.'
-  }
+  releaseNote.value += ' Обновите страницу, чтобы увидеть новое состояние.'
 }
 
 /**
@@ -401,7 +480,9 @@ async function save(): Promise<void> {
 
   const pass = await framePass(frame.auth)
   if (pass === null) {
-    failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
+    // В `saveFailure`, а не в общий `failure`: тот стоит выше редактора и стёр бы его вместе
+    // с правками — тот же класс, что закрыт для перечитки после публикации. `/review` в PR #104.
+    saveFailure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
   }
 
@@ -589,7 +670,7 @@ async function save(): Promise<void> {
                её правки: новая версия. Инвариант — опубликованная неизменяема, по ней уже
                собрана статистика, а ссылки у людей ведут именно на неё. -->
           <div
-            v-else
+            v-else-if="!locked"
             class="mt-3 flex flex-wrap items-center gap-2"
           >
             <B24Button
@@ -624,9 +705,10 @@ async function save(): Promise<void> {
             v-if="frozen"
             class="mt-3"
             color="air-secondary-accent"
-            :description="retired
-              ? 'Эту версию сняли с публикации: ссылки по ней больше не выпускаются. Править её нельзя — по ней уже собирали ответы. Чтобы изменить анкету, создайте новую версию.'
-              : 'Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию.'"
+            :description="(retired
+              ? 'Эту версию сняли с публикации: ссылки по ней больше не выпускаются. Править её нельзя — по ней уже собирали ответы.'
+              : 'Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми.')
+              + (locked ? '' : ' Чтобы изменить анкету, создайте новую версию.')"
           >
             <template #title>
               <span class="inline-flex items-center gap-1">

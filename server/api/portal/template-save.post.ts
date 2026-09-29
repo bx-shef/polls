@@ -1,17 +1,13 @@
-import { defineEventHandler, createError, readBody } from 'h3'
+import { defineEventHandler, readBody } from 'h3'
 import { verifyItemAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
 import { readUpdatedItemId } from '../../domain/answers/portal-calls'
 import { validateTemplate } from '../../domain/surveys/validate'
 import { assignMissingKeys, readIncomingSchema } from '../../domain/templates/schema-input'
-import {
-  isFrozen,
-  buildGetTemplateItemCall,
-  buildSaveSchemaCall,
-  readTemplateItem,
-} from '../../domain/templates/portal-calls'
+import { isFrozen, isStale, buildSaveSchemaCall, readTemplateItem } from '../../domain/templates/portal-calls'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
+import { openTemplate } from './-template-access'
 
 /**
  * Saves the survey schema back into a draft template.
@@ -57,24 +53,13 @@ export default defineEventHandler(async (event) => {
   // приложения — у него права администратора, — поэтому «а можно ли этому человеку» решает
   // портал по своим правам, а не мы по своим догадкам. Без проверки любой сотрудник
   // с фреймовым пропуском мог бы прислать чужой `itemId` и переписать анкету, к которой
-  // портал его не подпускает. У роута ЧТЕНИЯ довод другой (там только наши же шаблоны),
-  // и копировать его сюда было ошибкой. Нашёл `/code-review`.
-  const access = await verifyItemAccess(
-    session.portal.domain,
-    session.authId,
-    refs.template.entityTypeId,
-    itemId,
-  )
-  if (!access.ok) {
-    if (access.reason === 'unreachable') {
-      throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
-    }
-    return { ok: false as const, reason: 'denied' as const }
-  }
-
-  const get = buildGetTemplateItemCall(refs.template, itemId)
-  const current = readTemplateItem(await session.call(get.method, get.params), refs.template)
-  if (current === null) return { ok: false as const, reason: 'no-item' as const }
+  // портал его не подпускает. Довод «там только наши же шаблоны» был скопирован у роута
+  // ЧТЕНИЯ и для записи не работал; с #101 его нет и у чтения. Нашёл `/code-review`.
+  // Вход общий с чтением и публикацией (`openTemplate`): там же отказ `hidden-fields` — схему,
+  // которую портал прячет от сотрудника, запись не затирает.
+  const opened = await openTemplate(session, refs.template, itemId)
+  if (!opened.ok) return { ok: false as const, reason: opened.reason }
+  const { userView, current } = opened
   // Опубликованная и снятая с публикации — неизменяемы. Со штатными стадиями «опубликована»
   // решает дата публикации, а не стадия: версию, которую перетащили в «Черновик», не поправить.
   if (isFrozen(current.state)) {
@@ -85,8 +70,11 @@ export default defineEventHandler(async (event) => {
   // открытые на одной анкете, иначе молча затирают работу друг друга — и обеим показано
   // «Сохранено». Пустая отметка (портал её не отдал) проверку пропускает: отказывать
   // из-за отсутствующего поля значило бы сломать сохранение целиком. Нашёл `/code-review`.
+  // ⚠ Сверяется с отметкой ГЛАЗАМИ СОТРУДНИКА — тем же взглядом, каким её получила вкладка: при
+  // открытии и после каждого сохранения (ниже). Что между двумя чтениями входа элемент не менялся,
+  // проверил `openTemplate`, так что эта отметка — отметка того, поверх чего пишем (`isStale`).
   const seen = typeof body?.updatedAt === 'string' ? body.updatedAt : ''
-  if (seen !== '' && current.updatedAt !== '' && seen !== current.updatedAt) {
+  if (isStale(seen, userView.updatedAt)) {
     return { ok: false as const, reason: 'stale' as const }
   }
 
@@ -118,11 +106,16 @@ export default defineEventHandler(async (event) => {
   // сохранённого черновика, а не того, что человек только что набрал.
   // Перечитываем элемент: нужна свежая отметка изменения, иначе следующее сохранение
   // из этой же вкладки упрётся в собственную же проверку на одновременную правку.
-  const after = readTemplateItem(await session.call(get.method, get.params), refs.template)
+  // ⚠ Перечитываем ТОКЕНОМ СОТРУДНИКА: вкладка живёт его взглядом, и отметку он сверяет своим (выше).
+  // Взгляд приложения показал бы ему поля мимо прав, которые портал применил при открытии.
+  // Отказ перечитки запись не отменяет — она уже прошла; тогда вкладке уходит записанная схема
+  // со старой отметкой, и следующее сохранение попросит обновить страницу, а не затрёт чужое.
+  const again = await verifyItemAccess(session.portal.domain, session.authId, refs.template.entityTypeId, itemId)
+  const after = again.ok ? readTemplateItem({ result: { item: again.item } }, refs.template) : null
 
   return {
     ok: true as const,
-    template: after ?? { ...current, schema },
+    template: after ?? { ...userView, schema },
     problems: validateTemplate(schema),
   }
 })

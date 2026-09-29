@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  * то, ради чего инвариант «опубликованная версия неизменяема» вообще заведён: снятая с публикации
  * и уведённая в «Черновик» версии не правятся и не публикуются повторно под новым номером.
  *
+ * Здесь же — сверка отметки изменения при сохранении (#101): на уровне роута её не держал ни один тест.
+ *
  * Роуты импортируются напрямую, сессия и портал подделаны — приём в `survey-result-api.test.ts`.
  */
 
@@ -27,6 +29,11 @@ const SCHEMA = {
 }
 
 let item: Record<string, unknown>
+/** Элемент глазами сотрудника, если портал показывает ему не то, что приложению. `null` — то же самое. */
+let userItem: Record<string, unknown> | null
+/** Что сотрудник увидит на следующих проверках доступа — перечитка после записи. `null` — то же, что первый раз. */
+let userItemLater: Record<string, unknown> | null
+let accessChecks: number
 let body: Record<string, unknown>
 let writes: { method: string, params: Record<string, unknown> }[]
 
@@ -46,7 +53,12 @@ async function load(route: 'template-save' | 'template-publish') {
     }),
   }))
   vi.doMock('../../server/b24/provision', () => ({ readStoredRefs: async () => ({ template: TEMPLATE }) }))
-  vi.doMock('../../server/b24/frame-auth', () => ({ verifyItemAccess: async () => ({ ok: true, item }) }))
+  vi.doMock('../../server/b24/frame-auth', () => ({
+    verifyItemAccess: async () => {
+      accessChecks += 1
+      return { ok: true, item: accessChecks > 1 && userItemLater !== null ? userItemLater : (userItem ?? item) }
+    },
+  }))
   vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
   vi.doMock('h3', async () => {
     const actual = await vi.importActual<typeof import('h3')>('h3')
@@ -62,6 +74,9 @@ async function load(route: 'template-save' | 'template-publish') {
 }
 
 beforeEach(() => {
+  userItem = null
+  userItemLater = null
+  accessChecks = 0
   item = {
     id: 4,
     stageId: 'DT1038_14:SUCCESS',
@@ -115,6 +130,143 @@ describe('сохранение схемы со стадиями', () => {
   })
 })
 
+describe('одновременная правка', () => {
+  beforeEach(() => {
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '' }
+  })
+
+  it('ГЛАВНОЕ: отметки двух взглядов в разных часовых поясах — не чужая правка', async () => {
+    // ⚠ Вход читает элемент токеном сотрудника и токеном приложения — от имени двух пользователей,
+    // и совпадение записи времени у двух токенов не замерено. Здесь пояса намеренно разные: сверка
+    // строкой — и двух чтений, и отметки вкладки — отказала бы в каждом сохранении. `/review` в PR #104.
+    userItem = { ...item, updatedTime: '2026-09-28T10:00:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T07:00:00+00:00' }
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T10:00:00+03:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+    expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
+  })
+
+  it('отметка разошлась — отказ «stale» и ни одной записи', async () => {
+    // Две вкладки на одной анкете иначе молча затирают работу друг друга. Нашёл `/code-review`.
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T09:59:00+03:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: после записи вкладке уходит СВЕЖАЯ перечитка глазами сотрудника — с новой отметкой', async () => {
+    // Без перечитки вкладка осталась бы со старой отметкой, и каждое второе сохранение из неё упёрлось бы
+    // в «stale». Взгляд приложения показал бы поля мимо прав. Отметка после записи здесь новая, поэтому
+    // видно, что перечитка была. Второй замыкающий `/review` в PR #104.
+    userItem = { ...item, updatedTime: '2026-09-28T10:00:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T07:00:00+00:00' }
+    userItemLater = { ...userItem, updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T10:00:00+03:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true, template: { updatedAt: '2026-09-28T10:05:00+03:00' } })
+  })
+
+  it('ГЛАВНОЕ: чужая запись между двумя чтениями входа — «stale», а не запись поверх', async () => {
+    // Вкладка и сотрудник видят одну отметку, а к чтению приложения коллега уже сохранил своё. Сверка
+    // одной отметки вкладки этого не видит. Второй замыкающий `/code-review` в PR #104.
+    userItem = { ...item, updatedTime: '2026-09-28T10:00:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T10:00:02+03:00' }
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T10:00:00+03:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
+  })
+})
+
+describe('поля, которые портал прячет от сотрудника', () => {
+  /** Схема с дырой в диапазонах: публикация отказала бы проверкой и вернула бы претензии. */
+  const BROKEN = { ...SCHEMA, sections: [{ ...SCHEMA.sections[0]!, title: 'Секретный раздел', bands: [{ from: 0, to: 5, text: 'Мало' }] }] }
+
+  beforeEach(() => {
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '' }
+    body = { itemId: 4, schema: SCHEMA }
+  })
+
+  it('ГЛАВНОЕ: запись не затирает схему, которой сотрудник не видел', async () => {
+    // ⚠ Он видел пустой черновик и собрал анкету заново, а пишем мы токеном приложения — поверх
+    // настоящей. Портал может и отдать поле пустым, поэтому сравниваются два взгляда. `/review` в PR #104.
+    userItem = { ...item, UF_CRM_8_SCHEMA: null }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(writes).toEqual([])
+  })
+
+  it('и тогда, когда портал не отдал поле вовсе', async () => {
+    const { UF_CRM_8_SCHEMA: _hidden, ...rest } = item
+    userItem = rest
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(writes).toEqual([])
+  })
+
+  it('пустой черновик, пустой для обоих, собирается с нуля как прежде', async () => {
+    // Затирать нечего: схемы нет ни у сотрудника, ни у приложения.
+    item = { ...item, UF_CRM_8_SCHEMA: '' }
+    userItem = { ...item }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+    expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
+  })
+
+  it('ГЛАВНОЕ: публикация не выпускает схему, которой сотрудник не видел, — и отказ не несёт её претензий', async () => {
+    // ⚠ Выпуск необратим: номер занят, по версии выпускают ссылки. А отказ проверки отдал бы
+    // названия разделов и формулировки вопросов из поля, которое портал закрыл. `/review`
+    // и `/code-review` в PR #104.
+    item = { ...item, UF_CRM_8_SCHEMA: JSON.stringify(BROKEN) }
+    userItem = { ...item, UF_CRM_8_SCHEMA: null }
+    body = { itemId: 4, action: 'publish' }
+    const publish = await load('template-publish')
+
+    const reply = await publish({})
+
+    expect(reply).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(JSON.stringify(reply)).not.toContain('Секретный раздел')
+    expect(writes).toEqual([])
+  })
+
+  it('новую версию от спрятанной схемы тоже не заводит', async () => {
+    item = { ...item, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00', stageId: 'DT1038_14:SUCCESS' }
+    const { UF_CRM_8_SCHEMA: _hidden, ...rest } = item
+    userItem = rest
+    body = { itemId: 4, action: 'new-version' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(writes).toEqual([])
+  })
+
+  it('закрытый номер версии не мешает: он прячет только значок «Версия N»', async () => {
+    item = { ...item, UF_CRM_8_VERSION: 0 }
+    userItem = { ...item, UF_CRM_8_VERSION: null }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+  })
+
+  it('закрытая дата публикации — отказ, а не опубликованная версия под видом черновика', async () => {
+    // Сотрудник увидел бы «Черновик» и кнопки правки, а сервер отвечал бы «уже опубликовали».
+    item = { ...item, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00', stageId: 'DT1038_14:SUCCESS' }
+    userItem = { ...item, UF_CRM_8_PUBLISHED_AT: null }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(writes).toEqual([])
+  })
+})
+
 describe('публикация со стадиями', () => {
   beforeEach(() => {
     body = { itemId: 4, action: 'publish' }
@@ -126,6 +278,25 @@ describe('публикация со стадиями', () => {
 
     expect(await publish({})).toEqual({ ok: false, reason: 'published' })
     expect(writes).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: публикация не выпускает редакцию, изменённую после открытия вкладки', async () => {
+    // Коллега сохранил черновик из соседней вкладки, пока эта была открыта. Выпуск необратим — номер
+    // занят, по версии выпускают ссылки. Второй замыкающий `/review` в PR #104.
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:00:00+03:00' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
+  })
+
+  it('та же редакция, что во вкладке, публикуется', async () => {
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:05:00+03:00' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toMatchObject({ ok: true, action: 'publish' })
   })
 
   it('от снятой с публикации можно открыть новую версию', async () => {

@@ -1,5 +1,5 @@
 import { registerEndpoint } from '@nuxt/test-utils/runtime'
-import { defineEventHandler, readBody } from 'h3'
+import { createError, defineEventHandler, readBody } from 'h3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountInShell } from './in-shell'
 
@@ -27,7 +27,11 @@ const AUTH = {
 
 let frameWorks = true
 let placementOptions: unknown = { ID: '42' }
+/** Что фрейм отдаёт как данные авторизации; `false` — пропуска нет, как у протухшего токена. */
+let authData: unknown = null
 let reply: unknown
+/** Ответ роута чтения, который до вкладки не дойдёт: сервер ответит 503. */
+const UNREACHABLE = Symbol('портал недоступен')
 
 /** Куда вкладка попросила портал открыть слайдер. */
 let sliderPath = ''
@@ -36,7 +40,7 @@ vi.mock('@bitrix24/b24jssdk', () => ({
   initializeB24Frame: async () => {
     if (!frameWorks) throw new Error('нет связи с порталом')
     return {
-      auth: { getAuthData: () => AUTH },
+      auth: { getAuthData: () => authData ?? AUTH },
       placement: { options: placementOptions },
       slider: {
         // Форма списана с SDK: `getUrl` знает адрес портала, `openPath` принимает URL.
@@ -51,6 +55,7 @@ vi.mock('@bitrix24/b24jssdk', () => ({
 
 registerEndpoint('/api/portal/template', defineEventHandler(async (event) => {
   await readBody(event)
+  if (reply === UNREACHABLE) throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
   return reply
 }))
 
@@ -115,6 +120,7 @@ async function open() {
 
 beforeEach(() => {
   frameWorks = true
+  authData = null
   placementOptions = { ID: '42' }
   reply = PUBLISHED
   sent = null
@@ -235,6 +241,44 @@ describe('вкладка конструктора', () => {
     expect(text).toContain('Анкета не определена')
   })
 
+  it('нет доступа — так и говорит, а не «откройте из карточки»', async () => {
+    // Анкету читает токен сотрудника (#101), и отказ портала значит «не показывает» или «удалили».
+    // Совет «откройте вкладку из карточки» здесь не помогает: из карточки её и открыли.
+    reply = { ok: false, reason: 'denied' }
+
+    const text = await open()
+
+    expect(text).toContain('Нет доступа к этой анкете')
+    expect(text).not.toContain('Анкета не определена')
+  })
+
+  it('поля конструктора спрятаны от сотрудника — так и говорит, а не открывает пустой черновик', async () => {
+    reply = { ok: false, reason: 'hidden-fields' }
+
+    const text = await open()
+
+    expect(text).toContain('не показывает вам часть полей этой анкеты')
+    expect(text).not.toContain('Анкета не определена')
+  })
+
+  it('портал недоступен при открытии — «не удалось прочитать», а не «анкета не определена»', async () => {
+    reply = UNREACHABLE
+
+    const text = await open()
+
+    expect(text).toContain('Не удалось прочитать анкету с портала')
+    expect(text).not.toContain('Анкета не определена')
+  })
+
+  it('анкету меняли ровно во время чтения — «обновите страницу», а не «нет доступа»', async () => {
+    reply = { ok: false, reason: 'stale' }
+
+    const text = await open()
+
+    expect(text).toContain('Анкету прямо сейчас изменили в другом месте')
+    expect(text).not.toContain('Анкета не определена')
+  })
+
   it('ненастроенный портал отличается от отсутствующей анкеты', async () => {
     // Первое лечит администратор переустановкой, второе — открыть вкладку из карточки.
     // Один текст на оба случая отправлял бы половину людей чинить не то.
@@ -303,6 +347,22 @@ describe('правка черновика', () => {
     expect(mounted.text()).toContain('Сократите тексты')
     expect(mounted.findAll('input')).toHaveLength(before)
     expect(button(mounted, 'Сохранить')).toBeDefined()
+  })
+
+  it('без пропуска сохранение не стирает форму с правками', async () => {
+    // Отказ в общем `failure` подменил бы собой редактор целиком — тот же класс, что закрыт
+    // для перечитки после публикации. `/review` в PR #104.
+    reply = DRAFT
+    const mounted = await mount()
+    await button(mounted, 'Править')!.trigger('click')
+    authData = false
+
+    await button(mounted, 'Сохранить')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('Портал не передал данные авторизации')
+    expect(button(mounted, 'Сохранить')).toBeDefined()
+    expect(sent).toBeNull()
   })
 
   it('отказ «уже опубликовали» объясняется словами', async () => {
@@ -387,6 +447,83 @@ describe('публикация и новая версия', () => {
 
     expect(released!.action).toBe('publish')
     expect(mounted.text()).toContain('опубликована как версия 4')
+  })
+
+  it('ГЛАВНОЕ: перечитка после публикации получила отказ — сообщение о выпуске остаётся', async () => {
+    // ⚠ С #101 анкету перечитывает токен сотрудника, и права по стадиям могут не пустить его
+    // в «Опубликован». Отказ в общем `failure` стёр бы экран вместе с «опубликована как версия 4»,
+    // и человек решил бы, что анкета не вышла. Нашёл `/code-review` в PR #104.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    reply = { ok: false, reason: 'denied' }
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('опубликована как версия 4')
+    expect(mounted.text()).not.toContain('Нет доступа к этой анкете')
+    // Выпуск подтверждён номером — версия показана неизменяемой, а не черновиком с кнопками.
+    // И «Создать новую версию» здесь нет: она спросит доступ к тому же элементу и получит отказ,
+    // а «обновите страницу» не поможет — после обновления вкладка откажет тем же. `/review` в PR #104.
+    expect(mounted.text()).toContain('портал её вам больше не показывает')
+    expect(mounted.text()).not.toContain('Обновите страницу')
+    expect(mounted.text()).not.toContain('создайте новую версию')
+    expect(button(mounted, 'Опубликовать')).toBeUndefined()
+    expect(button(mounted, 'Править')).toBeUndefined()
+    expect(button(mounted, 'Создать новую версию')).toBeUndefined()
+  })
+
+  it('спрятанные поля после публикации — свои слова, и плашка не советует новую версию, которой нет', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    reply = { ok: false, reason: 'hidden-fields' }
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    // Элемент виден, а поля — нет: «портал её вам больше не показывает» было бы неправдой.
+    // Второй замыкающий `/review` в PR #104.
+    expect(mounted.text()).toContain('портал не показывает вам часть её полей')
+    expect(mounted.text()).not.toContain('создайте новую версию')
+    expect(button(mounted, 'Создать новую версию')).toBeUndefined()
+  })
+
+  it('перечитка после публикации не дошла — версия опубликована, и новую от неё завести можно', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    reply = UNREACHABLE
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('опубликована как версия 4')
+    expect(mounted.text()).toContain('Обновите страницу, чтобы увидеть новое состояние')
+    expect(button(mounted, 'Опубликовать')).toBeUndefined()
+    expect(button(mounted, 'Создать новую версию')).toBeDefined()
+  })
+
+  it('ГЛАВНОЕ: публикация уходит с отметкой той редакции, что на экране', async () => {
+    // По ней сервер откажет, если черновик за это время сохранили из соседней вкладки: иначе вышла бы
+    // редакция, которой человек не видел. Второй замыкающий `/review` в PR #104.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0, updatedAt: '2026-09-29T10:00:00+03:00' } }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(released!.updatedAt).toBe('2026-09-29T10:00:00+03:00')
+  })
+
+  it('черновик сохранили из соседней вкладки — публикация говорит проверить его, а не «не затереть»', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    releaseReply = { ok: false, reason: 'stale' }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('Обновите страницу и проверьте её')
+    expect(mounted.text()).not.toContain('не затереть чужую работу')
   })
 
   it('отказ публикации объясняется и не ломает экран', async () => {
