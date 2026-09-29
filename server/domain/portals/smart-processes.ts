@@ -874,16 +874,23 @@ export function buildCardSections(spTypeId: number, resultField: boolean, staged
 export const CARD_RESULT_SECTION = 'survey_result'
 
 /**
- * What revision 6 does to a survey card layout that is already on the portal (`planSurveyCard`):
+ * What an edit of a card layout that is already on the portal comes to:
  * - `write` — write these sections: something of ours was placed or taken out;
- * - `keep` — everything of ours already stands as it should;
+ * - `keep` — nothing to change: everything of ours already stands as it should;
  * - `unreadable` — a section came in a shape we do not understand, and nothing is written.
  *
  * ⚠ Не разобрав, не пишем: `set` перезаписывает раскладку целиком и на всех пользователей, и, отдав
  * `[]` вместо непонятного `elements`, мы стёрли бы у всех то, что в разделе было. Нашёл `/code-review`
- * в PR #80.
+ * в PR #80. «Не понял» отделено от «нечего делать», чтобы первое дошло до журнала: нашли `/review`
+ * и `/code-review` в панели PR #98.
  */
-export type SurveyCardPlan = { kind: 'write', sections: Record<string, unknown>[] } | { kind: 'keep' } | { kind: 'unreadable' }
+export type CardPlan = { kind: 'write', sections: Record<string, unknown>[] } | { kind: 'keep' } | { kind: 'unreadable' }
+
+/**
+ * What revision 6 does to a survey card layout (`planSurveyCard`): a `CardPlan`, or `foreign` — an adopted
+ * smart process whose layout holds none of our fields: it may be the client's own.
+ */
+export type SurveyCardPlan = CardPlan | { kind: 'foreign' }
 
 /** Our JSON fields that the widget shows in words; the card keeps them only while there is no widget. */
 const CARD_JSON_FIELDS: readonly string[] = ['SCORES', 'ANSWERS']
@@ -917,9 +924,18 @@ interface CardAnchor {
  * ⚠ Разово, при переходе на ревизию 6 (`CARD_REVISION`): повторяясь при каждом обустройстве, правка
  * возвращала бы клиенту поля, которые он убрал сам.
  */
-export function planSurveyCard(current: unknown, spTypeId: number, widget: boolean): SurveyCardPlan {
+export function planSurveyCard(current: unknown, spTypeId: number, card: { widget: boolean, adopted: boolean }): SurveyCardPlan {
   const sections = readCardLayout(current)
   if (sections === null) return { kind: 'unreadable' }
+  const { widget } = card
+  // ⚠ У УСЫНОВЛЁННОГО — только если раскладка уже знает хоть одно наше поле. Найденный по названию
+  // чаще всего наш же, переживший переустановку, и его раскладка — наша: её надо довести, иначе он
+  // не получил бы ни виджета, ни ссылки никогда. Но голое «Опрос» может оказаться смарт-процессом
+  // клиента, и в его карточку, где наших полей нет, мы ничего не ставим: чужого не перенастраиваем.
+  // Первая редакция не трогала усыновлённого вовсе и замораживала наш же. Нашли `/review`
+  // и `/code-review` в панели PR #98.
+  const ours = [...SURVEY_FIELDS.map(field => field.postfix), SURVEY_RESULT_FIELD].map(postfix => isOurField(spTypeId, postfix))
+  if (card.adopted && !sections.some(section => section.elements.some(element => ours.some(is => is(element))))) return { kind: 'foreign' }
 
   const rows = (index: number) => sections[index]!.elements
   /** Section and position of the first field of `postfixes`, in layout order, or `null`. */
@@ -985,7 +1001,7 @@ export function planSurveyCard(current: unknown, spTypeId: number, widget: boole
 }
 
 /** A card section as `crm.item.details.configuration.set` accepts it back. */
-export interface CardSection extends Record<string, unknown> {
+interface CardSection extends Record<string, unknown> {
   name: string
   title: string
   type: 'section'
@@ -1003,7 +1019,7 @@ export interface CardSection extends Record<string, unknown> {
  * И `set` перезаписывает раскладку целиком и на всех: не разобрав, не пишем (нашёл `/code-review`
  * в PR #80). Разделы и их списки элементов — копии: читающий вправе их править.
  */
-export function readCardLayout(current: unknown): CardSection[] | null {
+function readCardLayout(current: unknown): CardSection[] | null {
   const listed = (current as { result?: unknown } | null)?.result
   if (!Array.isArray(listed) || listed.length === 0) return null
   const sections: CardSection[] = []
@@ -1019,7 +1035,7 @@ export function readCardLayout(current: unknown): CardSection[] | null {
 }
 
 /** A predicate: is this layout element our field `postfix` of this smart process, however the portal spells it. */
-export function isOurField(spTypeId: number, postfix: string): (element: unknown) => boolean {
+function isOurField(spTypeId: number, postfix: string): (element: unknown) => boolean {
   const target = normalizeFieldName(buildFieldName(spTypeId, postfix))
   return (element) => {
     const name = (element as { name?: unknown } | null)?.name
@@ -1032,20 +1048,22 @@ function isFilledText(value: unknown): value is string {
 }
 
 /**
- * The card layout without our field, or `null` when there is nothing to take out.
+ * The card layout without our field: `keep` when there is none (or no saved layout at all), `unreadable` when the layout is not understood.
  *
  * ⚠ Раскладка хранит поля по имени, и удалённое поле в ней остаётся (замерено 28.09). Удаляя поле
  * «Состояние» миграцией ревизии 5, мы оставили бы в каждой уже сохранённой раскладке имя без поля.
  * Нашёл `/review` в панели PR #93. Убираем только его и только там, где оно есть: остальное в
  * раскладке — решение клиента.
  */
-export function planDropFieldFromCard(current: unknown, spTypeId: number, postfix: string): Record<string, unknown>[] | null {
+export function planDropFieldFromCard(current: unknown, spTypeId: number, postfix: string): CardPlan {
+  // Своей раскладки нет — у умолчания портала и имени без поля нет.
+  if (!hasCardConfig(current)) return { kind: 'keep' }
   // Не разобрав, не пишем: `set` перезаписывает раскладку целиком (разбор у `readCardLayout`).
   const sections = readCardLayout(current)
-  if (sections === null) return null
+  if (sections === null) return { kind: 'unreadable' }
   const isTarget = isOurField(spTypeId, postfix)
-  if (!sections.some(section => section.elements.some(isTarget))) return null
-  return sections.map(section => ({ ...section, elements: section.elements.filter(element => !isTarget(element)) }))
+  if (!sections.some(section => section.elements.some(isTarget))) return { kind: 'keep' }
+  return { kind: 'write', sections: sections.map(section => ({ ...section, elements: section.elements.filter(element => !isTarget(element)) })) }
 }
 
 /** Прочитать общую настройку карточки. `scope: 'C'` — общая, не личная. */

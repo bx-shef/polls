@@ -523,20 +523,29 @@ describe('перенос старого поля «Состояние»', () => 
     ])
   })
 
-  it('ГЛАВНОЕ: раскладку без нашего поля или непонятную — не переписывает вовсе', async () => {
+  it('ГЛАВНОЕ: раскладку без нашего поля или непонятную — не переписывает вовсе, а о непонятной говорит', async () => {
     // ⚠ `set` перезаписывает раскладку целиком и на всех: записав пустое вместо непонятного, мы
-    // стёрли бы клиенту его карточку. Нашёл тестировщик во втором круге панели PR #93.
-    for (const answer of [
-      { result: [{ type: 'section', name: 'survey_form', title: 'Анкета', elements: [{ name: 'UF_CRM_10_LINK' }] }] },
-      { result: [] },
-      { result: null },
-      { result: [{ name: 'survey_form', elements: 'не массив' }] },
-    ]) {
+    // стёрли бы клиенту его карточку. Нашёл тестировщик во втором круге панели PR #93. А молча
+    // пропущенная непонятная оставила бы в карточке имя без поля, и узнать это было бы неоткуда:
+    // нашли `/review` и `/code-review` в панели PR #98.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const section = { type: 'section', name: 'survey_form', title: 'Анкета' }
+    for (const [answer, unreadable] of [
+      [{ result: [{ ...section, elements: [{ name: 'UF_CRM_10_LINK' }] }] }, false],
+      [{ result: [] }, false],
+      [{ result: null }, false],
+      // Разделы, которые не принял бы сам `set`: без названия и со списком не того вида.
+      [{ result: [{ type: 'section', name: 'survey_form', elements: [{ name: 'UF_CRM_10_STATE' }] }] }, true],
+      [{ result: [{ ...section, elements: 'не массив' }] }, true],
+    ] as const) {
+      warn.mockClear()
       const p = portal({ 'crm.item.details.configuration.get': answer })
 
       await dropStateField(p.call, STAGED_SURVEY, SURVEY_FIELD, fresh(), clock())
 
       expect(p.of('crm.item.details.configuration.set')).toEqual([])
+      const line = warn.mock.calls.find(([, message]) => String(message).includes('непонятной формы'))
+      expect(line?.[0]).toEqual(unreadable ? { domain: 'shef.bitrix24.ru', typeId: 10 } : undefined)
     }
   })
 

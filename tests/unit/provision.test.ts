@@ -5,6 +5,10 @@ import { PortalError } from '../../server/domain/portals/portal-error'
 import { SURVEY_RESULT_TYPE } from '../../server/domain/portals/userfield-type'
 import { logger } from '../../server/utils/logger'
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 /**
  * Обустройство портала целиком, поверх подделки вызова. Проверяем то, чья поломка
  * не видна в сборке: дубликат смарт-процесса при лимите тарифа 150 на портал
@@ -301,10 +305,6 @@ describe('связь «Опроса» со сделкой', () => {
  * карточки для ВСЕХ пользователей, прошёл бы гейт незамеченным. Ровно тот класс отказа,
  * про который в проекте написано «все тесты зелёные при живой регрессии».
  */
-afterEach(() => {
-  vi.restoreAllMocks()
-})
-
 describe('раскладка карточки «Результата опросов»', () => {
   it('ставится там, где своей нет', async () => {
     const p = portal()
@@ -609,6 +609,23 @@ describe('поле «Результат опроса»', () => {
     expect([settled.resultField, settled.cardSettled]).toEqual(['failed', true])
   })
 
+  it('ГЛАВНОЕ: на портале ревизии 6 повторимый отказ шага поля виджета ревизию не держит и не опускает', async () => {
+    // ⚠ Без гейта `cardDue` у этой проверки портал, уже отмеченный шестой, при каждом сбое связи
+    // опускался бы до пятой — и правка карточки повторилась бы, возвращая клиенту убранное им самим.
+    // Нашли `/review` и `/code-review` в панели PR #98.
+    const p = portal({
+      'app.info': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+      'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, true) },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 6 })
+
+    expect([result.resultField, result.cardSettled, reachedRevision(6, result)]).toEqual(['failed', true, 6])
+    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+  })
+
   it('на портале ревизии 6 повторимый отказ раскладки ревизию не держит — правка ему уже не положена', async () => {
     const p = portal({
       ...withField(OUR_TYPE),
@@ -637,25 +654,70 @@ describe('поле «Результат опроса»', () => {
     expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
   })
 
-  it('ГЛАВНОЕ: у усыновлённого стоящую раскладку не трогает — это может быть «Опрос» клиента', async () => {
-    // ⚠ Найденный по названию смарт-процесс может оказаться собственным процессом клиента, и наши
-    // поля встали бы в его карточку у всех пользователей. Та же политика, что у стадий
-    // и переименования. Нашёл `/code-review` в панели PR #98.
-    const p = portal({
-      'crm.item.details.configuration.get': { result: [{ type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: 'TITLE' }] }] },
+  describe('усыновлённый смарт-процесс', () => {
+    const ADOPTED = { template: TEMPLATE, survey: SURVEY, adopted: { survey: true as const } }
+    const CLIENT_LAYOUT = [{ type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: 'TITLE' }] }]
+
+    it('ГЛАВНОЕ: раскладку без единого нашего поля не трогает — это может быть «Опрос» клиента', async () => {
+      // ⚠ Найденный по названию смарт-процесс может оказаться собственным процессом клиента, и наши
+      // поля встали бы в его карточку у всех пользователей. Нашёл `/code-review` в панели PR #98.
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+      const p = portal({ 'crm.item.details.configuration.get': { result: CLIENT_LAYOUT } })
+
+      const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
+
+      expect(result.adoptedSurvey).toBe(true)
+      expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+      expect([result.cardConfigured, result.cardSettled]).toEqual([false, true])
+      expect(info.mock.calls.some(([, message]) => String(message).includes('нет ни одного нашего поля'))).toBe(true)
     })
 
-    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY, adopted: { survey: true } }, { ...WITH_WIDGET, previousRevision: 5 })
+    it('ГЛАВНОЕ: свою раскладку доводит — наш же смарт-процесс после переустановки не замерзает', async () => {
+      // ⚠ Первая редакция не трогала усыновлённого вовсе, а усыновляется чаще всего наш же,
+      // переживший переустановку: ни виджета, ни ссылки у него не было бы никогда. Нашли `/review`
+      // и `/code-review` в панели PR #98.
+      const p = portal({ 'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, false) } })
 
-    expect(result.adoptedSurvey).toBe(true)
-    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
-    expect(result.cardSettled).toBe(true)
+      const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
+
+      expect(result.cardConfigured).toBe(true)
+      expect(sentLayout(p)).toContain(FIELD)
+      expect(sentLayout(p)).not.toContain(`UF_CRM_${SURVEY.id}_ANSWERS`)
+    })
+
+    it('ГЛАВНОЕ: своей раскладки нет — нашу целиком не ставит', async () => {
+      // Раскладка с нуля — это наши разделы у всех пользователей, а процесс может быть клиентским:
+      // у него остаётся умолчание портала. Нашли `/review` и `/code-review` в панели PR #98.
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+      const p = portal()
+
+      const result = await provisionSmartProcesses(p.call, ADOPTED, WITH_WIDGET)
+
+      expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+      expect(result.cardConfigured).toBe(false)
+      expect(info.mock.calls.some(([, message]) => String(message).includes('нашу целиком не ставим'))).toBe(true)
+    })
+
+    it('отказ шага поля виджета ради чужой раскладки ревизию не держит — её не тронем и потом', async () => {
+      // Держа ревизию, портал обустраивался бы каждый час ради раскладки, которую мы не правим.
+      const p = portal({
+        'app.info': () => {
+          throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        },
+        'crm.item.details.configuration.get': { result: CLIENT_LAYOUT },
+      })
+
+      const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
+
+      expect([result.resultField, result.cardSettled]).toEqual(['failed', true])
+    })
   })
 
   it('непонятную раскладку не пишет, но говорит об этом', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const p = portal({
-      'crm.item.details.configuration.get': { result: [{ name: 'своё', elements: 'не список' }] },
+      // Раздел, который `set` не принял бы: без названия. Разбор — у `readCardLayout`.
+      'crm.item.details.configuration.get': { result: [{ type: 'section', name: 'своё', elements: [{ name: 'TITLE' }] }] },
     })
 
     await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
@@ -925,9 +987,9 @@ describe('идентификаторы на портале', () => {
     // Ревизия 6: разовая правка карточки. Отказ, который лечится повтором, держит портал на пятой.
     ['карточка не доделана — ревизия до неё', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false }, SETTLED, 5],
     ['стадии и карточка разом — держат стадии', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: false }, null, 4],
-    // Без `Math.max`, как у стадий: иначе портал, отмеченный шестой, к карточке не вернулся бы. Просил
-    // тестировщик в панели PR #98.
-    ['карточка не доделана на портале шестой ревизии — опускаем до пятой', 6, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false }, SETTLED, 5],
+    // Строки «не доделана на портале шестой» здесь нет: такого входа не бывает — правку держит гейт
+    // `cardDue`, и это доказывают сквозные тесты «на портале ревизии 6 …» в блоке поля виджета.
+    // Нашёл `/review` в панели PR #98.
     ['карточка не доделана, всё прежнее доделано — ревизия пятая', 2, { resultField: 'ok', ownership: { changes: 3, fieldsLocked: true, settled: true }, stages: SETTLED, cardSettled: false }, SETTLED, 5],
   ])('достигнутая ревизия: %s', (_, previous, result, carried, expected) => {
     // Гвард под находки `/code-review` и `/review` во втором круге PR #87: ревизия откатывалась
