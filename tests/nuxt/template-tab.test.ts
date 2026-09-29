@@ -1,5 +1,5 @@
 import { registerEndpoint } from '@nuxt/test-utils/runtime'
-import { defineEventHandler, readBody } from 'h3'
+import { createError, defineEventHandler, readBody } from 'h3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountInShell } from './in-shell'
 
@@ -27,7 +27,11 @@ const AUTH = {
 
 let frameWorks = true
 let placementOptions: unknown = { ID: '42' }
+/** Что фрейм отдаёт как данные авторизации; `false` — пропуска нет, как у протухшего токена. */
+let authData: unknown = null
 let reply: unknown
+/** Ответ роута чтения, который до вкладки не дойдёт: сервер ответит 503. */
+const UNREACHABLE = Symbol('портал недоступен')
 
 /** Куда вкладка попросила портал открыть слайдер. */
 let sliderPath = ''
@@ -36,7 +40,7 @@ vi.mock('@bitrix24/b24jssdk', () => ({
   initializeB24Frame: async () => {
     if (!frameWorks) throw new Error('нет связи с порталом')
     return {
-      auth: { getAuthData: () => AUTH },
+      auth: { getAuthData: () => authData ?? AUTH },
       placement: { options: placementOptions },
       slider: {
         // Форма списана с SDK: `getUrl` знает адрес портала, `openPath` принимает URL.
@@ -51,6 +55,7 @@ vi.mock('@bitrix24/b24jssdk', () => ({
 
 registerEndpoint('/api/portal/template', defineEventHandler(async (event) => {
   await readBody(event)
+  if (reply === UNREACHABLE) throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
   return reply
 }))
 
@@ -115,6 +120,7 @@ async function open() {
 
 beforeEach(() => {
   frameWorks = true
+  authData = null
   placementOptions = { ID: '42' }
   reply = PUBLISHED
   sent = null
@@ -246,12 +252,12 @@ describe('вкладка конструктора', () => {
     expect(text).not.toContain('Анкета не определена')
   })
 
-  it('поле схемы спрятано от сотрудника — так и говорит, а не открывает пустой черновик', async () => {
-    reply = { ok: false, reason: 'hidden-schema' }
+  it('поля конструктора спрятаны от сотрудника — так и говорит, а не открывает пустой черновик', async () => {
+    reply = { ok: false, reason: 'hidden-fields' }
 
     const text = await open()
 
-    expect(text).toContain('не показывает вам поле со схемой анкеты')
+    expect(text).toContain('не показывает вам часть полей этой анкеты')
     expect(text).not.toContain('Анкета не определена')
   })
 
@@ -323,6 +329,22 @@ describe('правка черновика', () => {
     expect(mounted.text()).toContain('Сократите тексты')
     expect(mounted.findAll('input')).toHaveLength(before)
     expect(button(mounted, 'Сохранить')).toBeDefined()
+  })
+
+  it('без пропуска сохранение не стирает форму с правками', async () => {
+    // Отказ в общем `failure` подменил бы собой редактор целиком — тот же класс, что закрыт
+    // для перечитки после публикации. `/review` в PR #104.
+    reply = DRAFT
+    const mounted = await mount()
+    await button(mounted, 'Править')!.trigger('click')
+    authData = false
+
+    await button(mounted, 'Сохранить')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('Портал не передал данные авторизации')
+    expect(button(mounted, 'Сохранить')).toBeDefined()
+    expect(sent).toBeNull()
   })
 
   it('отказ «уже опубликовали» объясняется словами', async () => {
@@ -421,12 +443,29 @@ describe('публикация и новая версия', () => {
     for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(mounted.text()).toContain('опубликована как версия 4')
-    expect(mounted.text()).toContain('Обновите страницу, чтобы увидеть новое состояние')
     expect(mounted.text()).not.toContain('Нет доступа к этой анкете')
-    // Выпуск подтверждён номером — версия показана неизменяемой, а не черновиком с кнопками,
-    // которые теперь получили бы только отказ. `/review` в PR #104.
+    // Выпуск подтверждён номером — версия показана неизменяемой, а не черновиком с кнопками.
+    // И «Создать новую версию» здесь нет: она спросит доступ к тому же элементу и получит отказ,
+    // а «обновите страницу» не поможет — после обновления вкладка откажет тем же. `/review` в PR #104.
+    expect(mounted.text()).toContain('в новой стадии портал вам её не показывает')
+    expect(mounted.text()).not.toContain('Обновите страницу')
     expect(button(mounted, 'Опубликовать')).toBeUndefined()
     expect(button(mounted, 'Править')).toBeUndefined()
+    expect(button(mounted, 'Создать новую версию')).toBeUndefined()
+  })
+
+  it('перечитка после публикации не дошла — версия опубликована, и новую от неё завести можно', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    reply = UNREACHABLE
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('опубликована как версия 4')
+    expect(mounted.text()).toContain('Обновите страницу, чтобы увидеть новое состояние')
+    expect(button(mounted, 'Опубликовать')).toBeUndefined()
+    expect(button(mounted, 'Создать новую версию')).toBeDefined()
   })
 
   it('отказ публикации объясняется и не ломает экран', async () => {

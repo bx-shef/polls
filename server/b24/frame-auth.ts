@@ -178,7 +178,11 @@ async function callAsUser(
   if (!response.ok) {
     // 4xx — портал сказал «нет». 5xx — порталу плохо, и это не повод не пускать сотрудника
     // навсегда: вызывающий отличит одно от другого по причине.
-    return { ok: false, reason: response.status >= 500 ? 'unreachable' : 'rejected' }
+    // ⚠ 429 — тоже «порталу плохо», а не «нет»: так приходит `OPERATION_TIME_LIMIT`, и блокировка
+    // снимается сама («Коды ошибок» документации). Считай мы её отказом, вкладка конструктора
+    // на пределе нагрузки отправляла бы человека к администратору за правами, которые у него есть.
+    // Нашёл `/code-review` в PR #104: с #101 через эту проверку идёт и открытие вкладки.
+    return { ok: false, reason: response.status >= 500 || response.status === 429 ? 'unreachable' : 'rejected' }
   }
 
   const body = await response.json().catch(() => null) as unknown

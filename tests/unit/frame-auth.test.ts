@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { verifyDealAccess, verifyFrameToken } from '../../server/b24/frame-auth'
+import { verifyDealAccess, verifyFrameToken, verifyItemAccess } from '../../server/b24/frame-auth'
 
 /**
  * Проверка фреймового пропуска — граница безопасности всех портальных экранов: за ней
@@ -160,5 +160,25 @@ describe('проверка доступа к сделке', () => {
         { ok: false, reason: 'denied' },
       )
     }
+  })
+})
+
+describe('предел нагрузки портала', () => {
+  it('ГЛАВНОЕ: 429 — «портал недоступен», а не «нет доступа»', async () => {
+    // ⚠ Так приходит `OPERATION_TIME_LIMIT`, и блокировка снимается сама («Коды ошибок»
+    // документации). С #101 через эту проверку идёт и открытие вкладки конструктора: сочти мы 429
+    // отказом, человек пошёл бы к администратору за правами, которые у него есть. `/code-review` в PR #104.
+    const limited = answering({ error: 'OPERATION_TIME_LIMIT', error_description: 'Method is blocked due to operation time limit' }, 429)
+
+    expect(await verifyItemAccess(DOMAIN, FRAME_TOKEN, 1038, 42, limited)).toEqual({ ok: false, reason: 'unreachable' })
+    expect(await verifyDealAccess(DOMAIN, FRAME_TOKEN, 42, limited)).toEqual({ ok: false, reason: 'unreachable' })
+    expect(await verifyFrameToken(DOMAIN, FRAME_TOKEN, limited)).toEqual({ ok: false, reason: 'unreachable' })
+  })
+
+  it('отказ проверки с пустым кодом — по-прежнему «не видит»', async () => {
+    // Так портал отвечает на несуществующий элемент: `400 {"error": "", "error_description": "Not found"}`.
+    const missing = answering({ error: '', error_description: 'Not found' }, 400)
+
+    expect(await verifyItemAccess(DOMAIN, FRAME_TOKEN, 1038, 42, missing)).toEqual({ ok: false, reason: 'denied' })
   })
 })

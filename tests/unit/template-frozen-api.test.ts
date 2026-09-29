@@ -125,10 +125,13 @@ describe('одновременная правка', () => {
     item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '' }
   })
 
-  it('ГЛАВНОЕ: отметка вкладки в другом часовом поясе — не чужая правка', async () => {
-    // ⚠ Вкладка получила отметку токеном сотрудника (#101), роут перечитывает токеном приложения.
-    // Сравнив строки, мы отказали бы в каждом сохранении, где пояса разошлись (`isSameStamp`).
-    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T07:00:00+00:00' }
+  it('ГЛАВНОЕ: отметка сверяется глазами сотрудника — тем же взглядом, каким её получила вкладка', async () => {
+    // ⚠ Отметка приложения — чтение от имени другого пользователя, и совпадение записи времени
+    // у двух токенов не замерено. Здесь они намеренно разные: сверка с приложением отказала бы.
+    // `/review` в PR #104.
+    userItem = { ...item, updatedTime: '2026-09-28T10:00:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T07:00:00+00:00' }
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T10:00:00+03:00' }
     const save = await load('template-save')
 
     expect(await save({})).toMatchObject({ ok: true })
@@ -143,9 +146,22 @@ describe('одновременная правка', () => {
     expect(await save({})).toEqual({ ok: false, reason: 'stale' })
     expect(writes).toEqual([])
   })
+
+  it('после записи вкладке уходит взгляд сотрудника — с его отметкой для следующей сверки', async () => {
+    // Взгляд приложения показал бы ему поля мимо прав, а следующая сверка шла бы между двумя токенами.
+    userItem = { ...item, updatedTime: '2026-09-28T10:05:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T07:05:00+00:00' }
+    body = { itemId: 4, schema: SCHEMA }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true, template: { updatedAt: '2026-09-28T10:05:00+03:00' } })
+  })
 })
 
-describe('схема, которую портал прячет от сотрудника', () => {
+describe('поля, которые портал прячет от сотрудника', () => {
+  /** Схема с дырой в диапазонах: публикация отказала бы проверкой и вернула бы претензии. */
+  const BROKEN = { ...SCHEMA, sections: [{ ...SCHEMA.sections[0]!, title: 'Секретный раздел', bands: [{ from: 0, to: 5, text: 'Мало' }] }] }
+
   beforeEach(() => {
     item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '' }
     body = { itemId: 4, schema: SCHEMA }
@@ -157,7 +173,7 @@ describe('схема, которую портал прячет от сотруд
     userItem = { ...item, UF_CRM_8_SCHEMA: null }
     const save = await load('template-save')
 
-    expect(await save({})).toEqual({ ok: false, reason: 'hidden-schema' })
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-fields' })
     expect(writes).toEqual([])
   })
 
@@ -166,7 +182,7 @@ describe('схема, которую портал прячет от сотруд
     userItem = rest
     const save = await load('template-save')
 
-    expect(await save({})).toEqual({ ok: false, reason: 'hidden-schema' })
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-fields' })
     expect(writes).toEqual([])
   })
 
@@ -178,6 +194,43 @@ describe('схема, которую портал прячет от сотруд
 
     expect(await save({})).toMatchObject({ ok: true })
     expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
+  })
+
+  it('ГЛАВНОЕ: публикация не выпускает схему, которой сотрудник не видел, — и отказ не несёт её претензий', async () => {
+    // ⚠ Выпуск необратим: номер занят, по версии выпускают ссылки. А отказ проверки отдал бы
+    // названия разделов и формулировки вопросов из поля, которое портал закрыл. `/review`
+    // и `/code-review` в PR #104.
+    item = { ...item, UF_CRM_8_SCHEMA: JSON.stringify(BROKEN) }
+    userItem = { ...item, UF_CRM_8_SCHEMA: null }
+    body = { itemId: 4, action: 'publish' }
+    const publish = await load('template-publish')
+
+    const reply = await publish({})
+
+    expect(reply).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(JSON.stringify(reply)).not.toContain('Секретный раздел')
+    expect(writes).toEqual([])
+  })
+
+  it('новую версию от спрятанной схемы тоже не заводит', async () => {
+    item = { ...item, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00', stageId: 'DT1038_14:SUCCESS' }
+    const { UF_CRM_8_SCHEMA: _hidden, ...rest } = item
+    userItem = rest
+    body = { itemId: 4, action: 'new-version' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(writes).toEqual([])
+  })
+
+  it('закрытая дата публикации — отказ, а не опубликованная версия под видом черновика', async () => {
+    // Сотрудник увидел бы «Черновик» и кнопки правки, а сервер отвечал бы «уже опубликовали».
+    item = { ...item, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00', stageId: 'DT1038_14:SUCCESS' }
+    userItem = { ...item, UF_CRM_8_PUBLISHED_AT: null }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-fields' })
+    expect(writes).toEqual([])
   })
 })
 
