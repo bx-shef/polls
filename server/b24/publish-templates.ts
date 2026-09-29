@@ -12,7 +12,7 @@ import {
 } from '../domain/import/template-publish'
 import { readNextOffset, type SmartProcessRef } from '../domain/portals/smart-processes'
 import { safeRefusal } from '../domain/answers/portal-errors'
-import { PortalError } from '../domain/portals/portal-error'
+import { LIST_TRUNCATED_CODE, PortalError } from '../domain/portals/portal-error'
 import type { RestCall } from './provision'
 import { writesLegacyState } from './write-templates'
 import { logger } from '../utils/logger'
@@ -28,9 +28,6 @@ import { logger } from '../utils/logger'
 
 /** Предел перелистывания. Страховка от кривого `next`, а не ожидаемый размер. */
 const MAX_PAGES = 50
-
-/** Наш код отказа: список не дочитан до конца. */
-export const PORTAL_LIST_TRUNCATED = 'SHEF_LIST_TRUNCATED'
 
 /** Наш код отказа: портал ответил успехом, но элемент не вернул. */
 export const PORTAL_UPDATED_NOTHING = 'SHEF_UPDATED_NOTHING'
@@ -123,7 +120,7 @@ async function tallyUsage(call: RestCall, survey: SmartProcessRef): Promise<Map<
   // Нашёл `/code-review` в PR #50.
   if (start !== null) {
     throw new PortalError(
-      PORTAL_LIST_TRUNCATED,
+      LIST_TRUNCATED_CODE,
       `список «Опросов» не дочитан за ${MAX_PAGES} страниц — сводка по пройденным была бы неполной`,
     )
   }
@@ -150,7 +147,7 @@ async function listAllItems(call: RestCall, template: SmartProcessRef): Promise<
   // списке просто не сработает — вторая карточка окажется на непрочитанной странице.
   if (start !== null) {
     throw new PortalError(
-      PORTAL_LIST_TRUNCATED,
+      LIST_TRUNCATED_CODE,
       `список шаблонов не дочитан за ${MAX_PAGES} страниц`,
     )
   }

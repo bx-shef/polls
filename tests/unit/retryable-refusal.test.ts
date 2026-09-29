@@ -35,6 +35,12 @@ describe('отказ, который лечится повтором', () => {
     expect(isRetryableRefusal(new PortalError('SHEF_UNREACHABLE', 'socket hang up'))).toBe(true)
   })
 
+  it('список не дочитан (`SHEF_LIST_TRUNCATED`) — не повторять: сам список не укоротится', () => {
+    // На это опирается `refuse` у обустройства: разовый шаг миграции не ходит к порталу каждый час из-за
+    // списка, который повтор не дочитает (`/review` в третьем круге PR #113).
+    expect(isRetryableRefusal(new PortalError('SHEF_LIST_TRUNCATED', 'crm.type.list: список не дочитан за 100 страниц'))).toBe(false)
+  })
+
   it('код берётся только из `PortalError`, а не из чего угодно с полем `code`', () => {
     // Иначе системная ошибка Node или чужой объект выбирали бы решение за нас.
     expect(isRetryableRefusal({ code: 'ACCESS_DENIED' })).toBe(true)

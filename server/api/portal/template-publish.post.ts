@@ -69,6 +69,7 @@ export default defineEventHandler(async (event) => {
     // (или повтор запроса после обрыва) заводило бы ещё один черновик той же анкеты, и каждый
     // публиковался бы отдельной версией. Нашёл `/code-review`.
     const existing = await findExistingDraft(session.call, refs.template, current.schema.code)
+    if (existing === 'truncated') return listTruncated(session.portal.domain, action)
     if (existing !== null) {
       return { ok: true as const, action: 'new-version' as const, itemId: existing, entityTypeId: refs.template.entityTypeId, reused: true }
     }
@@ -110,7 +111,9 @@ export default defineEventHandler(async (event) => {
   // ⚠ Номер считается по ВСЕМ версиям этого кода на портале, а не по открытой. Версия —
   // внешний ключ: по паре «код + версия» живут кэш схемы, ссылки и статистика. Выдав
   // занятый номер, мы склеили бы две разные анкеты в одну.
-  const version = nextVersion(await readAllVersions(session.call, refs.template, current.schema.code))
+  const versions = await readAllVersions(session.call, refs.template, current.schema.code)
+  if (versions === 'truncated') return listTruncated(session.portal.domain, action)
+  const version = nextVersion(versions)
 
   const publish = buildPublishTemplateCall(refs.template, itemId, current.schema, version, new Date())
   if (readUpdatedItemId(await session.call(publish.method, publish.params)) === null) {
@@ -133,12 +136,24 @@ export default defineEventHandler(async (event) => {
  */
 const MAX_PAGES = 20
 
-/** Все номера версий этого кода, со всех страниц. */
+/**
+ * Refuses a release whose template list did not end within the page cap, naming the portal in the log.
+ *
+ * ⚠ Ответ вкладке, а не исключение. Исключение уходило пятисотым, вкладка звала его обрывом связи —
+ * «проверьте и попробуйте ещё раз», хотя повтор не поможет, пока список длиннее предела, — а своей
+ * строки с порталом в журнале не было. Нашли `/review` и `/code-review` во втором круге PR #113.
+ */
+function listTruncated(domain: string, action: 'publish' | 'new-version') {
+  logger.warn({ domain, action, pages: MAX_PAGES }, 'список шаблонов не дочитан до конца — выпуск остановлен')
+  return { ok: false as const, reason: 'list-truncated' as const }
+}
+
+/** Every version number of this code across all pages; `'truncated'` when the list did not end within the cap. */
 async function readAllVersions(
   call: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
   template: { entityTypeId: number, id: number },
   code: string,
-): Promise<number[]> {
+): Promise<number[] | 'truncated'> {
   const found: number[] = []
   let start: number | null = 0
 
@@ -149,15 +164,24 @@ async function readAllVersions(
     start = readNextOffset(response)
   }
 
+  // ⚠ Не дочитали — отказ, а не номер по неполному списку: выданный так номер мог оказаться занятым,
+  // и две анкеты склеились бы в одну пару «код + версия». Тот же приём, что у операторского двойника
+  // (`publish-templates.ts`). С #110 листание заработало, и предел стал достижим — `/review`
+  // и `/code-review` в PR #113.
+  if (start !== null) return 'truncated'
   return found
 }
 
-/** Черновик этого кода, если он уже есть. Ищем так же постранично: он может быть где угодно. */
+/**
+ * The id of this code's draft if there is one, `null` if none; `'truncated'` when the list did not end within the cap.
+ *
+ * Ищем постранично: черновик может лежать где угодно.
+ */
 async function findExistingDraft(
   call: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
   template: { entityTypeId: number, id: number },
   code: string,
-): Promise<number | null> {
+): Promise<number | null | 'truncated'> {
   let start: number | null = 0
 
   for (let page = 0; page < MAX_PAGES && start !== null; page++) {
@@ -168,5 +192,7 @@ async function findExistingDraft(
     start = readNextOffset(response)
   }
 
+  // Не дочитали — не «черновика нет»: иначе новая версия завела бы второй черновик той же анкеты.
+  if (start !== null) return 'truncated'
   return null
 }

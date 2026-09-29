@@ -18,6 +18,7 @@ const TEMPLATE = { entityTypeId: 1038, id: 8, categoryId: 14 }
 const SCHEMA = JSON.stringify({ code: 'brand', title: 'Бренд', sections: [{ key: 's', title: 'Раздел', scored: false, bands: [], questions: [{ key: 'q', sourceKey: 'q', title: 'Вопрос', type: 'text', weight: 0, scored: false }] }] })
 const version = (over: Record<string, unknown>) => ({ id: 4, UF_CRM_8_CODE: 'brand', UF_CRM_8_VERSION: 1, UF_CRM_8_SCHEMA: SCHEMA, UF_CRM_8_PUBLISHED_AT: '2026-09-20', ...over })
 const stageless = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter(([, message]) => String(message).includes('выключены стадии'))
+const truncated = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter(([, message]) => String(message).includes('не дочитан'))
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -46,6 +47,36 @@ describe('опубликованные шаблоны со стадиями', ()
     await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'third.bitrix24.ru')
 
     expect(stageless(warn).map(([context]) => (context as { domain: string }).domain)).toEqual(['second.bitrix24.ru', 'third.bitrix24.ru'])
+  })
+
+  it('ГЛАВНОЕ: список не дочитан — вкладка показывает, что есть, но журнал об этом знает, раз на портал', async () => {
+    // С #110 листание заработало, и предел в двадцать страниц стал достижим: без строки в журнале анкеты
+    // за ним пропадали бы из выпуска молча (`/review` и `/code-review` в PR #113).
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    // Своя версия на каждой странице, и список не кончается: так видно, что прочитано каждое из двадцати.
+    const call = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      const start = Number(params?.start ?? 0)
+      return { result: { items: [version({ id: 100 + start, UF_CRM_8_VERSION: start / 50 + 1, stageId: 'DT1038_14:SUCCESS' })] }, next: start + 50 }
+    })
+
+    const found = await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
+    await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
+
+    // Дочитано ровно до предела — по двадцать страниц на каждое из двух чтений, — и прочитанное отдано.
+    expect(call).toHaveBeenCalledTimes(40)
+    expect(found.map(one => one.version)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1))
+    expect(truncated(warn).map(([context]) => context)).toEqual([{ domain: 'fifth.bitrix24.ru', typeId: 8, pages: 20 }])
+  })
+
+  it('стадии выключены и список не дочитан — обе строки: у каждого предупреждения своя память', async () => {
+    // Общая память проглотила бы второе предупреждение за первым (`/code-review` во втором круге PR #113).
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const call = vi.fn(async () => ({ result: { items: [version({})] }, next: 50 }))
+
+    await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'sixth.bitrix24.ru')
+
+    expect(stageless(warn)).toHaveLength(1)
+    expect(truncated(warn)).toHaveLength(1)
   })
 
   it('стадии на месте — молчит', async () => {

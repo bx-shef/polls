@@ -526,6 +526,20 @@ describe('публикация и новая версия', () => {
     expect(mounted.text()).not.toContain('не затереть чужую работу')
   })
 
+  it('список анкет не дочитан — вкладка говорит, что повтор не поможет, а не «связь прервалась»', async () => {
+    // Роут прежде падал исключением, и вкладка звала это обрывом связи — человек повторял бы без толку.
+    // `/review` и `/code-review` во втором круге PR #113.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    releaseReply = { ok: false, reason: 'list-truncated' }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('Повтор не поможет')
+    expect(mounted.text()).not.toContain('Связь с порталом прервалась')
+  })
+
   it('отказ публикации объясняется и не ломает экран', async () => {
     reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
     releaseReply = { ok: false, reason: 'invalid' }

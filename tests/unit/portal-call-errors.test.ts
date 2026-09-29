@@ -12,6 +12,8 @@ import { asPortalError, makePortalCall } from '../../server/b24/client'
 import { CODELESS_REFUSAL, safeRefusal, UNKNOWN_REFUSAL } from '../../server/domain/answers/portal-errors'
 import { isDeadGrant } from '../../server/domain/portals/lifecycle'
 import { isScopeRefusal } from '../../server/domain/portals/scopes'
+import { readNextOffset } from '../../server/domain/portals/smart-processes'
+import { listAllTypes } from '../../server/b24/provision'
 import { isRetryableRefusal, PortalError, refusalCode } from '../../server/domain/portals/portal-error'
 import { logger } from '../../server/utils/logger'
 
@@ -43,6 +45,8 @@ import { logger } from '../../server/utils/logger'
  * `raw` — тело как есть, не JSON: так отвечают прокси и WAF — страницей, а не телом портала.
  */
 let reply: { status: number, body?: unknown, raw?: string, type?: string } = { status: 200, body: { result: true } }
+/** Ответ «портала», выбранный по телу запроса, — для листания: страница зависит от `start`. Перекрывает `reply`. */
+let respond: ((request: Record<string, unknown>) => typeof reply) | null = null
 /**
  * Как «портал» обходится с соединением: отвечает; рвёт его до ответа; молчит; рвёт посреди сжатого
  * тела — так выглядит обрыв, когда заголовки уже пришли и статус у ошибки настоящий (`/code-review`
@@ -122,7 +126,7 @@ beforeAll(async () => {
         setTimeout(() => req.socket.destroy(), 30)
         return
       }
-      const { status, body, raw: rawBody, type } = isAuth ? authReply : reply
+      const { status, body, raw: rawBody, type } = isAuth ? authReply : (respond === null ? reply : respond(JSON.parse(raw || '{}') as Record<string, unknown>))
       res.writeHead(status, { 'content-type': type ?? 'application/json' })
       res.end(rawBody ?? JSON.stringify(body))
     })
@@ -134,6 +138,7 @@ beforeAll(async () => {
 afterEach(() => {
   delivery = 'answer'
   authDelivery = 'answer'
+  respond = null
   for (const socket of inFlight) socket.destroy()
   inFlight.clear()
   vi.useRealTimers()
@@ -349,6 +354,61 @@ describe('отказ портала доезжает до нас с машинн
 
     expect(refusalCode(error)).toBe(expected)
     expect(isRetryableRefusal(error)).toBe(false)
+  })
+})
+
+/**
+ * Листание — через настоящий SDK: `next` списочного метода доезжает до вызывающего (issue #110).
+ *
+ * ⚠ SDK отдаёт в `getData()` только `{ result, time }`, и до #110 `readNextOffset` на боевом пути видел
+ * `null` всегда. Подделки портала в прочих тестах кладут `next` сами, а живые проверки ходили вебхуком,
+ * который отдавал тело целиком, — поэтому форму SDK держит только этот блок. С PR #113 вебхук отдаёт
+ * ту же форму (`result`, `time`, `next`), и это держит `verify-link.test.ts`.
+ */
+describe('листание списков', () => {
+  const time = { start: 1, finish: 2, duration: 1 }
+
+  it('ГЛАВНОЕ: смещение следующей страницы доезжает до вызывающего', async () => {
+    reply = { status: 200, body: { result: { types: [] }, next: 50, total: 61, time } }
+
+    const page = await portalTo().call('crm.type.list', {})
+
+    expect(readNextOffset(page)).toBe(50)
+    // Та же форма, что у вебхука операторских команд (`verify-link.test.ts`): `result`, `time` и `next`, без
+    // `total`. В расхождении двух путей и прожил #110 (`/code-review` во втором круге PR #113).
+    expect(page).toEqual({ result: { types: [] }, time: expect.anything(), next: 50 })
+  })
+
+  it('последняя страница — без смещения: листание кончается', async () => {
+    reply = { status: 200, body: { result: { types: [] }, total: 11, time } }
+
+    expect(readNextOffset(await portalTo().call('crm.type.list', { start: 50 }))).toBeNull()
+  })
+
+  it('страница со смещением так же неизменяема, как ответ без него', async () => {
+    // `getData()` SDK отдаёт замороженный ответ; копия с `next` не должна отличаться от него ничем, кроме
+    // смещения (`/code-review` во втором круге PR #113: без проверки заморозку снимали бесследно).
+    reply = { status: 200, body: { result: { types: [] }, next: 50, total: 61, time } }
+    const page = await portalTo().call('crm.type.list', {})
+    reply = { status: 200, body: { result: { types: [] }, total: 11, time } }
+    const last = await portalTo().call('crm.type.list', { start: 50 })
+
+    expect(Object.isFrozen(page)).toBe(true)
+    expect(Object.isFrozen(last)).toBe(true)
+  })
+
+  it('ГЛАВНОЕ: поиск перед созданием видит смарт-процесс со второй страницы', async () => {
+    // Иначе на портале, где смарт-процессов больше пятидесяти, наш не находился бы, и обустройство
+    // завело бы второй — при лимите 150 на весь портал (issue #110).
+    const type = (id: number) => ({ id, entityTypeId: 1000 + id, title: `Тип ${id}` })
+    respond = request => Number(request.start ?? 0) === 50
+      ? { status: 200, body: { result: { types: Array.from({ length: 11 }, (_, i) => type(51 + i)) }, total: 61, time } }
+      : { status: 200, body: { result: { types: Array.from({ length: 50 }, (_, i) => type(1 + i)) }, next: 50, total: 61, time } }
+
+    const types = await listAllTypes(portalTo().call)
+
+    expect(types).toHaveLength(61)
+    expect(types.at(-1)).toMatchObject({ title: 'Тип 61' })
   })
 })
 
