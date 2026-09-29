@@ -1,4 +1,4 @@
-import { refusalCode } from '../portals/portal-error'
+import { REJECTED_CODE, UNREACHABLE_CODE, refusalCode } from '../portals/portal-error'
 
 /**
  * Turns a portal refusal into something safe to write down.
@@ -88,8 +88,10 @@ const OWN_CODES = [
   'SHEF_UPDATED_NOTHING',
   /** Списочный метод не дочитан до конца: продолжать на неполных данных нельзя. */
   'SHEF_LIST_TRUNCATED',
-  /** Портал отказал без кода (`"error": ""` или `"0"` при HTTP 4xx): отказ проверки, повтор не лечит. */
-  'SHEF_REJECTED',
+  /** Портал отказал без кода (`"error": ""` или `"0"`), повтор не лечит. */
+  REJECTED_CODE,
+  /** Ответа портала нет — сеть, обрыв посреди ответа, страница прокси. */
+  UNREACHABLE_CODE,
 ] as const
 
 /** Что пишем, когда код не распознан. Фиксированная строка — в ней нет ничего чужого. */

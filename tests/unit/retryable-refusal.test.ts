@@ -29,6 +29,11 @@ describe('отказ, который лечится повтором', () => {
     expect(isRetryableRefusal(new PortalError('SHEF_REJECTED', 'Section at index 0 does not have title.'))).toBe(false)
   })
 
+  it('ответа портала нет (`SHEF_UNREACHABLE`) — повторять: сеть и прокси лечит время', () => {
+    // Свой код, а не пустота, — ради журнала (`safeRefusal` его называет); повторяется так же.
+    expect(isRetryableRefusal(new PortalError('SHEF_UNREACHABLE', 'socket hang up'))).toBe(true)
+  })
+
   it('код берётся только из `PortalError`, а не из чего угодно с полем `code`', () => {
     // Иначе системная ошибка Node или чужой объект выбирали бы решение за нас.
     expect(isRetryableRefusal({ code: 'ACCESS_DENIED' })).toBe(true)

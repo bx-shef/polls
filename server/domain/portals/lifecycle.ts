@@ -73,7 +73,18 @@ const DEAD_GRANT_CODES: readonly string[] = ['invalid_grant']
  * Теперь решение принимается по полю `error` ответа портала и ни по чему больше.
  */
 export function isDeadGrant(error: unknown): boolean {
-  return DEAD_GRANT_CODES.includes(refusalCode(error))
+  return isDeadGrantCode(refusalCode(error))
+}
+
+/**
+ * Whether a refusal code means the portal's grant is dead.
+ *
+ * Нужна разборщику ошибок SDK (`asPortalError`): мёртвый грант он пропускает всегда, при любом
+ * статусе ответа, — сетью такой код не получить, а сдвиг статуса в новой версии SDK не должен его
+ * спрятать (безопасность в панели PR #106).
+ */
+export function isDeadGrantCode(code: string): boolean {
+  return DEAD_GRANT_CODES.includes(code)
 }
 
 /**

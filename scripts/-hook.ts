@@ -80,13 +80,17 @@ export function hookCall(base: string): RestCall {
 
     const body = await response.json() as { error?: string, error_description?: string }
     if (typeof body.error === 'string' && body.error !== '') {
-      throw new PortalError(body.error, body.error_description ?? '')
+      // `"0"` — отказ без кода и при двухсотом ответе: тот же код, что ставит разборщик SDK (issue #99).
+      throw new PortalError(body.error === '0' ? REJECTED_CODE : body.error, body.error_description ?? '')
     }
     return body
   }
 }
 
-/** A portal refusal in an HTTP 400 answer: the usual `{error, error_description}` body; `null` — not one. */
+/**
+ * A portal refusal in an HTTP 400 answer: the usual `{error, error_description}` body, with `""` and `"0"`
+ * mapped to `REJECTED_CODE`; `null` — not one.
+ */
 async function portalRefusal(response: Response): Promise<PortalError | null> {
   try {
     const body = await response.json() as { error?: unknown, error_description?: unknown }
