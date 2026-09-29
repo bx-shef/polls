@@ -112,7 +112,7 @@ describe('вкладки приложения', () => {
 })
 
 describe('цена холодной установки', () => {
-  it('холодная установка: ровно 53 вызова портала, миграции 4 и 5 — ни одного лишнего', async () => {
+  it('холодная установка: ровно 57 вызовов портала, миграции 4 и 5 — ни одного лишнего', async () => {
     // ⚠ Число держится намеренно, целой последовательностью. Установка — синхронный путь под
     // общим пределом 45 секунд (`PROVISION_BUDGET_MS`), и каждый новый шаг на нём должен быть
     // виден в ревью, а не проявиться таймаутом у клиента. Комментарии проекта называли холодную
@@ -123,6 +123,9 @@ describe('цена холодной установки', () => {
     // Ревизия 5 (штатные стадии) добавила по семь вызовов на смарт-процесс — воронка, стадии, три
     // переименования и два удаления — и сняла по полю «Состояние»: 41 − 2 + 14 = 53. Переноса
     // старого поля на свежей установке нет вовсе: элементов ещё нет, и поля — тоже.
+    //
+    // Ревизия 7 (поле «Анкета», #84, п. 18) — ещё четыре: регистрация второго типа, его поле
+    // и чтение с записью раскладки «Шаблона». `app.info` и список типов — общие на оба поля: 57.
     vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
     const p = portal({
       'app.option.get': { result: '' },
@@ -151,7 +154,8 @@ describe('цена холодной установки', () => {
       'userfieldconfig.list', ...Array(4).fill('userfieldconfig.add'),
       'userfieldconfig.list', ...Array(8).fill('userfieldconfig.add'),
       'crm.type.get', 'crm.type.update',
-      'app.info', 'userfieldtype.list', 'userfieldtype.add', 'userfieldconfig.add',
+      'app.info', 'userfieldtype.list', 'userfieldtype.add', 'userfieldconfig.add', 'userfieldtype.add', 'userfieldconfig.add',
+      'crm.item.details.configuration.get', 'crm.item.details.configuration.set',
       'crm.item.details.configuration.get', 'crm.item.details.configuration.set',
       'crm.deal.userfield.list', 'crm.deal.userfield.add', 'crm.deal.userfield.add',
       'crm.contact.userfield.list', 'crm.contact.userfield.add', 'crm.contact.userfield.add',

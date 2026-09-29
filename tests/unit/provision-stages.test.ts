@@ -241,9 +241,10 @@ describe('настройка стадий', () => {
     const added = p.of('userfieldconfig.add').map(one => (one.params.field as { fieldName: string }).fieldName)
     expect(added.some(name => name.endsWith('_STATE'))).toBe(false)
     expect(added.length).toBeGreaterThan(0)
-    // И в раскладку карточки его имя не попадает: там осталось бы имя без поля.
+    // И в раскладки карточек его имя не попадает: там осталось бы имя без поля. С ревизии 7 их две —
+    // «Результата опросов» и «Шаблона опроса» (#84, п. 18).
     const card = p.of('crm.item.details.configuration.set')
-    expect(card).toHaveLength(1)
+    expect(card.map(one => one.params.entityTypeId).sort()).toEqual([1038, 1040])
     expect(JSON.stringify(card)).not.toContain('_STATE')
   })
 })
@@ -743,6 +744,47 @@ describe('порядок миграции целиком', () => {
     expect(line?.[0]).toEqual({ domain: 'shef.bitrix24.ru' })
     const stored = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!).revision)
     expect(stored.at(-1)).toBe(5)
+  })
+})
+
+describe('ревизия 7: поле «Анкета» и карточка «Шаблона опроса» в журнале', () => {
+  it('карточка «Шаблона» не доделана — в журнал с доменом, и ревизия 7 не отмечается', async () => {
+    // Та же строка, что у карточки «Результата опросов»: без неё портал, который донастройка берёт
+    // каждый час, в журнале было бы не узнать (#84, п. 18).
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const p = portal({
+      'crm.item.details.configuration.set': (params: Record<string, unknown>) => {
+        if (params.entityTypeId === 1038) throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        return { result: true }
+      },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const line = warn.mock.calls.find(([, message]) => String(message).includes('ревизию 7 не отмечаем'))
+    expect(line?.[0]).toEqual({ domain: 'shef.bitrix24.ru' })
+    const stored = p.of('app.option.set').map(one => JSON.parse(Object.values(one.params.options as Record<string, string>)[0]!).revision)
+    expect(stored.at(-1)).toBe(6)
+  })
+
+  it('поле «Анкета» не завелось — строка с доменом, а итог несёт исходы обоих полей и обеих карточек', async () => {
+    vi.stubEnv('PUBLIC_BASE_URL', 'https://polls.bx-shef.by')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    const p = portal({
+      'userfieldconfig.add': (params: Record<string, unknown>) => {
+        if ((params.field as { fieldName: string }).fieldName === 'UF_CRM_8_FORM') throw new PortalError('ACCESS_DENIED', 'нет прав')
+        return { result: { field: 1 } }
+      },
+    })
+
+    expect(await provisionWithCall(p.call, 'shef.bitrix24.ru')).toBe('ok')
+
+    const line = warn.mock.calls.find(([, message]) => String(message).includes('остаётся схема-JSON'))
+    expect(line?.[0]).toEqual({ domain: 'shef.bitrix24.ru' })
+    const summary = info.mock.calls.find(([, message]) => message === 'смарт-процессы обустроены')
+    expect(summary?.[0]).toMatchObject({ domain: 'shef.bitrix24.ru', resultField: 'ok', formField: 'failed', templateCardSettled: true })
   })
 })
 

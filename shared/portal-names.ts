@@ -62,6 +62,8 @@ export const TEMPLATE_TAB_TITLE_EN = ownerLabel('Builder')
  * подписями, а справка их называет, и поле под другим именем человек в карточке не найдёт.
  */
 export const RESULT_FIELD_LABEL = 'Результат опроса'
+/** Поле своего типа в карточке «Шаблона опроса»: анкета словами вместо схемы-JSON (#84, п. 18). */
+export const FORM_FIELD_LABEL = 'Анкета'
 export const LINK_FIELD_LABEL = 'Ссылка на анкету'
 export const SCORE_FIELD_LABEL = 'Оценка клиента'
 export const LAST_SURVEY_AT_FIELD_LABEL = 'Дата последнего опроса'

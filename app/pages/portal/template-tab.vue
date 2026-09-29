@@ -5,6 +5,7 @@ import { isFrozen } from '#shared/template-state'
 import { framePass } from '~/utils/frame-auth'
 import { isPreview, portalGate } from '~/utils/in-portal'
 import { placementItemId } from '~/utils/placement'
+import { DATE_HINT, QUESTION_TYPES, type QuestionType } from '~/utils/question-labels'
 
 /**
  * The survey builder, living inside the template smart-process card (`TEMPLATE_SP_TITLE`).
@@ -35,7 +36,7 @@ interface Band {
 interface Question {
   key: string
   title: string
-  type: 'scale' | 'text' | 'date'
+  type: QuestionType
   weight: number
   scored: boolean
   scale?: { min: number, max: number }
@@ -65,23 +66,6 @@ interface TemplateItem {
   updatedAt?: string
   schema: { code: string, title: string, sections: Section[] } | null
 }
-
-/** Подписи типов вопросов. Вкладку читает сотрудник клиента, а не разработчик. */
-const QUESTION_TYPES = {
-  scale: 'Балльный',
-  text: 'Текстовый',
-  date: 'Дата',
-} as const satisfies Record<Question['type'], string>
-
-/**
- * Что увидит клиент на вопросе «Дата».
- *
- * ⚠ Подсказка стоит рядом с типом, потому что одного слова «Дата» оказалось мало: владелец
- * спросил, как такой вопрос вообще будет показан (issue #84, п. 13). Про балльный и текстовый
- * этого вопроса не возникает — ползунок и поле для текста угадываются по названию типа,
- * а дату можно было бы спрашивать и текстом.
- */
-const DATE_HINT = 'клиент выберет её в календаре'
 
 /** Отказы сохранения: у каждого свой текст, потому что чинятся они по-разному. */
 const SAVE_REFUSALS: Record<string, string> = {

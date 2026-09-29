@@ -26,6 +26,8 @@ import {
   templateTabPlacement,
 } from '../domain/portals/placements'
 import {
+  SURVEY_FORM_FIELD_TYPE,
+  SURVEY_RESULT_FIELD_TYPE,
   SURVEY_RESULT_TITLE,
   buildListTypesCall,
   buildRegisterTypeCall,
@@ -35,6 +37,7 @@ import {
   isOurFieldType,
   planTypeRegistration,
   readAppInfo,
+  type FieldTypeSpec,
 } from '../domain/portals/userfield-type'
 import {
   buildCreateFieldCall,
@@ -58,6 +61,7 @@ import {
   planDealRelation,
   planDropFieldFromCard,
   planSurveyCard,
+  planTemplateCard,
   readTypeRelations,
   planMissingFields,
   readCreatedRef,
@@ -76,13 +80,16 @@ import {
   normalizeFieldName,
   PROVISION_REVISION,
   CARD_REVISION,
+  TEMPLATE_CARD_REVISION,
+  TEMPLATE_FORM_FIELD,
   STAGES_REVISION,
   ourFields,
   type ExistingField,
   type PortalCall,
   type SmartProcessField,
   type SmartProcessRef,
-  type SurveyCardInput,
+  type CardInput,
+  type OwnCardPlan,
 } from '../domain/portals/smart-processes'
 import {
   SURVEY_STAGES,
@@ -207,12 +214,14 @@ export type ResultFieldOutcome = 'ok' | 'deferred' | 'failed'
 export interface ProvisionOptions {
   /** Адрес страницы виджета. `null` — хост не `https`, и поле честно не заводится. */
   resultHandlerUrl?: string | null
+  /** Адрес страницы поля «Анкета» у «Шаблона опроса» — по тем же правилам, что `resultHandlerUrl`. */
+  formHandlerUrl?: string | null
   /** Ревизия, до которой портал был обустроен раньше. От неё зависят разовые правки. */
   previousRevision?: number
 }
 
 /**
- * What became of the survey card layout in one provisioning run:
+ * What became of one of our card layouts in one provisioning run:
  * - `written` — written: ours from scratch, or our fields placed into or taken out of the standing one;
  * - `kept` — nothing to write: everything stood, or the one-time fix is not due;
  * - `unreadable` — the standing layout came in a shape we do not understand, and nothing was written;
@@ -252,7 +261,7 @@ export interface ProvisionResult extends SmartProcessRefs {
    * Переименовывать и перенастраивать усыновлённый мы не станем (`settleSmartProcesses`). Что мы
    * в нём всё-таки делаем — каждое осознанно: дописываем свои поля и поле виджета, ставим связь
    * со сделкой, снимаем своё поле «Состояние» ревизией 5 (`dropStateField`, там же — почему)
-   * и доводим раскладку карточки, где уже стоят наши поля (`planSurveyCard`).
+   * и доводим раскладки карточек, где уже стоят наши поля (`planSurveyCard`, `planTemplateCard`).
    */
   adoptedTemplate: boolean
   adoptedSurvey: boolean
@@ -281,6 +290,13 @@ export interface ProvisionResult extends SmartProcessRefs {
    * (`reachedRevision`). Только ниже шестой ревизии (`cardDue`).
    */
   cardSettled: boolean
+  /** What became of the template card layout (`CardOutcome`), by the same rules as the survey card (`planTemplateCard`). */
+  templateCard: CardOutcome
+  /**
+   * Доделана ли разовая правка карточки «Шаблона опроса» ревизии 7 — по тем же правилам, что
+   * `cardSettled`: `false` держит портал на шестой ревизии. Только ниже седьмой (`TEMPLATE_CARD_REVISION`).
+   */
+  templateCardSettled: boolean
   /**
    * Что с полем своего типа «Результат опроса».
    *
@@ -292,6 +308,11 @@ export interface ProvisionResult extends SmartProcessRefs {
    * обязан это залогировать — иначе «виджета нет» узнаётся от клиента, а не из журнала.
    */
   resultField: ResultFieldOutcome
+  /**
+   * Что с полем своего типа «Анкета» у «Шаблона опроса» — по тем же правилам, что `resultField`:
+   * `deferred` не отмечает ревизию, `failed` оставляет в карточке схему-JSON и уходит в журнал.
+   */
+  formField: ResultFieldOutcome
   /**
    * Сколько полей заведено на сущностях CRM клиента (сделка, контакт).
    *
@@ -517,10 +538,11 @@ export async function storeProvisionRevision(
  */
 export function reachedRevision(
   previous: number,
-  result: Pick<ProvisionResult, 'resultField' | 'ownership' | 'stages' | 'cardSettled'>,
+  result: Pick<ProvisionResult, 'resultField' | 'formField' | 'ownership' | 'stages' | 'cardSettled' | 'templateCardSettled'>,
   carried: StagesOutcome | null = null,
 ): number {
-  if (result.resultField === 'deferred') return previous
+  // Оба поля своего типа откладываются вместе — по одному и тому же `app.info`.
+  if (result.resultField === 'deferred' || result.formField === 'deferred') return previous
   const ownership = result.ownership
   if (ownership !== null && (!ownership.fieldsLocked || !ownership.settled)) return Math.max(previous, OWNERSHIP_REVISION - 1)
   // Стадии не доделаны — портал на ревизии до них: всё прежнее на месте, донастройка вернётся.
@@ -537,6 +559,8 @@ export function reachedRevision(
   // бывает `false` только ниже шестой — правку держит гейт `cardDue`, — так что `Math.max` здесь
   // ничего бы не изменил.
   if (!result.cardSettled) return CARD_REVISION - 1
+  // Карточка «Шаблона» не доделана — портал на шестой: всё прежнее, включая карточку «Результата», на месте.
+  if (!result.templateCardSettled) return TEMPLATE_CARD_REVISION - 1
   return PROVISION_REVISION
 }
 
@@ -774,10 +798,21 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
   return written
 }
 
+/** One of our cards: how its layout is planned, and how the log names it. */
+interface OwnCard {
+  plan: (current: unknown, spTypeId: number, card: CardInput) => OwnCardPlan
+  /** The smart process the card belongs to, in the genitive, as the log says it: «Результата опросов». */
+  name: string
+}
+
+const SURVEY_OWN_CARD: OwnCard = { plan: planSurveyCard, name: 'Результата опросов' }
+const TEMPLATE_OWN_CARD: OwnCard = { plan: planTemplateCard, name: 'Шаблона опроса' }
+
 /**
- * Puts the survey card layout in order (`planSurveyCard`) and tells what became of it.
+ * Puts one of our card layouts in order (`planSurveyCard`, `planTemplateCard`) and tells what became of it.
  *
- * Разложить карточку «Результата опросов» так, чтобы в ней было видно главное.
+ * Разложить карточку так, чтобы в ней было видно главное: у «Результата опросов» — сделку, клиента
+ * и результат, у «Шаблона опроса» — саму анкету (#84, п. 18).
  *
  * ⚠ Целиком — только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает
  * раскладку целиком и сразу для всех пользователей — это настройка клиента, а не наша.
@@ -786,8 +821,8 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
  * если пусто.
  *
  * ⚠ Если раскладка уже стоит — правим в ней только свои поля (`planSurveyCard`, там же —
- * почему и где), и только при переходе на ревизию 6 (`due`): повторяясь при каждом обустройстве,
- * правка возвращала бы клиенту поля, которые он убрал сам.
+ * почему и где), и только при переходе на ревизию карточки (`due`): повторяясь при каждом
+ * обустройстве, правка возвращала бы клиенту поля, которые он убрал сам.
  *
  * `widget` — заведено ли поле виджета. Без него раскладка остаётся при JSON: ставить в карточку
  * поле, которого на элементе нет, значит показать пустое место вместо ответов.
@@ -800,18 +835,19 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 async function ensureCardConfig(
   call: RestCall,
   ref: SmartProcessRef,
-  card: Omit<SurveyCardInput, 'staged'>,
+  card: Omit<CardInput, 'staged'>,
+  own: OwnCard,
 ): Promise<Exclude<CardOutcome, 'failed'>> {
   const read = buildReadCardConfigCall(ref.entityTypeId)
-  const plan = planSurveyCard(await call(read.method, read.params), ref.id, { ...card, staged: isStaged(ref) })
+  const plan = own.plan(await call(read.method, read.params), ref.id, { ...card, staged: isStaged(ref) })
   if (plan.kind === 'unreadable') {
-    // Не разобрав, не пишем — но и молчать нельзя: виджета и ссылки в карточке не будет, а JSON
-    // останется, и узнать это надо из журнала, а не от клиента.
-    logger.warn({ typeId: ref.id }, 'раскладка карточки «Результата опросов» непонятной формы — виджет и ссылка не поставлены, JSON не убран')
+    // Не разобрав, не пишем — но и молчать нельзя: виджета в карточке не будет, а JSON останется,
+    // и узнать это надо из журнала, а не от клиента.
+    logger.warn({ typeId: ref.id }, `раскладка карточки «${own.name}» непонятной формы — наши поля не поставлены, JSON не убран`)
     return 'unreadable'
   }
   if (plan.kind === 'foreign') {
-    logger.info({ typeId: ref.id }, 'усыновлённый смарт-процесс: раскладка карточки не наша — не трогаем и нашу не ставим')
+    logger.info({ typeId: ref.id }, `усыновлённый смарт-процесс: раскладка карточки «${own.name}» не наша — не трогаем и нашу не ставим`)
     return 'foreign'
   }
   if (plan.kind === 'keep') return 'kept'
@@ -819,6 +855,47 @@ async function ensureCardConfig(
   const set = buildSetCardConfigCall(ref.entityTypeId, plan.sections)
   await call(set.method, set.params)
   return 'written'
+}
+
+/**
+ * Lays out one of our cards (`ensureCardConfig`) and tells whether its one-time fix is done.
+ *
+ * ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение работает
+ * целиком, просто карточка выглядит хуже. Роняя установку из-за косметики, мы поменяли бы местами
+ * главное и второстепенное.
+ *
+ * ⚠ «Разово» держит гейт `due`: правка положена только порталу ниже ревизии карточки. На отказе,
+ * который лечится повтором, она держит ревизию: отметив её, мы не вернулись бы к карточке никогда.
+ * Отказ, который повтор не вылечит, — только журнал.
+ *
+ * ⚠ Повторимый отказ шага поля виджета держит правку так же, как её собственный: без поля правка
+ * сняла бы не всё, ревизия отметилась бы — и к карточке мы не вернулись бы никогда (`/review`
+ * и `/code-review` в панели PR #98). Держит при ЛЮБОМ исходе карточки: повтор — ещё и единственная
+ * попытка завести само поле, а ждать приходится, только пока шаг падает. Второй круг PR #98 снимал
+ * удержание ради чужой и непонятной раскладки — и поле после сбоя связи не заводилось больше никогда:
+ * донастройка не берёт порталы, отмеченные ревизией. Разбор — `docs/PROCESS.md`, раздел 9.
+ *
+ * Одно правило на обе карточки: в PR #100 оно было переписано в двух местах, а правили его по ревью
+ * уже трижды — расхождение дало бы портал, навсегда застрявший ниже ревизии. Нашёл `/code-review`.
+ */
+async function settleOwnCard(
+  call: RestCall,
+  sp: { ref: SmartProcessRef, adopted: boolean },
+  own: OwnCard,
+  due: boolean,
+  widget: WidgetFieldResult,
+): Promise<{ outcome: CardOutcome, settled: boolean }> {
+  let outcome: CardOutcome = 'failed'
+  let settled = true
+  try {
+    outcome = await ensureCardConfig(call, sp.ref, { widget: widget.outcome === 'ok', due, adopted: sp.adopted }, own)
+  }
+  catch (error) {
+    if (due && isRetryableRefusal(error)) settled = false
+    logger.warn({ reason: safeRefusal(error) }, `раскладка карточки «${own.name}» не настроена`)
+  }
+  if (due && widget.refusal !== null && isRetryableRefusal(widget.refusal)) settled = false
+  return { outcome, settled }
 }
 
 /**
@@ -870,44 +947,20 @@ export async function provisionSmartProcesses(
   // ставит в карточку имена полей; поставив туда поле, которого ещё нет, мы полагались бы
   // на то, как портал поведёт себя с несуществующим именем, — а это нигде не описано.
   // Неудача установку не роняет: данные на месте, раскладка просто остаётся при JSON.
-  let resultField: ResultFieldOutcome = 'failed'
-  let widgetRefusal: unknown = null
   const resultHandlerUrl = options.resultHandlerUrl ?? null
-  if (resultHandlerUrl !== null) {
-    try {
-      resultField = await ensureSurveyResultField(call, resultHandlerUrl, survey.ref, surveyFields.existing)
-    }
-    catch (error) {
-      widgetRefusal = error
-      logger.warn({ reason: safeRefusal(error) }, 'поле «Результат опроса» не заведено')
-    }
-  }
+  const formHandlerUrl = options.formHandlerUrl ?? null
+  const widgets = await ensureWidgetFields(call, {
+    result: resultHandlerUrl === null ? null : { type: SURVEY_RESULT_FIELD_TYPE, handlerUrl: resultHandlerUrl, ref: survey.ref, postfix: SURVEY_RESULT_FIELD, listed: surveyFields.existing },
+    form: formHandlerUrl === null ? null : { type: SURVEY_FORM_FIELD_TYPE, handlerUrl: formHandlerUrl, ref: template.ref, postfix: TEMPLATE_FORM_FIELD, listed: templateFields.existing },
+  })
+  const resultField = widgets.result.outcome
+  const formField = widgets.form.outcome
 
-  // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
-  // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
-  // мы поменяли бы местами главное и второстепенное.
-  let cardSettled = true
-  let card: CardOutcome = 'failed'
-  // ⚠ «Разово» держит гейт `cardDue`: правка положена только порталу ниже шестой ревизии.
-  const cardDue = (options.previousRevision ?? 0) < CARD_REVISION
-  try {
-    card = await ensureCardConfig(call, survey.ref, { widget: resultField === 'ok', due: cardDue, adopted: survey.adopted })
-  }
-  catch (error) {
-    // ⚠ Разовая правка ревизии 6 на отказе, который лечится повтором, держит ревизию: отметив её,
-    // мы не вернулись бы к карточке никогда, и на старых порталах виджет со ссылкой так и не встали
-    // бы, а JSON остался бы. Отказ, который повтор не вылечит, — как прежде, только журнал.
-    if (cardDue && isRetryableRefusal(error)) cardSettled = false
-    logger.warn({ reason: safeRefusal(error) }, 'раскладка карточки «Результата опросов» не настроена')
-  }
-  // ⚠ Повторимый отказ шага поля виджета держит разовую правку так же, как её собственный: без поля
-  // правка поставила бы одну ссылку, JSON остался бы, ревизия 6 отметилась бы — и к карточке мы не
-  // вернулись бы никогда (`/review` и `/code-review` в панели PR #98). Держит при ЛЮБОМ исходе
-  // карточки: повтор — ещё и единственная попытка завести само поле, а ждать приходится, только пока
-  // шаг падает. Второй круг снимал удержание ради чужой и непонятной раскладки — и поле виджета
-  // после сбоя связи не заводилось больше никогда: донастройка не берёт порталы шестой ревизии.
-  // Вернул `/code-review` в третьем круге; разбор — `docs/PROCESS.md`, раздел 9.
-  if (cardDue && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
+  // Обе карточки — одним правилом (`settleOwnCard`): «Результата опросов» с ревизии 6, «Шаблона
+  // опроса» с ревизии 7 (#84, п. 18); до неё раскладку «Шаблона» мы не ставили вовсе.
+  const previous = options.previousRevision ?? 0
+  const surveyCard = await settleOwnCard(call, survey, SURVEY_OWN_CARD, previous < CARD_REVISION, widgets.result)
+  const templateCard = await settleOwnCard(call, template, TEMPLATE_OWN_CARD, previous < TEMPLATE_CARD_REVISION, widgets.form)
 
   // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
   // в карточке «Опроса», а он дочерняя сущность: ни фильтр в списке сделок, ни робот
@@ -947,9 +1000,12 @@ export async function provisionSmartProcesses(
     adoptedSurvey: survey.adopted,
     addedFields: templateFields.added + surveyFields.added,
     dealLinked,
-    card,
-    cardSettled,
+    card: surveyCard.outcome,
+    cardSettled: surveyCard.settled,
+    templateCard: templateCard.outcome,
+    templateCardSettled: templateCard.settled,
     resultField,
+    formField,
     crmFields,
     ownership,
     stages,
@@ -1588,8 +1644,36 @@ async function ensureTabPlacement(
   }
 }
 
+/** One field of our own type to set up: its type, where its page lives, its smart process and postfix. */
+export interface WidgetTarget {
+  type: FieldTypeSpec
+  handlerUrl: string
+  ref: SmartProcessRef
+  postfix: string
+  /**
+   * Поля смарт-процесса, уже прочитанные шагом полей. Поле виджета тот шаг не создаёт, так что
+   * список до его создания для этой проверки точен, а второй раз листать его незачем.
+   */
+  listed?: readonly ExistingField[]
+}
+
+/** What became of one widget field, and the portal's refusal when there was one. */
+export interface WidgetFieldResult {
+  outcome: ResultFieldOutcome
+  refusal: unknown
+}
+
+/** Our two widget fields; `null` — not set up this run (no https host). */
+export interface WidgetTargets {
+  result: WidgetTarget | null
+  form: WidgetTarget | null
+}
+
+const NOT_SET_UP: WidgetFieldResult = { outcome: 'failed', refusal: null }
+
 /**
- * Завести на «Результате опросов» поле своего типа — виджет, который показывает ответы словами вместо простыни JSON.
+ * Завести поля своего типа — виджеты, которые показывают словами то, что лежит в карточках простынёй
+ * JSON: «Результат опроса» на «Результате опросов» и «Анкету» на «Шаблоне опроса» (#84, п. 18).
  *
  * ⚠ ПОРЯДОК ОБЯЗАТЕЛЕН: сведения о приложении → регистрация типа → поле.
  * - `app.info` ПЕРВЫМ: до `installFinish()` поле своего типа портал не примет, а мастер
@@ -1604,50 +1688,84 @@ async function ensureTabPlacement(
  * ⚠ Отдельными вызовами, не батчем: `userfieldtype.add` и `.update` отвечают в батче
  * `ERROR_BATCH_METHOD_NOT_ALLOWED`.
  *
- * ⚠ Отказ портала БРОСАЕТСЯ, а не превращается в `failed` молча: вызывающий пишет его
- * в журнал с причиной. У соседнего приложения регистрация шла батчем без проверки результата,
+ * ⚠ `app.info` и список типов — ОДИН раз на оба поля: приложение и его регистрации у них общие.
+ * Их отказ — общий для обоих полей; отказ на одном поле остаётся при нём (`refusal`) и второе не держит.
+ *
+ * ⚠ НИЧЕГО НЕ БРОСАЕТ, но и не молчит: всякий отказ — строка в журнале с причиной и `failed`
+ * с этим отказом у поля. У соседнего приложения регистрация шла батчем без проверки результата,
  * и провалившаяся уезжала в «установлено»: приложение считалось поставленным, а типа на портале
- * не было.
+ * не было. Установку отказ не роняет: без виджета данные на месте, в карточке остаётся JSON.
  */
-export async function ensureSurveyResultField(
-  call: RestCall,
-  handlerUrl: string,
-  survey: SmartProcessRef,
-  // Поля «Результата опросов», уже прочитанные шагом полей. Поле виджета тот шаг не создаёт,
-  // так что список до его создания для этой проверки точен, а второй раз листать его незачем.
-  listed?: readonly ExistingField[],
-): Promise<ResultFieldOutcome> {
-  const app = readAppInfo(await call('app.info', {}))
-  if (!app.installed) {
-    logger.info({}, 'установка не завершена — поле «Результат опроса» заведёт донастройка')
-    return 'deferred'
+async function ensureWidgetFields(call: RestCall, targets: WidgetTargets): Promise<Record<keyof WidgetTargets, WidgetFieldResult>> {
+  /** The same result for every field this run sets up; `NOT_SET_UP` for the ones it does not. */
+  const each = (result: WidgetFieldResult) => ({
+    result: targets.result === null ? NOT_SET_UP : result,
+    form: targets.form === null ? NOT_SET_UP : result,
+  })
+  // Нет https-хоста — ни одного вызова: заводить нечего (`buildTabHandlerUrl`).
+  if (targets.result === null && targets.form === null) return each(NOT_SET_UP)
+
+  let appId: number
+  let registered: unknown
+  try {
+    const app = readAppInfo(await call('app.info', {}))
+    if (!app.installed) {
+      logger.info({}, 'установка не завершена — поля своего типа заведёт донастройка')
+      return each({ outcome: 'deferred', refusal: null })
+    }
+    if (app.id === null) {
+      logger.warn({}, 'портал не назвал идентификатор приложения — поля своего типа не заведены')
+      return each(NOT_SET_UP)
+    }
+    appId = app.id
+    const listing = buildListTypesCall()
+    registered = await call(listing.method, listing.params)
   }
-  if (app.id === null) {
-    logger.warn({}, 'портал не назвал идентификатор приложения — поле «Результат опроса» не заведено')
-    return 'failed'
+  catch (error) {
+    logger.warn({ reason: safeRefusal(error) }, 'поля своего типа не заведены: портал не ответил о приложении или о типах')
+    return each({ outcome: 'failed', refusal: error })
   }
 
-  const listing = buildListTypesCall()
-  const plan = planTypeRegistration(findRegisteredType(await call(listing.method, listing.params)), handlerUrl)
+  const one = async (target: WidgetTarget | null): Promise<WidgetFieldResult> => {
+    if (target === null) return NOT_SET_UP
+    try {
+      return { outcome: await ensureWidgetField(call, target, appId, registered), refusal: null }
+    }
+    catch (error) {
+      logger.warn({ reason: safeRefusal(error) }, `поле «${target.type.title}» не заведено`)
+      return { outcome: 'failed', refusal: error }
+    }
+  }
+  // По очереди, не разом: в батч регистрация типа не кладётся, а параллельные записи в один
+  // портал упираются в его же предел запросов.
+  const result = await one(targets.result)
+  const form = await one(targets.form)
+  return { result, form }
+}
+
+/** Registers one type of ours if needed and creates its field on the smart process: `ok`, or `failed` when a foreign field holds the name. */
+async function ensureWidgetField(call: RestCall, target: WidgetTarget, appId: number, registered: unknown): Promise<ResultFieldOutcome> {
+  const { type, handlerUrl, ref, postfix } = target
+  const plan = planTypeRegistration(findRegisteredType(registered, type.code), handlerUrl)
   if (plan !== 'keep') {
-    const register = plan === 'add' ? buildRegisterTypeCall(handlerUrl) : buildUpdateTypeCall(handlerUrl)
+    const register = plan === 'add' ? buildRegisterTypeCall(type, handlerUrl) : buildUpdateTypeCall(type, handlerUrl)
     await call(register.method, register.params)
   }
 
-  const name = buildFieldName(survey.id, SURVEY_RESULT_FIELD)
+  const name = buildFieldName(ref.id, postfix)
   // Сверка по канонической форме имени: `userfieldconfig.list` отдаёт его в другом написании,
   // и прямое сравнение считало бы существующее поле отсутствующим (разбор — у `buildFieldName`).
-  const existing = (listed ?? await listAllFields(call, survey.id))
+  const existing = (target.listed ?? await listAllFields(call, ref.id))
     .find(field => normalizeFieldName(field.name) === normalizeFieldName(name))
   if (existing !== undefined) {
-    if (isOurFieldType(existing.userTypeId, app.id)) return 'ok'
+    if (isOurFieldType(existing.userTypeId, appId, type.code)) return 'ok'
     // Тип виден в журнале целиком: это код типа поля, а не данные клиента.
-    logger.warn({ userTypeId: existing.userTypeId }, 'поле «Результат опроса» уже есть, но другого типа — виджет не ставим')
+    logger.warn({ userTypeId: existing.userTypeId }, `поле «${type.title}» уже есть, но другого типа — виджет не ставим`)
     return 'failed'
   }
 
   // Тем же билдером, что и прочие поля смарт-процесса: отличается только тип.
-  const add = buildCreateFieldCall(survey.id, { postfix: SURVEY_RESULT_FIELD, userTypeId: fullTypeCode(app.id), label: SURVEY_RESULT_TITLE })
+  const add = buildCreateFieldCall(ref.id, { postfix, userTypeId: fullTypeCode(appId, type.code), label: type.title })
   await call(add.method, add.params)
   return 'ok'
 }

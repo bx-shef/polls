@@ -4,12 +4,12 @@ import { readStoredRefs } from '../../b24/provision'
 import { readAllPublishedTemplates } from '../../b24/read-templates'
 import { issuedState, readIssuedLinks } from '../../domain/invitations/issued-links'
 import { buildFieldName, type SmartProcessRef } from '../../domain/portals/smart-processes'
-import { isSurveyCard } from '../../domain/portals/userfield-type'
 import type { SurveyTemplate } from '../../domain/surveys/model'
 import { buildResultSections, readAnswersField, readScoresField } from '../../domain/surveys/result-view'
 import { cacheTemplate, readLinkStatuses } from '../../links/issue'
 import { findTemplate } from '../../links/store'
 import { logger } from '../../utils/logger'
+import { positiveInteger, readCardOwner, refuseForeignCard } from './-card-owner'
 import { openPortalSession, type PortalSession } from './-session'
 
 /**
@@ -26,7 +26,7 @@ import { openPortalSession, type PortalSession } from './-session'
  *
  * ⚠ ПОЛЕ МОГУТ ЗАВЕСТИ НЕ ТАМ. Тип виден администратору в списке типов полей, и поле
  * «Результат опроса» можно поставить хоть на сделку. Тогда номер элемента — номер сделки,
- * и без проверки владельца мы показали бы «Опрос» с тем же номером. Разбор — у `isSurveyCard`;
+ * и без проверки владельца мы показали бы «Опрос» с тем же номером. Разбор — у `isCardOf`;
  * там же — почему это защита от ошибки администратора, а не граница прав.
  *
  * Последовательность шагов держит `tests/unit/survey-result-api.test.ts`.
@@ -45,14 +45,8 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-provisioned' as const }
   }
 
-  const owner = {
-    entityId: typeof body?.entityId === 'string' ? body.entityId.trim() : '',
-    entityTypeId: positiveInteger(body?.entityTypeId),
-  }
-  // ⚠ «Не прислал признаков» и «прислал чужие» — разные отказы. Первое — сбой встраивания
-  // на настоящей карточке «Опроса», и совет «удалите поле» там был бы вредным. Нашёл `/code-review`.
-  if (owner.entityId === '' && owner.entityTypeId === null) return { ok: false as const, reason: 'no-owner' as const }
-  if (!isSurveyCard(owner, refs.survey)) return { ok: false as const, reason: 'foreign-card' as const }
+  const refused = refuseForeignCard(readCardOwner(body), refs.survey)
+  if (refused !== null) return { ok: false as const, reason: refused }
 
   const access = await verifyItemAccess(
     session.portal.domain,
@@ -121,14 +115,6 @@ function waitingState(
   // Ответа в карточке нет, а ссылка «пройдена» — значит, ответ принят и ещё едет в портал.
   if (state === 'completed') return 'delivering'
   return state === 'active' ? '' : state
-}
-
-/** Строго положительное целое либо `null`. Пустота — не ноль. */
-function positiveInteger(raw: unknown): number | null {
-  if (raw === null || raw === undefined) return null
-  if (typeof raw === 'string' && raw.trim() === '') return null
-  const value = Number(typeof raw === 'string' ? raw.trim() : raw)
-  return Number.isInteger(value) && value > 0 ? value : null
 }
 
 /**

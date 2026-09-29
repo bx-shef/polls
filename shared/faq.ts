@@ -28,6 +28,7 @@
 import {
   DEAL_TAB_TITLE,
   LAST_SURVEY_AT_FIELD_LABEL,
+  FORM_FIELD_LABEL,
   LINK_FIELD_LABEL,
   ownerLabel,
   RESULT_FIELD_LABEL,
@@ -44,6 +45,7 @@ import {
 // вела на вкладку «Опросы», которой там уже не было.
 // Подписи полей портал показывает с меткой владельца — справка тоже.
 const RESULT_FIELD = ownerLabel(RESULT_FIELD_LABEL)
+const FORM_FIELD = ownerLabel(FORM_FIELD_LABEL)
 const LINK_FIELD = ownerLabel(LINK_FIELD_LABEL)
 const SCORE_FIELD = ownerLabel(SCORE_FIELD_LABEL)
 const LAST_SURVEY_AT_FIELD = ownerLabel(LAST_SURVEY_AT_FIELD_LABEL)
@@ -170,7 +172,8 @@ export const FAQ: readonly FaqEntry[] = [
     question: 'Как изменить анкету или собрать новую?',
     answer: [
       `Анкеты живут в смарт-процессе «${TEMPLATE_SP_TITLE}» на вашем портале. Откройте карточку анкеты `
-      + `и перейдите на вкладку «${TEMPLATE_TAB_TITLE}».`,
+      + `и перейдите на вкладку «${TEMPLATE_TAB_TITLE}». В самой карточке анкета видна полем «${FORM_FIELD}» — `
+      + 'словами, только для чтения.',
       'Черновик правится: кнопка «Править» открывает разделы, вопросы, шкалы, веса и тексты диапазонов, '
       + '«Сохранить» записывает черновик, «Опубликовать» делает его версией, по которой можно выпускать '
       + 'ссылки.',

@@ -13,6 +13,8 @@ import { describe, expect, it } from 'vitest'
  */
 
 const SOURCE = readFileSync(new URL('../../app/pages/uf/survey-result.vue', import.meta.url), 'utf8')
+/** Каркас фрейма, общий у обоих полей своего типа: связь с порталом живёт в нём (PR #100). */
+const PLUMBING = readFileSync(new URL('../../app/composables/useFieldWidget.ts', import.meta.url), 'utf8')
 
 describe('исходник виджета результата', () => {
   it('не строит разметку из данных', () => {
@@ -25,7 +27,9 @@ describe('исходник виджета результата', () => {
     // ⚠ Нередактируемость поля держится ровно на том, что `setValue` не зовётся нигде.
     // DOM-тест ловит вызов в пройденной ветке; этот — в любой.
     // Вызов, а не упоминание: в комментарии страницы `setValue` назван как то, чего нет.
-    expect(SOURCE).not.toMatch(/\.setValue\s*\(/)
-    expect(SOURCE).not.toMatch(/placement\.call\s*\(/)
+    for (const source of [SOURCE, PLUMBING]) {
+      expect(source).not.toMatch(/\.setValue\s*\(/)
+      expect(source).not.toMatch(/placement\.call\s*\(/)
+    }
   })
 })

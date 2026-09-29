@@ -3,6 +3,7 @@ import { readStoredRefs } from '../../b24/provision'
 import { buildGetTemplateItemCall, readTemplateItem } from '../../domain/templates/portal-calls'
 import { validateTemplate } from '../../domain/surveys/validate'
 import { logger } from '../../utils/logger'
+import { positiveInteger } from './-card-owner'
 import { openPortalSession } from './-session'
 
 /**
@@ -22,10 +23,9 @@ import { openPortalSession } from './-session'
 export default defineEventHandler(async (event) => {
   const session = await openPortalSession(event)
   const body = await readBody<{ itemId?: unknown }>(event).catch(() => null)
-  const itemId = Number(body?.itemId)
-  if (!Number.isInteger(itemId) || itemId <= 0) {
-    return { ok: false as const, reason: 'no-item' as const }
-  }
+  // Тем же разбором, что поля своего типа в той же карточке: пустое — не ноль (`positiveInteger`).
+  const itemId = positiveInteger(body?.itemId)
+  if (itemId === null) return { ok: false as const, reason: 'no-item' as const }
 
   const refs = await readStoredRefs(session.call)
   if (refs.template === undefined) {

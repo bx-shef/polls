@@ -7,13 +7,15 @@ import {
   planSurveyCard,
 } from '../../server/domain/portals/smart-processes'
 import {
+  SURVEY_FORM_FIELD_TYPE,
+  SURVEY_RESULT_FIELD_TYPE,
   SURVEY_RESULT_TYPE,
   buildRegisterTypeCall,
   buildUpdateTypeCall,
   findRegisteredType,
   fullTypeCode,
+  isCardOf,
   isOurFieldType,
-  isSurveyCard,
   planTypeRegistration,
   readAppInfo,
 } from '../../server/domain/portals/userfield-type'
@@ -37,8 +39,8 @@ describe('регистрация типа', () => {
   })
 
   it('правка и регистрация несут одно и то же описание, отличается только метод', () => {
-    const add = buildRegisterTypeCall(HANDLER)
-    const update = buildUpdateTypeCall(HANDLER)
+    const add = buildRegisterTypeCall(SURVEY_RESULT_FIELD_TYPE, HANDLER)
+    const update = buildUpdateTypeCall(SURVEY_RESULT_FIELD_TYPE, HANDLER)
 
     expect(add.method).toBe('userfieldtype.add')
     expect(update.method).toBe('userfieldtype.update')
@@ -56,14 +58,25 @@ describe('регистрация типа', () => {
       ],
     }
 
-    expect(findRegisteredType(response)).toEqual({ handler: HANDLER })
+    expect(findRegisteredType(response, SURVEY_RESULT_TYPE)).toEqual({ handler: HANDLER })
+  })
+
+  it('два наших типа различает по коду, и у каждого свой адрес', () => {
+    // ⚠ `HANDLER` у каждого типа обязан быть уникальным (документация `userfieldtype.add`): у «Анкеты»
+    // своя страница, и перепутав типы, правка переписала бы адрес одного адресом другого (#84, п. 18).
+    const form = 'https://polls.example/uf/survey-form'
+    const response = { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER }, { USER_TYPE_ID: SURVEY_FORM_FIELD_TYPE.code, HANDLER: form }] }
+
+    expect(findRegisteredType(response, SURVEY_FORM_FIELD_TYPE.code)).toEqual({ handler: form })
+    expect(SURVEY_FORM_FIELD_TYPE.handlerPath).not.toBe(SURVEY_RESULT_FIELD_TYPE.handlerPath)
+    expect(buildRegisterTypeCall(SURVEY_FORM_FIELD_TYPE, form).params).toMatchObject({ USER_TYPE_ID: 'shef_survey_form', HANDLER: form, TITLE: 'Анкета' })
   })
 
   it('сверяет код целиком, а не вхождением', () => {
     // Чужой тип с нашим кодом внутри имени — не наш. Первая редакция искала вхождением.
     const response = { result: [{ USER_TYPE_ID: `${SURVEY_RESULT_TYPE}_v2`, HANDLER }] }
 
-    expect(findRegisteredType(response)).toBeNull()
+    expect(findRegisteredType(response, SURVEY_RESULT_TYPE)).toBeNull()
   })
 
   it.each<[unknown, string]>([
@@ -71,14 +84,14 @@ describe('регистрация типа', () => {
     [{ result: true }, 'не список'],
     [null, 'ничего'],
   ])('без своего типа отвечает null (%#: %s)', (response) => {
-    expect(findRegisteredType(response)).toBeNull()
+    expect(findRegisteredType(response, SURVEY_RESULT_TYPE)).toBeNull()
   })
 })
 
 describe('полный код типа', () => {
   it('собирается из идентификатора приложения, как в официальном гайде', () => {
     // «Для приложения с ID = 123 полный код типа будет rest_123_phone_data».
-    expect(fullTypeCode(219)).toBe(`rest_219_${SURVEY_RESULT_TYPE}`)
+    expect(fullTypeCode(219, SURVEY_RESULT_TYPE)).toBe(`rest_219_${SURVEY_RESULT_TYPE}`)
   })
 
   it('читает идентификатор приложения из `app.info` — числом и строкой', () => {
@@ -114,8 +127,13 @@ describe('полный код типа', () => {
 
 describe('наш ли тип у поля', () => {
   it('узнаёт свой полный код — в любом регистре', () => {
-    expect(isOurFieldType(`rest_219_${SURVEY_RESULT_TYPE}`, 219)).toBe(true)
-    expect(isOurFieldType(`REST_219_${SURVEY_RESULT_TYPE.toUpperCase()}`, 219)).toBe(true)
+    expect(isOurFieldType(`rest_219_${SURVEY_RESULT_TYPE}`, 219, SURVEY_RESULT_TYPE)).toBe(true)
+    expect(isOurFieldType(`REST_219_${SURVEY_RESULT_TYPE.toUpperCase()}`, 219, SURVEY_RESULT_TYPE)).toBe(true)
+  })
+
+  it('поле «Анкеты» полем «Результата» не считает — и наоборот', () => {
+    expect(isOurFieldType(`rest_219_${SURVEY_FORM_FIELD_TYPE.code}`, 219, SURVEY_RESULT_TYPE)).toBe(false)
+    expect(isOurFieldType(`rest_219_${SURVEY_RESULT_TYPE}`, 219, SURVEY_FORM_FIELD_TYPE.code)).toBe(false)
   })
 
   it.each<[unknown, string]>([
@@ -123,36 +141,36 @@ describe('наш ли тип у поля', () => {
     [`rest_7_${SURVEY_RESULT_TYPE}`, 'наш тип, но от прошлой установки приложения'],
     [undefined, 'портал тип не назвал'],
   ])('чужое не признаёт (%#: %s)', (userTypeId) => {
-    expect(isOurFieldType(userTypeId, 219)).toBe(false)
+    expect(isOurFieldType(userTypeId, 219, SURVEY_RESULT_TYPE)).toBe(false)
   })
 })
 
 describe('чья карточка', () => {
   it('узнаёт карточку «Опроса» по `ENTITY_ID` — в любом регистре', () => {
-    expect(isSurveyCard({ entityId: 'CRM_8', entityTypeId: null }, SURVEY)).toBe(true)
-    expect(isSurveyCard({ entityId: 'crm_8', entityTypeId: null }, SURVEY)).toBe(true)
+    expect(isCardOf({ entityId: 'CRM_8', entityTypeId: null }, SURVEY)).toBe(true)
+    expect(isCardOf({ entityId: 'crm_8', entityTypeId: null }, SURVEY)).toBe(true)
   })
 
   it('узнаёт её и по `ENTITY_DATA.entityTypeId`, когда `ENTITY_ID` не пришёл', () => {
-    expect(isSurveyCard({ entityId: '', entityTypeId: 1046 }, SURVEY)).toBe(true)
+    expect(isCardOf({ entityId: '', entityTypeId: 1046 }, SURVEY)).toBe(true)
   })
 
   it('не принимает поле, заведённое на сделке', () => {
     // ⚠ Главный случай. Тип виден администратору в списке типов полей, и поле можно
     // поставить на сделку — тогда номер элемента это номер сделки, и мы показали бы
     // «Опрос» с тем же номером: чужой результат, выглядящий правдоподобно.
-    expect(isSurveyCard({ entityId: 'CRM_DEAL', entityTypeId: 2 }, SURVEY)).toBe(false)
+    expect(isCardOf({ entityId: 'CRM_DEAL', entityTypeId: 2 }, SURVEY)).toBe(false)
   })
 
   it('в `ENTITY_ID` стоит `id` смарт-процесса, а не `entityTypeId`', () => {
     // Проект уже обжигался на этой паре: имена полей и `ENTITY_ID` берут `id`,
     // элементы и точки встраивания — `entityTypeId`.
-    expect(isSurveyCard({ entityId: 'CRM_1046', entityTypeId: null }, SURVEY)).toBe(false)
+    expect(isCardOf({ entityId: 'CRM_1046', entityTypeId: null }, SURVEY)).toBe(false)
   })
 
   it('без признаков отказывает', () => {
     // Показать чужой результат хуже, чем не показать ничего.
-    expect(isSurveyCard({ entityId: '', entityTypeId: null }, SURVEY)).toBe(false)
+    expect(isCardOf({ entityId: '', entityTypeId: null }, SURVEY)).toBe(false)
   })
 })
 

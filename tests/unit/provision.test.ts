@@ -81,6 +81,16 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
   return { call, calls, of: (method: string) => calls.filter(c => c.method === method) }
 }
 
+/**
+ * Записи раскладки карточки «Результата опросов» — среди прочих.
+ *
+ * С ревизии 7 обустройство пишет и раскладку «Шаблона опроса» (#84, п. 18): тесты карточки
+ * «Результата» считают только свои записи, иначе их счёт зависел бы от чужой карточки.
+ */
+function surveySets(p: { of: (method: string) => { method: string, params: Record<string, unknown> }[] }) {
+  return p.of('crm.item.details.configuration.set').filter(one => one.params.entityTypeId === SURVEY.entityTypeId)
+}
+
 describe('права администратора', () => {
   it('признаёт только явное true', async () => {
     const yes = portal({ 'user.admin': { result: true } })
@@ -314,7 +324,7 @@ describe('раскладка карточки «Результата опрос�
     const result = await provisionSmartProcesses(p.call)
 
     expect(result.card).toBe('written')
-    const set = p.of('crm.item.details.configuration.set')
+    const set = surveySets(p)
     expect(set).toHaveLength(1)
     expect(set[0]!.params.entityTypeId).toBe(SURVEY.entityTypeId)
     expect(set[0]!.params.scope).toBe('C')
@@ -331,11 +341,11 @@ describe('раскладка карточки «Результата опрос�
     await provisionSmartProcesses(upgrading.call, {}, { previousRevision: 5 })
     const result = await provisionSmartProcesses(settled.call, {}, { previousRevision: 6 })
 
-    expect(upgrading.of('crm.item.details.configuration.set').map(one => one.params.data)).toEqual([
+    expect(surveySets(upgrading).map(one => one.params.data)).toEqual([
       [{ type: 'section', name: 'своё', title: 'Своё', elements: [{ name: 'OPPORTUNITY' }, { name: `UF_CRM_${SURVEY.id}_LINK` }] }],
     ])
     expect(result.card).toBe('kept')
-    expect(settled.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect(surveySets(settled)).toHaveLength(0)
   })
 
   it('показывает сделку и клиента, а не прячет их', async () => {
@@ -388,7 +398,7 @@ describe('поле «Результат опроса»', () => {
 
   /** Раскладка, которую обустройство отправило в портал, — именами полей. */
   function sentLayout(p: ReturnType<typeof portal>): string[] {
-    const data = p.of('crm.item.details.configuration.set')[0]!.params.data as { elements: { name: string }[] }[]
+    const data = surveySets(p)[0]!.params.data as { elements: { name: string }[] }[]
     return data.flatMap(section => section.elements.map(element => element.name))
   }
 
@@ -560,7 +570,7 @@ describe('поле «Результат опроса»', () => {
 
     await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 6 })
 
-    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect(surveySets(p)).toHaveLength(0)
   })
 
   it('ГЛАВНОЕ: в чужую раскладку без наших полей виджет встаёт в первый раздел, а не в «Скрытые поля»', async () => {
@@ -573,7 +583,7 @@ describe('поле «Результат опроса»', () => {
     const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
 
     expect(result.card).toBe('written')
-    expect(p.of('crm.item.details.configuration.set')[0]!.params.data).toEqual([
+    expect(surveySets(p)[0]!.params.data).toEqual([
       { type: 'section', name: 'своё', title: 'Своё', elements: [{ name: FIELD, optionFlags: 1 }, { name: `UF_CRM_${SURVEY.id}_LINK` }] },
     ])
   })
@@ -626,22 +636,24 @@ describe('поле «Результат опроса»', () => {
     // этим прогоном пошли бы по пути обустройства, которого у такого портала не бывает (`/code-review`).
     const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY }, { ...WITH_WIDGET, previousRevision: 6 })
 
-    expect([result.resultField, result.cardSettled, reachedRevision(6, result)]).toEqual(['failed', true, 6])
-    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect([result.resultField, result.cardSettled, reachedRevision(6, result)]).toEqual(['failed', true, PROVISION_REVISION])
+    expect(surveySets(p)).toHaveLength(0)
   })
 
   it('на портале ревизии 6 повторимый отказ раскладки ревизию не держит — правка ему уже не положена', async () => {
+    // Отказывает только чтение карточки «Результата»: карточка «Шаблона» на шестой ещё положена.
     const p = portal({
       ...withField(OUR_TYPE),
-      'crm.item.details.configuration.get': () => {
-        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      'crm.item.details.configuration.get': (params: Record<string, unknown>) => {
+        if (params.entityTypeId === SURVEY.entityTypeId) throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+        return { result: null }
       },
     })
 
     const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 6 })
 
     expect(result.cardSettled).toBe(true)
-    expect(reachedRevision(6, result)).toBe(6)
+    expect(reachedRevision(6, result)).toBe(PROVISION_REVISION)
   })
 
   it('ГЛАВНОЕ: карточка уже на ревизии 6 — ни одной записи, хотя правка и положена', async () => {
@@ -655,7 +667,7 @@ describe('поле «Результат опроса»', () => {
     const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
 
     expect(result.card).toBe('kept')
-    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect(surveySets(p)).toHaveLength(0)
   })
 
   describe('усыновлённый смарт-процесс', () => {
@@ -671,9 +683,9 @@ describe('поле «Результат опроса»', () => {
       const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
 
       expect(result.adoptedSurvey).toBe(true)
-      expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+      expect(surveySets(p)).toHaveLength(0)
       expect([result.card, result.cardSettled]).toEqual(['foreign', true])
-      expect(info.mock.calls.some(([, message]) => String(message).includes('раскладка карточки не наша'))).toBe(true)
+      expect(info.mock.calls.some(([, message]) => String(message).includes('не наша'))).toBe(true)
     })
 
     it('ГЛАВНОЕ: свою раскладку доводит — наш же смарт-процесс после переустановки не замерзает', async () => {
@@ -697,9 +709,9 @@ describe('поле «Результат опроса»', () => {
 
       const result = await provisionSmartProcesses(p.call, ADOPTED, WITH_WIDGET)
 
-      expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+      expect(surveySets(p)).toHaveLength(0)
       expect(result.card).toBe('foreign')
-      expect(info.mock.calls.some(([, message]) => String(message).includes('раскладка карточки не наша'))).toBe(true)
+      expect(info.mock.calls.some(([, message]) => String(message).includes('не наша'))).toBe(true)
     })
 
     it('отказ шага поля виджета держит ревизию и при чужой раскладке — повтор заводит само поле', async () => {
@@ -737,8 +749,8 @@ describe('поле «Результат опроса»', () => {
       const healed = portal({ ...withField(OUR_TYPE), 'crm.item.details.configuration.get': { result: layout } })
       const second = await provisionSmartProcesses(healed.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
 
-      expect([second.card, reachedRevision(5, second)]).toEqual(['written', 6])
-      expect(healed.of('crm.item.details.configuration.set')[0]!.params.data).toEqual([
+      expect([second.card, reachedRevision(5, second)]).toEqual(['written', PROVISION_REVISION])
+      expect(surveySets(healed)[0]!.params.data).toEqual([
         { type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: FIELD, optionFlags: 1 }, { name: `UF_CRM_${SURVEY.id}_LINK` }] },
       ])
     })
@@ -753,7 +765,7 @@ describe('поле «Результат опроса»', () => {
 
     const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
 
-    expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect(surveySets(p)).toHaveLength(0)
     expect(result.card).toBe('unreadable')
     expect(warn.mock.calls.some(([, message]) => String(message).includes('непонятной формы'))).toBe(true)
   })
@@ -771,6 +783,194 @@ describe('поле «Результат опроса»', () => {
     const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
 
     expect([result.resultField, result.card, result.cardSettled]).toEqual(['failed', 'unreadable', false])
+  })
+})
+
+/**
+ * Поле своего типа «Анкета» у «Шаблона опроса» и раскладка его карточки — ревизия 7 (#84, п. 18).
+ *
+ * Правила — те же, что у «Результата опроса» (блок выше): здесь держим то, что добавил второй тип.
+ */
+describe('поле «Анкета» и карточка «Шаблона опроса»', () => {
+  const RESULT_HANDLER = 'https://polls.example/uf/survey-result'
+  const FORM_HANDLER = 'https://polls.example/uf/survey-form'
+  const BOTH = { resultHandlerUrl: RESULT_HANDLER, formHandlerUrl: FORM_HANDLER }
+  const FORM = `UF_CRM_${TEMPLATE.id}_FORM`
+
+  /** Записи раскладки карточки «Шаблона опроса». */
+  const templateSets = (p: ReturnType<typeof portal>) =>
+    p.of('crm.item.details.configuration.set').filter(one => one.params.entityTypeId === TEMPLATE.entityTypeId)
+  const created = (p: ReturnType<typeof portal>, name: string) =>
+    p.of('userfieldconfig.add').filter(c => (c.params.field as { fieldName: string }).fieldName === name)
+  const QUERY_LIMIT = () => {
+    throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+  }
+
+  it('ГЛАВНОЕ: оба типа — за один `app.info` и один список типов, у каждого свой адрес', async () => {
+    // ⚠ `HANDLER` обязан быть уникальным (документация `userfieldtype.add`): у «Анкеты» своя страница.
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect([result.resultField, result.formField]).toEqual(['ok', 'ok'])
+    expect(p.of('app.info')).toHaveLength(1)
+    expect(p.of('userfieldtype.list')).toHaveLength(1)
+    expect(p.of('userfieldtype.add').map(one => [one.params.USER_TYPE_ID, one.params.HANDLER])).toEqual([
+      [SURVEY_RESULT_TYPE, RESULT_HANDLER],
+      ['shef_survey_form', FORM_HANDLER],
+    ])
+    // Поле — на «Шаблоне», по ПОЛНОМУ коду, закрытое и с меткой, как все наши поля.
+    const [add] = created(p, FORM)
+    expect(add!.params.field).toMatchObject({ entityId: `CRM_${TEMPLATE.id}`, userTypeId: 'rest_219_shef_survey_form', editInList: 'N' })
+  })
+
+  it('отказ поля «Анкета» «Результату опроса» не мешает', async () => {
+    const p = portal({
+      'userfieldconfig.add': (params: Record<string, unknown>) => {
+        if ((params.field as { fieldName: string }).fieldName === FORM) throw new PortalError('ACCESS_DENIED', 'нет прав')
+        return { result: { field: 1 } }
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect([result.resultField, result.formField]).toEqual(['ok', 'failed'])
+    // Без поля «Анкета» карточка «Шаблона» — со схемой-JSON: иначе анкеты в ней не было бы вовсе.
+    expect(JSON.stringify(templateSets(p)[0]!.params.data)).toContain(`UF_CRM_${TEMPLATE.id}_SCHEMA`)
+  })
+
+  it('ГЛАВНОЕ: портал ревизии 6 — «Результат» уже зарегистрирован, «Анкету» регистрирует, а не правит', async () => {
+    // ⚠ Так выглядит каждый установленный портал при переходе на ревизию 7. Найди обустройство
+    // регистрацию «Анкеты» по коду «Результата», оно правило бы тип, которого нет, и «Анкета»
+    // не появилась бы ни у одного старого клиента. Выжившая мутация — до этого гварда.
+    const p = portal({ 'userfieldtype.list': { result: [{ USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER: RESULT_HANDLER }] } })
+
+    await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect(p.of('userfieldtype.update')).toEqual([])
+    expect(p.of('userfieldtype.add').map(one => one.params.USER_TYPE_ID)).toEqual(['shef_survey_form'])
+  })
+
+  it('оба типа уже на месте со своими адресами — ни одной регистрации и правки', async () => {
+    const p = portal({ 'userfieldtype.list': { result: [
+      { USER_TYPE_ID: SURVEY_RESULT_TYPE, HANDLER: RESULT_HANDLER },
+      { USER_TYPE_ID: 'shef_survey_form', HANDLER: FORM_HANDLER },
+    ] } })
+
+    await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect([p.of('userfieldtype.add'), p.of('userfieldtype.update')]).toEqual([[], []])
+  })
+
+  it('стоящее поле «Анкета» своего типа не заводит заново, а чужого типа — не засчитывает', async () => {
+    // Тип сверяется по СВОЕМУ коду: сверка по коду «Результата» сочла бы наше поле «Анкета» чужим,
+    // а строковое поле клиента с тем же именем — нашим.
+    const standing = (userTypeId: string) => portal({
+      'userfieldconfig.list': (params: Record<string, unknown>) =>
+        (params.filter as { entityId: string }).entityId === `CRM_${TEMPLATE.id}`
+          ? { result: { fields: [{ fieldName: FORM, userTypeId }] } }
+          : { result: { fields: [] } },
+    })
+    const ours = standing('rest_219_shef_survey_form')
+    const foreign = standing('string')
+
+    const kept = await provisionSmartProcesses(ours.call, {}, BOTH)
+    const refused = await provisionSmartProcesses(foreign.call, {}, BOTH)
+
+    expect([kept.formField, created(ours, FORM)]).toEqual(['ok', []])
+    expect([refused.formField, created(foreign, FORM)]).toEqual(['failed', []])
+  })
+
+  it('ГЛАВНОЕ: отказ `app.info` — общий для обоих полей, и вызван он один раз', async () => {
+    // Сведения о приложении и список типов — одни на оба поля: их отказ валит оба, но не повторяется
+    // по разу на поле. Не держал ни один тест — нашёл тестировщик в панели PR #100.
+    const p = portal({ 'app.info': QUERY_LIMIT })
+
+    // Портал пятой ревизии: положены обе разовые правки — и «Результата», и «Шаблона».
+    const result = await provisionSmartProcesses(p.call, {}, { ...BOTH, previousRevision: 5 })
+
+    expect([result.resultField, result.formField]).toEqual(['failed', 'failed'])
+    expect([p.of('app.info').length, p.of('userfieldtype.list').length]).toEqual([1, 0])
+    // Отказ повторимый — обе карточки ждут повтора: без полей правка сняла бы не всё.
+    expect([result.cardSettled, result.templateCardSettled, reachedRevision(5, result)]).toEqual([false, false, 5])
+  })
+
+  it('отказ списка типов — тоже общий, и ни одного поля не заводит', async () => {
+    // Без списка не понять, регистрировать тип или править: регистрировать вслепую значило бы
+    // упереться в «Handler already binded» (тестировщик в панели PR #100).
+    const p = portal({ 'userfieldtype.list': QUERY_LIMIT })
+
+    const result = await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect([result.resultField, result.formField]).toEqual(['failed', 'failed'])
+    expect([p.of('userfieldtype.add'), p.of('userfieldtype.update')]).toEqual([[], []])
+    expect(created(p, FORM)).toEqual([])
+  })
+
+  it('до `installFinish` откладывает оба поля и ничего не регистрирует', async () => {
+    const p = portal({ 'app.info': { result: { ID: 219, INSTALLED: false } } })
+
+    const result = await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect([result.resultField, result.formField]).toEqual(['deferred', 'deferred'])
+    expect(p.of('userfieldtype.list')).toHaveLength(0)
+    expect(reachedRevision(5, result)).toBe(5)
+  })
+
+  it('ГЛАВНОЕ: раскладка «Шаблона» с нуля — с полем «Анкета», схемы-JSON в ней нет', async () => {
+    const p = portal()
+
+    const result = await provisionSmartProcesses(p.call, {}, BOTH)
+
+    expect(result.templateCard).toBe('written')
+    const data = JSON.stringify(templateSets(p)[0]!.params.data)
+    expect(data).toContain(`{"name":"${FORM}","optionFlags":1}`)
+    expect(data).not.toContain(`UF_CRM_${TEMPLATE.id}_SCHEMA`)
+  })
+
+  it('ГЛАВНОЕ: повторимый отказ раскладки «Шаблона» держит портал на шестой', async () => {
+    const p = portal({
+      'crm.item.details.configuration.set': (params: Record<string, unknown>) => (params.entityTypeId === TEMPLATE.entityTypeId ? QUERY_LIMIT() : { result: true }),
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...BOTH, previousRevision: 6 })
+
+    expect([result.cardSettled, result.templateCardSettled, reachedRevision(6, result)]).toEqual([true, false, 6])
+  })
+
+  it('повторимый отказ шага поля «Анкета» держит карточку «Шаблона» — без поля правка сняла бы не всё', async () => {
+    const p = portal({
+      'userfieldconfig.add': (params: Record<string, unknown>) =>
+        (params.field as { fieldName: string }).fieldName === FORM ? QUERY_LIMIT() : { result: { field: 1 } },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...BOTH, previousRevision: 6 })
+
+    expect([result.formField, result.templateCardSettled, reachedRevision(6, result)]).toEqual(['failed', false, 6])
+  })
+
+  it('на портале ревизии 7 повторимый отказ раскладки «Шаблона» ревизию не держит — правка ему не положена', async () => {
+    const p = portal({
+      'crm.item.details.configuration.get': (params: Record<string, unknown>) => (params.entityTypeId === TEMPLATE.entityTypeId ? QUERY_LIMIT() : { result: null }),
+    })
+
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY }, { ...BOTH, previousRevision: 7 })
+
+    expect([result.templateCardSettled, reachedRevision(7, result)]).toEqual([true, 7])
+  })
+
+  it('ГЛАВНОЕ: у усыновлённого «Шаблона» раскладку без наших полей не трогает', async () => {
+    // Найденный по названию «Шаблон опроса» может оказаться смарт-процессом клиента.
+    const p = portal({
+      'crm.item.details.configuration.get': (params: Record<string, unknown>) => (params.entityTypeId === TEMPLATE.entityTypeId
+        ? { result: [{ type: 'section', name: 'main', title: 'Мой шаблон', elements: [{ name: 'TITLE' }] }] }
+        : { result: null }),
+    })
+
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY, adopted: { template: true as const } }, { ...BOTH, previousRevision: 6 })
+
+    expect(result.templateCard).toBe('foreign')
+    expect(templateSets(p)).toHaveLength(0)
   })
 })
 
@@ -1017,27 +1217,31 @@ describe('идентификаторы на портале', () => {
   const UNSETTLED = { changes: 0, settled: false }
 
   it.each<[string, number, Parameters<typeof reachedRevision>[1], Parameters<typeof reachedRevision>[2], number]>([
-    ['поле виджета отложено — ревизия прежняя', 2, { resultField: 'deferred', ownership: null, stages: SETTLED, cardSettled: true }, null, 2],
-    ['миграция 4 не доделана — ревизия до неё', 2, { resultField: 'ok', ownership: { changes: 1, fieldsLocked: false, settled: true }, stages: SETTLED, cardSettled: true }, null, 3],
-    ['не доделана, а портал уже выше — не опускаем', 3, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: true, settled: false }, stages: SETTLED, cardSettled: true }, null, 3],
-    ['всё доделано', 2, { resultField: 'ok', ownership: { changes: 5, fieldsLocked: true, settled: true }, stages: SETTLED, cardSettled: true }, SETTLED, 6],
-    ['миграция не требовалась', 6, { resultField: 'failed', ownership: null, stages: SETTLED, cardSettled: true }, null, 6],
+    ['поле виджета отложено — ревизия прежняя', 2, { resultField: 'deferred', ownership: null, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 2],
+    ['миграция 4 не доделана — ревизия до неё', 2, { resultField: 'ok', ownership: { changes: 1, fieldsLocked: false, settled: true }, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 3],
+    ['не доделана, а портал уже выше — не опускаем', 3, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: true, settled: false }, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 3],
+    ['всё доделано', 2, { resultField: 'ok', ownership: { changes: 5, fieldsLocked: true, settled: true }, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, SETTLED, 7],
+    ['миграция не требовалась', 7, { resultField: 'failed', ownership: null, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 7],
     // Ревизия 5: стадии и перенос старого поля. Повтор нужен — портал на ревизии до них, а не ниже.
-    ['стадии не доделаны — ревизия до них', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: true }, SETTLED, 4],
-    ['перенос «Состояния» не доделан — ревизия до него', 4, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: true }, UNSETTLED, 4],
-    ['миграция 4 и стадии разом — держит та, что раньше', 2, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: false, settled: true }, stages: UNSETTLED, cardSettled: true }, null, 3],
+    ['стадии не доделаны — ревизия до них', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, SETTLED, 4],
+    ['перенос «Состояния» не доделан — ревизия до него', 4, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, UNSETTLED, 4],
+    ['миграция 4 и стадии разом — держит та, что раньше', 2, { resultField: 'ok', ownership: { changes: 0, fieldsLocked: false, settled: true }, stages: UNSETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 3],
     // ⚠ Портал уже на пятой, а смарт-процесс на нём пересоздан, и его воронка не прочиталась:
     // ревизия ОПУСКАЕТСЯ до четвёртой. С `max(previous, 4)` портал не вернулся бы к донастройке
     // никогда. Нашёл `/code-review` в панели PR #93; строку с шестой просил тестировщик.
-    ['стадии не доделаны на портале пятой ревизии — опускаем до четвёртой', 5, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: true }, null, 4],
-    ['и выше пятой — тоже', 6, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: true }, null, 4],
+    ['стадии не доделаны на портале пятой ревизии — опускаем до четвёртой', 5, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 4],
+    ['и выше пятой — тоже', 6, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: true, formField: 'ok', templateCardSettled: true }, null, 4],
     // Ревизия 6: разовая правка карточки. Отказ, который лечится повтором, держит портал на пятой.
-    ['карточка не доделана — ревизия до неё', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false }, SETTLED, 5],
-    ['стадии и карточка разом — держат стадии', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: false }, null, 4],
+    ['карточка не доделана — ревизия до неё', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false, formField: 'ok', templateCardSettled: true }, SETTLED, 5],
+    ['стадии и карточка разом — держат стадии', 4, { resultField: 'ok', ownership: null, stages: UNSETTLED, cardSettled: false, formField: 'ok', templateCardSettled: true }, null, 4],
     // Строки «не доделана на портале шестой» здесь нет: такого входа не бывает — правку держит гейт
     // `cardDue`, и это доказывают сквозные тесты «на портале ревизии 6 …» в блоке поля виджета.
     // Нашёл `/review` в панели PR #98.
-    ['карточка не доделана, всё прежнее доделано — ревизия пятая', 2, { resultField: 'ok', ownership: { changes: 3, fieldsLocked: true, settled: true }, stages: SETTLED, cardSettled: false }, SETTLED, 5],
+    ['карточка не доделана, всё прежнее доделано — ревизия пятая', 2, { resultField: 'ok', ownership: { changes: 3, fieldsLocked: true, settled: true }, stages: SETTLED, cardSettled: false, formField: 'ok', templateCardSettled: true }, SETTLED, 5],
+    // Ревизия 7: поле «Анкета» и раскладка «Шаблона» — по тем же правилам, что у «Результата» (#84, п. 18).
+    ['поле «Анкета» отложено — ревизия прежняя', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: true, formField: 'deferred', templateCardSettled: true }, null, 5],
+    ['карточка «Шаблона» не доделана — ревизия шестая', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: true, formField: 'ok', templateCardSettled: false }, null, 6],
+    ['обе карточки не доделаны — держит та, что раньше', 5, { resultField: 'ok', ownership: null, stages: SETTLED, cardSettled: false, formField: 'ok', templateCardSettled: false }, null, 5],
   ])('достигнутая ревизия: %s', (_, previous, result, carried, expected) => {
     // Гвард под находки `/code-review` и `/review` во втором круге PR #87: ревизия откатывалась
     // к нулю, не поднималась до уже сделанного и считалась у вызывающего особым случаем.

@@ -7,7 +7,7 @@ import { saveRefreshedTokens } from '../links/issue'
 import type { RegisterPortal } from '../domain/portals/install'
 import { applyProvisionStatus } from '../portals/store'
 import { buildTabHandlerUrl } from '../domain/portals/placements'
-import { SURVEY_RESULT_HANDLER_PATH } from '../domain/portals/userfield-type'
+import { SURVEY_FORM_FIELD_TYPE, SURVEY_RESULT_FIELD_TYPE } from '../domain/portals/userfield-type'
 import { STAGES_REVISION } from '../domain/portals/smart-processes'
 import { REQUIRED_SCOPES, looksLikeScopeRefusal } from '../domain/portals/scopes'
 import { publicBaseUrl } from '../utils/env'
@@ -210,7 +210,8 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     // а раскладка — часть обустройства смарт-процессов. Почему именно в таком порядке —
     // у самого шага в `provisionSmartProcesses`.
     const result = await provisionSmartProcesses(budgeted, known, {
-      resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_HANDLER_PATH),
+      resultHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_RESULT_FIELD_TYPE.handlerPath),
+      formHandlerUrl: buildTabHandlerUrl(publicBaseUrl(), SURVEY_FORM_FIELD_TYPE.handlerPath),
       previousRevision: known.revision,
     })
     const adopted = {
@@ -297,6 +298,9 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     if (result.resultField === 'failed') {
       logger.warn({ domain: portal.domain }, 'поле «Результат опроса» не заведено — в карточке остаётся JSON')
     }
+    if (result.formField === 'failed') {
+      logger.warn({ domain: portal.domain }, 'поле «Анкета» не заведено — в карточке «Шаблона опроса» остаётся схема-JSON')
+    }
 
     if (!result.dealLinked) {
       // ⚠ Приложение установилось, но главного не делает: элемент «Опрос» не привяжется
@@ -330,6 +334,9 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
     if (!result.cardSettled) {
       logger.warn({ domain: portal.domain }, 'карточка «Результата опросов» не доделана — ревизию 6 не отмечаем, донастройка вернётся')
     }
+    if (!result.templateCardSettled) {
+      logger.warn({ domain: portal.domain }, 'карточка «Шаблона опроса» не доделана — ревизию 7 не отмечаем, донастройка вернётся')
+    }
     const reached = reachedRevision(known.revision, result, carried)
     await storeProvisionRevision(budgeted, refs, reached, adopted)
 
@@ -342,9 +349,12 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         placed,
         builderPlaced,
         resultField: result.resultField,
+        formField: result.formField,
         dealLinked: result.dealLinked,
         card: result.card,
         cardSettled: result.cardSettled,
+        templateCard: result.templateCard,
+        templateCardSettled: result.templateCardSettled,
         ownership: result.ownership,
         stages: result.stages,
         carried,
