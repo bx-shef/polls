@@ -673,6 +673,7 @@ export function buildRevokedTitle(subject: string): string {
 
 /**
  * Закрыть дело выпуска при отзыве ссылки — одним вызовом: тема, текст без адреса и «выполнено».
+ * Текст меняется, только если дело не правил человек (`isUntouchedIssueActivity`).
  *
  * ⚠ ОДИН ВЫЗОВ, А НЕ ДВА, и это ради отсутствия полусостояния. `crm.activity.update` принимает
  * тему, описание и `COMPLETED` вместе — замерено 29.09. Двумя вызовами дело могло бы остаться
@@ -688,8 +689,12 @@ export function buildRevokedActivityCall(found: FoundActivity, dealTabTitle: str
       id: Number(found.id),
       fields: {
         SUBJECT: buildRevokedTitle(found.subject),
-        DESCRIPTION: buildRevokedDescription(dealTabTitle),
-        DESCRIPTION_TYPE: DESCRIPTION_TYPE_BB,
+        // ⚠ Описание, которое правил человек, не трогаем: заметка менеджера («клиент просил
+        // перезвонить в пятницу») пропала бы без следа, а закрытое дело потом не поправить. Адрес
+        // в нём остаётся, но отозван и не открывается (`/code-review`, замыкающий проход PR #102).
+        ...(isUntouchedIssueActivity(found)
+          ? { DESCRIPTION: buildRevokedDescription(dealTabTitle), DESCRIPTION_TYPE: DESCRIPTION_TYPE_BB }
+          : {}),
         COMPLETED: 'Y',
       },
     },

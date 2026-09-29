@@ -884,6 +884,22 @@ describe('дело выпуска перезаписывается итогом'
     expect(JSON.stringify(warn.mock.calls)).toContain('не привязано')
   })
 
+  it('ГЛАВНОЕ: повтор после перезаписи без смены ключа — второго дела нет, ключ и блоки доделываются', async () => {
+    // ⚠ Прошлая попытка перезаписала дело итогом и оборвалась до ключа итога (выкат, OOM). Дело
+    // с заголовком итога — наше, а не «правленное человеком»: без этой ветки итог лёг бы вторым делом
+    // рядом (`/code-review`, замыкающий проход PR #102). Закрытое после перезаписи — тоже наше.
+    for (const completed of ['N', 'Y']) {
+      const p = issued({ ...ISSUED, COMPLETED: completed, SUBJECT: 'Опрос пройден: Оценка работы — 9', DESCRIPTION: '[B]Опрос пройден: Оценка работы[/B]' })
+
+      expect(await run(p)).toBe(true)
+
+      expect(p.methods()).not.toContain('crm.activity.todo.add')
+      expect(p.methods()).not.toContain('crm.activity.todo.update')
+      expect(p.of('crm.activity.update')[0]!.params).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(SURVEY.entityTypeId, 777) } })
+      expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ activityId: 308 })
+    }
+  })
+
   it('итог уже записан — дело выпуска даже не ищем', async () => {
     const p = portal({ 'crm.activity.list': { result: [{ ID: 4242 }] } })
 

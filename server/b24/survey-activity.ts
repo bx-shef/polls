@@ -166,6 +166,15 @@ export async function writeResultActivity(call: RestCall, plan: ResultActivityPl
   }
 
   const issued = await findActivity(call, linkActivityOriginId(plan.survey.entityTypeId, plan.itemId))
+  if (issued !== null && issued.subject.startsWith(RESULT_TITLE_PREFIX)) {
+    // ⚠ НАША НЕЗАКОНЧЕННАЯ ПЕРЕЗАПИСЬ: прошлая попытка перезаписала дело итогом и оборвалась до ключа
+    // итога (выкат, OOM — процесс убит, строку вернул `requeueStuck`). Заголовок итога у дела выпуска
+    // бывает только от нас. Доделываем ключ, блоки и привязку — второе дело не пишем, даже если
+    // менеджер дело уже закрыл. Без этой ветки такое дело сочлось бы «правленным человеком», и итог
+    // лёг бы вторым делом рядом (`/code-review`, замыкающий проход PR #102).
+    await finishOverwrite(call, issued, plan)
+    return true
+  }
   if (issued !== null && !issued.completed && isUntouchedIssueActivity(issued) && await overwriteWithResult(call, issued, plan)) return true
   if (issued !== null && issued.completed) {
     logger.info({}, 'дело выпуска закрыто — итог пишем новым делом рядом')
@@ -182,8 +191,8 @@ export async function writeResultActivity(call: RestCall, plan: ResultActivityPl
  *
  * ⚠ ТРИ ВЫЗОВА, И ПОРЯДОК НЕСУЩИЙ. Сначала содержимое (`todo.update`), потом ключ итога, потом
  * блоки. Ключ итога после содержимого: упади мы между ними, повтор доставки найдёт дело по ключу
- * выпуска и перезапишет его ещё раз — перезапись идемпотентна. Обратный порядок оставил бы дело
- * с ключом итога и адресом анкеты вместо итога, и повтор счёл бы итог записанным.
+ * выпуска с заголовком итога и доделает ключ и блоки (`writeResultActivity`). Обратный порядок
+ * оставил бы дело с ключом итога и адресом анкеты вместо итога, и повтор счёл бы итог записанным.
  *
  * ⚠ Чего это не закрывает: дело перезаписано, ключ не лёг, и между этим и повтором доставки
  * менеджер закрыл дело. Повтор увидит закрытое дело выпуска и напишет итог второй раз, рядом.
@@ -217,14 +226,23 @@ async function overwriteWithResult(call: RestCall, found: FoundActivity, plan: R
     }
   }
 
-  if (!(await markActivity(call, found.id, activityOriginId(plan.survey.entityTypeId, plan.itemId)))) {
-    // Итог в ленте есть; не найдёт его только повтор доставки, а он после удачной доставки не наступает.
-    logger.error({}, 'дело перезаписано итогом, но ключ итога не лёг: как итог его не найти')
-  }
-  await trySetBlocks(call, found.id, owner, plan.blocks)
-  await tryBindToSurveyItem(call, found.id, plan.survey, plan.itemId)
+  await finishOverwrite(call, found, plan)
   logger.info({}, 'дело выпуска перезаписано итогом опроса')
   return true
+}
+
+/**
+ * Доделать перезапись: ключ итога, блоки, привязка к элементу.
+ *
+ * Общая для свежей перезаписи и для повтора доставки, заставшего перезапись без ключа итога.
+ */
+async function finishOverwrite(call: RestCall, found: FoundActivity, plan: ResultActivityPlan): Promise<void> {
+  if (!(await markActivity(call, found.id, activityOriginId(plan.survey.entityTypeId, plan.itemId)))) {
+    // Итог в ленте есть. Без ключа итога его найдёт повтор доставки — по ключу выпуска и заголовку итога.
+    logger.error({}, 'дело перезаписано итогом, но ключ итога не лёг')
+  }
+  await trySetBlocks(call, found.id, ownerOf(found, plan.dealId), plan.blocks)
+  await tryBindToSurveyItem(call, found.id, plan.survey, plan.itemId)
 }
 
 /**

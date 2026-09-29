@@ -406,7 +406,25 @@ describe('нетронутое ли дело выпуска', () => {
 })
 
 describe('закрытие при отзыве', () => {
-  const found = { id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: `${ISSUE_TITLE_PREFIX}brand`, description: '' }
+  const found = {
+    id: '308',
+    completed: false,
+    ownerTypeId: 1040,
+    ownerId: 78,
+    subject: `${ISSUE_TITLE_PREFIX}brand`,
+    description: buildIssueActivityDescription('https://polls.example/s/abc123', new Date('2026-10-29T02:43:00Z')),
+  }
+
+  it('ГЛАВНОЕ: описание, которое правил человек, не заменяется — заметка менеджера цела', () => {
+    // Закрытое дело потом не поправить, и «клиент просил перезвонить в пятницу» пропало бы без следа
+    // (`/code-review`, замыкающий проход PR #102). Адрес в нём остаётся, но отозван.
+    const touched = { ...found, description: `${found.description}\nклиент просил перезвонить в пятницу` }
+
+    const fields = buildRevokedActivityCall(touched, '[sh] Ссылки на опросы').params.fields as Record<string, unknown>
+
+    expect(fields).not.toHaveProperty('DESCRIPTION')
+    expect(fields).toMatchObject({ SUBJECT: `${REVOKED_TITLE_PREFIX}brand`, COMPLETED: 'Y' })
+  })
 
   it('ГЛАВНОЕ: одним вызовом — тема, текст без адреса и «выполнено»', () => {
     // ⚠ Двумя вызовами дело могло бы остаться открытым с текстом «отозвана» или закрытым
