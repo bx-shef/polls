@@ -16,6 +16,7 @@ import {
   capTitle,
   formatExpiryDay,
   hasBadSection,
+  isOurIssueDescription,
   isUntouchedIssueActivity,
   ISSUE_TITLE_PREFIX,
   linkActivityOriginId,
@@ -399,6 +400,11 @@ describe('нетронутое ли дело выпуска', () => {
     expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ''))).toBe(false)
   })
 
+  it('описание узнаётся отдельно от заголовка — для отзыва', () => {
+    expect(isOurIssueDescription(ours)).toBe(true)
+    expect(isOurIssueDescription(`${ours}\nзаметка`)).toBe(false)
+  })
+
   it('текст дела выпуска честно говорит, что будет при закрытии', () => {
     // Закрытое дело портал не перезаписывает — итог приходит новым делом рядом (решение владельца, п. 14).
     expect(ours).toContain('Закроете раньше — итог придёт новым делом рядом.')
@@ -414,6 +420,18 @@ describe('закрытие при отзыве', () => {
     subject: `${ISSUE_TITLE_PREFIX}brand`,
     description: buildIssueActivityDescription('https://polls.example/s/abc123', new Date('2026-10-29T02:43:00Z')),
   }
+
+  it('переименован только заголовок — наше описание с адресом всё равно заменяется', () => {
+    // Чужой заголовок сохраняет `buildRevokedTitle`; адрес и обещание «ответ заменит итогом»
+    // в закрытом отозванном деле были бы неправдой (`/review`, PR #102).
+    const renamed = { ...found, subject: 'Отправить опрос Иванову (мессенджер)' }
+
+    const fields = buildRevokedActivityCall(renamed, '[sh] Ссылки на опросы').params.fields as Record<string, unknown>
+
+    expect(fields.DESCRIPTION).toEqual(expect.stringContaining('отозвана'))
+    expect(String(fields.DESCRIPTION)).not.toContain('/s/')
+    expect(fields.SUBJECT).toBe(`${REVOKED_TITLE_PREFIX}Отправить опрос Иванову (мессенджер)`)
+  })
 
   it('ГЛАВНОЕ: описание, которое правил человек, не заменяется — заметка менеджера цела', () => {
     // Закрытое дело потом не поправить, и «клиент просил перезвонить в пятницу» пропало бы без следа

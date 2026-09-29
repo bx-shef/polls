@@ -42,6 +42,7 @@ import {
   buildFindActivityCall,
   buildListBindingsCall,
   ISSUE_TITLE_PREFIX,
+  isUntouchedIssueActivity,
   linkActivityOriginId,
   readBindingKeys,
   readFoundActivity,
@@ -253,6 +254,10 @@ async function main(): Promise<number> {
   const sent = await findOwn(call, linkActivityOriginId(surveySp.entityTypeId, issued.itemId))
   expect(sent.count === 1, `дел выпуска с нашей меткой: ${sent.count}`)
   expect(sent.found.subject.startsWith(ISSUE_TITLE_PREFIX), `заголовок дела: «${sent.found.subject}»`)
+  // ⚠ Прямо, а не косвенно: перезапись итогом узнаёт дело выпуска по строению описания. Верни портал
+  // текст по-своему (регистр тегов, переводы строк), итог уходил бы новым делом рядом, а здесь это
+  // всплыло бы шагом позже — без причины (`/review`, PR #102).
+  expect(isUntouchedIssueActivity(sent.found), 'портал вернул дело выпуска в том виде, в каком мы его записали')
   expect((await readActivityText(call, sent.found.id)).includes(issued.url), 'в деле лежит выпущенный адрес анкеты')
   // ⚠ К элементу — НЕТ, и это проверяется живьём: финальная стадия элемента закрывает все открытые
   // дела, привязанные к нему (замер 29.09), и «Пройдена» закрыла бы дело выпуска до перезаписи итогом.

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { buildIssueActivityDescription } from '../../server/domain/answers/timeline-activity'
 
 /**
  * Обработчик отзыва ссылки: `server/api/portal/revoke.post.ts`.
@@ -177,7 +178,14 @@ describe('отзыв ссылки', () => {
 })
 
 describe('дело выпуска при отзыве (issue #84, п. 14)', () => {
-  const OPEN = { ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '1040', OWNER_ID: String(ITEM), SUBJECT: 'Отправить опрос клиенту: Бренд' }
+  const OPEN = {
+    ID: '308',
+    COMPLETED: 'N',
+    OWNER_TYPE_ID: '2',
+    OWNER_ID: String(DEAL),
+    SUBJECT: 'Отправить опрос клиенту: Бренд',
+    DESCRIPTION: buildIssueActivityDescription('https://polls.example/s/abc123', new Date('2026-10-29T02:43:00Z')),
+  }
 
   it('ГЛАВНОЕ: открытое дело закрывается с «Ссылка отозвана» — после стадии, одним вызовом', async () => {
     activities = [OPEN]
@@ -188,6 +196,10 @@ describe('дело выпуска при отзыве (issue #84, п. 14)', () =
     const closes = activityCloses()
     expect(closes).toHaveLength(1)
     expect(closes[0]!.params).toMatchObject({ id: 308, fields: { SUBJECT: 'Ссылка отозвана: Бренд', COMPLETED: 'Y' } })
+    // Описание наше — адрес из него уходит.
+    const fields = closes[0]!.params.fields as Record<string, unknown>
+    expect(String(fields.DESCRIPTION)).toContain('отозвана')
+    expect(String(fields.DESCRIPTION)).not.toContain('/s/')
     const methods = probe.portalCalls.map(one => one.method)
     expect(methods.indexOf('crm.item.update')).toBeLessThan(methods.indexOf('crm.activity.update'))
   })

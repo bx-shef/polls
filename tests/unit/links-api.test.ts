@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { buildIssueActivityDescription } from '../../server/domain/answers/timeline-activity'
 import type { PortalError } from '../../server/domain/portals/portal-error'
 
 /**
@@ -14,6 +15,8 @@ import type { PortalError } from '../../server/domain/portals/portal-error'
  */
 
 const SURVEY = { entityTypeId: 1040, id: 10, categoryId: 16 }
+/** Описание дела выпуска ровно в нашем виде: отзыв убирает из него адрес. */
+const ISSUED_TEXT = buildIssueActivityDescription('https://polls.example/s/abc123', new Date('2026-10-29T02:43:00Z'))
 
 let items: Record<string, unknown>[]
 let statuses: Map<number, string>
@@ -161,13 +164,14 @@ describe('список ссылок сделки', () => {
     // (`/code-review`, PR #102). Теперь дописывание идёт тем же путём, что кнопка.
     items = [element(54, 'NEW')]
     statuses = new Map([[54, 'revoked']])
-    activities = [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '2', OWNER_ID: '2', SUBJECT: 'Отправить опрос клиенту: brand' }]
+    activities = [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '2', OWNER_ID: '2', SUBJECT: 'Отправить опрос клиенту: brand', DESCRIPTION: ISSUED_TEXT }]
     const handler = await loadHandler()
 
     await handler({})
 
     expect(closes).toHaveLength(1)
     expect(closes[0]).toMatchObject({ id: 308, fields: { SUBJECT: 'Ссылка отозвана: brand', COMPLETED: 'Y' } })
+    expect(String((closes[0]!.fields as Record<string, unknown>).DESCRIPTION)).not.toContain('/s/')
   })
 
   it('ГЛАВНОЕ: стадию портал отвергает навсегда — дело выпуска всё равно закрыто', async () => {
@@ -175,7 +179,7 @@ describe('список ссылок сделки', () => {
     items = [element(54, 'NEW')]
     statuses = new Map([[54, 'revoked']])
     refuseFor = new Set([54])
-    activities = [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '2', OWNER_ID: '2', SUBJECT: 'Отправить опрос клиенту: brand' }]
+    activities = [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '2', OWNER_ID: '2', SUBJECT: 'Отправить опрос клиенту: brand', DESCRIPTION: ISSUED_TEXT }]
     const handler = await loadHandler()
 
     await handler({})

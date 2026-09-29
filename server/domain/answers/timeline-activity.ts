@@ -547,7 +547,14 @@ export function buildIssueActivityDescription(url: string, expiresAt: Date): str
   ].join('\n')
 }
 
-/** Первая строка описания дела выпуска — наша, по ней и по последней дело узнаётся нетронутым. */
+/**
+ * Первая строка описания дела выпуска — наша, по ней и по последней дело узнаётся нетронутым.
+ *
+ * ⚠ ЭТИ СТРОКИ — ХРАНИМЫЙ ФОРМАТ, а не просто текст. По ним доставка и отзыв узнают дело выпуска
+ * нетронутым (`isOurIssueDescription`), а дела живут до тридцати дней. Поменяв формулировку, все
+ * выпущенные за это время дела сочтутся правлеными: итог пойдёт новым делом рядом, а отзыв оставит
+ * в них адрес. Меняя — узнавайте и прежний вариант (`/review`, PR #102).
+ */
 const ISSUE_DESCRIPTION_HEAD = '[B]Адрес анкеты для клиента:[/B]'
 const ISSUE_EXPIRY_LEAD = 'Действует до '
 /**
@@ -569,8 +576,18 @@ const ISSUE_DESCRIPTION_TAIL = 'Пока дело открыто, ответ к�
  * Сверяем строение, а не текст целиком: адреса анкеты у доставки нет — у нас лежит только хеш токена.
  */
 export function isUntouchedIssueActivity(found: FoundActivity): boolean {
-  if (!found.subject.startsWith(ISSUE_TITLE_PREFIX)) return false
-  const lines = found.description.split(/\r?\n/)
+  return found.subject.startsWith(ISSUE_TITLE_PREFIX) && isOurIssueDescription(found.description)
+}
+
+/**
+ * Описание дела выпуска — ровно наше, построчно.
+ *
+ * Отдельно от заголовка — ради отзыва: он бережёт текст человека, а переименованный заголовок
+ * сохраняет и так (`buildRevokedTitle`). Переименовали только заголовок — адрес из нашего описания
+ * отзыв всё равно убирает (`/review`, PR #102).
+ */
+export function isOurIssueDescription(description: string): boolean {
+  const lines = description.split(/\r?\n/)
   return lines.length === 5
     && lines[0] === ISSUE_DESCRIPTION_HEAD
     && /^https:\/\/\S+$/.test(lines[1]!)
@@ -623,7 +640,6 @@ export function ownerOf(found: FoundActivity, dealId: number): ActivityOwner {
  * ⚠ Метку и тип описания перезапись не трогает — замерено 29.09: после `todo.update`
  * у дела те же `ORIGINATOR_ID`, `ORIGIN_ID` и `DESCRIPTION_TYPE = 2`. Ключ итога ставит
  * следующий вызов (`buildActivityMarkerCall`).
- *
  */
 export function buildOverwriteActivityCall(activityId: string, owner: ActivityOwner, params: {
   title: string
@@ -672,8 +688,16 @@ export function buildRevokedTitle(subject: string): string {
 }
 
 /**
+ * Отметить дело выполненным, не трогая текста и заголовка — дело выпуска, итог по которому ушёл
+ * новым делом рядом (`writeResultActivity`).
+ */
+export function buildCompleteActivityCall(activityId: string): PortalCall {
+  return { method: ACTIVITY_UPDATE_METHOD, params: { id: Number(activityId), fields: { COMPLETED: 'Y' } } }
+}
+
+/**
  * Закрыть дело выпуска при отзыве ссылки — одним вызовом: тема, текст без адреса и «выполнено».
- * Текст меняется, только если дело не правил человек (`isUntouchedIssueActivity`).
+ * Текст меняется, только если он наш (`isOurIssueDescription`): заметку человека отзыв не трогает.
  *
  * ⚠ ОДИН ВЫЗОВ, А НЕ ДВА, и это ради отсутствия полусостояния. `crm.activity.update` принимает
  * тему, описание и `COMPLETED` вместе — замерено 29.09. Двумя вызовами дело могло бы остаться
@@ -692,7 +716,7 @@ export function buildRevokedActivityCall(found: FoundActivity, dealTabTitle: str
         // ⚠ Описание, которое правил человек, не трогаем: заметка менеджера («клиент просил
         // перезвонить в пятницу») пропала бы без следа, а закрытое дело потом не поправить. Адрес
         // в нём остаётся, но отозван и не открывается (`/code-review`, замыкающий проход PR #102).
-        ...(isUntouchedIssueActivity(found)
+        ...(isOurIssueDescription(found.description)
           ? { DESCRIPTION: buildRevokedDescription(dealTabTitle), DESCRIPTION_TYPE: DESCRIPTION_TYPE_BB }
           : {}),
         COMPLETED: 'Y',
