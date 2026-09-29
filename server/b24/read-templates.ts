@@ -43,6 +43,17 @@ const MAX_PAGES = 20
 const warnedStageless = new Set<string>()
 
 /**
+ * Portals whose truncated template list this process has already reported, as `domain/typeId`.
+ *
+ * Вкладка с неполным списком лучше вкладки с ошибкой, но молчать об этом нельзя: с #110 листание
+ * заработало, и предел в двадцать страниц стал достижим — анкеты за ним пропали бы из вкладки, выпуска
+ * и карточки результата без единой строки в журнале (`/review` и `/code-review` в PR #113). Какие
+ * именно — решает порядок портала: своего `order` список не задаёт (issue #114). Раз
+ * за жизнь процесса, по той же причине, что `warnedStageless`.
+ */
+const warnedTruncated = new Set<string>()
+
+/**
  * Reads every published template of the portal: issuable now, or ever published (`readPublishedTemplates`).
  *
  * `domain` — только для журнала: номер смарт-процесса у каждого портала свой и сам по себе
@@ -74,6 +85,10 @@ export async function readAllPublishedTemplates(
   if (stageless && !warnedStageless.has(key)) {
     warnedStageless.add(key)
     logger.warn({ domain, typeId: template.id }, 'у «Шаблона опроса» выключены стадии — выпуск решает одна дата публикации')
+  }
+  if (start !== null && !warnedTruncated.has(key)) {
+    warnedTruncated.add(key)
+    logger.warn({ domain, typeId: template.id, pages: MAX_PAGES }, 'список шаблонов не дочитан до конца — анкеты за пределом не видны')
   }
 
   return found

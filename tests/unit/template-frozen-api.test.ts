@@ -36,6 +36,8 @@ let userItemLater: Record<string, unknown> | null
 let accessChecks: number
 let body: Record<string, unknown>
 let writes: { method: string, params: Record<string, unknown> }[]
+/** Смещение следующей страницы в ответе списка шаблонов; `undefined` — страница последняя. */
+let listNext: number | undefined
 
 async function load(route: 'template-save' | 'template-publish') {
   writes = []
@@ -46,7 +48,7 @@ async function load(route: 'template-save' | 'template-publish') {
       authId: 'фреймовый-токен',
       call: async (method: string, params: Record<string, unknown> = {}) => {
         if (method === 'crm.item.get') return { result: { item } }
-        if (method === 'crm.item.list') return { result: { items: [item] } }
+        if (method === 'crm.item.list') return { result: { items: [item] }, ...(listNext === undefined ? {} : { next: listNext }) }
         writes.push({ method, params })
         return { result: { item: { id: 4 } } }
       },
@@ -74,6 +76,7 @@ async function load(route: 'template-save' | 'template-publish') {
 }
 
 beforeEach(() => {
+  listNext = undefined
   userItem = null
   userItemLater = null
   accessChecks = 0
@@ -288,6 +291,28 @@ describe('публикация со стадиями', () => {
     const publish = await load('template-publish')
 
     expect(await publish({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: список шаблонов не дочитан — публикации нет, а не номер по неполному списку', async () => {
+    // Выпуск необратим: номер, выданный по неполному списку, мог оказаться занятым, и две анкеты склеились бы
+    // в одну пару «код + версия». С #110 листание заработало, и предел в двадцать страниц стал достижим
+    // (`/review` и `/code-review` в PR #113).
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:05:00+03:00' }
+    listNext = 50
+    const publish = await load('template-publish')
+
+    await expect(publish({})).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(writes).toEqual([])
+  })
+
+  it('список не дочитан — новая версия не заводится: черновик мог лежать за пределом', async () => {
+    body = { itemId: 4, action: 'new-version' }
+    listNext = 50
+    const publish = await load('template-publish')
+
+    await expect(publish({})).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
     expect(writes).toEqual([])
   })
 

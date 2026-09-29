@@ -99,7 +99,11 @@ export function hookCall(base: string): RestCall {
     // Без него ответ 2xx без результата — страница, пустой `"error": ""` — уезжал к переносу успехом,
     // и пустое чтение значило бы «шаблонов нет»: записал бы второй. `/review` в панели PR #106.
     if (!('result' in answer)) throw new PortalError(UNREACHABLE_CODE, `${method}: в ответе портала нет результата`)
-    return body
+    // ⚠ Наружу — та же форма, что у `makePortalCall`: `result`, `time` и `next` списков. Вебхук отдавал
+    // тело целиком, и в этом расхождении прожил #110 — живые проверки видели `next`, а бой нет. Кто
+    // однажды прочтёт `total`, должен упасть уже в проверке, а не в бою (`/code-review` в PR #113).
+    const { result, time, next } = answer as { result?: unknown, time?: unknown, next?: unknown }
+    return next === undefined ? { result, time } : { result, time, next }
   }
 }
 

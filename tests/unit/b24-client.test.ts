@@ -25,6 +25,9 @@ interface SdkProbe {
 
 const probe: { last?: SdkProbe } = {}
 
+/** Что отдаёт `call.make` подделки: успешный ответ без следующей страницы, если тест не сказал иного. */
+let answer: Record<string, unknown> = { isSuccess: true, getData: () => ({ result: true }), isMore: () => false }
+
 vi.mock('@bitrix24/b24jssdk', () => ({
   B24OAuth: class {
     constructor(auth: Record<string, unknown>, credentials: Record<string, unknown>, options: Record<string, unknown>) {
@@ -35,7 +38,7 @@ vi.mock('@bitrix24/b24jssdk', () => ({
       probe.last!.refreshCallback = callback
     }
 
-    actions = { v2: { call: { make: async () => ({ isSuccess: true, getData: () => ({ result: true }) }) } } }
+    actions = { v2: { call: { make: async () => answer } } }
   },
   // Подделки ради импорта: сам модуль их только упоминает.
   LoggerBrowser: { build: () => ({}) },
@@ -61,6 +64,22 @@ function withCredentials() {
 afterEach(() => {
   vi.unstubAllEnvs()
   probe.last = undefined
+  answer = { isSuccess: true, getData: () => ({ result: true }), isMore: () => false }
+})
+
+describe('листание: сторожок на дрейф SDK', () => {
+  it('ГЛАВНОЕ: SDK говорит «есть ещё», а смещение не прочитать — громкий отказ, а не одна страница', async () => {
+    // Смещение мы берём из внутреннего `_data` SDK; публичный `isMore()` читает то же поле изнутри. Переименуй
+    // SDK поле — и без сторожка листание снова тихо видело бы одну страницу, а перенос удалил бы поле
+    // «Состояние» (#110; `/review` и `/code-review` в PR #113).
+    withCredentials()
+    answer = { isSuccess: true, getData: () => ({ result: { types: [] }, time: {} }), isMore: () => true }
+    const { makePortalCall } = await import('../../server/b24/client')
+
+    const failure = await makePortalCall(AUTH).call('crm.type.list').catch((error: unknown) => error)
+
+    expect(failure).toMatchObject({ name: 'PortalError', code: '' })
+  })
 })
 
 describe('конструктор клиента', () => {

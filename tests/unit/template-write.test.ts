@@ -269,4 +269,13 @@ describe('перенос против портала', () => {
     expect(result.skip.map(s => s.code)).toEqual(['brand'])
     expect(p.of('crm.item.list')).toHaveLength(2)
   })
+
+  it('ГЛАВНОЕ: список версий не дочитан за предел страниц — перенос не пишет ничего, а не дубликат', async () => {
+    // Упёршись в предел, чтение молча отдавало неполный список, и версия с непрочитанной страницы
+    // записывалась второй раз (`/review` и `/code-review` в PR #113).
+    const p = portal({ 'crm.item.list': { result: { items: [item('другое', 1)] }, next: 50 } })
+
+    await expect(writeTemplates(p.call, TEMPLATE, TEMPLATES, { apply: true })).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(p.of('crm.item.add')).toEqual([])
+  })
 })

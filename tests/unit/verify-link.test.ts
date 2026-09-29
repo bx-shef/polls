@@ -342,6 +342,16 @@ describe('как вебхук читает ответ портала', () => {
     expect(failure).toBeInstanceOf(Stop)
   })
 
+  it('ГЛАВНОЕ: ответ вебхука — той же формы, что у SDK-пути: `result`, `time` и `next`, без `total`', async () => {
+    // Вебхук отдавал тело целиком, а SDK-путь терял `next`: в этом расхождении прожил #110 — живые проверки
+    // видели листание, бой нет. Кто однажды прочтёт `total`, должен упасть в проверке (`/code-review` в PR #113).
+    answer(200, JSON.stringify({ result: [{ ID: '1' }], total: 61, next: 50, time: { start: 1 } }))
+
+    const body = await hookCall('https://portal.example/rest/1/key/')('crm.deal.list')
+
+    expect(body).toEqual({ result: [{ ID: '1' }], time: { start: 1 }, next: 50 })
+  })
+
   it('ГЛАВНОЕ: двухсотый ответ не JSON — ответа портала нет, а не «беда на нашей стороне»', async () => {
     // Голый `SyntaxError` дошёл бы до `report` с диагнозом «Портал тут ни при чём» — а отвечала страница
     // прокси (`/code-review` в закрывающем круге панели PR #106).

@@ -40,6 +40,9 @@ const MAX_PAGES = 50
 /** Наш код отказа: портал ответил успехом, но элемента не создал. */
 export const PORTAL_CREATED_NOTHING = 'SHEF_CREATED_NOTHING'
 
+/** Наш код отказа: список не дочитан до конца. */
+export const PORTAL_LIST_TRUNCATED = 'SHEF_LIST_TRUNCATED'
+
 /** Чем кончился перенос. Обе половины идут в отчёт клиенту, а не только успех. */
 export interface TemplateWriteResult extends TemplateWritePlan {
   /** Сколько создано. При сухом прогоне ноль, и `create` при этом непустой. */
@@ -153,6 +156,9 @@ async function listExistingVersions(call: RestCall, template: SmartProcessRef): 
     start = readNextOffset(response)
   }
 
+  // Та же причина — и для предела страниц: упёршись в него, мы молча вернули бы неполный список
+  // и записали бы дубликат версии с непрочитанной страницы (`/review` и `/code-review` в PR #113).
+  if (start !== null) throw new PortalError(PORTAL_LIST_TRUNCATED, `список версий не дочитан за ${MAX_PAGES} страниц`)
   return keys
 }
 

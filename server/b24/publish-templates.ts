@@ -14,7 +14,7 @@ import { readNextOffset, type SmartProcessRef } from '../domain/portals/smart-pr
 import { safeRefusal } from '../domain/answers/portal-errors'
 import { PortalError } from '../domain/portals/portal-error'
 import type { RestCall } from './provision'
-import { writesLegacyState } from './write-templates'
+import { PORTAL_LIST_TRUNCATED, writesLegacyState } from './write-templates'
 import { logger } from '../utils/logger'
 
 /**
@@ -28,9 +28,6 @@ import { logger } from '../utils/logger'
 
 /** Предел перелистывания. Страховка от кривого `next`, а не ожидаемый размер. */
 const MAX_PAGES = 50
-
-/** Наш код отказа: список не дочитан до конца. */
-export const PORTAL_LIST_TRUNCATED = 'SHEF_LIST_TRUNCATED'
 
 /** Наш код отказа: портал ответил успехом, но элемент не вернул. */
 export const PORTAL_UPDATED_NOTHING = 'SHEF_UPDATED_NOTHING'

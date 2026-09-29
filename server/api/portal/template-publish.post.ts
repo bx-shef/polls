@@ -1,7 +1,9 @@
 import { defineEventHandler, readBody } from 'h3'
 import { readStoredRefs } from '../../b24/provision'
+import { PORTAL_LIST_TRUNCATED } from '../../b24/write-templates'
 import { readUpdatedItemId } from '../../domain/answers/portal-calls'
 import { buildListTemplatesCall } from '../../domain/invitations/portal-calls'
+import { PortalError } from '../../domain/portals/portal-error'
 import { readNextOffset } from '../../domain/portals/smart-processes'
 import { validateTemplate } from '../../domain/surveys/validate'
 import {
@@ -149,6 +151,11 @@ async function readAllVersions(
     start = readNextOffset(response)
   }
 
+  // ⚠ Не дочитали — отказ, а не номер по неполному списку: выданный так номер мог оказаться занятым,
+  // и две анкеты склеились бы в одну пару «код + версия». Тот же приём, что у операторского двойника
+  // (`publish-templates.ts`). С #110 листание заработало, и предел стал достижим — `/review`
+  // и `/code-review` в PR #113.
+  if (start !== null) throw new PortalError(PORTAL_LIST_TRUNCATED, `список шаблонов не дочитан за ${MAX_PAGES} страниц`)
   return found
 }
 
@@ -168,5 +175,7 @@ async function findExistingDraft(
     start = readNextOffset(response)
   }
 
+  // Не дочитали — не «черновика нет»: иначе новая версия завела бы второй черновик той же анкеты.
+  if (start !== null) throw new PortalError(PORTAL_LIST_TRUNCATED, `список шаблонов не дочитан за ${MAX_PAGES} страниц`)
   return null
 }

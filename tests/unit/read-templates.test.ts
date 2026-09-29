@@ -48,6 +48,20 @@ describe('опубликованные шаблоны со стадиями', ()
     expect(stageless(warn).map(([context]) => (context as { domain: string }).domain)).toEqual(['second.bitrix24.ru', 'third.bitrix24.ru'])
   })
 
+  it('ГЛАВНОЕ: список не дочитан — вкладка показывает, что есть, но журнал об этом знает, раз на портал', async () => {
+    // С #110 листание заработало, и предел в двадцать страниц стал достижим: без строки в журнале анкеты
+    // за ним пропадали бы из выпуска молча (`/review` и `/code-review` в PR #113).
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const call = vi.fn(async () => ({ result: { items: [version({ stageId: 'DT1038_14:SUCCESS' })] }, next: 50 }))
+
+    const found = await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
+    await readAllPublishedTemplates(call, TEMPLATE, 'issuable', 'fifth.bitrix24.ru')
+
+    expect(found.length).toBeGreaterThan(0)
+    const truncated = warn.mock.calls.filter(([, message]) => String(message).includes('не дочитан'))
+    expect(truncated.map(([context]) => context)).toEqual([{ domain: 'fifth.bitrix24.ru', typeId: 8, pages: 20 }])
+  })
+
   it('стадии на месте — молчит', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const call = vi.fn(async () => ({ result: { items: [version({ stageId: 'DT1038_14:SUCCESS' })] } }))

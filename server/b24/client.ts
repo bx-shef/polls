@@ -200,7 +200,11 @@ export function makePortalCall(
     // проверки ходят вебхуком, который отдаёт тело целиком. Публичного чтения самого смещения у SDK
     // нет — берём его из тела ответа (`_data`), тем же полем, что читают его `isMore()` и `getNext()`.
     const next = (response as unknown as { _data?: { next?: unknown } })._data?.next
-    return next === undefined ? data : { ...data, next }
+    // ⚠ Сторожок на дрейф SDK: публичный `isMore()` читает то же поле изнутри и от его имени не зависит.
+    // Переименуй SDK `_data` — и мы снова тихо видели бы одну страницу, а перенос удалил бы поле.
+    // Громкий повторимый отказ вместо тихого усечения (`/review` и `/code-review` в PR #113).
+    if (next === undefined && response.isMore()) throw new PortalError('', `${method}: SDK не отдал смещение следующей страницы`)
+    return next === undefined ? data : Object.freeze({ ...data, next })
   }
 
   /**
