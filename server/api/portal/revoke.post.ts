@@ -1,8 +1,9 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyDealAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildListIssuedCall, buildRevokeCall, isRevocable, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
+import { buildListIssuedCall, isRevocable, needsRevokeRepair, readIssuedLinks } from '../../domain/invitations/issued-links'
 import { readLinkStatuses, revokeLink } from '../../links/issue'
+import { reflectRevocation } from '../../links/revoke-flow'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 
@@ -68,8 +69,7 @@ export default defineEventHandler(async (event) => {
   // клиента на «Отозвана» не сработали бы. Нашли `/review` и `/code-review` во втором круге
   // панели PR #93.
   if (needsRevokeRepair(target, status)) {
-    const repair = buildRevokeCall(refs.survey, itemId)
-    await session.call(repair.method, repair.params)
+    await reflectRevocation(session.call, refs.survey, itemId)
     logger.info({ domain: session.portal.domain, itemId, userId: session.userId }, 'отзыв ссылки дописан на портал')
     return { ok: true as const }
   }
@@ -88,8 +88,9 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-revocable' as const }
   }
 
-  const revoke = buildRevokeCall(refs.survey, itemId)
-  await session.call(revoke.method, revoke.params)
+  // Стадия «Отозвана», потом дело выпуска с адресом — оно закрывается последним и лучшими
+  // усилиями (issue #84, п. 14). Общий путь с живой проверкой: `server/links/revoke-flow.ts`.
+  await reflectRevocation(session.call, refs.survey, itemId)
 
   logger.info({ domain: session.portal.domain, itemId, userId: session.userId }, 'ссылка отозвана')
 

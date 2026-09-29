@@ -4,13 +4,29 @@ import {
   ACTIVITY_COLOR_BAD,
   ACTIVITY_COLOR_GOOD,
   activityDeadline,
+  activityOriginId,
   buildActivityTitle,
+  buildFindActivityCall,
+  buildIssueActivityDescription,
+  buildIssueActivityTitle,
+  buildOverwriteActivityCall,
+  buildRevokedActivityCall,
+  buildRevokedTitle,
   buildTodoActivityCall,
   capTitle,
+  formatExpiryDay,
   hasBadSection,
+  isOurIssueDescription,
+  isUntouchedIssueActivity,
+  ISSUE_TITLE_PREFIX,
+  linkActivityOriginId,
   MAX_TITLE_BYTES,
-  readCreatedActivityId,
+  ownerOf,
+  readActivityId,
+  readBindApplied,
+  readFoundActivity,
   readFoundActivityId,
+  REVOKED_TITLE_PREFIX,
 } from '../../server/domain/answers/timeline-activity'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
@@ -221,20 +237,228 @@ describe('заголовок дела', () => {
 describe('разбор ответов портала', () => {
   it('принимает обе формы идентификатора созданного дела', () => {
     // ⚠ Документация обещает `{result:{id}}`, у соседа часть порталов отвечала `{result: id}`.
-    expect(readCreatedActivityId({ result: { id: 999 } })).toBe('999')
-    expect(readCreatedActivityId({ result: 999 })).toBe('999')
+    expect(readActivityId({ result: { id: 999 } })).toBe('999')
+    expect(readActivityId({ result: 999 })).toBe('999')
   })
 
   it('не принимает за идентификатор то, что им не является', () => {
     // Приняв мусор, мы нанесли бы метку в пустоту и спрятали поломку за успешным вызовом.
-    expect(readCreatedActivityId({ result: { id: 'abc' } })).toBeNull()
-    expect(readCreatedActivityId({ result: null })).toBeNull()
-    expect(readCreatedActivityId(null)).toBeNull()
+    expect(readActivityId({ result: { id: 'abc' } })).toBeNull()
+    expect(readActivityId({ result: null })).toBeNull()
+    expect(readActivityId(null)).toBeNull()
+  })
+
+  it('привязку принятой считает только `true`: `false` — задокументированный отказ двухсотым', () => {
+    expect(readBindApplied({ result: true })).toBe(true)
+    expect(readBindApplied({ result: false })).toBe(false)
+    expect(readBindApplied(null)).toBe(false)
   })
 
   it('пустой поиск — это «ещё не писали», а не ошибка', () => {
     expect(readFoundActivityId({ result: [] })).toBeNull()
     expect(readFoundActivityId(null)).toBeNull()
     expect(readFoundActivityId({ result: [{ ID: 42 }] })).toBe('42')
+  })
+})
+
+describe('дело выпуска: «Отправить опрос клиенту» (#84, п. 14)', () => {
+  const URL = 'https://polls.example/s/abc123'
+  const EXPIRES = new Date('2026-10-29T02:43:00Z')
+
+  it('ГЛАВНОЕ: ключ выпуска свой и не находится ключом итога — ни целиком, ни началом', () => {
+    // ⚠ С общим ключом повтор доставки нашёл бы закрытое менеджером дело выпуска и решил бы,
+    // что итог уже записан. Фильтр портала — точное совпадение (замер 29.09), но и сами строки
+    // не должны быть началом друг друга: ключ элемента 7 не должен быть началом ключа элемента 78.
+    expect(linkActivityOriginId(1040, 78)).not.toBe(activityOriginId(1040, 78))
+    expect(linkActivityOriginId(1040, 78).startsWith(activityOriginId(1040, 7))).toBe(false)
+    expect(linkActivityOriginId(1040, 78).startsWith(activityOriginId(1040, 78))).toBe(false)
+  })
+
+  it('ГЛАВНОЕ: ключи несут тип смарт-процесса — пересозданный не находит дел прежнего', () => {
+    // ⚠ У пересозданного смарт-процесса номера элементов считаются заново, а дела живут в сделках.
+    // Без типа новый элемент 12 нашёл бы дело старого элемента 12 из другой сделки — итог «уже
+    // записан» и не записался бы вовсе (`/code-review`, PR #102).
+    expect(activityOriginId(1040, 12)).not.toBe(activityOriginId(1052, 12))
+    expect(linkActivityOriginId(1040, 12)).not.toBe(linkActivityOriginId(1052, 12))
+    expect(activityOriginId(1040, 12)).toBe('survey-1040-12')
+    expect(linkActivityOriginId(1040, 12)).toBe('survey-link-1040-12')
+  })
+
+  it('в описании — выпущенный адрес и день окончания', () => {
+    const text = buildIssueActivityDescription(URL, EXPIRES)
+
+    expect(text).toContain(URL)
+    expect(text).toContain('Действует до 29.10.2026')
+  })
+
+  it('день окончания считается в UTC+3: вечер по UTC — это уже завтра в Минске и Москве', () => {
+    // ⚠ Пояс чужого портала неизвестен, текст дела портал не переводит (разбор у `formatExpiryDay`).
+    expect(formatExpiryDay(new Date('2026-10-29T20:59:00Z'))).toBe('29.10.2026')
+    expect(formatExpiryDay(new Date('2026-10-29T21:00:00Z'))).toBe('30.10.2026')
+  })
+
+  it('заголовок — наш префикс и название анкеты, в пределе байтов', () => {
+    expect(buildIssueActivityTitle('Бренд')).toBe(`${ISSUE_TITLE_PREFIX}Бренд`)
+    expect(buildIssueActivityTitle('')).toBe(`${ISSUE_TITLE_PREFIX}Опрос`)
+    expect(Buffer.byteLength(buildIssueActivityTitle('я'.repeat(400)), 'utf8')).toBeLessThanOrEqual(MAX_TITLE_BYTES)
+  })
+
+  it('без цвета — портальный по умолчанию; итог цвет передаёт всегда', () => {
+    const base = { dealEntityTypeId: 2, dealId: 42, title: 't', description: 'd', deadline: new Date(0) }
+
+    expect(buildTodoActivityCall(base).params).not.toHaveProperty('colorId')
+    expect(buildTodoActivityCall({ ...base, color: ACTIVITY_COLOR_GOOD }).params).toMatchObject({ colorId: ACTIVITY_COLOR_GOOD })
+  })
+})
+
+describe('найденное дело', () => {
+  it('поиск просит закрыто ли дело, чьё оно и как называется', () => {
+    expect(buildFindActivityCall('survey-link-1040-78').params.select).toEqual(['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT', 'DESCRIPTION'])
+  })
+
+  it('без владельца и заголовка — нули и пустая строка, а не падение', () => {
+    // ⚠ Заголовок дальше режут `startsWith` (`buildRevokedTitle`): не строкой он уронил бы отзыв
+    // изнутри, и в журнале стоял бы посторонний диагноз. Нашёл тестировщик в панели PR #102.
+    expect(readFoundActivity({ result: [{ ID: '1', COMPLETED: 'N' }] }))
+      .toEqual({ id: '1', completed: false, ownerTypeId: 0, ownerId: 0, subject: '', description: '' })
+    expect(readFoundActivity({ result: [{ ID: '1', SUBJECT: 42 }] })?.subject).toBe('')
+  })
+
+  it('читает закрытость, владельца и заголовок так, как отдаёт портал — строками', () => {
+    // Форма строки — с живого портала 29.09: числа строками, `COMPLETED` — `Y`/`N`.
+    const answer = { result: [{ ID: '308', COMPLETED: 'N', OWNER_TYPE_ID: '1040', OWNER_ID: '78', SUBJECT: 'Отправить опрос клиенту: brand' }] }
+
+    expect(readFoundActivity(answer)).toEqual({ id: '308', completed: false, ownerTypeId: 1040, ownerId: 78, subject: 'Отправить опрос клиенту: brand', description: '' })
+    expect(readFoundActivity({ result: [{ ID: '308', COMPLETED: 'Y' }] })?.completed).toBe(true)
+    expect(readFoundActivity({ result: [] })).toBeNull()
+  })
+
+  it('владелец — тот, кого назвал портал; не назвал — сделка', () => {
+    const found = { id: '1', completed: false, ownerTypeId: 1040, ownerId: 78, subject: '', description: '' }
+
+    expect(ownerOf(found, 42)).toEqual({ entityTypeId: 1040, entityId: 78 })
+    expect(ownerOf({ ...found, ownerTypeId: 0 }, 42)).toEqual({ entityTypeId: 2, entityId: 42 })
+  })
+})
+
+describe('перезапись итогом', () => {
+  it('ответственный уходит в перезапись, когда он известен', () => {
+    const call = buildOverwriteActivityCall('308', { entityTypeId: 2, entityId: 42 }, {
+      title: 't',
+      description: 'd',
+      deadline: new Date(0),
+      color: ACTIVITY_COLOR_GOOD,
+      responsibleId: 5,
+    })
+
+    expect(call.params).toMatchObject({ responsibleId: 5 })
+  })
+
+  it('ГЛАВНОЕ: `todo.update` с владельцем, сроком, заголовком, текстом и цветом', () => {
+    // ⚠ `deadline` в этом методе обязателен в каждом вызове (документация) — без него портал
+    // отказал бы, и итог ушёл бы новым делом рядом, оставив в ленте адрес.
+    const call = buildOverwriteActivityCall('308', { entityTypeId: 1040, entityId: 78 }, {
+      title: 'Опрос пройден: brand — 7,2',
+      description: '[B]Опрос пройден: brand[/B]',
+      deadline: new Date('2026-09-30T00:00:00Z'),
+      color: ACTIVITY_COLOR_GOOD,
+      responsibleId: 0,
+    })
+
+    expect(call).toEqual({
+      method: 'crm.activity.todo.update',
+      params: {
+        id: 308,
+        ownerTypeId: 1040,
+        ownerId: 78,
+        deadline: '2026-09-30T00:00:00.000Z',
+        title: 'Опрос пройден: brand — 7,2',
+        description: '[B]Опрос пройден: brand[/B]',
+        colorId: ACTIVITY_COLOR_GOOD,
+      },
+    })
+  })
+})
+
+describe('нетронутое ли дело выпуска', () => {
+  const URL_ = 'https://polls.example/s/abc123'
+  const found = (subject: string, description: string) => ({ id: '1', completed: false, ownerTypeId: 2, ownerId: 42, subject, description })
+  const ours = buildIssueActivityDescription(URL_, new Date('2026-10-29T02:43:00Z'))
+
+  it('ровно наши заголовок и описание — нетронутое', () => {
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ours))).toBe(true)
+  })
+
+  it('перевод строки портала `\\r\\n` нетронутым делом считается', () => {
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ours.replaceAll('\n', '\r\n')))).toBe(true)
+  })
+
+  it('дописанная строка, правка строки или чужой заголовок — тронутое', () => {
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, `${ours}\nзаметка`))).toBe(false)
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ours.replace('Действует до', 'Действовала до')))).toBe(false)
+    expect(isUntouchedIssueActivity(found('Позвонить Иванову', ours))).toBe(false)
+    expect(isUntouchedIssueActivity(found(`${ISSUE_TITLE_PREFIX}brand`, ''))).toBe(false)
+  })
+
+  it('описание узнаётся отдельно от заголовка — для отзыва', () => {
+    expect(isOurIssueDescription(ours)).toBe(true)
+    expect(isOurIssueDescription(`${ours}\nзаметка`)).toBe(false)
+  })
+
+  it('текст дела выпуска честно говорит, что будет при закрытии', () => {
+    // Закрытое дело портал не перезаписывает — итог приходит новым делом рядом (решение владельца, п. 14).
+    expect(ours).toContain('Закроете раньше — итог придёт новым делом рядом.')
+  })
+})
+
+describe('закрытие при отзыве', () => {
+  const found = {
+    id: '308',
+    completed: false,
+    ownerTypeId: 1040,
+    ownerId: 78,
+    subject: `${ISSUE_TITLE_PREFIX}brand`,
+    description: buildIssueActivityDescription('https://polls.example/s/abc123', new Date('2026-10-29T02:43:00Z')),
+  }
+
+  it('переименован только заголовок — наше описание с адресом всё равно заменяется', () => {
+    // Чужой заголовок сохраняет `buildRevokedTitle`; адрес и обещание «ответ заменит итогом»
+    // в закрытом отозванном деле были бы неправдой (`/review`, PR #102).
+    const renamed = { ...found, subject: 'Отправить опрос Иванову (мессенджер)' }
+
+    const fields = buildRevokedActivityCall(renamed, '[sh] Ссылки на опросы').params.fields as Record<string, unknown>
+
+    expect(fields.DESCRIPTION).toEqual(expect.stringContaining('отозвана'))
+    expect(String(fields.DESCRIPTION)).not.toContain('/s/')
+    expect(fields.SUBJECT).toBe(`${REVOKED_TITLE_PREFIX}Отправить опрос Иванову (мессенджер)`)
+  })
+
+  it('ГЛАВНОЕ: описание, которое правил человек, не заменяется — заметка менеджера цела', () => {
+    // Закрытое дело потом не поправить, и «клиент просил перезвонить в пятницу» пропало бы без следа
+    // (`/code-review`, замыкающий проход PR #102). Адрес в нём остаётся, но отозван.
+    const touched = { ...found, description: `${found.description}\nклиент просил перезвонить в пятницу` }
+
+    const fields = buildRevokedActivityCall(touched, '[sh] Ссылки на опросы').params.fields as Record<string, unknown>
+
+    expect(fields).not.toHaveProperty('DESCRIPTION')
+    expect(fields).toMatchObject({ SUBJECT: `${REVOKED_TITLE_PREFIX}brand`, COMPLETED: 'Y' })
+  })
+
+  it('ГЛАВНОЕ: одним вызовом — тема, текст без адреса и «выполнено»', () => {
+    // ⚠ Двумя вызовами дело могло бы остаться открытым с текстом «отозвана» или закрытым
+    // с живым на вид адресом.
+    const call = buildRevokedActivityCall(found, '[sh] Ссылки на опросы')
+
+    expect(call.method).toBe('crm.activity.update')
+    const fields = call.params.fields as Record<string, unknown>
+    expect(fields).toMatchObject({ SUBJECT: `${REVOKED_TITLE_PREFIX}brand`, DESCRIPTION_TYPE: 2, COMPLETED: 'Y' })
+    expect(String(fields.DESCRIPTION)).not.toContain('/s/')
+    expect(String(fields.DESCRIPTION)).toContain('[sh] Ссылки на опросы')
+  })
+
+  it('чужой заголовок сохраняется целиком и получает префикс спереди', () => {
+    // Менеджер мог переписать тему дела — выбрасывать написанное им нельзя.
+    expect(buildRevokedTitle('Позвонить Иванову')).toBe(`${REVOKED_TITLE_PREFIX}Позвонить Иванову`)
+    expect(buildRevokedTitle('')).toBe(`${REVOKED_TITLE_PREFIX}Опрос`)
   })
 })

@@ -12,7 +12,7 @@ import { PortalError } from '../../server/domain/portals/portal-error'
 import type { SurveyTemplate } from '../../server/domain/surveys/model'
 import { scoreSurvey } from '../../server/domain/surveys/scoring'
 import { LAST_SCORE_CODE, crmFieldName } from '../../server/domain/portals/crm-fields'
-import { ACTIVITY_ORIGINATOR_ID, activityOriginId } from '../../server/domain/answers/timeline-activity'
+import { ACTIVITY_ORIGINATOR_ID, activityOriginId, buildIssueActivityDescription, linkActivityOriginId } from '../../server/domain/answers/timeline-activity'
 import { logger } from '../../server/utils/logger'
 
 /**
@@ -163,7 +163,9 @@ describe('запись ответа в портал', () => {
     expect((updates[0]!.params.fields as Record<string, unknown>).UF_CRM_8_STATE).toBe('completed')
   })
 
-  it('не отправляет пустой комментарий: портал его отвергает', async () => {
+  it('на пустую анкету дело всё равно пишется — с заголовком, а не пустым описанием', async () => {
+    // Портал отвергает пустое описание, а с issue #84 (п. 14) пустое описание ещё и оставило бы
+    // в перезаписанном деле адрес анкеты. Заголовок в описании есть всегда: «молчание тоже сигнал».
     const empty: SurveyTemplate = { ...TEMPLATE, sections: [{ ...TEMPLATE.sections[0]!, scored: false, questions: [] }] }
     const p = portal()
     // ⚠ Элемент передаётся УЖЕ ПРОЧИТАННЫМ: его читает `writeToPortal` один раз
@@ -171,7 +173,7 @@ describe('запись ответа в портал', () => {
     const item = { result: { item: { id: 777, parentId2: 351 } } }
     await tryTimelineActivity(p.call, SURVEY, 777, empty, {}, scoreSurvey(empty, {}), item)
 
-    expect(p.methods()).not.toContain('crm.activity.todo.add')
+    expect(p.of('crm.activity.todo.add')[0]!.params.description).toBe(`[B]Опрос пройден: ${TEMPLATE.title}[/B]`)
   })
 })
 
@@ -256,7 +258,7 @@ describe('дело пишется один раз', () => {
 
     const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
     expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
-    expect(filter.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(filter.ORIGIN_ID).toBe(activityOriginId(SURVEY.entityTypeId, 777))
   })
 
   it('метка наносится вторым вызовом — иначе дело не найдётся никогда', async () => {
@@ -267,7 +269,7 @@ describe('дело пишется один раз', () => {
     await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
 
     const fields = p.of('crm.activity.update')[0]!.params.fields as Record<string, unknown>
-    expect(fields.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(fields.ORIGIN_ID).toBe(activityOriginId(SURVEY.entityTypeId, 777))
     // ⚠ ДВОЙКА ЗДЕСЬ НЕСУЩАЯ, и с 25.09 больше, чем была. `2` — bbCode по
     // `crm.enum.contenttype` с живого портала (`3` там HTML). Замер ленты показал, что при
     // двойке она рисует `<b>` и `<a href>` буквально, тегами, — и ровно на этом стоит решение
@@ -329,9 +331,11 @@ describe('дело пишется один раз', () => {
         attempts += 1
         throw new Error('таймаут')
       },
-      // Первый поиск — это дедупликация перед созданием, и дела ещё нет. Второй —
-      // переспрос после неудачной пометки, и вот тут портал говорит, что метка легла.
-      'crm.activity.list': () => {
+      // Первый поиск по ключу итога — это дедупликация перед созданием, и дела ещё нет. Второй —
+      // переспрос после неудачной пометки, и вот тут портал говорит, что метка легла. Дела
+      // выпуска у этой ссылки нет (выпущена до issue #84, п. 14): его ключ не находит ничего.
+      'crm.activity.list': (params: Record<string, unknown>) => {
+        if ((params.filter as Record<string, string>).ORIGIN_ID !== activityOriginId(SURVEY.entityTypeId, 777)) return { result: [] }
         searches += 1
         return searches === 1 ? { result: [] } : { result: [{ ID: '9001' }] }
       },
@@ -368,7 +372,7 @@ describe('дело пишется один раз', () => {
     expect(p.methods()).not.toContain('crm.activity.update')
   })
 
-  it('ответственный — тот, кто выпускал ссылку', async () => {
+  it('ответственный нового дела итога — нынешний ответственный элемента', async () => {
     const p = portal()
 
     await writeToPortal(p.call, SURVEY, 777, TEMPLATE, ANSWERS)
@@ -695,6 +699,291 @@ describe('дело привязывается и к элементу «Опро�
 
     const filter = p.of('crm.activity.list')[0]!.params.filter as Record<string, string>
     expect(filter.ORIGINATOR_ID).toBe(ACTIVITY_ORIGINATOR_ID)
-    expect(filter.ORIGIN_ID).toBe(activityOriginId(777))
+    expect(filter.ORIGIN_ID).toBe(activityOriginId(SURVEY.entityTypeId, 777))
+  })
+})
+
+/**
+ * Дело выпуска перезаписывается итогом (issue #84, п. 14 и 6).
+ *
+ * ⚠ Одна ссылка — одно дело в ленте. Выпуск заводит «Отправить опрос клиенту» с адресом, ответ
+ * превращает его в итог. Закрытое менеджером дело портал перезаписать не даёт — тогда итог
+ * пишется новым делом рядом.
+ */
+describe('дело выпуска перезаписывается итогом', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  const ITEM = { result: { item: { id: 777, parentId2: 351, contactId: 12, assignedById: 5 } } }
+
+  /**
+   * Строка дела выпуска так, как её отдаёт портал: владелец — сделка (к элементу дело выпуска
+   * не привязывается), заголовок и описание — ровно наши.
+   */
+  const ISSUED = {
+    ID: '308',
+    COMPLETED: 'N',
+    OWNER_TYPE_ID: '2',
+    OWNER_ID: '351',
+    SUBJECT: 'Отправить опрос клиенту: Оценка работы',
+    DESCRIPTION: buildIssueActivityDescription('https://polls.example/s/abc', new Date('2026-10-29T02:43:00Z')),
+  }
+
+  /** Портал, у которого по ключу выпуска находится `row`, а по ключу итога — ничего. */
+  function issued(row: Record<string, unknown>, extra: Parameters<typeof portal>[0] = {}) {
+    return portal({
+      'crm.activity.list': (params: Record<string, unknown>) => ((params.filter as Record<string, string>).ORIGIN_ID === linkActivityOriginId(SURVEY.entityTypeId, 777) ? { result: [row] } : { result: [] }),
+      'crm.activity.todo.update': { result: { id: 308 } },
+      'crm.activity.layout.blocks.set': { result: { success: true } },
+      ...extra,
+    })
+  }
+
+  const run = (p: ReturnType<typeof portal>) => tryTimelineActivity(p.call, SURVEY, 777, TEMPLATE, ANSWERS, scoreSurvey(TEMPLATE, ANSWERS), ITEM)
+
+  it('ГЛАВНОЕ: открытое дело выпуска перезаписывается — второго дела в ленте нет', async () => {
+    const p = issued(ISSUED)
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
+    const update = p.of('crm.activity.todo.update')[0]!.params
+    expect(update).toMatchObject({ id: 308, title: 'Опрос пройден: Оценка работы — 9', colorId: '4' })
+    // ⚠ Адрес анкеты уходит из дела вместе со старым описанием: оно заменяется целиком.
+    expect(String(update.description)).toContain('Опрос пройден')
+    expect(String(update.description)).not.toContain('/s/')
+    expect(typeof update.deadline).toBe('string')
+  })
+
+  it('владелец в перезаписи и в блоках — тот, кого назвал портал: у дела выпуска это сделка', async () => {
+    // Документация велит передавать сущность, «к которой привязано дело», — её портал и называет.
+    const p = issued(ISSUED)
+
+    await run(p)
+
+    expect(p.of('crm.activity.todo.update')[0]!.params).toMatchObject({ ownerTypeId: 2, ownerId: 351 })
+    expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ entityTypeId: 2, entityId: 351, activityId: 308 })
+  })
+
+  it('перезапись передаёт нынешнего ответственного элемента — того же, что у нового дела итога', async () => {
+    // Иначе итог оставался бы на том, кто выпускал ссылку, а новое дело шло бы нынешнему:
+    // ответ зависел бы от ветки (`/review`, PR #102).
+    const p = issued(ISSUED)
+
+    await run(p)
+
+    expect(p.of('crm.activity.todo.update')[0]!.params).toMatchObject({ responsibleId: 5 })
+  })
+
+  it('ГЛАВНОЕ: дело выпуска, которое правил человек, не перезаписываем — итог новым делом рядом', async () => {
+    // ⚠ Перезапись заменяет заголовок и описание целиком: заметка менеджера пропала бы без следа
+    // (`/review`, PR #102).
+    const p = issued({ ...ISSUED, DESCRIPTION: `${ISSUED.DESCRIPTION}\nОтправил в мессенджер, обещал до пятницы.` })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.update')
+    expect(p.of('crm.activity.todo.add')).toHaveLength(1)
+  })
+
+  it('ГЛАВНОЕ: неперезаписанное открытое дело выпуска закрывается после итога — одним «выполнено»', async () => {
+    // ⚠ Ответ получен, отправлять нечего. Открытым оно в день окончания ссылки встало бы просроченным,
+    // хотя ответ давно в сделке (`/review`, PR #102). Текст и заголовок человека не трогаем.
+    const p = issued({ ...ISSUED, DESCRIPTION: `${ISSUED.DESCRIPTION}\nОтправил в мессенджер.` })
+
+    await run(p)
+
+    const close = p.of('crm.activity.update').find(one => one.params.id === 308)!
+    expect(close.params).toEqual({ id: 308, fields: { COMPLETED: 'Y' } })
+    const methods = p.methods()
+    expect(methods.indexOf('crm.activity.todo.add')).toBeLessThan(methods.lastIndexOf('crm.activity.update'))
+  })
+
+  it('заголовок дела выпуска переписан человеком — тоже не перезаписываем', async () => {
+    const p = issued({ ...ISSUED, SUBJECT: 'Позвонить Иванову про опрос' })
+
+    await run(p)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.update')
+  })
+
+  it('ГЛАВНОЕ: после перезаписи дело получает ключ итога — повтор доставки найдёт его как итог', async () => {
+    const p = issued(ISSUED)
+
+    await run(p)
+
+    const mark = p.of('crm.activity.update')[0]!.params
+    expect(mark).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(SURVEY.entityTypeId, 777), ORIGINATOR_ID: ACTIVITY_ORIGINATOR_ID } })
+  })
+
+  it('порядок: содержимое, потом ключ итога, потом блоки', async () => {
+    // ⚠ Ключ итога раньше содержимого оставил бы при сбое дело с ключом итога и адресом анкеты
+    // вместо итога, и повтор доставки счёл бы итог записанным.
+    const p = issued(ISSUED)
+
+    await run(p)
+
+    const methods = p.methods()
+    expect(methods.indexOf('crm.activity.todo.update')).toBeLessThan(methods.indexOf('crm.activity.update'))
+    expect(methods.indexOf('crm.activity.update')).toBeLessThan(methods.indexOf('crm.activity.layout.blocks.set'))
+  })
+
+  it('ГЛАВНОЕ: закрытое менеджером дело не трогаем — итог новым делом рядом', async () => {
+    // ⚠ Портал закрытое дело не перезаписывает, и отвечает на это не документированным кодом,
+    // а `"0"` (замер 29.09). Поэтому решаем по `COMPLETED`, прочитанному до записи.
+    const p = issued({ ...ISSUED, COMPLETED: 'Y' })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.update')
+    expect(p.of('crm.activity.todo.add')).toHaveLength(1)
+    expect(p.of('crm.activity.update').map(one => one.params.id)).toEqual([9001])
+  })
+
+  it('перезапись не прошла — итог всё равно в ленте, новым делом', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = issued(ISSUED, {
+      'crm.activity.todo.update': () => {
+        throw new PortalError('0', 'Операции с файлами для закрытого дела запрещены')
+      },
+    })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.of('crm.activity.todo.add')).toHaveLength(1)
+    expect(p.of('crm.activity.update').some(one => one.params.id === 308 && JSON.stringify(one.params.fields) === '{"COMPLETED":"Y"}')).toBe(true)
+    expect(JSON.stringify(warn.mock.calls)).toContain('не перезаписано: портал отказал')
+    // Проза портала в журнал не уходит — только наш код.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('Операции с файлами')
+  })
+
+  it('портал ответил на перезапись без номера дела — итог новым делом, если перезапись не легла', async () => {
+    // Двухсотый ответ без `id` — не подтверждение. Нашёл тестировщик в панели PR #102.
+    const p = issued(ISSUED, { 'crm.activity.todo.update': { result: {} } })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.of('crm.activity.todo.add')).toHaveLength(1)
+  })
+
+  it('ГЛАВНОЕ: перезапись легла, но ответ не дошёл — переспрашиваем портал, второго дела не пишем', async () => {
+    // ⚠ Таймаут и обрыв связи выглядят как отказ, хотя портал запрос уже применил. Без переспроса
+    // одна такая перезапись давала второе дело итога рядом (`/code-review`, PR #102).
+    let searches = 0
+    const p = issued(ISSUED, {
+      'crm.activity.todo.update': () => {
+        throw new Error('портал не ответил за 20000 мс: crm.activity.todo.update')
+      },
+      'crm.activity.list': (params: Record<string, unknown>) => {
+        if ((params.filter as Record<string, string>).ORIGIN_ID !== linkActivityOriginId(SURVEY.entityTypeId, 777)) return { result: [] }
+        searches += 1
+        // Первый поиск — до записи: дело выпуска. Второй — переспрос: уже с заголовком итога.
+        return { result: [searches === 1 ? ISSUED : { ...ISSUED, SUBJECT: 'Опрос пройден: Оценка работы — 9' }] }
+      },
+    })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
+    expect(p.of('crm.activity.update')[0]!.params).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(SURVEY.entityTypeId, 777) } })
+  })
+
+  it('перезапись легла без ответа, а сделку тут же закрыли — второго дела всё равно нет', async () => {
+    // Закрытость переспрос не спрашивает: легшая перезапись остаётся перезаписью (`/review`, PR #102).
+    let searches = 0
+    const p = issued(ISSUED, {
+      'crm.activity.todo.update': () => {
+        throw new Error('портал не ответил за 20000 мс: crm.activity.todo.update')
+      },
+      'crm.activity.list': (params: Record<string, unknown>) => {
+        if ((params.filter as Record<string, string>).ORIGIN_ID !== linkActivityOriginId(SURVEY.entityTypeId, 777)) return { result: [] }
+        searches += 1
+        return { result: [searches === 1 ? ISSUED : { ...ISSUED, COMPLETED: 'Y', SUBJECT: 'Опрос пройден: Оценка работы — 9' }] }
+      },
+    })
+
+    expect(await run(p)).toBe(true)
+
+    expect(p.methods()).not.toContain('crm.activity.todo.add')
+  })
+
+  it('привязка, отвергнутая двухсотым «нет», в журнале не выдаётся за удачу', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => logger)
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = portal({ 'crm.activity.binding.add': { result: false } })
+
+    await run(p)
+
+    expect(JSON.stringify(info.mock.calls)).not.toContain('дело привязано')
+    expect(JSON.stringify(warn.mock.calls)).toContain('не привязано')
+  })
+
+  it('ГЛАВНОЕ: повтор после перезаписи без смены ключа — второго дела нет, ключ и блоки доделываются', async () => {
+    // ⚠ Прошлая попытка перезаписала дело итогом и оборвалась до ключа итога (выкат, OOM). Дело
+    // с заголовком итога — наше, а не «правленное человеком»: без этой ветки итог лёг бы вторым делом
+    // рядом (`/code-review`, замыкающий проход PR #102). Закрытое после перезаписи — тоже наше.
+    for (const completed of ['N', 'Y']) {
+      const p = issued({ ...ISSUED, COMPLETED: completed, SUBJECT: 'Опрос пройден: Оценка работы — 9', DESCRIPTION: '[B]Опрос пройден: Оценка работы[/B]' })
+
+      expect(await run(p)).toBe(true)
+
+      expect(p.methods()).not.toContain('crm.activity.todo.add')
+      expect(p.methods()).not.toContain('crm.activity.todo.update')
+      expect(p.of('crm.activity.update')[0]!.params).toMatchObject({ id: 308, fields: { ORIGIN_ID: activityOriginId(SURVEY.entityTypeId, 777) } })
+      expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ activityId: 308 })
+    }
+  })
+
+  it('итог уже записан — дело выпуска даже не ищем', async () => {
+    const p = portal({ 'crm.activity.list': { result: [{ ID: 4242 }] } })
+
+    await run(p)
+
+    expect(p.of('crm.activity.list')).toHaveLength(1)
+    expect(p.methods()).not.toContain('crm.activity.todo.update')
+  })
+
+  it('ГЛАВНОЕ: итог уже записан — блоки досылаются: прошлая попытка могла оборваться до них', async () => {
+    // Второй раз дело не пишется, и без досылки итог навсегда остался бы без баллов разделов
+    // (`/review`, PR #102). Набор блоков заменяется целиком — повтор безопасен.
+    const p = portal({ 'crm.activity.list': { result: [{ ID: 4242, OWNER_TYPE_ID: String(SURVEY.entityTypeId), OWNER_ID: '777' }] } })
+
+    await run(p)
+
+    expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ activityId: 4242, entityTypeId: SURVEY.entityTypeId, entityId: 777 })
+  })
+
+  it('отказ блоков доставку не роняет: итог в заголовке, разбор — в карточке', async () => {
+    // ⚠ Вебхуком блоки не ставятся вовсе (`ERROR_WRONG_CONTEXT`) — это путь `verify:link`.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const p = issued(ISSUED, {
+      'crm.activity.layout.blocks.set': () => {
+        throw new PortalError('ERROR_WRONG_CONTEXT', 'Вызов метода возможен только в контексте rest приложения')
+      },
+    })
+
+    expect(await run(p)).toBe(true)
+    expect(JSON.stringify(warn.mock.calls)).toContain('ERROR_WRONG_CONTEXT')
+  })
+
+  it('новое дело итога: блоки владельцем-сделкой и до привязки к «Опросу»', async () => {
+    // До привязки владелец дела — сделка; к ней дело привязано всегда.
+    const p = portal({ 'crm.activity.layout.blocks.set': { result: { success: true } } })
+
+    await run(p)
+
+    expect(p.of('crm.activity.layout.blocks.set')[0]!.params).toMatchObject({ entityTypeId: 2, entityId: 351, activityId: 9001 })
+    const methods = p.methods()
+    expect(methods.indexOf('crm.activity.layout.blocks.set')).toBeLessThan(methods.indexOf('crm.activity.binding.add'))
+  })
+
+  it('в блоках — баллы, в описании — слова клиента', async () => {
+    const p = portal({ 'crm.activity.layout.blocks.set': { result: { success: true } } })
+
+    await run(p)
+
+    const blocks = JSON.stringify(p.of('crm.activity.layout.blocks.set')[0]!.params.layout)
+    expect(blocks).toContain('Итоговый балл')
+    expect(blocks).not.toContain('Совершенно секретный текст клиента')
+    expect(String(p.of('crm.activity.todo.add')[0]!.params.description)).toContain('Совершенно секретный текст клиента')
   })
 })

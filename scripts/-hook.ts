@@ -62,10 +62,15 @@ export function hookCall(base: string): RestCall {
       body: JSON.stringify(params),
     })
 
-    // ⚠ Битрикс24 отдаёт свои отказы двухсотым с полем `error`, поэтому не-2xx здесь означает
-    // беду ДО портала: прокси, опечатку в адресе, погашенный вебхук. Тела у неё может не быть
-    // вовсе, а может быть страница — разбирать её как JSON бессмысленно.
+    // ⚠ HTTP 400 с телом `{error, error_description}` — отказ ПОРТАЛА, а не беда связи.
+    // Так ответили `crm.activity.layout.blocks.set` вебхуком (`ERROR_WRONG_CONTEXT`) и
+    // `crm.activity.todo.update` по закрытому делу — замерено 29.09. Поднимаем его с кодом, как
+    // двухсотый: иначе `safeRefusal` его не назвал бы, и проверка рапортовала бы беду связи.
+    // Остальные не-2xx — беда ДО портала: прокси, опечатка в адресе, погашенный вебхук; тела
+    // у неё может не быть вовсе, а может быть страница, и подсказка ниже полезнее кода.
     if (!response.ok) {
+      const refusal = response.status === 400 ? await portalRefusal(response) : null
+      if (refusal !== null) throw refusal
       // ⚠ `Stop`, а не голый `Error`: текст здесь НАШ, и `report` печатает его как есть.
       // Пройдя через `safeRefusal`, понятное «портал ответил 502» схлопнулось бы
       // в «код не распознан» — то есть фильтр, заведённый против чужой прозы, съел бы
@@ -78,6 +83,19 @@ export function hookCall(base: string): RestCall {
       throw new PortalError(body.error, body.error_description ?? '')
     }
     return body
+  }
+}
+
+/** A portal refusal in an HTTP 400 answer: the usual `{error, error_description}` body; `null` — not one. */
+async function portalRefusal(response: Response): Promise<PortalError | null> {
+  try {
+    const body = await response.json() as { error?: unknown, error_description?: unknown }
+    // Пустой код — тоже отказ портала: у `crm.activity.update` документирован и такой (`"error": ""`).
+    if (typeof body.error !== 'string') return null
+    return new PortalError(body.error, typeof body.error_description === 'string' ? body.error_description : '')
+  }
+  catch {
+    return null
   }
 }
 

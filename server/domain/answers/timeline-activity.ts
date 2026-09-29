@@ -1,10 +1,14 @@
 import type { SurveyTemplate } from '../surveys/model'
 import { Buffer } from 'node:buffer'
 import type { SurveyScore } from '../surveys/scoring'
-import type { PortalCall } from '../portals/smart-processes'
+import { DEAL_ENTITY_TYPE_ID, type PortalCall } from '../portals/smart-processes'
 
 /**
- * The timeline activity that carries a finished survey back into the deal.
+ * The survey's activity in the deal timeline: sent with the link, overwritten by the result, closed on revoke.
+ *
+ * С issue #84 (п. 14) у ссылки одно дело на всю её жизнь: при выпуске — «Отправить опрос клиенту»
+ * с адресом анкеты, после ответа — итог, при отзыве — «Ссылка отозвана». Здесь чистые построители
+ * вызовов и разбор ответов; кто, когда и в каком порядке их зовёт — `server/b24/survey-activity.ts`.
  *
  * ⚠ ЗАМЕНЯЕТ СОБОЙ КОММЕНТАРИЙ, и ради одного свойства: `crm.timeline.comment.add`
  * НЕ ИДЕМПОТЕНТЕН — второй вызов добавляет второй комментарий, а не обновляет первый.
@@ -25,6 +29,8 @@ import type { PortalCall } from '../portals/smart-processes'
 
 /** Метод, создающий универсальное дело в таймлайне. */
 export const ACTIVITY_ADD_METHOD = 'crm.activity.todo.add'
+/** Метод, которым дело выпуска перезаписывается итогом. */
+export const ACTIVITY_TODO_UPDATE_METHOD = 'crm.activity.todo.update'
 /** Метод, которым метка и тип описания наносятся следом. */
 export const ACTIVITY_UPDATE_METHOD = 'crm.activity.update'
 /** Метод поиска по метке. */
@@ -39,13 +45,38 @@ export const ACTIVITY_LIST_METHOD = 'crm.activity.list'
 export const ACTIVITY_ORIGINATOR_ID = 'SHEF_SURVEY'
 
 /**
- * Ключ дедупликации — элемент «Опрос», к которому относится ответ.
+ * Ключ дедупликации итога — элемент «Результата опросов», к которому относится ответ.
  *
  * Приглашение проходится ровно один раз (ссылка одноразовая, статус `completed` закрывает
  * её транзакцией), поэтому «один элемент — одно дело» и есть правильная единица.
+ *
+ * ⚠ С ТИПОМ СМАРТ-ПРОЦЕССА, а не одним номером элемента (панель PR #102, `/code-review`).
+ * У пересозданного смарт-процесса номера элементов считаются заново, а дела живут в сделках
+ * и переживают и элементы, и сам тип. Без типа новый элемент 12 нашёл бы дело старого элемента 12
+ * из другой сделки — итог «уже записан», и не записался бы вовсе. Тип у пересозданного
+ * смарт-процесса новый, поэтому пара «тип + номер» уникальна. Дела, записанные раньше, остаются
+ * с прежним ключом `survey-<номер>`: второй раз их не ищут — ссылка одноразовая, а доставленный
+ * ответ из буфера удаляется.
  */
-export function activityOriginId(itemId: number): string {
-  return `survey-${itemId}`
+export function activityOriginId(entityTypeId: number, itemId: number): string {
+  return `survey-${entityTypeId}-${itemId}`
+}
+
+/**
+ * Ключ дела при выпуске ссылки — «Отправить опрос клиенту» (issue #84, п. 14).
+ *
+ * ⚠ СВОЙ КЛЮЧ, А НЕ ТОТ ЖЕ, ЧТО У ИТОГА. Доставка ищет «итог уже записан» по ключу итога,
+ * а дело выпуска — отдельно. Закрытое менеджером дело выпуска портал перезаписать не даёт,
+ * и итог тогда пишется новым делом рядом. С общим ключом повторная доставка нашла бы
+ * закрытое дело выпуска и решила бы, что итог уже записан. Перезаписанное итогом дело
+ * получает ключ итога, и дальше его ищут как итог.
+ *
+ * ⚠ Фильтр `ORIGIN_ID` у `crm.activity.list` — точное совпадение, а не поиск подстроки.
+ * Замерено 29.09: поиск по началу ключа не нашёл ничего. Иначе ключ элемента 7 находил бы
+ * и дела элемента 78. Тип смарт-процесса в ключе — по той же причине, что у итога.
+ */
+export function linkActivityOriginId(entityTypeId: number, itemId: number): string {
+  return `survey-link-${entityTypeId}-${itemId}`
 }
 
 /**
@@ -145,6 +176,9 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
   })
 }
 
+/** Начало заголовка дела с итогом. По нему переспрос узнаёт, что перезапись легла (`survey-activity.ts`). */
+export const RESULT_TITLE_PREFIX = 'Опрос пройден: '
+
 /**
  * Заголовок дела: что случилось и с каким итогом.
  *
@@ -153,7 +187,7 @@ export function hasBadSection(template: SurveyTemplate, score: SurveyScore): boo
  * в нём не осталось бы. Поэтому режется именно название, а итог приписывается после.
  */
 export function buildActivityTitle(template: SurveyTemplate, score: SurveyScore): string {
-  const prefix = 'Опрос пройден: '
+  const prefix = RESULT_TITLE_PREFIX
   const tail = score.overall === null ? '' : ` — ${format(score.overall)}`
 
   // ⚠ Режем НАЗВАНИЕ, а не готовую строку. Первая редакция склеивала всё и обрезала конец —
@@ -218,10 +252,65 @@ export function buildFindActivityCall(originId: string): PortalCall {
       // под фильтр, и один `ORIGIN_ID` мог бы совпасть с делом, которое клиент завёл сам
       // или принёс другой поставщик, — тогда мы молча решили бы, что уже писали.
       filter: { ORIGINATOR_ID: ACTIVITY_ORIGINATOR_ID, ORIGIN_ID: originId },
-      select: ['ID'],
+      // Закрыто ли дело, чьё оно, как называется и что в нём написано — то, что решает перезапись
+      // и отзыв (`FoundActivity`).
+      select: ['ID', 'COMPLETED', 'OWNER_TYPE_ID', 'OWNER_ID', 'SUBJECT', 'DESCRIPTION'],
       order: { ID: 'ASC' },
     },
   }
+}
+
+/** An activity found by our marker, with what the next step decides on. */
+export interface FoundActivity {
+  id: string
+  /**
+   * Closed by a person — «Выполнено» in the timeline.
+   *
+   * ⚠ Решаем по этому полю, прочитанному ДО записи, а не по отказу записи. Документация обещает
+   * на закрытое дело `CAN_NOT_UPDATE_COMPLETED_TODO`, а портал 29.09 ответил кодом `"0"`
+   * и текстом про файлы («Операции с файлами для закрытого дела запрещены») — различать отказы
+   * по коду здесь нечем.
+   */
+  completed: boolean
+  /**
+   * The owner as the portal names it.
+   *
+   * ⚠ После привязки к элементу «Опроса» владельцем становится он, а не сделка (замерено 24.09
+   * и 29.09). `crm.activity.todo.update` принял и сделку, и элемент — обе привязки, — но
+   * документация велит передавать ту сущность, «к которой привязано дело», и ровно её портал
+   * здесь и называет. Передаём её, а не угадываем.
+   */
+  ownerTypeId: number
+  ownerId: number
+  /** The title — revoking keeps what came after our prefix. */
+  subject: string
+  /**
+   * The description as stored.
+   *
+   * ⚠ Читается ради одного вопроса — правил ли дело выпуска человек (`isUntouchedIssueActivity`).
+   * У дела итога здесь слова клиента: в журнал это поле не уходит никогда.
+   */
+  description: string
+}
+
+/** The first activity carrying our marker; `null` — none, or the answer is not a list of them. */
+export function readFoundActivity(response: unknown): FoundActivity | null {
+  const id = readFoundActivityId(response)
+  if (id === null) return null
+  const row = ((response as { result: unknown[] }).result[0] ?? {}) as Record<string, unknown>
+  return {
+    id,
+    completed: row.COMPLETED === 'Y',
+    ownerTypeId: positive(row.OWNER_TYPE_ID),
+    ownerId: positive(row.OWNER_ID),
+    subject: typeof row.SUBJECT === 'string' ? row.SUBJECT : '',
+    description: typeof row.DESCRIPTION === 'string' ? row.DESCRIPTION : '',
+  }
+}
+
+function positive(raw: unknown): number {
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : 0
 }
 
 /**
@@ -295,12 +384,12 @@ export interface TodoActivityParams {
   deadline: string
   title: string
   description: string
-  colorId: string
+  colorId?: string
   responsibleId?: number
 }
 
 /**
- * Собрать дело по завершённому опросу.
+ * Собрать дело в ленте сделки — дело выпуска ссылки или новое дело итога.
  *
  * ⚠ Дело создаётся ОТКРЫТЫМ и закрытым не становится. `todo.add` открытое по умолчанию,
  * то есть это решение НЕ добавлять признак завершения — записанное здесь потому, что его
@@ -308,8 +397,8 @@ export interface TodoActivityParams {
  * закрытое дело читается как «сделано, смотреть нечего», и его никто не откроет.
  * Решение владельца, 21.09.
  *
- * ⚠ Описание — целиком тот же текст, что собирал комментарий (`buildAnswerComment`).
- * Второй сборщик того же самого разошёлся бы с первым с первой правки.
+ * ⚠ Текст описания собирают не здесь: у итога — `buildResultDescription` (`comment.ts`),
+ * у дела выпуска — `buildIssueActivityDescription`. Один сборщик на одно содержимое.
  */
 export function buildTodoActivityCall(params: {
   dealEntityTypeId: number
@@ -317,7 +406,13 @@ export function buildTodoActivityCall(params: {
   title: string
   description: string
   deadline: Date
-  color: string
+  /**
+   * Цвет итога — всегда (`ACTIVITY_COLOR_*`, почему — там). Не передан только у дела выпуска:
+   * «Отправить опрос клиенту» — обычное дело менеджера, и цвет у него портальный, по умолчанию.
+   * Перезапись итогом ставит свой цвет, так что неразличимость «не задан» и «жёлтый» здесь
+   * ничего не прячет.
+   */
+  color?: string
   responsibleId?: number
 }): PortalCall {
   const fields: TodoActivityParams = {
@@ -334,20 +429,22 @@ export function buildTodoActivityCall(params: {
     deadline: params.deadline.toISOString(),
     title: params.title,
     description: params.description,
-    colorId: params.color,
+    ...(params.color === undefined ? {} : { colorId: params.color }),
     ...(params.responsibleId ? { responsibleId: params.responsibleId } : {}),
   }
   return { method: ACTIVITY_ADD_METHOD, params: fields as unknown as Record<string, unknown> }
 }
 
 /**
- * Идентификатор созданного дела.
+ * Идентификатор дела из ответа `crm.activity.todo.add` или `crm.activity.todo.update`.
+ *
+ * У обоих методов ответ один: `{result:{id}}` (документация; у `todo.update` замерено 29.09).
  *
  * ⚠ Две формы ответа принимаются намеренно: документация обещает `{result:{id}}`, но у соседа
  * часть порталов отвечала `{result: id}`. Ошибиться здесь молча: `null` читается как
  * «ничего не записано», метка не наносится, и следующая доставка пишет дело заново.
  */
-export function readCreatedActivityId(response: unknown): string | null {
+export function readActivityId(response: unknown): string | null {
   const result = (response as { result?: unknown } | null)?.result
   if (result === undefined || result === null) return null
   return asActivityId(typeof result === 'object' ? (result as Record<string, unknown>).id : result)
@@ -398,4 +495,232 @@ export function buildActivityMarkerCall(activityId: string, originId: string): P
  */
 export function readMarkApplied(response: unknown): boolean {
   return (response as { result?: unknown } | null)?.result === true
+}
+
+/**
+ * Приняла ли привязка.
+ *
+ * ⚠ `crm.activity.binding.add` тоже документирован как возвращающий булево, и `false` двухсотым
+ * ответом — задокументированный путь отказа. Не проверив его, журнал говорил бы «привязано»,
+ * когда привязки нет. Нашёл программист в панели PR #102: у метки и блоков проверка уже стояла.
+ * Обратное не доказывает ничего — к НЕСУЩЕСТВУЮЩЕЙ сущности портал отвечает `true` (замер соседа).
+ */
+export function readBindApplied(response: unknown): boolean {
+  return readMarkApplied(response)
+}
+
+/** Начало заголовка дела выпуска. По нему отзыв узнаёт наш заголовок (`buildRevokedTitle`). */
+export const ISSUE_TITLE_PREFIX = 'Отправить опрос клиенту: '
+
+/** Начало заголовка дела, закрытого отзывом ссылки. */
+export const REVOKED_TITLE_PREFIX = 'Ссылка отозвана: '
+
+/**
+ * Заголовок дела выпуска: «Отправить опрос клиенту: <анкета>».
+ *
+ * Режется название анкеты, а не готовая строка, — по той же причине, что у итога
+ * (`buildActivityTitle`): заголовок должен остаться читаемым целиком.
+ */
+export function buildIssueActivityTitle(surveyTitle: string): string {
+  const name = surveyTitle.trim() === '' ? 'Опрос' : surveyTitle
+  return `${ISSUE_TITLE_PREFIX}${capTo(name, MAX_TITLE_BYTES - byteLength(ISSUE_TITLE_PREFIX))}`
+}
+
+/**
+ * Описание дела выпуска: адрес анкеты и срок действия.
+ *
+ * ⚠ АДРЕС С ТОКЕНОМ — В ДЕЛЕ СДЕЛКИ, и это решение владельца (issue #84, п. 14 и 20):
+ * «не страшный секрет». У нас по-прежнему лежит только хеш токена. Цена записана
+ * в `docs/PROCESS.md`: ответить вместо клиента может любой, кто видит сделку. Заодно это второй
+ * путь скопировать ссылку: текст дела в ленте выделяется и копируется без буфера обмена фрейма.
+ *
+ * ⚠ Адрес строим МЫ (`buildSurveyUrl`), в нём нет скобок и пробелов, поэтому обезвреживать
+ * здесь нечего. Разметка — наша: жирная подпись.
+ */
+export function buildIssueActivityDescription(url: string, expiresAt: Date): string {
+  return [
+    ISSUE_DESCRIPTION_HEAD,
+    url,
+    '',
+    `${ISSUE_EXPIRY_LEAD}${formatExpiryDay(expiresAt)}. Ответить по ней можно один раз.`,
+    ISSUE_DESCRIPTION_TAIL,
+  ].join('\n')
+}
+
+/**
+ * Первая строка описания дела выпуска — наша, по ней и по последней дело узнаётся нетронутым.
+ *
+ * ⚠ ЭТИ СТРОКИ — ХРАНИМЫЙ ФОРМАТ, а не просто текст. По ним доставка и отзыв узнают дело выпуска
+ * нетронутым (`isOurIssueDescription`), а дела живут до тридцати дней. Поменяв формулировку, все
+ * выпущенные за это время дела сочтутся правлеными: итог пойдёт новым делом рядом, а отзыв оставит
+ * в них адрес. Меняя — узнавайте и прежний вариант (`/review`, PR #102).
+ */
+const ISSUE_DESCRIPTION_HEAD = '[B]Адрес анкеты для клиента:[/B]'
+const ISSUE_EXPIRY_LEAD = 'Действует до '
+/**
+ * Последняя строка: что будет с делом.
+ *
+ * ⚠ Обещание честное с обеих сторон: закрытое дело портал не перезаписывает, и итог тогда приходит
+ * новым делом рядом (решение владельца, п. 14). Прежний текст «это дело сменится итогом» в этой
+ * ветке был неправдой — нашёл `/review` в панели PR #102.
+ */
+const ISSUE_DESCRIPTION_TAIL = 'Пока дело открыто, ответ клиента заменит его итогом. Закроете раньше — итог придёт новым делом рядом.'
+
+/**
+ * Правил ли дело выпуска человек: заголовок и описание — ровно наши.
+ *
+ * ⚠ ПРАВЛЕННОЕ ДЕЛО НЕ ПЕРЕЗАПИСЫВАЕМ. Перезапись заменяет заголовок и описание целиком, и заметка
+ * менеджера («отправил в мессенджер, обещал до пятницы») пропала бы без следа. Нашёл `/review`
+ * в панели PR #102. Тронутое дело остаётся как есть, итог пишется новым делом рядом.
+ *
+ * Сверяем строение, а не текст целиком: адреса анкеты у доставки нет — у нас лежит только хеш токена.
+ */
+export function isUntouchedIssueActivity(found: FoundActivity): boolean {
+  return found.subject.startsWith(ISSUE_TITLE_PREFIX) && isOurIssueDescription(found.description)
+}
+
+/**
+ * Описание дела выпуска — ровно наше, построчно.
+ *
+ * Отдельно от заголовка — ради отзыва: он бережёт текст человека, а переименованный заголовок
+ * сохраняет и так (`buildRevokedTitle`). Переименовали только заголовок — адрес из нашего описания
+ * отзыв всё равно убирает (`/review`, PR #102).
+ */
+export function isOurIssueDescription(description: string): boolean {
+  const lines = description.split(/\r?\n/)
+  return lines.length === 5
+    && lines[0] === ISSUE_DESCRIPTION_HEAD
+    && /^https:\/\/\S+$/.test(lines[1]!)
+    && lines[2] === ''
+    && lines[3]!.startsWith(ISSUE_EXPIRY_LEAD)
+    && lines[4] === ISSUE_DESCRIPTION_TAIL
+}
+
+/**
+ * С каким сдвигом от UTC считается день окончания ссылки, часов.
+ *
+ * ⚠ Пояс чужого портала нам неизвестен, а текст дела портал не переводит. Берём UTC+3 — Минск
+ * и Москва. Срок ссылки — тридцать дней, и часы в нём не важны. На краю суток у далёкого пояса
+ * день может разойтись на один. Точный срок в поясе человека портал показывает сам: поле
+ * «Ссылка действительна до» в карточке «Результата опросов».
+ */
+const EXPIRY_DAY_OFFSET_HOURS = 3
+
+/** The day a link stops working, `ДД.ММ.ГГГГ`. */
+export function formatExpiryDay(moment: Date): string {
+  const day = new Date(moment.getTime() + EXPIRY_DAY_OFFSET_HOURS * 60 * 60 * 1000)
+  const two = (value: number) => String(value).padStart(2, '0')
+  return `${two(day.getUTCDate())}.${two(day.getUTCMonth() + 1)}.${day.getUTCFullYear()}`
+}
+
+/** Whom a call about a found activity is addressed to: `entityTypeId` and `entityId` of one of its bindings. */
+export interface ActivityOwner {
+  entityTypeId: number
+  entityId: number
+}
+
+/**
+ * Владелец найденного дела — или сделка, если портал его не назвал.
+ *
+ * Сделка — законная замена: дело к ней привязано всегда, а `crm.activity.todo.update` принял её
+ * и после того, как владельцем стал элемент «Опроса» (замерено 29.09).
+ */
+export function ownerOf(found: FoundActivity, dealId: number): ActivityOwner {
+  return found.ownerTypeId > 0 && found.ownerId > 0
+    ? { entityTypeId: found.ownerTypeId, entityId: found.ownerId }
+    : { entityTypeId: DEAL_ENTITY_TYPE_ID, entityId: dealId }
+}
+
+/**
+ * Перезаписать дело выпуска итогом опроса.
+ *
+ * ⚠ `deadline` обязателен в КАЖДОМ вызове `crm.activity.todo.update` (документация) — поэтому срок
+ * задаётся и здесь, тем же правилом, что у нового дела итога (`activityDeadline`).
+ *
+ * ⚠ Метку и тип описания перезапись не трогает — замерено 29.09: после `todo.update`
+ * у дела те же `ORIGINATOR_ID`, `ORIGIN_ID` и `DESCRIPTION_TYPE = 2`. Ключ итога ставит
+ * следующий вызов (`buildActivityMarkerCall`).
+ */
+export function buildOverwriteActivityCall(activityId: string, owner: ActivityOwner, params: {
+  title: string
+  description: string
+  deadline: Date
+  color: string
+  /**
+   * Нынешний ответственный за элемент — тот же, что у нового дела итога.
+   *
+   * ⚠ Без него итог оставался бы на том, кто выпускал ссылку до тридцати дней назад, а новое дело
+   * итога шло бы нынешнему ответственному: ответ клиента зависел бы от ветки (`/review`, PR #102).
+   * Ноль — не передаём, портал оставит прежнего.
+   */
+  responsibleId: number
+}): PortalCall {
+  return {
+    method: ACTIVITY_TODO_UPDATE_METHOD,
+    params: {
+      id: Number(activityId),
+      ownerTypeId: owner.entityTypeId,
+      ownerId: owner.entityId,
+      deadline: params.deadline.toISOString(),
+      title: params.title,
+      description: params.description,
+      colorId: params.color,
+      ...(params.responsibleId > 0 ? { responsibleId: params.responsibleId } : {}),
+    },
+  }
+}
+
+/** Текст дела, закрытого отзывом. Адреса в нём нет: он больше не открывается. */
+export function buildRevokedDescription(dealTabTitle: string): string {
+  return `Ссылка на анкету отозвана и больше не открывается. Чтобы опросить клиента снова, выпустите новую ссылку во вкладке «${dealTabTitle}».`
+}
+
+/**
+ * Заголовок дела, закрытого отзывом: наш префикс выпуска меняется на «Ссылка отозвана».
+ *
+ * ⚠ По НАШЕМУ заголовку, а не по названию анкеты: отзыв знает о ссылке номер элемента и код,
+ * но не название. Заголовок, который менеджер успел переписать, сохраняется целиком
+ * и получает префикс спереди — чужое не выбрасываем.
+ */
+export function buildRevokedTitle(subject: string): string {
+  const rest = subject.startsWith(ISSUE_TITLE_PREFIX) ? subject.slice(ISSUE_TITLE_PREFIX.length) : subject
+  return `${REVOKED_TITLE_PREFIX}${capTo(rest.trim() === '' ? 'Опрос' : rest, MAX_TITLE_BYTES - byteLength(REVOKED_TITLE_PREFIX))}`
+}
+
+/**
+ * Отметить дело выполненным, не трогая текста и заголовка — дело выпуска, итог по которому ушёл
+ * новым делом рядом (`writeResultActivity`).
+ */
+export function buildCompleteActivityCall(activityId: string): PortalCall {
+  return { method: ACTIVITY_UPDATE_METHOD, params: { id: Number(activityId), fields: { COMPLETED: 'Y' } } }
+}
+
+/**
+ * Закрыть дело выпуска при отзыве ссылки — одним вызовом: тема, текст без адреса и «выполнено».
+ * Текст меняется, только если он наш (`isOurIssueDescription`): заметку человека отзыв не трогает.
+ *
+ * ⚠ ОДИН ВЫЗОВ, А НЕ ДВА, и это ради отсутствия полусостояния. `crm.activity.update` принимает
+ * тему, описание и `COMPLETED` вместе — замерено 29.09. Двумя вызовами дело могло бы остаться
+ * открытым с текстом «отозвана» или закрытым с живым на вид адресом.
+ *
+ * ⚠ `crm.activity.update` помечен устаревшим; принят сознательно, как у метки дела
+ * (`buildActivityMarkerCall`): у `todo.update` признака «выполнено» нет вовсе.
+ */
+export function buildRevokedActivityCall(found: FoundActivity, dealTabTitle: string): PortalCall {
+  return {
+    method: ACTIVITY_UPDATE_METHOD,
+    params: {
+      id: Number(found.id),
+      fields: {
+        SUBJECT: buildRevokedTitle(found.subject),
+        // ⚠ Описание, которое правил человек, не трогаем: заметка менеджера («клиент просил
+        // перезвонить в пятницу») пропала бы без следа, а закрытое дело потом не поправить. Адрес
+        // в нём остаётся, но отозван и не открывается (`/code-review`, замыкающий проход PR #102).
+        ...(isOurIssueDescription(found.description)
+          ? { DESCRIPTION: buildRevokedDescription(dealTabTitle), DESCRIPTION_TYPE: DESCRIPTION_TYPE_BB }
+          : {}),
+        COMPLETED: 'Y',
+      },
+    },
+  }
 }

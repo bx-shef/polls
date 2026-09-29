@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { buildIssueActivityDescription } from '../../server/domain/answers/timeline-activity'
 
 /**
  * Обработчик отзыва ссылки: `server/api/portal/revoke.post.ts`.
@@ -19,15 +20,22 @@ const ITEM = 54
 interface Probe {
   portalCalls: { method: string, params: Record<string, unknown> }[]
   revoked: number[]
+  warned: string[]
 }
 
 let probe: Probe
 let item: Record<string, unknown>
 let linkStatus: string | null
 let revokedRows: number
+/** Дела выпуска, которые находит поиск по ключу; пусто — ссылка выпущена до issue #84, п. 14. */
+let activities: Record<string, unknown>[]
+/** Как портал отвечает на закрытие дела. */
+let closeActivity: () => unknown
+/** Как портал отвечает на запись стадии. */
+let writeStage: () => unknown
 
 async function loadHandler() {
-  probe = { portalCalls: [], revoked: [] }
+  probe = { portalCalls: [], revoked: [], warned: [] }
 
   vi.doMock('../../server/api/portal/-session', () => ({
     openPortalSession: async () => ({
@@ -37,6 +45,9 @@ async function loadHandler() {
       call: async (method: string, params: Record<string, unknown> = {}) => {
         probe.portalCalls.push({ method, params })
         if (method === 'crm.item.list') return { result: { items: [item] } }
+        if (method === 'crm.activity.list') return { result: activities }
+        if (method === 'crm.activity.update') return closeActivity()
+        if (method === 'crm.item.update') return writeStage()
         return { result: { item: { id: ITEM } } }
       },
     }),
@@ -51,7 +62,9 @@ async function loadHandler() {
       return revokedRows
     },
   }))
-  vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
+  vi.doMock('../../server/utils/logger', () => ({
+    logger: { info: () => {}, warn: (_fields: unknown, message: string) => void probe.warned.push(message), error: () => {} },
+  }))
   vi.doMock('h3', async () => {
     const actual = await vi.importActual<typeof import('h3')>('h3')
     return { ...actual, readBody: async () => ({ dealId: DEAL, itemId: ITEM }) }
@@ -63,6 +76,7 @@ async function loadHandler() {
 }
 
 const stageWrites = () => probe.portalCalls.filter(one => one.method === 'crm.item.update')
+const activityCloses = () => probe.portalCalls.filter(one => one.method === 'crm.activity.update')
 
 beforeEach(() => {
   item = {
@@ -74,6 +88,9 @@ beforeEach(() => {
   }
   linkStatus = 'sent'
   revokedRows = 1
+  activities = []
+  closeActivity = () => ({ result: true })
+  writeStage = () => ({ result: { item: { id: ITEM } } })
 })
 
 afterEach(() => {
@@ -157,5 +174,105 @@ describe('отзыв ссылки', () => {
     expect(await handler({})).toEqual({ ok: false, reason: 'not-revocable' })
     expect(probe.revoked).toEqual([])
     expect(stageWrites()).toEqual([])
+  })
+})
+
+describe('дело выпуска при отзыве (issue #84, п. 14)', () => {
+  const OPEN = {
+    ID: '308',
+    COMPLETED: 'N',
+    OWNER_TYPE_ID: '2',
+    OWNER_ID: String(DEAL),
+    SUBJECT: 'Отправить опрос клиенту: Бренд',
+    DESCRIPTION: buildIssueActivityDescription('https://polls.example/s/abc123', new Date('2026-10-29T02:43:00Z')),
+  }
+
+  it('ГЛАВНОЕ: открытое дело закрывается с «Ссылка отозвана» — после стадии, одним вызовом', async () => {
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+
+    const closes = activityCloses()
+    expect(closes).toHaveLength(1)
+    expect(closes[0]!.params).toMatchObject({ id: 308, fields: { SUBJECT: 'Ссылка отозвана: Бренд', COMPLETED: 'Y' } })
+    // Описание наше — адрес из него уходит.
+    const fields = closes[0]!.params.fields as Record<string, unknown>
+    expect(String(fields.DESCRIPTION)).toContain('отозвана')
+    expect(String(fields.DESCRIPTION)).not.toContain('/s/')
+    const methods = probe.portalCalls.map(one => one.method)
+    expect(methods.indexOf('crm.item.update')).toBeLessThan(methods.indexOf('crm.activity.update'))
+  })
+
+  it('ищет дело по ключу ВЫПУСКА этого элемента', async () => {
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    await handler({})
+
+    const find = probe.portalCalls.find(one => one.method === 'crm.activity.list')!
+    expect(find.params.filter).toEqual({ ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: `survey-link-${SURVEY.entityTypeId}-${ITEM}` })
+  })
+
+  it('дела выпуска нет — ссылка выпущена до п. 14: закрывать нечего, отзыв в порядке', async () => {
+    // Нашёл тестировщик в панели PR #102: этот случай исполнялся только мимоходом, в старых тестах.
+    activities = []
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(activityCloses()).toEqual([])
+    // И без сбоя внутри: «дела нет» — штатный случай, а не отказ, пойманный перехватом.
+    expect(probe.warned).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: стадия не легла — дело выпуска всё равно закрыто, а отказ стадии уходит наверх', async () => {
+    // ⚠ Прежде дело закрывалось только после стадии: отказ стадии оставлял его открытым с мёртвым
+    // адресом, а дописывание стадии дела не трогало (`/code-review`, PR #102).
+    activities = [OPEN]
+    writeStage = () => {
+      throw new Error('портал не ответил за 20 с на crm.item.update')
+    }
+    const handler = await loadHandler()
+
+    await expect(handler({})).rejects.toThrow()
+    expect(activityCloses()).toHaveLength(1)
+  })
+
+  it('закрытое менеджером дело не трогает', async () => {
+    activities = [{ ...OPEN, COMPLETED: 'Y' }]
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(activityCloses()).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: отказ закрытия дела отзыв не отменяет — ссылку гасит наша строка', async () => {
+    activities = [OPEN]
+    closeActivity = () => {
+      throw new Error('ACCESS_DENIED')
+    }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(probe.revoked).toEqual([ITEM])
+  })
+
+  it('повторное нажатие, дописывающее стадию, закрывает и дело', async () => {
+    linkStatus = 'revoked'
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: true })
+    expect(activityCloses()).toHaveLength(1)
+  })
+
+  it('база не погасила строку — дело не трогаем: ответ мог уже прийти', async () => {
+    revokedRows = 0
+    activities = [OPEN]
+    const handler = await loadHandler()
+
+    await handler({})
+
+    expect(probe.portalCalls.some(one => one.method.startsWith('crm.activity.'))).toBe(false)
   })
 })

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { hookBatch, report, Stop } from '../../scripts/-hook'
+import { hookBatch, hookCall, report, Stop } from '../../scripts/-hook'
 import { PortalError } from '../../server/domain/portals/portal-error'
 import { buildAnswers, VERIFY_DATE } from '../../scripts/verify-link'
 import type { PublishedTemplate } from '../../server/domain/invitations/portal-calls'
@@ -236,5 +236,51 @@ describe('диагноз, который видит оператор', () => {
     const out = printed(new Stop('  ✗ Смарт-процесс «Опрос» не найден. Запустите verify:install.', 2))
 
     expect(out).toContain('verify:install')
+  })
+})
+
+describe('отказ портала не двухсотым', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function answer(status: number, body: string) {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status }))
+  }
+
+  it('ГЛАВНОЕ: HTTP 400 с телом портала — отказ с кодом, а не беда связи', async () => {
+    // ⚠ Замерено 29.09: `crm.activity.layout.blocks.set` вебхуком и `crm.activity.todo.update`
+    // по закрытому делу отвечают HTTP 400 с обычным `{error, error_description}`. Раньше такой
+    // ответ становился «портал ответил 400, проверьте вебхук» — и код терялся.
+    answer(400, JSON.stringify({ error: 'ERROR_WRONG_CONTEXT', error_description: 'Вызов метода возможен только в контексте rest приложения' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.layout.blocks.set').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+    expect((failure as PortalError).code).toBe('ERROR_WRONG_CONTEXT')
+  })
+
+  it('HTTP 400 с пустым кодом — тоже отказ портала, а не беда связи', async () => {
+    // У `crm.activity.update` документирован и такой отказ: `"error": ""` (`/review`, PR #102).
+    answer(400, JSON.stringify({ error: '', error_description: 'Access denied.' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.activity.update').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(PortalError)
+  })
+
+  it('не-2xx без тела портала — по-прежнему подсказка оператору', async () => {
+    answer(502, '<html>Bad Gateway</html>')
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.get').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Stop)
+    expect((failure as Stop).message).toContain('502')
+  })
+
+  it('401 с телом портала — тоже подсказка: дело в самом вебхуке', async () => {
+    answer(401, JSON.stringify({ error: 'NO_AUTH_FOUND', error_description: 'Wrong authorization data' }))
+
+    const failure = await hookCall('https://portal.example/rest/1/key/')('crm.item.get').catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Stop)
   })
 })

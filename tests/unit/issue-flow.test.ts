@@ -37,7 +37,15 @@ const created = { result: { item: { id: 501 } } }
 
 type Answer = (method: string, params: Record<string, unknown>) => unknown
 
-function input(answer: Answer = method => (method === 'crm.item.add' ? created : { result: true })) {
+/** Портал, который создаёт элемент и дело и не знает за делом ни одной привязки. */
+const healthy: Answer = (method) => {
+  if (method === 'crm.item.add') return created
+  if (method === 'crm.activity.todo.add') return { result: { id: 9100 } }
+  if (method === 'crm.activity.binding.list') return { result: [] }
+  return { result: true }
+}
+
+function input(answer: Answer = healthy) {
   return {
     call: vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
       steps.push(method)
@@ -75,7 +83,8 @@ describe('порядок шагов', () => {
 
     const issued = await issueLink(request)
 
-    expect(steps).toEqual(['crm.item.add', 'insertLink', 'crm.item.update'])
+    // Пятым шагом — дело выпуска (issue #84, п. 14): оно несёт тот же адрес и идёт ещё позже.
+    expect(steps.slice(0, 4)).toEqual(['crm.item.add', 'insertLink', 'crm.item.update', 'crm.activity.todo.add'])
     const [, create] = request.call.mock.calls[0]!
     expect(JSON.stringify(create)).not.toContain('/s/')
     const [, update] = request.call.mock.calls[1]!
@@ -93,6 +102,78 @@ describe('порядок шагов', () => {
     expect(issued.ok).toBe(true)
     expect(JSON.stringify(warn.mock.calls)).toContain('QUERY_LIMIT_EXCEEDED')
     expect(JSON.stringify(warn.mock.calls)).not.toContain('/s/')
+  })
+})
+
+describe('дело выпуска в ленте сделки (issue #84, п. 14)', () => {
+  it('ГЛАВНОЕ: «Отправить опрос клиенту» с выпущенным адресом — после записи индекса и элемента', async () => {
+    const request = input()
+
+    const issued = await issueLink(request)
+
+    const add = request.call.mock.calls.find(([method]) => method === 'crm.activity.todo.add')![1]!
+    expect(add).toMatchObject({ ownerTypeId: 2, ownerId: 42, title: 'Отправить опрос клиенту: Бренд', responsibleId: 7 })
+    expect(String(add.description)).toContain(issued.ok ? issued.url : '—')
+    expect(steps.indexOf('crm.activity.todo.add')).toBeGreaterThan(steps.indexOf('insertLink'))
+  })
+
+  it('ГЛАВНОЕ: срок дела выпуска — срок ссылки, а не сутки', async () => {
+    // ⚠ Сутки делали дело просроченным со второго дня до самого ответа при ссылке на тридцать дней
+    // и подталкивали закрыть его — после чего итог уходил новым делом рядом (`/review`, PR #102).
+    const request = input()
+
+    const issued = await issueLink(request)
+
+    const add = request.call.mock.calls.find(([method]) => method === 'crm.activity.todo.add')![1]!
+    expect(add.deadline).toBe(issued.ok ? issued.expiresAt.toISOString() : '—')
+  })
+
+  it('дело получает ключ ВЫПУСКА', async () => {
+    const request = input()
+
+    await issueLink(request)
+
+    const mark = request.call.mock.calls.find(([method]) => method === 'crm.activity.update')![1]!
+    expect(mark).toMatchObject({ id: 9100, fields: { ORIGINATOR_ID: 'SHEF_SURVEY', ORIGIN_ID: `survey-link-${SURVEY.entityTypeId}-501` } })
+  })
+
+  it('портал ответил без номера дела — ключ не ставим, выпуск в порядке', async () => {
+    // Двухсотый ответ без `id` — не подтверждение: метка «в пустоту» спрятала бы поломку.
+    // Нашёл тестировщик в панели PR #102.
+    const request = input((method, params) => (method === 'crm.activity.todo.add' ? { result: {} } : healthy(method, params)))
+
+    const issued = await issueLink(request)
+
+    expect(issued.ok).toBe(true)
+    expect(steps).not.toContain('crm.activity.update')
+    expect(JSON.stringify(warn.mock.calls)).toContain('не вернул идентификатор')
+  })
+
+  it('ГЛАВНОЕ: к элементу «Результата опросов» дело выпуска НЕ привязывается', async () => {
+    // ⚠ Замер 29.09: финальная стадия элемента закрывает все открытые дела, привязанные к нему.
+    // Доставка ставит «Пройдена», отзыв — «Отозвана» раньше, чем трогают дело, и привязанное дело
+    // выпуска портал закрывал бы до перезаписи итогом. Первый живой прогон `verify:link` так и упал:
+    // итог ушёл новым делом рядом. Привязка — при записи итога, когда стадия уже финальная.
+    const request = input()
+
+    await issueLink(request)
+
+    expect(steps).not.toContain('crm.activity.binding.add')
+  })
+
+  it('ГЛАВНОЕ: отказ дела выпуск не отменяет, а адрес в журнал не уходит', async () => {
+    // ⚠ Ссылка уже работает и видна во вкладке. В вызове дела лежит адрес с токеном, и Битрикс24
+    // любит цитировать присланное в тексте ошибки — в журнал уходит только наш код.
+    const request = input((method, params) => {
+      if (method === 'crm.activity.todo.add') throw new PortalError('ACCESS_DENIED', `нельзя: ${String(params.description)}`)
+      return healthy(method, params)
+    })
+
+    const issued = await issueLink(request)
+
+    expect(issued.ok).toBe(true)
+    expect(JSON.stringify(warn.mock.calls)).toContain('ACCESS_DENIED')
+    expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain('/s/')
   })
 })
 
