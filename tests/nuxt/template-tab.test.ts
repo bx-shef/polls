@@ -261,6 +261,15 @@ describe('вкладка конструктора', () => {
     expect(text).not.toContain('Анкета не определена')
   })
 
+  it('анкету меняли ровно во время чтения — «обновите страницу», а не «нет доступа»', async () => {
+    reply = { ok: false, reason: 'stale' }
+
+    const text = await open()
+
+    expect(text).toContain('Анкету прямо сейчас изменили в другом месте')
+    expect(text).not.toContain('Анкета не определена')
+  })
+
   it('ненастроенный портал отличается от отсутствующей анкеты', async () => {
     // Первое лечит администратор переустановкой, второе — открыть вкладку из карточки.
     // Один текст на оба случая отправлял бы половину людей чинить не то.
@@ -447,10 +456,26 @@ describe('публикация и новая версия', () => {
     // Выпуск подтверждён номером — версия показана неизменяемой, а не черновиком с кнопками.
     // И «Создать новую версию» здесь нет: она спросит доступ к тому же элементу и получит отказ,
     // а «обновите страницу» не поможет — после обновления вкладка откажет тем же. `/review` в PR #104.
-    expect(mounted.text()).toContain('в новой стадии портал вам её не показывает')
+    expect(mounted.text()).toContain('портал её вам больше не показывает')
     expect(mounted.text()).not.toContain('Обновите страницу')
+    expect(mounted.text()).not.toContain('создайте новую версию')
     expect(button(mounted, 'Опубликовать')).toBeUndefined()
     expect(button(mounted, 'Править')).toBeUndefined()
+    expect(button(mounted, 'Создать новую версию')).toBeUndefined()
+  })
+
+  it('спрятанные поля после публикации — свои слова, и плашка не советует новую версию, которой нет', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    reply = { ok: false, reason: 'hidden-fields' }
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    // Элемент виден, а поля — нет: «портал её вам больше не показывает» было бы неправдой.
+    // Второй замыкающий `/review` в PR #104.
+    expect(mounted.text()).toContain('портал не показывает вам часть её полей')
+    expect(mounted.text()).not.toContain('создайте новую версию')
     expect(button(mounted, 'Создать новую версию')).toBeUndefined()
   })
 
@@ -466,6 +491,30 @@ describe('публикация и новая версия', () => {
     expect(mounted.text()).toContain('Обновите страницу, чтобы увидеть новое состояние')
     expect(button(mounted, 'Опубликовать')).toBeUndefined()
     expect(button(mounted, 'Создать новую версию')).toBeDefined()
+  })
+
+  it('ГЛАВНОЕ: публикация уходит с отметкой той редакции, что на экране', async () => {
+    // По ней сервер откажет, если черновик за это время сохранили из соседней вкладки: иначе вышла бы
+    // редакция, которой человек не видел. Второй замыкающий `/review` в PR #104.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0, updatedAt: '2026-09-29T10:00:00+03:00' } }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(released!.updatedAt).toBe('2026-09-29T10:00:00+03:00')
+  })
+
+  it('черновик сохранили из соседней вкладки — публикация говорит проверить его, а не «не затереть»', async () => {
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    releaseReply = { ok: false, reason: 'stale' }
+    const mounted = await mount()
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('проверьте её, прежде чем публиковать')
+    expect(mounted.text()).not.toContain('не затереть чужую работу')
   })
 
   it('отказ публикации объясняется и не ломает экран', async () => {

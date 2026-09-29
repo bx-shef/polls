@@ -31,6 +31,9 @@ const SCHEMA = {
 let item: Record<string, unknown>
 /** Элемент глазами сотрудника, если портал показывает ему не то, что приложению. `null` — то же самое. */
 let userItem: Record<string, unknown> | null
+/** Что сотрудник увидит на следующих проверках доступа — перечитка после записи. `null` — то же, что первый раз. */
+let userItemLater: Record<string, unknown> | null
+let accessChecks: number
 let body: Record<string, unknown>
 let writes: { method: string, params: Record<string, unknown> }[]
 
@@ -50,7 +53,12 @@ async function load(route: 'template-save' | 'template-publish') {
     }),
   }))
   vi.doMock('../../server/b24/provision', () => ({ readStoredRefs: async () => ({ template: TEMPLATE }) }))
-  vi.doMock('../../server/b24/frame-auth', () => ({ verifyItemAccess: async () => ({ ok: true, item: userItem ?? item }) }))
+  vi.doMock('../../server/b24/frame-auth', () => ({
+    verifyItemAccess: async () => {
+      accessChecks += 1
+      return { ok: true, item: accessChecks > 1 && userItemLater !== null ? userItemLater : (userItem ?? item) }
+    },
+  }))
   vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
   vi.doMock('h3', async () => {
     const actual = await vi.importActual<typeof import('h3')>('h3')
@@ -67,6 +75,8 @@ async function load(route: 'template-save' | 'template-publish') {
 
 beforeEach(() => {
   userItem = null
+  userItemLater = null
+  accessChecks = 0
   item = {
     id: 4,
     stageId: 'DT1038_14:SUCCESS',
@@ -147,14 +157,29 @@ describe('одновременная правка', () => {
     expect(writes).toEqual([])
   })
 
-  it('после записи вкладке уходит взгляд сотрудника — с его отметкой для следующей сверки', async () => {
-    // Взгляд приложения показал бы ему поля мимо прав, а следующая сверка шла бы между двумя токенами.
-    userItem = { ...item, updatedTime: '2026-09-28T10:05:00+03:00' }
-    item = { ...item, updatedTime: '2026-09-28T07:05:00+00:00' }
-    body = { itemId: 4, schema: SCHEMA }
+  it('ГЛАВНОЕ: после записи вкладке уходит СВЕЖАЯ перечитка глазами сотрудника — с новой отметкой', async () => {
+    // Без перечитки вкладка осталась бы со старой отметкой, и каждое второе сохранение из неё упёрлось бы
+    // в «stale». Взгляд приложения показал бы поля мимо прав. Отметка после записи здесь новая, поэтому
+    // видно, что перечитка была. Второй замыкающий `/review` в PR #104.
+    userItem = { ...item, updatedTime: '2026-09-28T10:00:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T07:00:00+00:00' }
+    userItemLater = { ...userItem, updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T10:00:00+03:00' }
     const save = await load('template-save')
 
     expect(await save({})).toMatchObject({ ok: true, template: { updatedAt: '2026-09-28T10:05:00+03:00' } })
+  })
+
+  it('ГЛАВНОЕ: чужая запись между двумя чтениями входа — «stale», а не запись поверх', async () => {
+    // Вкладка и сотрудник видят одну отметку, а к чтению приложения коллега уже сохранил своё. Сверка
+    // одной отметки вкладки этого не видит. Второй замыкающий `/code-review` в PR #104.
+    userItem = { ...item, updatedTime: '2026-09-28T10:00:00+03:00' }
+    item = { ...item, updatedTime: '2026-09-28T10:00:02+03:00' }
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T10:00:00+03:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
   })
 })
 
@@ -223,6 +248,14 @@ describe('поля, которые портал прячет от сотрудн
     expect(writes).toEqual([])
   })
 
+  it('закрытый номер версии не мешает: он прячет только значок «Версия N»', async () => {
+    item = { ...item, UF_CRM_8_VERSION: 0 }
+    userItem = { ...item, UF_CRM_8_VERSION: null }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+  })
+
   it('закрытая дата публикации — отказ, а не опубликованная версия под видом черновика', async () => {
     // Сотрудник увидел бы «Черновик» и кнопки правки, а сервер отвечал бы «уже опубликовали».
     item = { ...item, UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00', stageId: 'DT1038_14:SUCCESS' }
@@ -245,6 +278,25 @@ describe('публикация со стадиями', () => {
 
     expect(await publish({})).toEqual({ ok: false, reason: 'published' })
     expect(writes).toEqual([])
+  })
+
+  it('ГЛАВНОЕ: публикация не выпускает редакцию, изменённую после открытия вкладки', async () => {
+    // Коллега сохранил черновик из соседней вкладки, пока эта была открыта. Выпуск необратим — номер
+    // занят, по версии выпускают ссылки. Второй замыкающий `/review` в PR #104.
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:00:00+03:00' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
+  })
+
+  it('та же редакция, что во вкладке, публикуется', async () => {
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '', updatedTime: '2026-09-28T10:05:00+03:00' }
+    body = { itemId: 4, action: 'publish', updatedAt: '2026-09-28T10:05:00+03:00' }
+    const publish = await load('template-publish')
+
+    expect(await publish({})).toMatchObject({ ok: true, action: 'publish' })
   })
 
   it('от снятой с публикации можно открыть новую версию', async () => {

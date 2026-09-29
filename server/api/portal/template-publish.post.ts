@@ -6,6 +6,7 @@ import { readNextOffset } from '../../domain/portals/smart-processes'
 import { validateTemplate } from '../../domain/surveys/validate'
 import {
   isFrozen,
+  isStale,
   buildNewVersionCall,
   buildPublishTemplateCall,
   findDraftOfCode,
@@ -31,7 +32,7 @@ import { openTemplate } from './-template-access'
  */
 export default defineEventHandler(async (event) => {
   const session = await openPortalSession(event)
-  const body = await readBody<{ itemId?: unknown, action?: unknown }>(event).catch(() => null)
+  const body = await readBody<{ itemId?: unknown, action?: unknown, updatedAt?: unknown }>(event).catch(() => null)
 
   const itemId = Number(body?.itemId)
   // ⚠ Действие принимается ТОЛЬКО точным совпадением. Прежняя редакция сводила всё, что
@@ -55,7 +56,7 @@ export default defineEventHandler(async (event) => {
   // формулировки. Нашли `/review` и `/code-review` в PR #104.
   const opened = await openTemplate(session, refs.template, itemId)
   if (!opened.ok) return { ok: false as const, reason: opened.reason }
-  const { current } = opened
+  const { userView, current } = opened
   if (current.schema === null) return { ok: false as const, reason: 'no-schema' as const }
 
   // Опубликованная ИЛИ снятая с публикации: обе неизменяемы, и от обеих заводится новая версия.
@@ -91,6 +92,14 @@ export default defineEventHandler(async (event) => {
   }
 
   if (published) return { ok: false as const, reason: 'published' as const }
+
+  // ⚠ Публикуется та редакция, которую сотрудник видел во вкладке, а не та, что лежит на портале
+  // сейчас. Черновик мог сохранить коллега из соседней вкладки, пока эта была открыта, и выпуск
+  // необратим: номер занят, по версии выпускают ссылки. Та же сверка отметки, что у сохранения
+  // (`isStale`); нашёл `/review` во втором замыкающем круге PR #104. Новой версии она не нужна:
+  // её заводят от опубликованной, а та не меняется.
+  const seen = typeof body?.updatedAt === 'string' ? body.updatedAt : ''
+  if (isStale(seen, userView.updatedAt)) return { ok: false as const, reason: 'stale' as const }
 
   const problems = validateTemplate(current.schema)
   const blocking = problems.filter(problem => problem.level === 'error')

@@ -1,7 +1,7 @@
 import { createError } from 'h3'
 import { verifyItemAccess } from '../../b24/frame-auth'
 import type { SmartProcessRef } from '../../domain/portals/smart-processes'
-import { buildGetTemplateItemCall, isHiddenFromUser, readTemplateItem } from '../../domain/templates/portal-calls'
+import { buildGetTemplateItemCall, isHiddenFromUser, isSameStamp, readTemplateItem } from '../../domain/templates/portal-calls'
 import type { TemplateItem } from '../../domain/templates/portal-calls'
 import { logger } from '../../utils/logger'
 import type { PortalSession } from './-session'
@@ -9,7 +9,7 @@ import type { PortalSession } from './-session'
 /** Шаблон, открытый для конструктора: глазами сотрудника и глазами приложения. */
 export type OpenedTemplate
   = | { ok: true, userView: TemplateItem, current: TemplateItem }
-    | { ok: false, reason: 'denied' | 'no-item' | 'hidden-fields' }
+    | { ok: false, reason: 'denied' | 'no-item' | 'stale' | 'hidden-fields' }
 
 /**
  * Open one template for the builder: as the employee sees it, checked against the app's view.
@@ -24,8 +24,12 @@ export type OpenedTemplate
  *    с ответом. Отказ — `denied` («не видит» и «удалили» портал не различает), недоступность — 503;
  * 2. тот же элемент глазами приложения: по нему сервер решает (неизменяемость, номер версии,
  *    проверка схемы) и им пишет;
- * 3. взгляды сверяются (`isHiddenFromUser`): прячет портал от сотрудника что-то из полей
- *    конструктора — работать с анкетой ему здесь нельзя, отказ `hidden-fields`.
+ * 3. элемент не менялся между двумя чтениями: отметки изменения сверяются мгновением (`isSameStamp` —
+ *    токены разные). Иначе отказ `stale`: чужая запись в промежутке прошла бы мимо сверки отметки
+ *    при сохранении и затёрлась, а поле, заполненное в промежутке, выглядело бы спрятанным.
+ *    Нашёл `/code-review` во втором замыкающем круге PR #104;
+ * 4. взгляды сверяются (`isHiddenFromUser`): прячет портал от сотрудника что-то из анкеты —
+ *    работать с ней ему здесь нельзя, отказ `hidden-fields`.
  *
  * Наружу вкладке уходит только `userView`: что сотруднику видно, решает портал (#101).
  */
@@ -43,6 +47,10 @@ export async function openTemplate(session: PortalSession, template: SmartProces
   const current = readTemplateItem(answer, template)
   const userView = readTemplateItem({ result: { item: access.item } }, template)
   if (current === null || userView === null) return { ok: false, reason: 'no-item' }
+
+  if (userView.updatedAt !== '' && current.updatedAt !== '' && !isSameStamp(userView.updatedAt, current.updatedAt)) {
+    return { ok: false, reason: 'stale' }
+  }
 
   // `readTemplateItem` уже убедился, что элемент в ответе есть и это объект.
   const appItem = (answer as { result: { item: Record<string, unknown> } }).result.item

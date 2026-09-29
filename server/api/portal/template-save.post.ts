@@ -4,7 +4,7 @@ import { readStoredRefs } from '../../b24/provision'
 import { readUpdatedItemId } from '../../domain/answers/portal-calls'
 import { validateTemplate } from '../../domain/surveys/validate'
 import { assignMissingKeys, readIncomingSchema } from '../../domain/templates/schema-input'
-import { isFrozen, buildSaveSchemaCall, readTemplateItem } from '../../domain/templates/portal-calls'
+import { isFrozen, isStale, buildSaveSchemaCall, readTemplateItem } from '../../domain/templates/portal-calls'
 import { logger } from '../../utils/logger'
 import { openPortalSession } from './-session'
 import { openTemplate } from './-template-access'
@@ -71,10 +71,10 @@ export default defineEventHandler(async (event) => {
   // «Сохранено». Пустая отметка (портал её не отдал) проверку пропускает: отказывать
   // из-за отсутствующего поля значило бы сломать сохранение целиком. Нашёл `/code-review`.
   // ⚠ Сверяется с отметкой ГЛАЗАМИ СОТРУДНИКА — тем же взглядом, каким её получила вкладка: при
-  // открытии и после каждого сохранения (ниже). Отметка приложения — чтение от имени другого
-  // пользователя, и совпадение записи времени у двух токенов нигде не замерено (`/review` в PR #104).
+  // открытии и после каждого сохранения (ниже). Что между двумя чтениями входа элемент не менялся,
+  // проверил `openTemplate`, так что эта отметка — отметка того, поверх чего пишем (`isStale`).
   const seen = typeof body?.updatedAt === 'string' ? body.updatedAt : ''
-  if (seen !== '' && userView.updatedAt !== '' && seen !== userView.updatedAt) {
+  if (isStale(seen, userView.updatedAt)) {
     return { ok: false as const, reason: 'stale' as const }
   }
 

@@ -85,13 +85,24 @@ const SAVE_REFUSALS: Record<string, string> = {
   'not-provisioned': 'Приложение ещё настраивается: смарт-процессы опросов на портале не найдены.',
 }
 
+/** Отказы роута чтения анкеты. */
+type ReadRefusal = 'denied' | 'hidden-fields' | 'stale' | 'no-item' | 'not-provisioned'
+
 /**
- * Почему анкету не прочитали. Первые две причины — наши, остальные присылает сервер.
- *
- * `no-pass` — портал не передал данные авторизации, `unreachable` — запрос не дошёл или сервер
- * ответил ошибкой; `denied`, `hidden-fields`, `no-item`, `not-provisioned` — отказы роута чтения.
+ * Почему анкету не прочитали: отказ роута — или наше. `no-pass` — портал не передал данные
+ * авторизации, `unreachable` — запрос не дошёл или сервер ответил ошибкой.
  */
-type LoadRefusal = 'no-pass' | 'unreachable' | 'denied' | 'hidden-fields' | 'no-item' | 'not-provisioned'
+type LoadRefusal = ReadRefusal | 'no-pass' | 'unreachable'
+
+/**
+ * Отказы публикации, у которых слова свои, а не как у сохранения.
+ *
+ * `stale` у сохранения говорит «не затереть чужую работу», а публикация ничего не затирает: она
+ * выпустила бы редакцию, которой человек не видел. Прочие отказы — общие (`SAVE_REFUSALS`).
+ */
+const PUBLISH_REFUSALS: Record<string, string> = {
+  stale: 'Анкету изменили в другом месте, пока вкладка была открыта. Обновите страницу и проверьте её, прежде чем публиковать.',
+}
 
 definePageMeta({ layout: 'portal' })
 
@@ -217,7 +228,7 @@ async function loadTemplate(): Promise<LoadRefusal | null> {
   if (pass === null) return 'no-pass'
 
   const answer = await $fetch<
-    { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: string }
+    { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: ReadRefusal }
   >('/api/portal/template', {
     method: 'POST',
     body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value },
@@ -232,13 +243,22 @@ async function loadTemplate(): Promise<LoadRefusal | null> {
     problems.value = answer.problems ?? []
     return null
   }
-  return answer.reason as LoadRefusal
+  return answer.reason
 }
 
 /** Отказ чтения при открытии вкладки: встаёт вместо редактора, и у каждого свои слова. */
 function showLoadRefusal(reason: LoadRefusal): void {
   if (reason === 'no-pass') {
     failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
+    return
+  }
+  if (reason === 'unreachable') {
+    failure.value = 'Не удалось прочитать анкету с портала. Обновите страницу.'
+    return
+  }
+  // Анкету меняли ровно в тот момент, когда вкладка её читала (`openTemplate`): совет — перечитать.
+  if (reason === 'stale') {
+    failure.value = 'Анкету прямо сейчас изменили в другом месте. Обновите страницу.'
     return
   }
   // «Нет доступа» — свой текст, а не «откройте из карточки»: из карточки её и открыли. Анкету
@@ -371,11 +391,12 @@ async function release(action: 'publish' | 'new-version'): Promise<void> {
       | { ok: false, reason: string, problems?: Problem[] }
     >('/api/portal/template-publish', {
       method: 'POST',
-      body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value, action },
+      // Отметка — та, что вкладка показала: публикуется редакция, которую человек видел (`isStale`).
+      body: { memberId: pass.memberId, authId: pass.authId, itemId: itemId.value, action, updatedAt: template.value?.updatedAt ?? '' },
     })
 
     if (!answer.ok) {
-      saveFailure.value = SAVE_REFUSALS[answer.reason] ?? 'Не получилось. Попробуйте ещё раз.'
+      saveFailure.value = PUBLISH_REFUSALS[answer.reason] ?? SAVE_REFUSALS[answer.reason] ?? 'Не получилось. Попробуйте ещё раз.'
       // ⚠ Претензии от сервера ЗАБИРАЕМ. Отказ говорит «список выше», а список на экране —
       // это то, что вкладка прочитала при открытии; схему на портале могли поправить
       // с тех пор, и человек получил бы совет чинить то, чего не видит.
@@ -411,10 +432,13 @@ async function release(action: 'publish' | 'new-version'): Promise<void> {
   // с кнопками «Править» и «Опубликовать»: они теперь получили бы только отказ.
   if (template.value !== null) template.value = { ...template.value, state: 'published', version: releasedVersion }
   // ⚠ Отказ в доступе — не «обновите страницу»: после обновления вкладка откажет тем же. Портал
-  // не показывает сотруднику версию в новой стадии, и действий у неё здесь не остаётся (`locked`).
+  // больше не показывает сотруднику версию (права по стадиям) или часть её полей, и действий у неё
+  // здесь не остаётся (`locked`) — плашка неизменяемости тоже не советует новую версию.
   if (reread === 'denied' || reread === 'hidden-fields') {
     locked.value = true
-    releaseNote.value += ' Дальше работать с ней здесь нельзя: в новой стадии портал вам её не показывает.'
+    releaseNote.value += reread === 'denied'
+      ? ' Дальше работать с ней здесь нельзя: портал её вам больше не показывает.'
+      : ' Дальше работать с ней здесь нельзя: портал не показывает вам часть её полей.'
     return
   }
   releaseNote.value += ' Обновите страницу, чтобы увидеть новое состояние.'
@@ -681,9 +705,10 @@ async function save(): Promise<void> {
             v-if="frozen"
             class="mt-3"
             color="air-secondary-accent"
-            :description="retired
-              ? 'Эту версию сняли с публикации: ссылки по ней больше не выпускаются. Править её нельзя — по ней уже собирали ответы. Чтобы изменить анкету, создайте новую версию.'
-              : 'Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми. Чтобы изменить анкету, создайте новую версию.'"
+            :description="(retired
+              ? 'Эту версию сняли с публикации: ссылки по ней больше не выпускаются. Править её нельзя — по ней уже собирали ответы.'
+              : 'Опубликованную версию править нельзя: по ней уже собрана статистика, и правка формулировки задним числом сделала бы прошлые ответы несравнимыми.')
+              + (locked ? '' : ' Чтобы изменить анкету, создайте новую версию.')"
           >
             <template #title>
               <span class="inline-flex items-center gap-1">

@@ -5,6 +5,8 @@ import {
   buildNewVersionCall,
   buildPublishTemplateCall,
   isHiddenFromUser,
+  isSameStamp,
+  isStale,
   nextVersion,
   readTemplateItem,
   readVersionsOfCode,
@@ -130,9 +132,12 @@ describe('отметка изменения', () => {
 })
 
 describe('поля конструктора глазами сотрудника', () => {
-  /** Элемент глазами приложения: все поля конструктора на месте. */
+  /** Шаблон со стадиями: состояние решает дата публикации (`templateStateOf`). */
+  const STAGED = { ...TEMPLATE, categoryId: 14 }
+  /** Опубликованная версия глазами приложения: все поля конструктора на месте. */
   const APP = {
     id: 42,
+    stageId: 'DT1038_14:SUCCESS',
     UF_CRM_8_CODE: 'brand',
     UF_CRM_8_VERSION: 3,
     UF_CRM_8_PUBLISHED_AT: '2026-09-20T03:00:00+03:00',
@@ -140,44 +145,85 @@ describe('поля конструктора глазами сотрудника'
   }
 
   it('видит всё, что видит приложение, — не спрятано', () => {
-    expect(isHiddenFromUser({ ...APP }, APP, TEMPLATE)).toBe(false)
+    expect(isHiddenFromUser({ ...APP }, APP, STAGED)).toBe(false)
   })
 
-  it('ГЛАВНОЕ: поля нет вовсе — спрятано; пустое поле ключом — нет', () => {
-    // Замер 29.09: пустые поля `crm.item.get` отдаёт ключами со значением `null`, поэтому
-    // отсутствие ключа — не пустота, а поле, которое портал сотруднику не отдал. `/review` в PR #104.
+  it('ГЛАВНОЕ: поля, которые конструктор пишет, нет вовсе — спрятано, даже пустое у приложения', () => {
+    // Замер 29.09: пустые поля `crm.item.get` отдаёт ключами со значением `null`, так что отсутствие
+    // ключа — не пустота, а поле, которое портал сотруднику не отдал. Писать в него мимо портала нельзя.
     const { UF_CRM_8_SCHEMA: _schema, ...withoutSchema } = APP
-    expect(isHiddenFromUser(withoutSchema, APP, TEMPLATE)).toBe(true)
-    // Даже пустое у приложения: поле есть, а сотруднику его не отдали — писать в него мимо портала нельзя.
-    expect(isHiddenFromUser(withoutSchema, { ...APP, UF_CRM_8_SCHEMA: null }, TEMPLATE)).toBe(true)
-    expect(isHiddenFromUser({ ...APP, UF_CRM_8_SCHEMA: null }, { ...APP, UF_CRM_8_SCHEMA: null }, TEMPLATE)).toBe(false)
+    const { UF_CRM_8_CODE: _code, ...withoutCode } = APP
+    expect(isHiddenFromUser(withoutSchema, APP, STAGED)).toBe(true)
+    expect(isHiddenFromUser(withoutSchema, { ...APP, UF_CRM_8_SCHEMA: null }, STAGED)).toBe(true)
+    expect(isHiddenFromUser(withoutCode, APP, STAGED)).toBe(true)
   })
 
-  it('ГЛАВНОЕ: приложению поле отдано заполненным, сотруднику пустым — спрятано', () => {
-    // Портал может и не убрать закрытое поле, а отдать его пустым: тогда ключ не опора.
-    expect(isHiddenFromUser({ ...APP, UF_CRM_8_SCHEMA: null }, APP, TEMPLATE)).toBe(true)
-    expect(isHiddenFromUser({ ...APP, UF_CRM_8_SCHEMA: '' }, APP, TEMPLATE)).toBe(true)
+  it('ГЛАВНОЕ: приложению схема отдана, сотруднику пустой — спрятано', () => {
+    // Портал может и не убрать закрытое поле, а отдать его пустым: тогда ключ не опора. `/review` в PR #104.
+    expect(isHiddenFromUser({ ...APP, UF_CRM_8_SCHEMA: null }, APP, STAGED)).toBe(true)
+    expect(isHiddenFromUser({ ...APP, UF_CRM_8_SCHEMA: '' }, APP, STAGED)).toBe(true)
   })
 
-  it.each(['UF_CRM_8_CODE', 'UF_CRM_8_VERSION', 'UF_CRM_8_PUBLISHED_AT'])('%s тоже поле конструктора', (key) => {
-    // Закрытая дата публикации показала бы опубликованную версию черновиком, закрытый код —
-    // попросил бы ввести его заново. `/review` в PR #104.
-    expect(isHiddenFromUser({ ...APP, [key]: null }, APP, TEMPLATE)).toBe(true)
+  it('код отдан сотруднику пустым — спрятано: вкладка попросила бы ввести его заново', () => {
+    expect(isHiddenFromUser({ ...APP, UF_CRM_8_CODE: null }, APP, STAGED)).toBe(true)
   })
 
-  it('поля, которого нет у приложения, не требует: старое «Состояние» после переноса', () => {
-    expect(isHiddenFromUser({ ...APP }, APP, TEMPLATE)).toBe(false)
-    expect(isHiddenFromUser({ ...APP }, { ...APP, UF_CRM_8_STATE: 'published' }, TEMPLATE)).toBe(true)
+  it('ГЛАВНОЕ: закрытая дата публикации — спрятано: опубликованная версия выглядела бы черновиком', () => {
+    const { UF_CRM_8_PUBLISHED_AT: _date, ...withoutDate } = APP
+    expect(isHiddenFromUser(withoutDate, APP, STAGED)).toBe(true)
+    expect(isHiddenFromUser({ ...APP, UF_CRM_8_PUBLISHED_AT: null }, APP, STAGED)).toBe(true)
+  })
+
+  it('сверяется смысл, а не сырое поле: закрытый номер версии не прячет ничего', () => {
+    // Номер выдаёт сервер по взгляду приложения, а закрытый он прячет лишь значок «Версия N».
+    // И ноль у приложения — это «версии нет», как пустота у сотрудника. Второй замыкающий `/review` в PR #104.
+    const { UF_CRM_8_VERSION: _version, ...withoutVersion } = APP
+    expect(isHiddenFromUser(withoutVersion, APP, STAGED)).toBe(false)
+    expect(isHiddenFromUser({ ...APP, UF_CRM_8_VERSION: null }, { ...APP, UF_CRM_8_VERSION: 0 }, STAGED)).toBe(false)
+  })
+
+  it('старое «Состояние» на портале со стадиями прячет что-то, только пока решает', () => {
+    // С датой публикации оно ничего не решает (`templateStateOf`) — закрыть его не значит спрятать.
+    const { UF_CRM_8_STATE: _state, ...userWithoutState } = { ...APP, UF_CRM_8_STATE: '' }
+    expect(isHiddenFromUser(userWithoutState, { ...APP, UF_CRM_8_STATE: 'published' }, STAGED)).toBe(false)
+    // А у опубликованной старым полем, без даты, оно и есть правда о публикации.
+    const legacy = { ...APP, UF_CRM_8_PUBLISHED_AT: null, UF_CRM_8_STATE: 'published' }
+    const { UF_CRM_8_STATE: _legacyState, ...legacyUser } = legacy
+    expect(isHiddenFromUser(legacyUser, legacy, STAGED)).toBe(true)
   })
 
   it('чужие поля клиента на смарт-процессе не смотрит', () => {
     // Закрыть своё поле от кого-то — право клиента, и конструктору оно не нужно.
-    expect(isHiddenFromUser({ ...APP }, { ...APP, UF_CRM_8_1695000000: 'своё поле клиента' }, TEMPLATE)).toBe(false)
+    expect(isHiddenFromUser({ ...APP }, { ...APP, UF_CRM_8_1695000000: 'своё поле клиента' }, STAGED)).toBe(false)
   })
 
   it('ищет поля по `id` смарт-процесса, а не по `entityTypeId`', () => {
-    const byType = { id: 42, UF_CRM_1038_SCHEMA: 'схема' }
-    expect(isHiddenFromUser({ id: 42 }, byType, TEMPLATE)).toBe(false)
+    expect(isHiddenFromUser({ id: 42 }, { id: 42, UF_CRM_1038_SCHEMA: 'схема' }, STAGED)).toBe(false)
+  })
+})
+
+describe('отметки изменения двух взглядов', () => {
+  it('ГЛАВНОЕ: то же мгновение в другом часовом поясе — та же отметка', () => {
+    // ⚠ Вход конструктора читает элемент токеном сотрудника и токеном приложения — от имени двух
+    // разных пользователей. Строкой разные пояса дали бы «элемент изменился» на каждом открытии.
+    expect(isSameStamp('2026-09-29T10:00:00+03:00', '2026-09-29T07:00:00+00:00')).toBe(true)
+  })
+
+  it('другое мгновение — другая отметка, в каком бы поясе ни пришло', () => {
+    expect(isSameStamp('2026-09-29T10:00:00+03:00', '2026-09-29T10:00:01+03:00')).toBe(false)
+    expect(isSameStamp('2026-09-29T10:00:00+03:00', '2026-09-29T10:00:00+00:00')).toBe(false)
+  })
+
+  it('неразобранная отметка сравнивается строкой — не пускает чужое и не отказывает своему', () => {
+    expect(isSameStamp('вчера', 'вчера')).toBe(true)
+    expect(isSameStamp('вчера', '2026-09-29T10:00:00+03:00')).toBe(false)
+  })
+
+  it('отметка вкладки разошлась с нынешней — устарела; пустая проверку пропускает', () => {
+    expect(isStale('2026-09-29T10:00:00+03:00', '2026-09-29T10:05:00+03:00')).toBe(true)
+    expect(isStale('2026-09-29T10:00:00+03:00', '2026-09-29T10:00:00+03:00')).toBe(false)
+    expect(isStale('', '2026-09-29T10:05:00+03:00')).toBe(false)
+    expect(isStale('2026-09-29T10:00:00+03:00', '')).toBe(false)
   })
 })
 

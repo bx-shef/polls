@@ -145,6 +145,18 @@ describe('чтение — глазами сотрудника', () => {
     expect(probe.logged).toContain('поля анкеты не видны сотруднику')
   })
 
+  it('ГЛАВНОЕ: элемент изменился между двумя чтениями — «stale», а не «поля спрятаны»', async () => {
+    // Сотрудник прочитал пустой черновик, а к чтению приложения коллега уже сохранил схему. Без сверки
+    // отметок это выглядело бы спрятанным полем, и человек пошёл бы к администратору, а в журнал ушёл
+    // бы ложный след для замера (#88). Второй замыкающий `/code-review` в PR #104.
+    access = { ok: true, item: { ...draftWith('Бренд', '2026-09-29T10:00:00+03:00'), UF_CRM_8_SCHEMA: null } }
+    appItem = draftWith('Бренд', '2026-09-29T10:00:01+03:00')
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: false, reason: 'stale' })
+    expect(probe.logged).not.toContain('поля анкеты не видны сотруднику')
+  })
+
   it('и тогда, когда портал отдал его пустым', async () => {
     access = { ok: true, item: { ...draftWith('Бренд'), UF_CRM_8_SCHEMA: null } }
     const handler = await loadHandler()
