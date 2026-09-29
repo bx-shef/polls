@@ -207,12 +207,12 @@ function layoutOf(plan: ReturnType<typeof planSurveyCard>): string[][] {
 
 describe('ревизия 6: свои поля в раскладке, которая уже стоит', () => {
   const f = (postfix: string) => buildFieldName(SURVEY.id, postfix)
-  /** Поле виджета на портале есть, смарт-процесс — созданный нами. */
-  const WIDGET = { widget: true, adopted: false }
-  /** Поля виджета на портале нет. */
-  const BARE = { widget: false, adopted: false }
-  /** Смарт-процесс найден по названию — усыновлён. */
-  const ADOPTED = { widget: true, adopted: true }
+  /** The widget field is ours, the smart process is ours, the fix is due. */
+  const WIDGET = { widget: true, adopted: false, due: true, staged: false }
+  /** No widget field on the portal. */
+  const BARE = { ...WIDGET, widget: false }
+  /** The smart process was found by title. */
+  const ADOPTED = { ...WIDGET, adopted: true }
 
   /** Раскладка, как её поставила прежняя версия приложения, плюс чужой раздел клиента. */
   function ours(): Record<string, unknown>[] {
@@ -413,6 +413,15 @@ describe('ревизия 6: свои поля в раскладке, котор�
     expect(layoutOf(planSurveyCard({ result: widget }, SURVEY.id, ADOPTED))).toEqual([[f('RESULT'), f('LINK')]])
   })
 
+  it('ГЛАВНОЕ: поле `RESULT` чужого типа своим у усыновлённого не делает', () => {
+    // ⚠ Строковое `RESULT` клиента на усыновлённом процессе заведение поля опознаёт как чужое
+    // (`widget: false`); засчитав его по имени, правка поставила бы нашу ссылку в карточку клиента
+    // у всех. Нашёл `/code-review` во втором круге панели PR #98.
+    const client = [{ type: 'section', name: 'main', title: 'Мой опрос', elements: [{ name: 'TITLE' }, { name: f('RESULT') }] }]
+
+    expect(planSurveyCard({ result: client }, SURVEY.id, { ...ADOPTED, widget: false })).toEqual({ kind: 'foreign' })
+  })
+
   it('всё уже на месте — писать нечего', () => {
     const settled = planSurveyCard({ result: ours() }, SURVEY.id, WIDGET) as { sections: Record<string, unknown>[] }
 
@@ -428,8 +437,34 @@ describe('ревизия 6: свои поля в раскладке, котор�
     expect(planSurveyCard({ result: layout }, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
     expect(planSurveyCard({ result: [null] }, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
     expect(planSurveyCard({ result: 'испорчено' }, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
-    expect(planSurveyCard({ result: [] }, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
+    expect(planSurveyCard({}, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
     expect(planSurveyCard(null, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
+  })
+
+  it('ГЛАВНОЕ: раскладка объектом, а не списком — непонятная, а не пустая: нашей её не заменяет', () => {
+    // ⚠ Так PHP отдаёт список с дырой. Первая редакция считала пустым всё, что не список, и ставила
+    // на место такой раскладки клиента нашу целиком — у всех и на любой ревизии. Нашёл `/code-review`
+    // во втором круге панели PR #98.
+    const holed = { result: { 0: ours()[0], 2: ours()[2] } }
+
+    expect(planSurveyCard(holed, SURVEY.id, WIDGET)).toEqual({ kind: 'unreadable' })
+    expect(planSurveyCard(holed, SURVEY.id, { ...WIDGET, due: false })).toEqual({ kind: 'keep' })
+  })
+
+  it('своей раскладки нет — наша целиком, на любой ревизии; усыновлённому — нет', () => {
+    // «Нет» — это `null` (замерено 28.09) и пустой список: стирать в них нечего.
+    const fresh = { kind: 'write', sections: buildCardSections(SURVEY.id, true, true) }
+
+    for (const empty of [{ result: null }, { result: [] }]) {
+      expect(planSurveyCard(empty, SURVEY.id, { ...WIDGET, staged: true })).toEqual(fresh)
+      expect(planSurveyCard(empty, SURVEY.id, { ...WIDGET, staged: true, due: false })).toEqual(fresh)
+      expect(planSurveyCard(empty, SURVEY.id, ADOPTED)).toEqual({ kind: 'foreign' })
+    }
+  })
+
+  it('правка не положена — стоящую раскладку не трогает, какой бы она ни была', () => {
+    // Разово, при переходе на ревизию 6: повторяясь, правка возвращала бы клиенту убранное им самим.
+    expect(planSurveyCard({ result: portalDefault() }, SURVEY.id, { ...WIDGET, due: false })).toEqual({ kind: 'keep' })
   })
 
   it('ГЛАВНОЕ: раздел, который отверг бы сам портал, не отправляет — иначе ревизия держалась бы вечно', () => {

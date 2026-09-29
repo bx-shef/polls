@@ -46,6 +46,8 @@ function portal(answers: Record<string, Answer> = {}) {
     if (method === 'crm.type.get') return { result: { type: { relations: { parent: [{ entityTypeId: 2, isChildrenListEnabled: 'Y' }], child: [] } } } }
     if (method === 'app.info') return { result: { ID: 219, INSTALLED: true } }
     if (method === 'userfieldtype.list') return { result: [] }
+    // Своей раскладки у карточки нет — так её отдаёт живой портал (замерено 28.09).
+    if (method === 'crm.item.details.configuration.get') return { result: null }
     return { result: true }
   })
   const of = (method: string) => calls.filter(one => one.method === method)
@@ -537,6 +539,9 @@ describe('перенос старого поля «Состояние»', () => 
       // Разделы, которые не принял бы сам `set`: без названия и со списком не того вида.
       [{ result: [{ type: 'section', name: 'survey_form', elements: [{ name: 'UF_CRM_10_STATE' }] }] }, true],
       [{ result: [{ ...section, elements: 'не массив' }] }, true],
+      // Объектом, а не списком: так PHP отдаёт список с дырой. Это не «пусто» (`/code-review`
+      // во втором круге панели PR #98).
+      [{ result: { 0: { ...section, elements: [{ name: 'UF_CRM_10_STATE' }] } } }, true],
     ] as const) {
       warn.mockClear()
       const p = portal({ 'crm.item.details.configuration.get': answer })

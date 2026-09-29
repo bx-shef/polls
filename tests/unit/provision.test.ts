@@ -52,6 +52,8 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     // из документации `userfieldtype.list` и `app.info`.
     if (method === 'userfieldtype.list') return { result: [] }
     if (method === 'app.info') return { result: { ID: 219, INSTALLED: true } }
+    // Своей раскладки у карточки нет — так её отдаёт живой портал (замерено 28.09).
+    if (method === 'crm.item.details.configuration.get') return { result: null }
     // ⚠ Умолчание — смарт-процесс, СОЗДАННЫЙ С `isClientEnabled`: Контакт и Компания
     // стоят родителями и помечены `isPredefined`, а Сделки среди них НЕТ. Это не выдумка
     // подделки, а дословная форма ответа из документации `crm.type.get`, и именно это
@@ -311,7 +313,7 @@ describe('раскладка карточки «Результата опрос�
 
     const result = await provisionSmartProcesses(p.call)
 
-    expect(result.cardConfigured).toBe(true)
+    expect(result.card).toBe('written')
     const set = p.of('crm.item.details.configuration.set')
     expect(set).toHaveLength(1)
     expect(set[0]!.params.entityTypeId).toBe(SURVEY.entityTypeId)
@@ -332,7 +334,7 @@ describe('раскладка карточки «Результата опрос�
     expect(upgrading.of('crm.item.details.configuration.set').map(one => one.params.data)).toEqual([
       [{ type: 'section', name: 'своё', title: 'Своё', elements: [{ name: 'OPPORTUNITY' }, { name: `UF_CRM_${SURVEY.id}_LINK` }] }],
     ])
-    expect(result.cardConfigured).toBe(false)
+    expect(result.card).toBe('kept')
     expect(settled.of('crm.item.details.configuration.set')).toHaveLength(0)
   })
 
@@ -360,7 +362,7 @@ describe('раскладка карточки «Результата опрос�
 
     const result = await provisionSmartProcesses(p.call)
 
-    expect(result.cardConfigured).toBe(false)
+    expect(result.card).toBe('failed')
     expect(result.dealLinked).toBe(true)
     // Держи его ревизия, портал обустраивался бы каждый час впустую: права повтором не лечатся.
     expect(result.cardSettled).toBe(true)
@@ -543,7 +545,7 @@ describe('поле «Результат опроса»', () => {
 
     const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 2 })
 
-    expect(result.cardConfigured).toBe(true)
+    expect(result.card).toBe('written')
     expect(sentLayout(p)).toContain(FIELD)
     expect(sentLayout(p)).not.toContain(`UF_CRM_${SURVEY.id}_SCORES`)
   })
@@ -570,7 +572,7 @@ describe('поле «Результат опроса»', () => {
 
     const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
 
-    expect(result.cardConfigured).toBe(true)
+    expect(result.card).toBe('written')
     expect(p.of('crm.item.details.configuration.set')[0]!.params.data).toEqual([
       { type: 'section', name: 'своё', title: 'Своё', elements: [{ name: FIELD, optionFlags: 1 }, { name: `UF_CRM_${SURVEY.id}_LINK` }] },
     ])
@@ -620,7 +622,9 @@ describe('поле «Результат опроса»', () => {
       'crm.item.details.configuration.get': { result: buildCardSections(SURVEY.id, true) },
     })
 
-    const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 6 })
+    // Смарт-процессы известны по идентификаторам — как у настоящего портала шестой ревизии: созданные
+    // этим прогоном пошли бы по пути обустройства, которого у такого портала не бывает (`/code-review`).
+    const result = await provisionSmartProcesses(p.call, { template: TEMPLATE, survey: SURVEY }, { ...WITH_WIDGET, previousRevision: 6 })
 
     expect([result.resultField, result.cardSettled, reachedRevision(6, result)]).toEqual(['failed', true, 6])
     expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
@@ -650,7 +654,7 @@ describe('поле «Результат опроса»', () => {
 
     const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
 
-    expect(result.cardConfigured).toBe(false)
+    expect(result.card).toBe('kept')
     expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
   })
 
@@ -668,8 +672,8 @@ describe('поле «Результат опроса»', () => {
 
       expect(result.adoptedSurvey).toBe(true)
       expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
-      expect([result.cardConfigured, result.cardSettled]).toEqual([false, true])
-      expect(info.mock.calls.some(([, message]) => String(message).includes('нет ни одного нашего поля'))).toBe(true)
+      expect([result.card, result.cardSettled]).toEqual(['foreign', true])
+      expect(info.mock.calls.some(([, message]) => String(message).includes('раскладка карточки не наша'))).toBe(true)
     })
 
     it('ГЛАВНОЕ: свою раскладку доводит — наш же смарт-процесс после переустановки не замерзает', async () => {
@@ -680,7 +684,7 @@ describe('поле «Результат опроса»', () => {
 
       const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
 
-      expect(result.cardConfigured).toBe(true)
+      expect(result.card).toBe('written')
       expect(sentLayout(p)).toContain(FIELD)
       expect(sentLayout(p)).not.toContain(`UF_CRM_${SURVEY.id}_ANSWERS`)
     })
@@ -694,22 +698,25 @@ describe('поле «Результат опроса»', () => {
       const result = await provisionSmartProcesses(p.call, ADOPTED, WITH_WIDGET)
 
       expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
-      expect(result.cardConfigured).toBe(false)
-      expect(info.mock.calls.some(([, message]) => String(message).includes('нашу целиком не ставим'))).toBe(true)
+      expect(result.card).toBe('foreign')
+      expect(info.mock.calls.some(([, message]) => String(message).includes('раскладка карточки не наша'))).toBe(true)
     })
 
     it('отказ шага поля виджета ради чужой раскладки ревизию не держит — её не тронем и потом', async () => {
-      // Держа ревизию, портал обустраивался бы каждый час ради раскладки, которую мы не правим.
-      const p = portal({
-        'app.info': () => {
-          throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
-        },
-        'crm.item.details.configuration.get': { result: CLIENT_LAYOUT },
-      })
+      // Держа ревизию, портал обустраивался бы каждый час ради раскладки, которую мы не правим. И так —
+      // при любой чужой: без наших полей и вовсе без своей (второе нашёл `/code-review` мутацией).
+      for (const layout of [CLIENT_LAYOUT, null]) {
+        const p = portal({
+          'app.info': () => {
+            throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+          },
+          'crm.item.details.configuration.get': { result: layout },
+        })
 
-      const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
+        const result = await provisionSmartProcesses(p.call, ADOPTED, { ...WITH_WIDGET, previousRevision: 5 })
 
-      expect([result.resultField, result.cardSettled]).toEqual(['failed', true])
+        expect([result.resultField, result.card, result.cardSettled]).toEqual(['failed', 'foreign', true])
+      }
     })
   })
 
@@ -720,10 +727,26 @@ describe('поле «Результат опроса»', () => {
       'crm.item.details.configuration.get': { result: [{ type: 'section', name: 'своё', elements: [{ name: 'TITLE' }] }] },
     })
 
-    await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
+    const result = await provisionSmartProcesses(p.call, {}, WITH_WIDGET)
 
     expect(p.of('crm.item.details.configuration.set')).toHaveLength(0)
+    expect(result.card).toBe('unreadable')
     expect(warn.mock.calls.some(([, message]) => String(message).includes('непонятной формы'))).toBe(true)
+  })
+
+  it('отказ шага поля виджета ради непонятной раскладки ревизию не держит — повтор её не изменит', async () => {
+    // Портал обустраивался бы каждый час ради карточки, которую не тронет и следующий прогон.
+    // Нашёл `/code-review` во втором круге панели PR #98.
+    const p = portal({
+      'app.info': () => {
+        throw new PortalError('QUERY_LIMIT_EXCEEDED', 'Too many requests')
+      },
+      'crm.item.details.configuration.get': { result: [{ type: 'section', name: 'своё', elements: [{ name: 'TITLE' }] }] },
+    })
+
+    const result = await provisionSmartProcesses(p.call, {}, { ...WITH_WIDGET, previousRevision: 5 })
+
+    expect([result.resultField, result.card, result.cardSettled]).toEqual(['failed', 'unreadable', true])
   })
 })
 

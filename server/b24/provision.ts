@@ -37,7 +37,6 @@ import {
   readAppInfo,
 } from '../domain/portals/userfield-type'
 import {
-  buildCardSections,
   buildCreateFieldCall,
   buildListSpFieldsCall,
   confirmsFieldOwnership,
@@ -46,7 +45,6 @@ import {
   buildReadTypeCall,
   buildSetCardConfigCall,
   buildUpdateRelationsCall,
-  hasCardConfig,
   hasTemplateExtras,
   findTypeByTitle,
   buildRenameTypeCall,
@@ -212,6 +210,16 @@ export interface ProvisionOptions {
   previousRevision?: number
 }
 
+/**
+ * What became of the survey card layout in one provisioning run:
+ * - `written` — written: ours from scratch, or our fields placed into or taken out of the standing one;
+ * - `kept` — nothing to write: everything stood, or the one-time fix is not due;
+ * - `unreadable` — the standing layout came in a shape we do not understand, and nothing was written;
+ * - `foreign` — an adopted smart process whose layout is not ours to change;
+ * - `failed` — the portal refused.
+ */
+export type CardOutcome = 'written' | 'kept' | 'unreadable' | 'foreign' | 'failed'
+
 /** Which of our smart processes were once found by title instead of being created or remembered. */
 export type AdoptedKinds = Partial<Record<SmartProcessKind, true>>
 
@@ -241,6 +249,8 @@ export interface ProvisionResult extends SmartProcessRefs {
    * обычные слова, и совпасть может чужой смарт-процесс, заведённый клиентом руками. Отличить
    * его от нашего, потерявшего идентификатор, нечем — а дальше мы допишем в него свои поля.
    * Переименовывать и перенастраивать усыновлённый мы не станем никогда (`settleSmartProcesses`).
+   * Исключение одно — раскладка карточки, где уже стоят наши поля: её доводит разовая правка
+   * ревизии 6 (`planSurveyCard`, там же — почему).
    */
   adoptedTemplate: boolean
   adoptedSurvey: boolean
@@ -256,14 +266,18 @@ export interface ProvisionResult extends SmartProcessRefs {
    */
   dealLinked: boolean
   /**
-   * Записали ли мы раскладку карточки «Результата опросов» — с нуля или поправив свои поля в стоящей (`planSurveyCard`).
-   * `false` — там уже всё стояло, раскладку не разобрать, раскладка усыновлённого не наша либо не вышло.
+   * What became of the survey card layout (`CardOutcome`).
+   *
+   * ⚠ Исход, а не «записали или нет»: из пяти исходов строка журнала с доменом пишется только
+   * в `register.ts`, и «чужая», «непонятная» и «всё стояло» должны различаться в ней, а не сливаться
+   * в `false`. Нашёл `/code-review` во втором круге панели PR #98.
    */
-  cardConfigured: boolean
+  card: CardOutcome
   /**
    * Доделана ли разовая правка карточки ревизии 6. `false` — отказ, который лечится повтором, у самой
    * правки или у шага поля виджета: вызывающий НЕ отмечает ревизию 6, и донастройка вернётся
-   * (`reachedRevision`).
+   * (`reachedRevision`). Только ниже шестой ревизии (`cardDue`) и только если правка вообще будет:
+   * чужую (`foreign`) и непонятную (`unreadable`) раскладку повтор не изменит.
    */
   cardSettled: boolean
   /**
@@ -760,6 +774,8 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
 }
 
 /**
+ * Puts the survey card layout in order (`planSurveyCard`) and tells what became of it.
+ *
  * Разложить карточку «Результата опросов» так, чтобы в ней было видно главное.
  *
  * ⚠ Целиком — только на ПУСТОМ месте. `crm.item.details.configuration.set` перезаписывает
@@ -779,40 +795,27 @@ export async function ensureDealRelation(call: RestCall, ref: SmartProcessRef): 
  * знает хоть одно наше поле (`planSurveyCard`, там же — почему). Найденный по названию может оказаться
  * собственным «Опросом» клиента, и наша раскладка целиком легла бы в его карточку у всех. Нашли
  * `/review` и `/code-review` в панели PR #98.
- *
- * Возвращает, что вышло: записали (`written`), всё уже стояло или трогать нечего (`kept`),
- * раскладка усыновлённого не наша (`foreign`).
  */
 async function ensureCardConfig(
   call: RestCall,
   ref: SmartProcessRef,
   card: { widget: boolean, due: boolean, adopted: boolean },
-): Promise<'written' | 'kept' | 'foreign'> {
+): Promise<Exclude<CardOutcome, 'failed'>> {
   const read = buildReadCardConfigCall(ref.entityTypeId)
-  const current = await call(read.method, read.params)
-
-  let sections: Record<string, unknown>[] | null = null
-  if (!hasCardConfig(current)) {
-    if (card.adopted) {
-      logger.info({ typeId: ref.id }, 'усыновлённый смарт-процесс без своей раскладки: нашу целиком не ставим')
-      return 'foreign'
-    }
-    sections = buildCardSections(ref.id, card.widget, isStaged(ref))
-  }
-  else if (card.due) {
-    const plan = planSurveyCard(current, ref.id, card)
+  const plan = planSurveyCard(await call(read.method, read.params), ref.id, { ...card, staged: isStaged(ref) })
+  if (plan.kind === 'unreadable') {
     // Не разобрав, не пишем — но и молчать нельзя: виджета и ссылки в карточке не будет, а JSON
     // останется, и узнать это надо из журнала, а не от клиента.
-    if (plan.kind === 'unreadable') logger.warn({ typeId: ref.id }, 'раскладка карточки «Результата опросов» непонятной формы — виджет и ссылка не поставлены, JSON не убран')
-    if (plan.kind === 'foreign') {
-      logger.info({ typeId: ref.id }, 'усыновлённый смарт-процесс: в раскладке нет ни одного нашего поля — не трогаем')
-      return 'foreign'
-    }
-    if (plan.kind === 'write') sections = plan.sections
+    logger.warn({ typeId: ref.id }, 'раскладка карточки «Результата опросов» непонятной формы — виджет и ссылка не поставлены, JSON не убран')
+    return 'unreadable'
   }
-  if (sections === null) return 'kept'
+  if (plan.kind === 'foreign') {
+    logger.info({ typeId: ref.id }, 'усыновлённый смарт-процесс: раскладка карточки не наша — не трогаем и нашу не ставим')
+    return 'foreign'
+  }
+  if (plan.kind === 'keep') return 'kept'
 
-  const set = buildSetCardConfigCall(ref.entityTypeId, sections)
+  const set = buildSetCardConfigCall(ref.entityTypeId, plan.sections)
   await call(set.method, set.params)
   return 'written'
 }
@@ -882,14 +885,12 @@ export async function provisionSmartProcesses(
   // ⚠ Раскладка карточки — удобство, и её неудача установку не роняет: без неё приложение
   // работает целиком, просто карточка выглядит хуже. Роняя установку из-за косметики,
   // мы поменяли бы местами главное и второстепенное.
-  let cardConfigured = false
   let cardSettled = true
-  let card: 'written' | 'kept' | 'foreign' | 'failed' = 'failed'
+  let card: CardOutcome = 'failed'
   // ⚠ «Разово» держит гейт `cardDue`: правка положена только порталу ниже шестой ревизии.
   const cardDue = (options.previousRevision ?? 0) < CARD_REVISION
   try {
     card = await ensureCardConfig(call, survey.ref, { widget: resultField === 'ok', due: cardDue, adopted: survey.adopted })
-    cardConfigured = card === 'written'
   }
   catch (error) {
     // ⚠ Разовая правка ревизии 6 на отказе, который лечится повтором, держит ревизию: отметив её,
@@ -900,10 +901,10 @@ export async function provisionSmartProcesses(
   }
   // ⚠ Повторимый отказ шага поля виджета держит разовую правку так же, как её собственный: без поля
   // правка поставила бы одну ссылку, JSON остался бы, ревизия 6 отметилась бы — и к карточке мы не
-  // вернулись бы никогда. Но не у чужой раскладки усыновлённого: её мы не тронем и потом, и держать
-  // ради неё портал значило бы обустраивать его каждый час впустую. Нашли `/review` и `/code-review`
-  // в панели PR #98.
-  if (cardDue && card !== 'foreign' && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
+  // вернулись бы никогда. Но не ради чужой и не ради непонятной раскладки: их мы не тронем и потом,
+  // и держать ради них портал значило бы обустраивать его каждый час впустую. Нашли `/review`
+  // и `/code-review` в панели PR #98, непонятную — `/code-review` во втором круге.
+  if (cardDue && card !== 'foreign' && card !== 'unreadable' && widgetRefusal !== null && isRetryableRefusal(widgetRefusal)) cardSettled = false
 
   // ⚠ Поля на ЧУЖИХ сущностях — сделке и контакте клиента. Без них балл виден только
   // в карточке «Опроса», а он дочерняя сущность: ни фильтр в списке сделок, ни робот
@@ -943,7 +944,7 @@ export async function provisionSmartProcesses(
     adoptedSurvey: survey.adopted,
     addedFields: templateFields.added + surveyFields.added,
     dealLinked,
-    cardConfigured,
+    card,
     cardSettled,
     resultField,
     crmFields,

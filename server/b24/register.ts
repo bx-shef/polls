@@ -343,7 +343,7 @@ export async function provisionWithCall(call: RestCall, domain: string): Promise
         builderPlaced,
         resultField: result.resultField,
         dealLinked: result.dealLinked,
-        cardConfigured: result.cardConfigured,
+        card: result.card,
         cardSettled: result.cardSettled,
         ownership: result.ownership,
         stages: result.stages,

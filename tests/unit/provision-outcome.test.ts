@@ -41,6 +41,8 @@ function portal(answers: Record<string, unknown | ((params: Record<string, unkno
     // Живой портал отвечает на правку поля самим полем (замерено 28.09): миграция ревизии 4
     // верит закрытию только по этому ответу.
     if (method === 'userfieldconfig.update') return { result: { field: { id: params.id, ...(params.field as object) } } }
+    // Своей раскладки у карточки нет — так её отдаёт живой портал (замерено 28.09).
+    if (method === 'crm.item.details.configuration.get') return { result: null }
     return { result: true }
   })
   return { call, calls }

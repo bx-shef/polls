@@ -887,10 +887,22 @@ export const CARD_RESULT_SECTION = 'survey_result'
 export type CardPlan = { kind: 'write', sections: Record<string, unknown>[] } | { kind: 'keep' } | { kind: 'unreadable' }
 
 /**
- * What revision 6 does to a survey card layout (`planSurveyCard`): a `CardPlan`, or `foreign` — an adopted
- * smart process whose layout holds none of our fields: it may be the client's own.
+ * What provisioning does to the survey card layout (`planSurveyCard`): a `CardPlan`, whose `write` may also be our
+ * layout from scratch, or `foreign` — an adopted smart process whose layout is not ours to change.
  */
 export type SurveyCardPlan = CardPlan | { kind: 'foreign' }
+
+/** What `planSurveyCard` needs to know besides the layout itself. */
+export interface SurveyCardInput {
+  /** The widget field is on the portal, and it is of our type. */
+  widget: boolean
+  /** The smart process was found by title rather than created or remembered by id. */
+  adopted: boolean
+  /** The one-time revision 6 fix is due: the portal stands below `CARD_REVISION`. */
+  due: boolean
+  /** The smart process runs on native stages, so there is no state field to show. */
+  staged: boolean
+}
 
 /** Our JSON fields that the widget shows in words; the card keeps them only while there is no widget. */
 const CARD_JSON_FIELDS: readonly string[] = ['SCORES', 'ANSWERS']
@@ -902,7 +914,11 @@ interface CardAnchor {
 }
 
 /**
- * Brings a survey card layout that is already on the portal to revision 6: the widget and the link in, JSON out.
+ * Plans the survey card layout: ours from scratch where the portal holds none, and the one-time revision 6 fix of a standing one — the widget and the link in, JSON out.
+ *
+ * ⚠ Всё решение о раскладке — здесь, в домене: и «ставить ли с нуля», и «чья она». Первая редакция
+ * держала половину правила в REST-слое, и её покрывал только сквозной тест с подделкой портала.
+ * Нашёл `/code-review` во втором круге панели PR #98.
  *
  * ⚠ ПЕРЕСМОТР РЕШЕНИЯ PR #80, ПО СЛОВУ ВЛАДЕЛЬЦА (#84, п. 15). Там правка знала один-единственный
  * свой раздел `survey_result`, а в раскладке, собранной клиентом, не трогала ничего: «его раскладка,
@@ -924,18 +940,14 @@ interface CardAnchor {
  * ⚠ Разово, при переходе на ревизию 6 (`CARD_REVISION`): повторяясь при каждом обустройстве, правка
  * возвращала бы клиенту поля, которые он убрал сам.
  */
-export function planSurveyCard(current: unknown, spTypeId: number, card: { widget: boolean, adopted: boolean }): SurveyCardPlan {
+export function planSurveyCard(current: unknown, spTypeId: number, card: SurveyCardInput): SurveyCardPlan {
+  // ⚠ Своей раскладки нет — ставим нашу целиком, но не усыновлённому: найденный по названию может
+  // оказаться «Опросом» клиента, и наши разделы легли бы в его карточку у всех. Нашли `/review`
+  // и `/code-review` в панели PR #98.
+  if (!hasCardConfig(current)) return card.adopted ? { kind: 'foreign' } : { kind: 'write', sections: buildCardSections(spTypeId, card.widget, card.staged) }
+  if (!card.due) return { kind: 'keep' }
   const sections = readCardLayout(current)
   if (sections === null) return { kind: 'unreadable' }
-  const { widget } = card
-  // ⚠ У УСЫНОВЛЁННОГО — только если раскладка уже знает хоть одно наше поле. Найденный по названию
-  // чаще всего наш же, переживший переустановку, и его раскладка — наша: её надо довести, иначе он
-  // не получил бы ни виджета, ни ссылки никогда. Но голое «Опрос» может оказаться смарт-процессом
-  // клиента, и в его карточку, где наших полей нет, мы ничего не ставим: чужого не перенастраиваем.
-  // Первая редакция не трогала усыновлённого вовсе и замораживала наш же. Нашли `/review`
-  // и `/code-review` в панели PR #98.
-  const ours = [...SURVEY_FIELDS.map(field => field.postfix), SURVEY_RESULT_FIELD].map(postfix => isOurField(spTypeId, postfix))
-  if (card.adopted && !sections.some(section => section.elements.some(element => ours.some(is => is(element))))) return { kind: 'foreign' }
 
   const rows = (index: number) => sections[index]!.elements
   /** Section and position of the first field of `postfixes`, in layout order, or `null`. */
@@ -957,6 +969,18 @@ export function planSurveyCard(current: unknown, spTypeId: number, card: { widge
     rows(0).push(element)
   }
 
+  // ⚠ У УСЫНОВЛЁННОГО — только если раскладка уже знает хоть одно наше поле. Найденный по названию
+  // чаще всего наш же, переживший переустановку, и его раскладка — наша: её надо довести, иначе он
+  // не получил бы ни виджета, ни ссылки никогда. Но голое «Опрос» может оказаться смарт-процессом
+  // клиента, и в его карточку, где наших полей нет, мы ничего не ставим: чужого не перенастраиваем.
+  // Первая редакция не трогала усыновлённого вовсе и замораживала наш же (`/review` и `/code-review`
+  // в панели PR #98). Виджет засчитывается, только когда поле нашего типа (`widget`): строковое
+  // `RESULT` клиента на усыновлённом процессе заведение поля опознаёт как чужое, а засчитав его по
+  // имени, мы поставили бы ссылку в карточку клиента (`/code-review` во втором круге).
+  const own = SURVEY_FIELDS.map(field => field.postfix)
+  if (card.adopted && find(card.widget ? [...own, SURVEY_RESULT_FIELD] : own) === null) return { kind: 'foreign' }
+
+  const { widget } = card
   let changed = false
   const standing = find([SURVEY_RESULT_FIELD])
   if (widget && standing === null) {
@@ -1072,17 +1096,23 @@ export function buildReadCardConfigCall(entityTypeId: number): PortalCall {
 }
 
 /**
- * Есть ли уже общая настройка карточки.
+ * Whether the portal holds a saved common card layout, understood or not.
  *
  * ⚠ От этого зависит, тронем ли мы её вообще. `crm.item.details.configuration.set`
  * перезаписывает раскладку ЦЕЛИКОМ и на всех пользователей сразу — как `relations`.
  * Клиент, разложивший карточку под себя, получил бы нашу при каждой переустановке.
  * Поэтому ставим только на пустом месте: на живом портале умолчание отдаётся как `null`,
  * то есть «никто ничего не настраивал» отличимо от «настроено».
+ *
+ * ⚠ «Пусто» — только `null` и пустой список: стирать в них нечего. Всё прочее — настройка, пусть
+ * и непонятная, и её разбирает `readCardLayout`. Первая редакция считала пустым всё, что не список:
+ * ответ объектом — так PHP отдаёт список с дырой, и проект ловит эту форму у `elements` и в импорте, —
+ * она приняла бы за пустоту и переписала бы раскладку клиента нашей целиком, на любой ревизии.
+ * Нашёл `/code-review` во втором круге панели PR #98.
  */
-export function hasCardConfig(response: unknown): boolean {
+function hasCardConfig(response: unknown): boolean {
   const result = (response as { result?: unknown } | null)?.result
-  return Array.isArray(result) && result.length > 0
+  return result !== null && !(Array.isArray(result) && result.length === 0)
 }
 
 /** Записать общую раскладку карточки — нашу с нуля или поправленную `planSurveyCard`. */
