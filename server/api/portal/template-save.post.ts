@@ -7,6 +7,7 @@ import { assignMissingKeys, readIncomingSchema } from '../../domain/templates/sc
 import {
   isFrozen,
   isSameStamp,
+  isSchemaHiddenFrom,
   buildGetTemplateItemCall,
   buildSaveSchemaCall,
   readTemplateItem,
@@ -90,6 +91,14 @@ export default defineEventHandler(async (event) => {
   const seen = typeof body?.updatedAt === 'string' ? body.updatedAt : ''
   if (seen !== '' && current.updatedAt !== '' && !isSameStamp(seen, current.updatedAt)) {
     return { ok: false as const, reason: 'stale' as const }
+  }
+
+  // ⚠ Схему, которую портал прячет от сотрудника, запись не затирает: он видел пустой черновик
+  // и собрал анкету заново, а пишем мы токеном приложения — поверх настоящей (`isSchemaHiddenFrom`).
+  const seenByUser = readTemplateItem({ result: { item: access.item } }, refs.template)
+  if (seenByUser !== null && isSchemaHiddenFrom(seenByUser, current)) {
+    logger.warn({ domain: session.portal.domain }, 'конструктор: схема не видна сотруднику, запись поверх неё не пошла')
+    return { ok: false as const, reason: 'hidden-schema' as const }
   }
 
   // ⚠ Код анкеты берётся у СОХРАНЁННОГО элемента, а не у присланной схемы, когда он там уже

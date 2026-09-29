@@ -1,7 +1,7 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { verifyItemAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { readTemplateItem } from '../../domain/templates/portal-calls'
+import { hasSchemaField, readTemplateItem } from '../../domain/templates/portal-calls'
 import { validateTemplate } from '../../domain/surveys/validate'
 import { logger } from '../../utils/logger'
 import { positiveInteger } from './-card-owner'
@@ -22,7 +22,8 @@ import { openPortalSession } from './-session'
  * что человеку видно, обязан портал. Панель ревью PR #100 разобрала этот размен у поля «Анкета»,
  * вкладка приведена к тому же (#101).
  *
- * «Не видит» и «удалили» портал не различает: отказ один, `denied`.
+ * «Не видит» и «удалили» портал не различает: отказ один, `denied`. Видит элемент, но не поле
+ * схемы — `hidden-schema`.
  *
  * Последовательность шагов держит `tests/unit/template-read-api.test.ts`.
  */
@@ -48,6 +49,9 @@ export default defineEventHandler(async (event) => {
     }
     return { ok: false as const, reason: 'denied' as const }
   }
+  // ⚠ Поле схемы портал мог не отдать сотруднику. Показав пустой черновик, мы пригласили бы собрать
+  // анкету заново поверх настоящей, которой он не видит (`hasSchemaField`, `/review` в PR #104).
+  if (!hasSchemaField(access.item, refs.template)) return { ok: false as const, reason: 'hidden-schema' as const }
   const item = readTemplateItem({ result: { item: access.item } }, refs.template)
   if (item === null) return { ok: false as const, reason: 'no-item' as const }
 

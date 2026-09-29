@@ -4,7 +4,9 @@ import {
   buildGetTemplateItemCall,
   buildNewVersionCall,
   buildPublishTemplateCall,
+  hasSchemaField,
   isSameStamp,
+  isSchemaHiddenFrom,
   nextVersion,
   readTemplateItem,
   readVersionsOfCode,
@@ -143,6 +145,31 @@ describe('отметка изменения', () => {
   it('неразобранная отметка сравнивается строкой — не пускает чужое и не отказывает своему', () => {
     expect(isSameStamp('вчера', 'вчера')).toBe(true)
     expect(isSameStamp('вчера', '2026-09-29T10:00:00+03:00')).toBe(false)
+  })
+})
+
+describe('схема глазами сотрудника', () => {
+  const view = (schema: unknown) => readTemplateItem({ result: { item: { id: 42, UF_CRM_8_SCHEMA: schema } } }, TEMPLATE)!
+  const SCHEMA_TEXT = JSON.stringify({ code: 'brand', title: 'Бренд', sections: [] })
+
+  it('пустое поле пришло ключом — поле отдано; ключа нет — спрятано', () => {
+    // Замер 29.09: пустые поля `crm.item.get` отдаёт ключами со значением `null`.
+    expect(hasSchemaField({ id: 42, UF_CRM_8_SCHEMA: null }, TEMPLATE)).toBe(true)
+    expect(hasSchemaField({ id: 42 }, TEMPLATE)).toBe(false)
+  })
+
+  it('ищет поле по `id` смарт-процесса, а не по `entityTypeId`', () => {
+    expect(hasSchemaField({ id: 42, UF_CRM_1038_SCHEMA: null }, TEMPLATE)).toBe(false)
+  })
+
+  it('ГЛАВНОЕ: приложение видит схему, сотрудник нет — спрятана', () => {
+    expect(isSchemaHiddenFrom(view(null), view(SCHEMA_TEXT))).toBe(true)
+  })
+
+  it('пусто у обоих или видно обоим — не спрятана', () => {
+    // Испорченную схему не разбирает никто — её по-прежнему можно чинить правкой.
+    expect(isSchemaHiddenFrom(view(''), view('не json'))).toBe(false)
+    expect(isSchemaHiddenFrom(view(SCHEMA_TEXT), view(SCHEMA_TEXT))).toBe(false)
   })
 })
 

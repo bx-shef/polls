@@ -29,6 +29,8 @@ const SCHEMA = {
 }
 
 let item: Record<string, unknown>
+/** Элемент глазами сотрудника, если портал показывает ему не то, что приложению. `null` — то же самое. */
+let userItem: Record<string, unknown> | null
 let body: Record<string, unknown>
 let writes: { method: string, params: Record<string, unknown> }[]
 
@@ -48,7 +50,7 @@ async function load(route: 'template-save' | 'template-publish') {
     }),
   }))
   vi.doMock('../../server/b24/provision', () => ({ readStoredRefs: async () => ({ template: TEMPLATE }) }))
-  vi.doMock('../../server/b24/frame-auth', () => ({ verifyItemAccess: async () => ({ ok: true, item }) }))
+  vi.doMock('../../server/b24/frame-auth', () => ({ verifyItemAccess: async () => ({ ok: true, item: userItem ?? item }) }))
   vi.doMock('../../server/utils/logger', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
   vi.doMock('h3', async () => {
     const actual = await vi.importActual<typeof import('h3')>('h3')
@@ -64,6 +66,7 @@ async function load(route: 'template-save' | 'template-publish') {
 }
 
 beforeEach(() => {
+  userItem = null
   item = {
     id: 4,
     stageId: 'DT1038_14:SUCCESS',
@@ -139,6 +142,42 @@ describe('одновременная правка', () => {
 
     expect(await save({})).toEqual({ ok: false, reason: 'stale' })
     expect(writes).toEqual([])
+  })
+})
+
+describe('схема, которую портал прячет от сотрудника', () => {
+  beforeEach(() => {
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '' }
+    body = { itemId: 4, schema: SCHEMA }
+  })
+
+  it('ГЛАВНОЕ: запись не затирает схему, которой сотрудник не видел', async () => {
+    // ⚠ Он видел пустой черновик и собрал анкету заново, а пишем мы токеном приложения — поверх
+    // настоящей. Портал может и отдать поле пустым, поэтому сравниваются два взгляда. `/review` в PR #104.
+    userItem = { ...item, UF_CRM_8_SCHEMA: null }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-schema' })
+    expect(writes).toEqual([])
+  })
+
+  it('и тогда, когда портал не отдал поле вовсе', async () => {
+    const { UF_CRM_8_SCHEMA: _hidden, ...rest } = item
+    userItem = rest
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'hidden-schema' })
+    expect(writes).toEqual([])
+  })
+
+  it('пустой черновик, пустой для обоих, собирается с нуля как прежде', async () => {
+    // Затирать нечего: схемы нет ни у сотрудника, ни у приложения.
+    item = { ...item, UF_CRM_8_SCHEMA: '' }
+    userItem = { ...item }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+    expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
   })
 })
 

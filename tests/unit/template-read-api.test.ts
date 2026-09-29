@@ -114,6 +114,17 @@ describe('чтение — токеном сотрудника', () => {
     expect(probe.appCalls).not.toContain('crm.item.get')
   })
 
+  it('ГЛАВНОЕ: поле схемы портал не отдал сотруднику — отказ, а не пустой черновик', async () => {
+    // ⚠ Пустой черновик пригласил бы собрать анкету заново, а запись идёт токеном приложения —
+    // поверх настоящей схемы, которой сотрудник не видел. Пустое поле приходит ключом со значением
+    // `null` (замер 29.09), так что нет ключа — поле спрятано. Нашёл `/review` в PR #104.
+    const { UF_CRM_8_SCHEMA: _hidden, ...rest } = (access as { item: Record<string, unknown> }).item
+    access = { ok: true, item: rest }
+    const handler = await loadHandler()
+
+    expect(await handler({})).toEqual({ ok: false, reason: 'hidden-schema' })
+  })
+
   it('портал недоступен — 503, а не «нет доступа»', async () => {
     access = { ok: false, reason: 'unreachable' }
     const handler = await loadHandler()
