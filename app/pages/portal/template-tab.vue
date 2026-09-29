@@ -175,7 +175,8 @@ onMounted(async () => {
 
   try {
     itemId.value = placementItemId(frame.placement.options, route.query)
-    await loadTemplate()
+    const refusal = await loadTemplate()
+    if (refusal !== null) showLoadRefusal(refusal)
   }
   catch {
     failure.value = 'Не удалось прочитать анкету с портала. Обновите страницу.'
@@ -185,14 +186,18 @@ onMounted(async () => {
   }
 })
 
-async function loadTemplate() {
-  if (itemId.value === null) return
+/**
+ * Прочитать анкету с портала в `template` и `problems`.
+ *
+ * Отдаёт причину отказа, `null` — прочитана. Что показать на отказ, решает вызывающий:
+ * при открытии вкладки отказ встаёт вместо редактора (`showLoadRefusal`), а перечитка после
+ * публикации только дописывает сообщение о выпуске — версия уже вышла (`release`).
+ */
+async function loadTemplate(): Promise<string | null> {
+  if (itemId.value === null) return null
 
   const pass = await framePass(frame!.auth)
-  if (pass === null) {
-    failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
-    return
-  }
+  if (pass === null) return 'no-pass'
 
   const answer = await $fetch<
     { ok: true, template: TemplateItem, problems: Problem[] } | { ok: false, reason: string }
@@ -208,18 +213,27 @@ async function loadTemplate() {
     // перезапуска контейнера. Ответ без этого поля уронил бы страницу целиком, и снаружи
     // это выглядело бы как «конструктор перестал работать».
     problems.value = answer.problems ?? []
+    return null
+  }
+  return answer.reason
+}
+
+/** Отказ чтения при открытии вкладки: встаёт вместо редактора, и у каждого свои слова. */
+function showLoadRefusal(reason: string): void {
+  if (reason === 'no-pass') {
+    failure.value = 'Портал не передал данные авторизации. Обновите страницу.'
     return
   }
   // «Нет доступа» — свой текст, а не «откройте из карточки»: из карточки её и открыли. Анкету
   // читает токен сотрудника (#101), и отказ значит, что портал её ему не показывает — или её удалили:
   // эти два случая портал не различает.
-  if (answer.reason === 'denied') {
+  if (reason === 'denied') {
     failure.value = `Нет доступа к этой анкете, или её удалили. Доступ к «${TEMPLATE_SP_TITLE}» настраивает администратор в правах CRM.`
     return
   }
   // «Не настроено» и «нет элемента» различаются текстом: первое лечит администратор,
   // второе означает, что вкладку открыли не из карточки.
-  notProvisioned.value = answer.reason === 'not-provisioned'
+  notProvisioned.value = reason === 'not-provisioned'
   if (!notProvisioned.value) itemId.value = null
 }
 
@@ -364,12 +378,12 @@ async function release(action: 'publish' | 'new-version'): Promise<void> {
   if (releasedVersion === 0) return
 
   releaseNote.value = `Анкета опубликована как версия ${releasedVersion}.`
-  try {
-    await loadTemplate()
-  }
-  catch {
-    releaseNote.value += ' Обновите страницу, чтобы увидеть новое состояние.'
-  }
+  // ⚠ Отказ перечитки — дописка к сообщению, а НЕ отказ вместо редактора. С #101 анкету
+  // перечитывает токен сотрудника, и портал вправе её не показать: права по стадиям пускают
+  // в «Черновик», но не в «Опубликован». Общий `failure` стёр бы сообщение о выпуске, и человек
+  // решил бы, что анкета не вышла, хотя она уже вышла. Нашёл `/code-review` в PR #104.
+  const reread = await loadTemplate().catch(() => 'unreachable')
+  if (reread !== null) releaseNote.value += ' Обновите страницу, чтобы увидеть новое состояние.'
 }
 
 /**

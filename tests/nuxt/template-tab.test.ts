@@ -400,6 +400,22 @@ describe('публикация и новая версия', () => {
     expect(mounted.text()).toContain('опубликована как версия 4')
   })
 
+  it('ГЛАВНОЕ: перечитка после публикации получила отказ — сообщение о выпуске остаётся', async () => {
+    // ⚠ С #101 анкету перечитывает токен сотрудника, и права по стадиям могут не пустить его
+    // в «Опубликован». Отказ в общем `failure` стёр бы экран вместе с «опубликована как версия 4»,
+    // и человек решил бы, что анкета не вышла. Нашёл `/code-review` в PR #104.
+    reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
+    const mounted = await mount()
+    reply = { ok: false, reason: 'denied' }
+
+    await button(mounted, 'Опубликовать')!.trigger('click')
+    for (let tick = 0; tick < 5; tick += 1) await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.text()).toContain('опубликована как версия 4')
+    expect(mounted.text()).toContain('Обновите страницу, чтобы увидеть новое состояние')
+    expect(mounted.text()).not.toContain('Нет доступа к этой анкете')
+  })
+
   it('отказ публикации объясняется и не ломает экран', async () => {
     reply = { ...DRAFT, template: { ...PUBLISHED.template, state: 'draft', version: 0 } }
     releaseReply = { ok: false, reason: 'invalid' }
