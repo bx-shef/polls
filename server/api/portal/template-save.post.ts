@@ -6,6 +6,7 @@ import { validateTemplate } from '../../domain/surveys/validate'
 import { assignMissingKeys, readIncomingSchema } from '../../domain/templates/schema-input'
 import {
   isFrozen,
+  isSameStamp,
   buildGetTemplateItemCall,
   buildSaveSchemaCall,
   readTemplateItem,
@@ -57,8 +58,8 @@ export default defineEventHandler(async (event) => {
   // приложения — у него права администратора, — поэтому «а можно ли этому человеку» решает
   // портал по своим правам, а не мы по своим догадкам. Без проверки любой сотрудник
   // с фреймовым пропуском мог бы прислать чужой `itemId` и переписать анкету, к которой
-  // портал его не подпускает. У роута ЧТЕНИЯ довод другой (там только наши же шаблоны),
-  // и копировать его сюда было ошибкой. Нашёл `/code-review`.
+  // портал его не подпускает. Довод «там только наши же шаблоны» был скопирован у роута
+  // ЧТЕНИЯ и для записи не работал; с #101 его нет и у чтения. Нашёл `/code-review`.
   const access = await verifyItemAccess(
     session.portal.domain,
     session.authId,
@@ -85,8 +86,9 @@ export default defineEventHandler(async (event) => {
   // открытые на одной анкете, иначе молча затирают работу друг друга — и обеим показано
   // «Сохранено». Пустая отметка (портал её не отдал) проверку пропускает: отказывать
   // из-за отсутствующего поля значило бы сломать сохранение целиком. Нашёл `/code-review`.
+  // Сверяется мгновение, а не строка: вкладка читала токеном сотрудника, мы — приложения (`isSameStamp`).
   const seen = typeof body?.updatedAt === 'string' ? body.updatedAt : ''
-  if (seen !== '' && current.updatedAt !== '' && seen !== current.updatedAt) {
+  if (seen !== '' && current.updatedAt !== '' && !isSameStamp(seen, current.updatedAt)) {
     return { ok: false as const, reason: 'stale' as const }
   }
 

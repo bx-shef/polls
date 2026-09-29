@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  * то, ради чего инвариант «опубликованная версия неизменяема» вообще заведён: снятая с публикации
  * и уведённая в «Черновик» версии не правятся и не публикуются повторно под новым номером.
  *
+ * Здесь же — сверка отметки изменения при сохранении (#101): на уровне роута её не держал ни один тест.
+ *
  * Роуты импортируются напрямую, сессия и портал подделаны — приём в `survey-result-api.test.ts`.
  */
 
@@ -112,6 +114,31 @@ describe('сохранение схемы со стадиями', () => {
 
     expect(await save({})).toMatchObject({ ok: true })
     expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
+  })
+})
+
+describe('одновременная правка', () => {
+  beforeEach(() => {
+    item = { ...item, stageId: 'DT1038_14:NEW', UF_CRM_8_PUBLISHED_AT: '' }
+  })
+
+  it('ГЛАВНОЕ: отметка вкладки в другом часовом поясе — не чужая правка', async () => {
+    // ⚠ Вкладка получила отметку токеном сотрудника (#101), роут перечитывает токеном приложения.
+    // Сравнив строки, мы отказали бы в каждом сохранении, где пояса разошлись (`isSameStamp`).
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T07:00:00+00:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toMatchObject({ ok: true })
+    expect(writes.map(one => one.method)).toEqual(['crm.item.update'])
+  })
+
+  it('отметка разошлась — отказ «stale» и ни одной записи', async () => {
+    // Две вкладки на одной анкете иначе молча затирают работу друг друга. Нашёл `/code-review`.
+    body = { itemId: 4, schema: SCHEMA, updatedAt: '2026-09-28T09:59:00+03:00' }
+    const save = await load('template-save')
+
+    expect(await save({})).toEqual({ ok: false, reason: 'stale' })
+    expect(writes).toEqual([])
   })
 })
 

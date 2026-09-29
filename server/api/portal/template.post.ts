@@ -1,6 +1,7 @@
-import { defineEventHandler, readBody } from 'h3'
+import { createError, defineEventHandler, readBody } from 'h3'
+import { verifyItemAccess } from '../../b24/frame-auth'
 import { readStoredRefs } from '../../b24/provision'
-import { buildGetTemplateItemCall, readTemplateItem } from '../../domain/templates/portal-calls'
+import { readTemplateItem } from '../../domain/templates/portal-calls'
 import { validateTemplate } from '../../domain/surveys/validate'
 import { logger } from '../../utils/logger'
 import { positiveInteger } from './-card-owner'
@@ -12,13 +13,18 @@ import { openPortalSession } from './-session'
  * POST, хотя и читает: фреймовый токен уходит телом, а не адресом — адреса оседают в журналах
  * прокси целиком. Тот же приём, что у соседних портальных роутов.
  *
- * ⚠ Элемент читается ВЫЗОВОМ ПРИЛОЖЕНИЯ, а не токеном сотрудника, и это осознанный размен.
- * У приложения прав больше, значит проверка «а можно ли этому человеку сюда» обязана быть
- * нашей. Она есть, и она дешёвая: вкладку открывает сам портал, и открывает он её только
- * тому, кому карточка доступна. Читаем ровно тот элемент, чей идентификатор портал положил
- * во фрейм, — подставить чужой можно, но в этом смарт-процессе лежат наши же шаблоны анкет,
- * а не данные клиентов. Ответы и имена людей живут в другом смарт-процессе, и туда этот
- * роут не ходит.
+ * ⚠ ЭЛЕМЕНТ ЧИТАЕТСЯ ТОКЕНОМ СОТРУДНИКА, одним вызовом с проверкой доступа (`verifyItemAccess`), —
+ * как у поля «Анкета» и виджета результата. Прежде вкладка читала вызовом приложения:
+ * «в «Шаблоне» наши же анкеты, а не данные клиентов». Но номер элемента присылает страница,
+ * и с правами администратора любой сотрудник с фреймовым пропуском прочитал бы любую анкету
+ * портала, включая черновики, мимо прав CRM на сам элемент. А формулировки анкет бывают
+ * внутренними для отдела, и «наши шаблоны» — всё равно тексты сотрудников клиента. Решать,
+ * что человеку видно, обязан портал. Панель ревью PR #100 разобрала этот размен у поля «Анкета»,
+ * вкладка приведена к тому же (#101).
+ *
+ * «Не видит» и «удалили» портал не различает: отказ один, `denied`.
+ *
+ * Последовательность шагов держит `tests/unit/template-read-api.test.ts`.
  */
 export default defineEventHandler(async (event) => {
   const session = await openPortalSession(event)
@@ -35,8 +41,14 @@ export default defineEventHandler(async (event) => {
     return { ok: false as const, reason: 'not-provisioned' as const }
   }
 
-  const get = buildGetTemplateItemCall(refs.template, itemId)
-  const item = readTemplateItem(await session.call(get.method, get.params), refs.template)
+  const access = await verifyItemAccess(session.portal.domain, session.authId, refs.template.entityTypeId, itemId)
+  if (!access.ok) {
+    if (access.reason === 'unreachable') {
+      throw createError({ statusCode: 503, statusMessage: 'Portal unreachable' })
+    }
+    return { ok: false as const, reason: 'denied' as const }
+  }
+  const item = readTemplateItem({ result: { item: access.item } }, refs.template)
   if (item === null) return { ok: false as const, reason: 'no-item' as const }
 
   // ⚠ Претензии к схеме считает СЕРВЕР, а не вкладка, и это не про удобство: `app/` не имеет
