@@ -173,7 +173,7 @@ async function readAllVersions(
 }
 
 /**
- * This code's draft if there is one, `null` if none; `'truncated'` when the list did not end within the cap.
+ * The id of this code's draft if there is one, `null` if none; `'truncated'` when the list did not end within the cap.
  *
  * Ищем постранично: черновик может лежать где угодно.
  */

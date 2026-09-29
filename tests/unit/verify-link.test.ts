@@ -352,6 +352,12 @@ describe('как вебхук читает ответ портала', () => {
 
     expect(body).toEqual({ result: [{ ID: '1' }], time: { start: 1 }, next: 50 })
     expect(Object.isFrozen(body)).toBe(true)
+
+    answer(200, JSON.stringify({ result: [], total: 61, time: { start: 2 } }))
+    const last = await hookCall('https://portal.example/rest/1/key/')('crm.deal.list', { start: 50 })
+
+    expect(last).toEqual({ result: [], time: { start: 2 } })
+    expect(Object.isFrozen(last)).toBe(true)
   })
 
   it('ГЛАВНОЕ: двухсотый ответ не JSON — ответа портала нет, а не «беда на нашей стороне»', async () => {

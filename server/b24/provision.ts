@@ -660,13 +660,14 @@ type SeenCrmFields = readonly ExistingCrmField[] | { refused: unknown }
  * в третьем круге PR #113).
  *
  * Возвращает число созданных. Ноль — всё уже было: повторная установка ничего не портит.
+ * `null` — завелось не всё; что и почему, пишет в журнал сама, по сущностям и полям.
  *
  * `seen` получает поля каждой сущности такими, какими они были ДО создания недостающих, —
- * даже если создание потом упало, — а недочитанный список — отказом, если повтор его
- * не вылечит. Их разбирает миграция подписей ревизии 4, и второй раз листать те же списки
+ * даже если создание потом упало, — а список, который не прочитался, — отказом, если повтор
+ * его не вылечит. Их разбирает миграция подписей ревизии 4, и второй раз листать те же списки
  * на критическом пути установки незачем (панель ревью PR #87).
  */
-async function ensureCrmScoreFields(call: RestCall, seen: Map<CrmEntity, SeenCrmFields>): Promise<number> {
+async function ensureCrmScoreFields(call: RestCall, seen: Map<CrmEntity, SeenCrmFields>): Promise<number | null> {
   let added = 0
   const failures: string[] = []
 
@@ -693,7 +694,14 @@ async function ensureCrmScoreFields(call: RestCall, seen: Map<CrmEntity, SeenCrm
     }
   }
 
-  if (failures.length > 0) throw new Error(failures.join('; '))
+  if (failures.length > 0) {
+    // ⚠ В журнал — сами отказы, а не сводная ошибка: `safeRefusal` у простого `Error` текста не читает, и
+    // сводка выходила «портал отказал, код не распознан» — и про наш `SHEF_LIST_TRUNCATED`, и про беду связи,
+    // а поля контакта звала незаведёнными, хотя они завелись. Отказы собраны из наших констант и вывода
+    // `safeRefusal`, данных клиента в них нет. Нашли `/review` и `/code-review` в четвёртом круге PR #113.
+    logger.warn({ failures }, 'поля оценки на сделке и контакте заведены не везде')
+    return null
+  }
   return added
 }
 
@@ -1030,6 +1038,7 @@ export async function provisionSmartProcesses(
     crmFields = await ensureCrmScoreFields(call, crmSeen)
   }
   catch (error) {
+    // Сюда доезжает только неожиданное: отказы списков и создания `ensureCrmScoreFields` пишет сама.
     logger.warn({ reason: safeRefusal(error) }, 'поля оценки на сделке и контакте не заведены')
   }
 
@@ -1232,8 +1241,9 @@ async function lockFields(
 /**
  * Поставить метку в подписи наших полей на сделке и контакте клиента.
  *
- * Подписи — не безопасность, но и они должны доехать: отказ оставляет миграцию незавершённой,
- * и донастройка вернётся. Каждый вызов — в своём `try`.
+ * Подписи — не безопасность, но и они должны доехать: отказ, который лечится повтором, оставляет
+ * миграцию незавершённой, и донастройка вернётся; прочие отпускают её (`refuse`). Список, отказавший
+ * так ещё у полей оценки, заново не листается. Каждый вызов — в своём `try`.
  */
 async function labelCrmFields(
   call: RestCall,

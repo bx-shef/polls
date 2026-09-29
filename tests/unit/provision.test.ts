@@ -1147,11 +1147,17 @@ describe('постраничные списки', () => {
   it('ГЛАВНОЕ: список полей сделки не кончился за предел — поля сделки не заводятся, а поля контакта заводятся', async () => {
     // Поля оценки — не критический путь: их отказ установку не роняет (`ensureCrmScoreFields`), по неполному
     // списку ничего не пишет и полям соседней сущности не мешает (`/review` в третьем круге PR #113).
+    const warn = vi.spyOn(logger, 'warn')
     const p = portal({ 'crm.deal.userfield.list': (params: Record<string, unknown>) => ({ result: [], next: Number(params.start ?? 0) + 50 }) })
 
     const result = await provisionSmartProcesses(p.call)
 
     expect(result.crmFields).toBeNull()
+    // Журнал называет свой код у сделки — на портале после миграции это единственная строка о шаге, — а поля
+    // контакта незаведёнными не зовёт (`/review` и `/code-review` в четвёртом круге PR #113).
+    expect(warn).toHaveBeenCalledWith({ failures: ['сделка: SHEF_LIST_TRUNCATED'] }, expect.stringContaining('заведены не везде'))
+    // Миграция подписей получила отказ готовым — и назвала его так же.
+    expect(warn).toHaveBeenCalledWith({ step: 'подписи полей сделки и контакта', reason: 'SHEF_LIST_TRUNCATED' }, expect.any(String))
     expect(p.of('crm.deal.userfield.add')).toEqual([])
     expect(p.of('crm.contact.userfield.add')).toHaveLength(SCORE_FIELDS.length)
     // Миграция подписей тот же список заново не листает: сто вызовов, а не двести, внутри общего бюджета.
@@ -1162,6 +1168,24 @@ describe('постраничные списки', () => {
     expect(result.ownership?.settled).toBe(true)
   })
 
+  it('беда связи на списке сделки — журнал так и говорит, а миграция подписей вернётся', async () => {
+    // Сводная ошибка звала её «портал отказал, код не распознан» — ровно то, против чего делали #99 и #106.
+    const warn = vi.spyOn(logger, 'warn')
+    const p = portal({
+      'crm.deal.userfield.list': () => {
+        throw new PortalError(UNREACHABLE_CODE, 'socket hang up')
+      },
+    })
+
+    const result = await provisionSmartProcesses(p.call)
+
+    expect(warn).toHaveBeenCalledWith({ failures: ['сделка: SHEF_UNREACHABLE'] }, expect.stringContaining('заведены не везде'))
+    expect(p.of('crm.contact.userfield.add')).toHaveLength(SCORE_FIELDS.length)
+    // Повторимый отказ не запоминается: миграция листает сама — и, не прочитав, держит ревизию незавершённой.
+    expect(p.of('crm.deal.userfield.list')).toHaveLength(2)
+    expect(result.ownership?.settled).toBe(false)
+  })
+
   it('ГЛАВНОЕ: список типов не продвигается — отказ за две страницы, а не сто', async () => {
     // Так выглядел бы метод, не понявший `start`: одна и та же первая страница и одно и то же смещение. До
     // предела это сто вызовов — дольше всего бюджета установки (`/review` в третьем круге PR #113).
@@ -1170,6 +1194,13 @@ describe('постраничные списки', () => {
     await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
     expect(p.of('crm.type.list')).toHaveLength(2)
     expect(p.of('crm.type.add')).toEqual([])
+  })
+
+  it('смещение назад — тоже отказ, а не круг по уже прочитанному', async () => {
+    const p = portal({ 'crm.type.list': (params: Record<string, unknown>) => ({ result: { types: [] }, next: Number(params.start ?? 0) === 0 ? 100 : 50 }) })
+
+    await expect(provisionSmartProcesses(p.call)).rejects.toMatchObject({ code: 'SHEF_LIST_TRUNCATED' })
+    expect(p.of('crm.type.list')).toHaveLength(2)
   })
 
   it('список полей смарт-процесса не продвигается — отказ за две страницы', async () => {
