@@ -191,5 +191,13 @@ const form = computed(() => reply.value?.form ?? null)
         </ul>
       </section>
     </template>
+
+    <!-- Ответ без анкеты — расхождение с роутом, а не пустое поле: молча показать пустоту значило бы
+         оставить человека гадать (`/review` и `/code-review` в замыкающем круге панели PR #100). -->
+    <B24Alert
+      v-else
+      color="air-primary-alert"
+      description="Не удалось показать анкету. Обновите карточку."
+    />
   </div>
 </template>

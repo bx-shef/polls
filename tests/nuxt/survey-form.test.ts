@@ -163,6 +163,15 @@ describe('поле «Анкета»', () => {
     expect(page.text()).toContain('0–10: Второй')
   })
 
+  it('ответ без анкеты — не пустое поле, а понятный отказ', async () => {
+    reply = { ok: true }
+
+    const page = await mountSuspended(await SurveyForm())
+    await settle()
+
+    expect(page.text()).toContain('Не удалось показать анкету')
+  })
+
   it('без доступа говорит честно: или нет прав, или анкету удалили', async () => {
     reply = { ok: false, reason: 'denied' }
 
